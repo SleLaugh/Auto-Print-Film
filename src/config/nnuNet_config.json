@@ -1,0 +1,17 @@
+{
+    "_configuration": "3d_fullres",
+    "_fold": "0",
+    "_continue": true,
+    "nnUNet_raw": "/home/peng/03_data/00_nnUnet/model/nnUNet_raw",
+    "nnUNet_preprocessed": "/home/peng/03_data/00_nnUnet/model/nnUNet_preprocessed",
+    "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",
+    "_dataset_id_mapping": {
+        "颅脑": 294,
+        "颈椎": 292,
+        "胸椎": 292,
+        "腰椎": 292,
+        "肺部": 315,
+        "骶骨": 292,
+        "髋骨": 297
+    }
+}

@@ -1,0 +1,205 @@
+#!/src/stages/stage_preprocessing.py
+# -*- coding: utf-8 -*-
+
+"""
+阶段一：预处理
+DICOM → NIfTI 转换（单序列处理）
+"""
+
+import warnings
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+import numpy as np
+import SimpleITK as sitk
+
+from src.core.base_stage import BaseStage
+from src.core.context import ProcessingContext
+from src.utils import ErrorLog
+
+# 设置警告过滤
+# 忽略警告信息（DICOM读取时可能产生大量无关警告）
+warnings.simplefilter("ignore")
+warnings.filterwarnings("ignore")
+
+
+class PreprocessingStage(BaseStage):
+    """
+    预处理阶段 - DICOM转NIfTI（单序列处理）
+    
+    特点：
+    1. 每次处理一个DICOM序列 - 专注单一任务，避免复杂性
+    2. 支持高并发调用 - 各走各的路径，互不干扰
+    3. 输出路径由调用方指定 - 灵活控制输出位置
+    4. 自动处理3D格式 - 确保输出为标准的3D医学图像
+    
+    工作流程：
+        输入DICOM目录 → 读取序列 → 转换为3D格式 → 输出NIfTI文件
+    """
+    
+    def __init__(self, config: Dict[str, Any] = None):
+        """
+        初始化预处理阶段
+        
+        Args:
+            config: 配置字典，支持以下选项：
+                - debug: bool，是否开启调试模式（默认False）
+                        开启后会输出详细错误信息和堆栈跟踪
+        """
+        super().__init__(name="preprocessing", config=config)
+        self.debug = config.get('debug', False) if config else False
+    
+    def execute(self, context: ProcessingContext) -> ProcessingContext:
+        """
+        执行DICOM到NIfTI的转换（主入口方法）
+        
+        流程说明：
+        1. 从context中获取输入输出路径
+        2. 创建输出目录
+        3. 读取DICOM序列
+        4. 转换为3D格式
+        5. 保存为NIfTI文件
+        6. 将结果写回context
+        
+        Args:
+            context: 处理上下文，必须包含：
+                - request.dicom_dir: DICOM序列所在目录
+                - request.output_dir: 输出根目录
+            
+        Returns:
+            ProcessingContext: 包含处理结果的上下文
+                结果中会包含：
+                - nifti_path: str，生成的NIfTI文件路径
+                - error: str（可选），错误信息（如果失败）
+        
+        Example:
+            >>> context.request.dicom_dir = '/data/patient1/CT'
+            >>> context.request.output_dir = '/output'
+            >>> result = stage.execute(context)
+            >>> print(result.get_result('preprocessing')['nifti_path'])
+            '/output/nifti/CT.nii.gz'读取dicom序列
+        """
+        
+        request = context.request
+        
+        input_dir = Path(request.dicom_dir) # 原始路径
+        
+        output_file = Path(request.output_dir) / 'nifti' / f"{input_dir.name}_0000.nii.gz" # 创建目标路径
+        
+        
+        output_file.parent.mkdir(parents=True, exist_ok=True) # 确保目标路径存在
+        try:
+            image = self._read_dicom_series(str(input_dir)) # 读取dicom序列
+            if image is not None:
+                image = self._ensure_3d(image) # 确保图像为3D格式
+                
+                sitk.WriteImage(image, str(output_file)) # 保存为NIfTI格式
+                
+                context.set_result(self.name, { # 记录成功结果，只保存路径
+                    'nifti_path': str(output_file)
+                }) 
+            else:
+                context.set_result(self.name, {
+                    'nifti_path': None,
+                    'error': '读取DICOM失败：未找到有效的DICOM序列'
+                })
+                
+        except Exception as e:
+            context.set_result(self.name, {
+                'nifti_path': None,
+                'error': str(e)
+            })
+        
+        return context
+
+    def _read_dicom_series(self, filepath: str) -> Optional[sitk.Image]:
+        """
+        读取DICOM序列
+        
+        使用SimpleITK的ImageSeriesReader自动识别并读取DICOM序列。
+        该方法能够处理：
+        - 单个DICOM文件
+        - 同一目录下的多个DICOM文件（组成一个序列）
+        - 包含私有标签的DICOM文件
+        
+        Args:
+            filepath: 包含DICOM文件的目录路径
+            
+        Returns:
+            Optional[sitk.Image]: 
+                - 成功：返回读取的3D/4D图像对象
+                - 失败：返回None
+            
+        技术细节：
+            1. ImageSeriesReader: SimpleITK的专用DICOM读取器
+            2. MetaDataDictionaryArrayUpdateOn(): 保留元数据信息
+            3. LoadPrivateTagsOn(): 读取私有标签（某些厂商特有信息）
+            4. GetGDCMSeriesFileNames(): 自动识别同一序列的所有文件
+        """
+        
+        try:
+            reader = sitk.ImageSeriesReader() # 创建DICOM序列读取器 
+            reader.MetaDataDictionaryArrayUpdateOn() # 启用元数据字典数组更新（保留每个切片的元数据）
+            reader.LoadPrivateTagsOn() # 加载私有标签（某些DICOM包含厂商特有的私有信息）
+            
+            series_file_names = reader.GetGDCMSeriesFileNames(filepath) # 自动识别目录下的所有DICOM文件并排序
+            if not series_file_names: # 没有找到DICOM文件
+                return None 
+            
+            reader.SetFileNames(series_file_names) # 设置文件列表并读取
+            return reader.Execute()
+            
+        except Exception as e:
+            ErrorLog(f" ⚠️  读取DICOM序列一场: {str(e)}")
+            return None
+    
+    def _ensure_3d(self, image: sitk.Image) -> sitk.Image:
+        """
+        确保图像是3D格式
+        
+        医学图像常见格式：
+        - 3D: (深度, 高度, 宽度) - 标准的体素数据
+        - 4D: (时间, 深度, 高度, 宽度) - 动态图像
+        - 4D: (通道, 深度, 高度, 宽度) - 多通道图像
+        - 2D: (高度, 宽度) - 单张切片
+        
+        该方法会将各种格式统一转换为3D：
+        - 2D → 3D (添加深度维度，深度=1)
+        - 4D → 3D (去除单维度或取第一个通道/时间点)
+        
+        Args:
+            image: 输入的SimpleITK图像对象
+            
+        Returns:
+            sitk.Image: 3D格式的SimpleITK图像对象
+            
+        处理策略：
+            1. 如果是2D: 转换为3D（添加深度维度）
+            2. 如果是4D: 尝试去除单维度，或取第一个通道
+            3. 如果已经是3D: 直接返回
+            
+        Example:
+            >>> # 4D图像 (时间, 深度, 高度, 宽度) = (5, 128, 128, 128)
+            >>> image_3d = stage._ensure_3d(image_4d)
+            >>> # 输出: (128, 128, 128) - 取第一个时间点
+        """
+                
+        image_array = sitk.GetArrayFromImage(image) # 获取图像数组， SimpleITK的数组顺序为 (z, y, x) 即 (深度, 高度, 宽度)
+        
+
+        if len(image_array.shape) > 3: # 维度大于3（通常是4D）
+            image_array = image_array.squeeze() # 去除所有大小为1的维度   例如：(1, 128, 128, 128) → (128, 128, 128)
+            
+            if len(image_array.shape) > 3: # 如果去除单维度后还是4D，取第一个通道/时间点  例如：(5, 128, 128, 128) → (128, 128, 128)
+                image_array = image_array[..., 0] # Python的...表示所有维度，[..., 0]表示取最后一个维度的第一个元素   例如：(128, 128, 128, 5) → (128, 128, 128) 取第5维的第一个
+            
+            if len(image_array.shape) >= 2:
+                width, height = image_array.shape[0], image_array.shape[1] # 重塑为3D格式 (深度, 高度, 宽度)
+                image_array = np.reshape(image_array, (width, height, -1)) # -1表示自动计算该维度大小
+            
+            image = sitk.GetImageFromArray(image_array) # 转换回SimpleITK图像
+        
+        # 如果是2D，GetImageFromArray会自动添加深度维度
+        # 所以不需要额外处理
+        return image
+    

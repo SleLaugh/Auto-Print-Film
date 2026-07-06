@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "调试 main.py",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "program": "${workspaceFolder}/main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-i", "/home/peng/03_data/demo/Image/dicom/腰椎CT/1",
+                "-o", "/home/peng/03_data/demo/Image/dicom/腰椎CT/1Result",
+                "--body-part", "腰椎"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
+    ]
+}

@@ -1,0 +1,8 @@
+{
+    "console_enabled": true,
+    "run_log_file_enabled": true,
+    "debug_log_file_enabled": true,
+    "error_log_file_enabled": true,
+    "log_encoding": "utf-8",
+    "base_dir": "Log"
+}

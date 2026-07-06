@@ -1,0 +1,5 @@
+# 基础依赖
+PyYAML>=6.0
+colorlog>=6.7.0
+numpy>=1.24.0
+SimpleITK>=2.0.0

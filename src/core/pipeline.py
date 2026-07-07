@@ -28,6 +28,8 @@ Pipeline执行器模块
 """
 
 import time
+import shutil
+from pathlib import Path
 from typing import List, Optional, Any
 from src.utils import ErrorLog, DebugLog
 from .base_stage import BaseStage
@@ -114,6 +116,7 @@ class Pipeline:
         DebugLog("Pipeline 开始执行")
         DebugLog(f"共 {len(self.stages)} 个阶段")
         
+        self._prepare_output_dir(request)
         
         context = ProcessingContext(request) # 创建处理上下文
         pipeline_start = time.time()        
@@ -154,3 +157,19 @@ class Pipeline:
         
         return response
 
+    def _prepare_output_dir(self, request: Any) -> None:
+        """
+        清理并重建本次任务的输出根目录。
+
+        输出目录是一次任务的完整产物目录。重新运行同一个 output_dir 时，
+        先删除旧目录，避免读取到上一次运行留下的 NIfTI、分割或报告文件。
+        """
+        output_dir = getattr(request, 'output_dir', None)
+        if not output_dir:
+            return
+
+        output_path = Path(output_dir)
+        if output_path.exists():
+            DebugLog(f"清理旧输出目录: {output_path}")
+            shutil.rmtree(output_path)
+        output_path.mkdir(parents=True, exist_ok=True)

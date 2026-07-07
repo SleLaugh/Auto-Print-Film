@@ -7,6 +7,7 @@ DICOM → NIfTI 转换（单序列处理）
 """
 
 import warnings
+import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -84,35 +85,38 @@ class PreprocessingStage(BaseStage):
         
         input_dir = Path(request.dicom_dir) # 原始路径
         
-        output_file = Path(request.output_dir) / 'nifti' / f"{input_dir.name}_0000.nii.gz" # 创建目标路径
+        output_root = Path(request.output_dir)
+        output_file = output_root / 'nifti' / 'raw_0000.nii.gz' # nnUNet 输入必须以 _0000 结尾
+        metadata_file = output_root / 'metadata' / 'dicom_metadata.json'
         
         
         output_file.parent.mkdir(parents=True, exist_ok=True) # 确保目标路径存在
+        metadata_file.parent.mkdir(parents=True, exist_ok=True)
         try:
-            image = self._read_dicom_series(str(input_dir)) # 读取dicom序列
+            read_result = self._read_dicom_series(str(input_dir)) # 读取dicom序列
+            image = read_result['image'] if read_result else None
             if image is not None:
                 image = self._ensure_3d(image) # 确保图像为3D格式
                 
                 sitk.WriteImage(image, str(output_file)) # 保存为NIfTI格式
+                metadata = self._build_metadata(image, read_result['series_file_names'])
+                with open(metadata_file, 'w', encoding='utf-8') as f:
+                    json.dump(metadata, f, ensure_ascii=False, indent=2)
                 
                 context.set_result(self.name, { # 记录成功结果，只保存路径
-                    'nifti_path': str(output_file)
+                    'nifti_path': str(output_file),
+                    'metadata_path': str(metadata_file)
                 }) 
             else:
-                context.set_result(self.name, {
-                    'nifti_path': None,
-                    'error': '读取DICOM失败：未找到有效的DICOM序列'
-                })
+                raise ValueError('读取DICOM失败：未找到有效的DICOM序列')
                 
         except Exception as e:
-            context.set_result(self.name, {
-                'nifti_path': None,
-                'error': str(e)
-            })
+            ErrorLog("预处理失败", e)
+            raise
         
         return context
 
-    def _read_dicom_series(self, filepath: str) -> Optional[sitk.Image]:
+    def _read_dicom_series(self, filepath: str) -> Optional[Dict[str, Any]]:
         """
         读取DICOM序列
         
@@ -147,11 +151,35 @@ class PreprocessingStage(BaseStage):
                 return None 
             
             reader.SetFileNames(series_file_names) # 设置文件列表并读取
-            return reader.Execute()
+            image = reader.Execute()
+            return {
+                'image': image,
+                'series_file_names': list(series_file_names)
+            }
             
         except Exception as e:
             ErrorLog(f" ⚠️  读取DICOM序列一场: {str(e)}")
             return None
+
+    def _build_metadata(self, image: sitk.Image, series_file_names: list[str]) -> Dict[str, Any]:
+        """
+        保存后续 DICOM 回写和 Z 轴映射需要的基础元数据。
+        """
+        spacing = image.GetSpacing()
+        return {
+            'raw_nifti_name': 'raw_0000.nii.gz',
+            'size_xyz': list(image.GetSize()),
+            'spacing_xyz': list(spacing),
+            'origin_xyz': list(image.GetOrigin()),
+            'direction': list(image.GetDirection()),
+            'slice_count': len(series_file_names),
+            'slice_thickness': spacing[2] if len(spacing) >= 3 else None,
+            'dicom_files': series_file_names,
+            'z_index_to_dicom_file': {
+                str(index): filename
+                for index, filename in enumerate(series_file_names)
+            }
+        }
     
     def _ensure_3d(self, image: sitk.Image) -> sitk.Image:
         """

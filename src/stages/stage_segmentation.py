@@ -36,7 +36,7 @@ class SegmentationStage(BaseStage):
             "_configuration": "3d_fullres",  # 模型配置：使用哪种网络架构配置
             "_fold": "0",  # 训练折数（fold）：使用哪个折的模型权重
             "_continue": True,  # 继续模式：如果输出文件已存在则跳过，避免重复预测
-            "_dataset_id": 292,  # 数据集ID
+            "_model_rules": [],
             # nnUNet环境变量。为空时沿用系统环境变量；相对路径按项目根目录解析。
             "nnUNet_raw": "",
             "nnUNet_preprocessed": "",
@@ -70,7 +70,7 @@ class SegmentationStage(BaseStage):
         self._configuration = default_config.get('_configuration', "3d_fullres")
         self._fold = str(default_config.get('_fold', "0"))
         self._continue = default_config.get('_continue', True)
-        self._dataset_id_mapping = default_config.get('_dataset_id_mapping', {})
+        self._model_rules = default_config.get('_model_rules', [])
         
         # 设置nnUNet环境变量
         self._nnunet_env_vars = {
@@ -110,34 +110,52 @@ class SegmentationStage(BaseStage):
         
         DebugLog("【阶段二】推理分割 - 模型匹配与推理")
         DebugLog(f"  输入NIfTI: {nifti_path}")
-        DebugLog(f"  部位类型: {request.body_part.value}")
+        body_part = self._enum_value(request.body_part)
+        check_type = self._enum_value(request.check_type)
+        scan_thickness = self._enum_value(getattr(request, 'scan_thickness', 'default'))
+
+        DebugLog(f"  部位类型: {body_part}")
+        DebugLog(f"  检查类型: {check_type}")
+        DebugLog(f"  扫描厚度: {scan_thickness}")
         
-        # 构建输出路径：request.output_dir / segmentation / {输入文件名}.nii.gz
+        # 构建输出路径：统一整理为 seg.nii.gz，方便后续阶段读取
         input_path = Path(nifti_path)
-        input_filename = input_path.stem  # 不带扩展名的文件名
         output_dir = Path(request.output_dir) / "segmentation"
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{input_filename}.nii.gz"
+        output_path = output_dir / "seg.nii.gz"
         
-        # [1] match_model: 匹配模型（获取对应的数据集ID）
+        # [1] match_model: 匹配模型（获取对应的 nnUNet 模型ID）
         DebugLog("  [1] match_model: 匹配模型...")
-        dataset_id, model_name = self._match_model(request.body_part.value)
-        DebugLog(f"    部位: {request.body_part.value} -> 数据集ID: {dataset_id}, 模型: {model_name}")
+        model_info = self._match_model(
+            body_part=body_part,
+            check_type=check_type,
+            scan_thickness=scan_thickness
+        )
+        dataset_id = model_info['model_id']
+        configuration = model_info.get('configuration', self._configuration)
+        fold = model_info.get('fold', self._fold)
+        DebugLog(
+            f"    部位: {body_part}, 检查类型: {check_type}, "
+            f"扫描厚度: {scan_thickness} "
+            f"-> 模型ID: {dataset_id}"
+        )
         
         # [2] run_nnunet_inference: 执行推理
         DebugLog("  [2] run_nnunet_inference: 执行nnUNet推理...")
         self._run_nnunet_inference(
             input_dir=input_path.parent,
+            input_path=input_path,
             output_path=output_path,
             dataset_id=dataset_id,
-            configuration=self._configuration,
-            fold=self._fold,
+            configuration=configuration,
+            fold=fold,
             continue_mode=self._continue
         )
         
         result = {
             'seg_path': str(output_path),
-            'input_nifti': nifti_path
+            'input_nifti': nifti_path,
+            'model': model_info
         }
         
         context.set_result(self.name, result)
@@ -147,26 +165,83 @@ class SegmentationStage(BaseStage):
         
         return context
     
-    def _match_model(self, body_part: str) -> tuple:
+    def _match_model(
+        self,
+        body_part: str,
+        check_type: str = "",
+        scan_thickness: str = "default"
+    ) -> Dict[str, Any]:
         """
-        根据身体部位匹配对应的数据集ID和模型名称
+        根据身体部位、检查类型和扫描厚度档位匹配对应模型。
         
         Args:
             body_part: 身体部位名称（如 "腰椎"）
+            check_type: 检查类型（CT、MR）
+            scan_thickness: 扫描厚度档位（default、3mm、6mm）
             
         Returns:
-            tuple: (dataset_id, model_name)
+            dict: 模型信息
         """
-        # 从映射中获取数据集ID，如果不存在则使用默认值292
-        dataset_id = self._dataset_id_mapping.get(body_part, 292)
-        
-        # 构建模型名称
-        model_name = f"nnUNet_{body_part}_model"
-        
-        return dataset_id, model_name
+        normalized_check_type = (check_type or "").strip().lower()
+        normalized_scan_thickness = self._normalize_scan_thickness(scan_thickness)
+
+        for rule in self._model_rules:
+            # 部位、检查类型、扫描厚度三项全部命中，才认为这条规则可用。
+            if rule.get('body_part') and rule['body_part'] != body_part:
+                continue
+
+            rule_check_type = str(rule.get('check_type', '')).strip().lower()
+            if rule_check_type and rule_check_type != normalized_check_type:
+                continue
+
+            rule_scan_thickness = str(rule.get('scan_thickness', 'default')).strip().lower()
+            if rule_scan_thickness and rule_scan_thickness != normalized_scan_thickness:
+                continue
+
+            if 'model_id' not in rule:
+                raise ValueError(f"模型规则缺少 model_id: {rule}")
+
+            model_id = rule['model_id']
+            return {
+                'model_id': model_id,
+                'dataset_id': model_id,
+                'scan_thickness': normalized_scan_thickness,
+                'configuration': rule.get('configuration', self._configuration),
+                'fold': str(rule.get('fold', self._fold)),
+                'matched_by': 'model_rules'
+            }
+
+        raise ValueError(
+            "未找到匹配的模型规则: "
+            f"body_part={body_part}, check_type={check_type}, scan_thickness={normalized_scan_thickness}"
+        )
+
+    @staticmethod
+    def _normalize_scan_thickness(scan_thickness: str) -> str:
+        """
+        归一化扫描厚度档位。
+
+        配置和命令行当前只允许 default、3mm、6mm。这里保留一个兜底，
+        防止外部 API 直接构造 Request 时传入大小写或空值导致匹配异常。
+        """
+        value = str(scan_thickness or "default").strip().lower()
+        if value in {"default", "3mm", "6mm"}:
+            return value
+        return "default"
+
+    @staticmethod
+    def _enum_value(value: Any) -> str:
+        """
+        兼容枚举和普通字符串。
+
+        CLI 会构造枚举类型；单元测试或外部调用有时可能直接传字符串。
+        统一转换后，后续匹配逻辑只处理字符串，代码会简单一些。
+        """
+        return str(getattr(value, 'value', value))
     
     def _run_nnunet_inference(self, 
                               input_dir: Path, 
+                              input_path: Path,
                               output_path: Path, 
                               dataset_id: str, 
                               configuration: str, 
@@ -177,7 +252,8 @@ class SegmentationStage(BaseStage):
         
         Args:
             input_dir: 输入目录（包含NIfTI文件）
-            output_path: 输出文件路径
+            input_path: 输入 NIfTI 文件路径，文件名应为 {case_id}_0000.nii.gz
+            output_path: 统一整理后的输出文件路径
             dataset_id: 数据集ID
             configuration: 模型配置（如 3d_fullres）
             fold: 训练折数
@@ -226,23 +302,9 @@ class SegmentationStage(BaseStage):
             if result.stdout:
                 DebugLog(f"    输出信息: {result.stdout}")
             
-            # 检查输出文件是否存在
-            expected_output = output_path.parent / f"{output_path.stem}.nii.gz"
-            if not expected_output.exists():
-                # 如果输出文件名称与预期不符，尝试查找
-                possible_outputs = list(output_path.parent.glob("*.nii.gz"))
-                if possible_outputs:
-                    # 重命名为预期名称
-                    found_file = possible_outputs[0]
-                    DebugLog(f"    找到输出文件: {found_file.name}, 重命名为: {output_path.name}")
-                    shutil.move(str(found_file), str(output_path))
-                else:
-                    raise FileNotFoundError(f"未找到nnUNet输出文件: {output_path.parent}")
-            else:
-                # 如果输出文件存在但名称不同，重命名
-                if expected_output != output_path:
-                    shutil.move(str(expected_output), str(output_path))
-                    DebugLog(f"    重命名输出文件: {expected_output.name} -> {output_path.name}")
+            case_id = self._get_case_id(input_path)
+            expected_output = output_path.parent / f"{case_id}.nii.gz"
+            self._normalize_output_file(expected_output, output_path)
             
         except subprocess.CalledProcessError as e:
             ErrorLog("    ❌ nnUNet命令执行失败", e)
@@ -250,3 +312,53 @@ class SegmentationStage(BaseStage):
         except Exception as e:
             ErrorLog("    ❌ nnUNet推理过程中发生错误", e)
             raise
+
+    @staticmethod
+    def _get_case_id(input_path: Path) -> str:
+        """
+        从 nnUNet 输入文件名中还原 case_id。
+
+        nnUNet 输入要求单通道文件名形如 {case_id}_0000.nii.gz；
+        推理输出则通常是 {case_id}.nii.gz。比如 raw_0000.nii.gz
+        对应输出 raw.nii.gz。
+        """
+        filename = input_path.name
+        if filename.endswith(".nii.gz"):
+            filename = filename[:-7]
+        else:
+            filename = input_path.stem
+        if filename.endswith("_0000"):
+            filename = filename[:-5]
+        return filename
+
+    @staticmethod
+    def _normalize_output_file(expected_output: Path, output_path: Path) -> None:
+        """
+        将 nnUNet 输出整理成固定文件名。
+
+        当前后续阶段统一读取 segmentation/seg.nii.gz。nnUNet 原始输出
+        通常是 {case_id}.nii.gz，所以这里先找预期输出；如果不同版本或
+        不同参数导致文件名不一致，再在输出目录中寻找唯一的 nii.gz 结果。
+        """
+        if expected_output.exists():
+            if expected_output != output_path:
+                if output_path.exists():
+                    output_path.unlink()
+                shutil.move(str(expected_output), str(output_path))
+            return
+
+        possible_outputs = [
+            path for path in output_path.parent.glob("*.nii.gz")
+            if path != output_path
+        ]
+        if possible_outputs:
+            found_file = possible_outputs[0]
+            if output_path.exists():
+                output_path.unlink()
+            shutil.move(str(found_file), str(output_path))
+            return
+
+        if output_path.exists():
+            return
+
+        raise FileNotFoundError(f"未找到nnUNet输出文件: {output_path.parent}")

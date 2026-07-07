@@ -5,13 +5,60 @@
     "nnUNet_raw": "/home/peng/03_data/00_nnUnet/model/nnUNet_raw",
     "nnUNet_preprocessed": "/home/peng/03_data/00_nnUnet/model/nnUNet_preprocessed",
     "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",
-    "_dataset_id_mapping": {
-        "颅脑": 294,
-        "颈椎": 292,
-        "胸椎": 292,
-        "腰椎": 292,
-        "肺部": 315,
-        "骶骨": 292,
-        "髋骨": 297
-    }
+    "_model_rules": [
+        {
+            "body_part": "颅脑",
+            "check_type": "CT",
+            "scan_thickness": "default",
+            "model_id": 294
+        },
+        {
+            "body_part": "颈椎",
+            "check_type": "CT",
+            "scan_thickness": "default",
+            "model_id": 292
+        },
+        {
+            "body_part": "胸椎",
+            "check_type": "CT",
+            "scan_thickness": "default",
+            "model_id": 292
+        },
+        {
+            "body_part": "腰椎",
+            "check_type": "CT",
+            "scan_thickness": "default",
+            "model_id": 292
+        },
+        {
+            "body_part": "腰椎",
+            "check_type": "CT",
+            "scan_thickness": "3mm",
+            "model_id": 292
+        },
+        {
+            "body_part": "腰椎",
+            "check_type": "CT",
+            "scan_thickness": "6mm",
+            "model_id": 292
+        },
+        {
+            "body_part": "肺部",
+            "check_type": "CT",
+            "scan_thickness": "default",
+            "model_id": 315
+        },
+        {
+            "body_part": "骶骨",
+            "check_type": "CT",
+            "scan_thickness": "default",
+            "model_id": 292
+        },
+        {
+            "body_part": "髋骨",
+            "check_type": "CT",
+            "scan_thickness": "default",
+            "model_id": 297
+        }
+    ]
 }

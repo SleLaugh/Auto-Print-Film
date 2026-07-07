@@ -17,6 +17,19 @@ class BodyPartEnum(Enum):
     髋骨 = "髋骨"
 
 
+class CheckTypeEnum(Enum):
+    """检查类型枚举"""
+    CT = "CT"
+    MR = "MR"
+
+
+class ScanThicknessEnum(Enum):
+    """扫描厚度档位枚举"""
+    默认 = "default"
+    三毫米 = "3mm"
+    六毫米 = "6mm"
+
+
 class PositioningModeEnum(Enum):
     """定位模式枚举"""
     单区间 = "single"          # 单区间模式（大多数部位使用）

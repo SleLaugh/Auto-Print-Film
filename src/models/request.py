@@ -7,7 +7,7 @@
 
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
-from .enums import BodyPartEnum
+from .enums import BodyPartEnum, CheckTypeEnum, ScanThicknessEnum
 
 @dataclass
 class Request:
@@ -15,6 +15,8 @@ class Request:
     dicom_dir: str
     output_dir: str
     body_part: BodyPartEnum = BodyPartEnum.腰椎
+    check_type: CheckTypeEnum = CheckTypeEnum.CT
+    scan_thickness: ScanThicknessEnum = ScanThicknessEnum.默认
     
     # ===== 后续扩展字段（取消注释即可使用）=====
     # patient_name: str = ""
@@ -28,7 +30,9 @@ class Request:
         return {
             'dicom_dir': self.dicom_dir,
             'output_dir': self.output_dir,
-            'body_part': self.body_part.value
+            'body_part': self.body_part.value,
+            'check_type': self.check_type.value,
+            'scan_thickness': self.scan_thickness.value
         }
     
     @classmethod
@@ -36,7 +40,9 @@ class Request:
         return cls(
             dicom_dir=data['dicom_dir'],
             output_dir=data['output_dir'],
-            body_part=BodyPartEnum(data.get('body_part', 'lumbar'))
+            body_part=BodyPartEnum(data.get('body_part', BodyPartEnum.腰椎.value)),
+            check_type=CheckTypeEnum(data.get('check_type', CheckTypeEnum.CT.value)),
+            scan_thickness=ScanThicknessEnum(data.get('scan_thickness', ScanThicknessEnum.默认.value))
         )
     
     def validate(self) -> tuple[bool, Optional[str]]:

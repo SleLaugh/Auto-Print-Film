@@ -6,11 +6,20 @@
 """
 
 from .request import Request
-from .enums import BodyPartEnum, PositioningModeEnum, PlaneTypeEnum, ProcessingStatusEnum
+from .enums import (
+    BodyPartEnum,
+    CheckTypeEnum,
+    ScanThicknessEnum,
+    PositioningModeEnum,
+    PlaneTypeEnum,
+    ProcessingStatusEnum
+)
 
 __all__ = [
     'Request',
     'BodyPartEnum',
+    'CheckTypeEnum',
+    'ScanThicknessEnum',
     'PositioningModeEnum',
     'PlaneTypeEnum',
     'ProcessingStatusEnum'

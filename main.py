@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# ruff: noqa: E402
 
 """
 SpineMPRProcessor - 主入口
@@ -15,8 +16,8 @@ sys.path.insert(0, str(project_root))
 
 # ===== 导入（在 sys.path 操作之后）=====
 from src.core import Pipeline
-from src.models import Request, BodyPartEnum
-from src.utils import RunLog, ErrorLog, DebugLog
+from src.models import Request, BodyPartEnum, CheckTypeEnum, ScanThicknessEnum
+from src.utils import RunLog, ErrorLog, DebugLog  
 
 
 def parse_arguments():
@@ -47,20 +48,42 @@ def parse_arguments():
         help='输出目录'
     )
     
-    # 添加 --body-part 参数
+    # 添加 --body_part 参数
     # default='腰椎' 表示如果不指定，默认处理腰椎
     # choices 限制了只能从列表中选一个值，输入其他会报错
     body_part_choices = [e.value for e in BodyPartEnum]
     parser.add_argument(
+        '--body_part',
         '--body-part',
+        dest='body_part',
         type=str,
         default='腰椎',
         choices=body_part_choices,
         help=f'部位类型，可选值: {", ".join(body_part_choices)}'
     )
+
+    parser.add_argument(
+        '--check_type',
+        '--check-type',
+        dest='check_type',
+        type=str,
+        default=CheckTypeEnum.CT.value,
+        choices=[e.value for e in CheckTypeEnum],
+        help='检查类型'
+    )
+
+    parser.add_argument(
+        '--scan_thickness',
+        '--scan-thickness',
+        dest='scan_thickness',
+        type=str,
+        default=ScanThicknessEnum.默认.value,
+        choices=[e.value for e in ScanThicknessEnum],
+        help='扫描厚度档位，用于匹配对应模型'
+    )
     
     # 解析命令行输入的参数
-    # 比如运行：python script.py -i /path/to/dicom -o /path/to/output --body-part 颈椎
+    # 比如运行：python script.py -i /path/to/dicom -o /path/to/output --body_part 颈椎
     # 就会把参数解析成对象返回
     return parser.parse_args()
 
@@ -74,12 +97,16 @@ def main():
         request = Request(
             dicom_dir=args.input,
             output_dir=args.output,
-            body_part=BodyPartEnum(args.body_part)
+            body_part=BodyPartEnum(args.body_part),
+            check_type=CheckTypeEnum(args.check_type),
+            scan_thickness=ScanThicknessEnum(args.scan_thickness)
         )
         
         DebugLog(f"输入路径: {request.dicom_dir}")
         DebugLog(f"输出路径: {request.output_dir}")
         DebugLog(f"部位类型: {request.body_part.value}")
+        DebugLog(f"检查类型: {request.check_type.value}")
+        DebugLog(f"扫描厚度: {request.scan_thickness.value}")
         
         pipeline = Pipeline()
         response = pipeline.run(request)

@@ -115,17 +115,17 @@ Linux / macOS：
 
 ```bash
 source .venv/bin/activate
-python main.py -i /path/to/dicom_dir -o /path/to/output_dir --body-part 腰椎
+python main.py -i /path/to/dicom_dir -o /path/to/output_dir --body_part 腰椎 --check_type CT --scan_thickness 3mm
 ```
 
 Windows PowerShell：
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python main.py -i D:\data\dicom_dir -o D:\data\output_dir --body-part 腰椎
+python main.py -i D:\data\dicom_dir -o D:\data\output_dir --body_part 腰椎 --check_type CT --scan_thickness 3mm
 ```
 
-支持的 `--body-part`：
+支持的 `--body_part`：
 
 ```text
 颅脑, 颈椎, 胸椎, 腰椎, 肺部, 骶骨, 髋骨

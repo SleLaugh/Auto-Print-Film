@@ -3,3 +3,7 @@ __pycache__/
 Log/
 *.py[cod]
 src/utils/logs/
+models/
+data/
+output/
+outputs/

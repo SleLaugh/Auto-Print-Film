@@ -1,5 +1,12 @@
-# 基础依赖
+# 项目基础依赖
 PyYAML>=6.0
 colorlog>=6.7.0
 numpy>=1.24.0
 SimpleITK>=2.0.0
+
+# 医学影像转换工具依赖
+nibabel>=5.0.0
+pynrrd>=1.0.0
+
+# 分割推理依赖，提供 nnUNetv2_predict 命令
+nnunetv2>=2.4.0

@@ -31,15 +31,16 @@ class SegmentationStage(BaseStage):
         优先加载外部JSON配置文件，如果不存在则使用默认配置
         """
         # 默认配置
+        project_root = Path(__file__).resolve().parents[2]
         default_config = {
             "_configuration": "3d_fullres",  # 模型配置：使用哪种网络架构配置
             "_fold": "0",  # 训练折数（fold）：使用哪个折的模型权重
             "_continue": True,  # 继续模式：如果输出文件已存在则跳过，避免重复预测
             "_dataset_id": 292,  # 数据集ID
-            # nnUNet环境变量
-            "nnUNet_raw": "/home/peng/03_data/00_nnUnet/model/nnUNet_raw",
-            "nnUNet_preprocessed": "/home/peng/03_data/00_nnUnet/model/nnUNet_preprocessed",
-            "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results"
+            # nnUNet环境变量。为空时沿用系统环境变量；相对路径按项目根目录解析。
+            "nnUNet_raw": "",
+            "nnUNet_preprocessed": "",
+            "nnUNet_results": ""
         }
         
         # 尝试加载外部配置文件
@@ -73,10 +74,28 @@ class SegmentationStage(BaseStage):
         
         # 设置nnUNet环境变量
         self._nnunet_env_vars = {
-            'nnUNet_raw': default_config.get('nnUNet_raw', ''),
-            'nnUNet_preprocessed': default_config.get('nnUNet_preprocessed', ''),
-            'nnUNet_results': default_config.get('nnUNet_results', '')
+            'nnUNet_raw': self._resolve_config_path(default_config.get('nnUNet_raw', ''), project_root),
+            'nnUNet_preprocessed': self._resolve_config_path(default_config.get('nnUNet_preprocessed', ''), project_root),
+            'nnUNet_results': self._resolve_config_path(default_config.get('nnUNet_results', ''), project_root)
         }
+
+    @staticmethod
+    def _resolve_config_path(value: str, project_root: Path) -> str:
+        """
+        解析配置中的 nnUNet 路径
+        
+        规则：
+            1. 配置为空字符串时，不覆盖系统环境变量
+            2. 支持 ~ 和环境变量展开，例如 ~/model 或 $HOME/model
+            3. 相对路径会按项目根目录解析，方便跨电脑迁移项目
+        """
+        if not value:
+            return ""
+        expanded = os.path.expanduser(os.path.expandvars(str(value)))
+        path = Path(expanded)
+        if not path.is_absolute():
+            path = project_root / path
+        return str(path)
     
     def execute(self, context: ProcessingContext) -> ProcessingContext:
         request = context.request

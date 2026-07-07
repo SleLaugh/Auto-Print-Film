@@ -179,7 +179,7 @@ class SegmentationStage(BaseStage):
             2. model_mapper: 在命中的 rule 内匹配 scan_thickness -> model_id
         
         Args:
-            body_part: 部位名称（如 "腰椎"、"颅脑"、"眼眶"）
+            body_part: 部位名称（如 "腰椎"、"头骨"、"肺部"）
             check_type: 检查类型（CT、MR）
             scan_thickness: 扫描厚度档位（default、3mm、6mm）
             

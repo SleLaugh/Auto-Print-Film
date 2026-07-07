@@ -6,6 +6,15 @@
 """
 
 from .request import Request
+from .dicom_metadata import DicomMetadata
+from .localization import (
+    VoxelPoint,
+    VoxelBBox,
+    LabelTarget,
+    LabelCoordinate,
+    NiftiImageInfo,
+    LocalizationResult,
+)
 from .enums import (
     BodyPartEnum,
     CheckTypeEnum,
@@ -18,6 +27,13 @@ from .enums import (
 
 __all__ = [
     'Request',
+    'DicomMetadata',
+    'VoxelPoint',
+    'VoxelBBox',
+    'LabelTarget',
+    'LabelCoordinate',
+    'NiftiImageInfo',
+    'LocalizationResult',
     'BodyPartEnum',
     'CheckTypeEnum',
     'ScanThicknessEnum',

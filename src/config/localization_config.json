@@ -25,15 +25,7 @@
         "L4": "vertebrae_L4",
         "L5": "vertebrae_L5",
         "S1": "sacrum",
-        "lung": [
-            "lung_left",
-            "lung_right"
-        ],
-        "brain": "brain",
-        "orbit": [
-            "eye_left",
-            "eye_right"
-        ],
+        "lung": "lung",
         "skull": "skull"
     },
     "targets": {
@@ -165,19 +157,7 @@
                 "end": "lung"
             }
         },
-        "颅脑": {
-            "whole_range": {
-                "start": "brain",
-                "end": "brain"
-            }
-        },
-        "眼眶": {
-            "whole_range": {
-                "start": "orbit",
-                "end": "orbit"
-            }
-        },
-        "颅骨": {
+        "头骨": {
             "whole_range": {
                 "start": "skull",
                 "end": "skull"

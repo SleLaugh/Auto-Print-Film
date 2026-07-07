@@ -16,6 +16,7 @@ import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
+from src.models import DicomMetadata
 from src.utils import ErrorLog
 
 # 设置警告过滤
@@ -101,7 +102,7 @@ class PreprocessingStage(BaseStage):
                 sitk.WriteImage(image, str(output_file)) # 保存为NIfTI格式
                 metadata = self._build_metadata(image, read_result['series_file_names'])
                 with open(metadata_file, 'w', encoding='utf-8') as f:
-                    json.dump(metadata, f, ensure_ascii=False, indent=2)
+                    json.dump(metadata.to_dict(), f, ensure_ascii=False, indent=2)
                 
                 context.set_result(self.name, { # 记录成功结果，只保存路径
                     'nifti_path': str(output_file),
@@ -161,25 +162,25 @@ class PreprocessingStage(BaseStage):
             ErrorLog(f" ⚠️  读取DICOM序列一场: {str(e)}")
             return None
 
-    def _build_metadata(self, image: sitk.Image, series_file_names: list[str]) -> Dict[str, Any]:
+    def _build_metadata(self, image: sitk.Image, series_file_names: list[str]) -> DicomMetadata:
         """
         保存后续 DICOM 回写和 Z 轴映射需要的基础元数据。
         """
         spacing = image.GetSpacing()
-        return {
-            'raw_nifti_name': 'raw_0000.nii.gz',
-            'size_xyz': list(image.GetSize()),
-            'spacing_xyz': list(spacing),
-            'origin_xyz': list(image.GetOrigin()),
-            'direction': list(image.GetDirection()),
-            'slice_count': len(series_file_names),
-            'slice_thickness': spacing[2] if len(spacing) >= 3 else None,
-            'dicom_files': series_file_names,
-            'z_index_to_dicom_file': {
+        return DicomMetadata(
+            raw_nifti_name='raw_0000.nii.gz',
+            size_xyz=list(image.GetSize()),
+            spacing_xyz=list(spacing),
+            origin_xyz=list(image.GetOrigin()),
+            direction=list(image.GetDirection()),
+            slice_count=len(series_file_names),
+            slice_thickness=spacing[2] if len(spacing) >= 3 else None,
+            dicom_files=series_file_names,
+            z_index_to_dicom_file={
                 str(index): filename
                 for index, filename in enumerate(series_file_names)
             }
-        }
+        )
     
     def _ensure_3d(self, image: sitk.Image) -> sitk.Image:
         """

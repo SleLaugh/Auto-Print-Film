@@ -8,15 +8,12 @@ from enum import Enum
 
 class BodyPartEnum(Enum):
     """部位枚举"""
-    颅脑 = "颅脑"
-    颅骨 = "颅骨"
-    眼眶 = "眼眶"
+    头骨 = "头骨"
     颈椎 = "颈椎"
     胸椎 = "胸椎"
     腰椎 = "腰椎"
     肺部 = "肺部"
     骶骨 = "骶骨"
-    髋骨 = "髋骨"
 
 
 class CheckTypeEnum(Enum):

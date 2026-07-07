@@ -128,7 +128,7 @@ python main.py -i D:\data\dicom_dir -o D:\data\output_dir --body_part 腰椎 --c
 支持的 `--body_part`：
 
 ```text
-颅脑, 颅骨, 眼眶, 颈椎, 胸椎, 腰椎, 肺部, 骶骨, 髋骨
+头骨, 颈椎, 胸椎, 腰椎, 肺部, 骶骨
 ```
 
 查看命令帮助：

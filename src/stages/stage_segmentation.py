@@ -114,7 +114,7 @@ class SegmentationStage(BaseStage):
         check_type = self._enum_value(request.check_type)
         scan_thickness = self._enum_value(getattr(request, 'scan_thickness', 'default'))
 
-        DebugLog(f"  部位类型: {body_part}")
+        DebugLog(f"  部位: {body_part}")
         DebugLog(f"  检查类型: {check_type}")
         DebugLog(f"  扫描厚度: {scan_thickness}")
         
@@ -172,14 +172,14 @@ class SegmentationStage(BaseStage):
         scan_thickness: str = "default"
     ) -> Dict[str, Any]:
         """
-        根据身体部位、检查类型和扫描厚度档位匹配对应模型。
+        根据部位、检查类型和扫描厚度档位匹配对应模型。
 
         配置结构分两层：
             1. _model_rules: 匹配 body_part + check_type
             2. model_mapper: 在命中的 rule 内匹配 scan_thickness -> model_id
         
         Args:
-            body_part: 身体部位名称（如 "腰椎"）
+            body_part: 部位名称（如 "腰椎"、"颅脑"、"眼眶"）
             check_type: 检查类型（CT、MR）
             scan_thickness: 扫描厚度档位（default、3mm、6mm）
             

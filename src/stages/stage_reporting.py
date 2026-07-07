@@ -58,7 +58,10 @@ class ReportingStage(BaseStage):
             'request': {
                 'dicom_dir': context.request.dicom_dir,
                 'output_dir': context.request.output_dir,
-                'body_part': str(context.request.body_part)
+                'body_part': context.request.body_part.value,
+                'check_type': context.request.check_type.value,
+                'scan_thickness': context.request.scan_thickness.value,
+                'cut_mode': context.request.cut_mode.value
             },
             'timings': context.timings,
             'total_time': context.get_total_time(),

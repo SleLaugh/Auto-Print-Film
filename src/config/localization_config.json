@@ -1,0 +1,187 @@
+{
+    "label_aliases": {
+        "C1": "vertebrae_C1",
+        "C2": "vertebrae_C2",
+        "C3": "vertebrae_C3",
+        "C4": "vertebrae_C4",
+        "C5": "vertebrae_C5",
+        "C6": "vertebrae_C6",
+        "C7": "vertebrae_C7",
+        "T1": "vertebrae_T1",
+        "T2": "vertebrae_T2",
+        "T3": "vertebrae_T3",
+        "T4": "vertebrae_T4",
+        "T5": "vertebrae_T5",
+        "T6": "vertebrae_T6",
+        "T7": "vertebrae_T7",
+        "T8": "vertebrae_T8",
+        "T9": "vertebrae_T9",
+        "T10": "vertebrae_T10",
+        "T11": "vertebrae_T11",
+        "T12": "vertebrae_T12",
+        "L1": "vertebrae_L1",
+        "L2": "vertebrae_L2",
+        "L3": "vertebrae_L3",
+        "L4": "vertebrae_L4",
+        "L5": "vertebrae_L5",
+        "S1": "sacrum",
+        "lung": [
+            "lung_left",
+            "lung_right"
+        ],
+        "brain": "brain",
+        "orbit": [
+            "eye_left",
+            "eye_right"
+        ],
+        "skull": "skull"
+    },
+    "targets": {
+        "颈椎": {
+            "whole_range": {
+                "start": "C1",
+                "end": "C7"
+            },
+            "interspace": {
+                "intervals": [
+                    {
+                        "start": "C2",
+                        "end": "C3"
+                    },
+                    {
+                        "start": "C3",
+                        "end": "C4"
+                    },
+                    {
+                        "start": "C4",
+                        "end": "C5"
+                    },
+                    {
+                        "start": "C5",
+                        "end": "C6"
+                    },
+                    {
+                        "start": "C6",
+                        "end": "C7"
+                    }
+                ]
+            }
+        },
+        "胸椎": {
+            "whole_range": {
+                "start": "C7",
+                "end": "L1"
+            },
+            "interspace": {
+                "intervals": [
+                    {
+                        "start": "C7",
+                        "end": "T1"
+                    },
+                    {
+                        "start": "T1",
+                        "end": "T2"
+                    },
+                    {
+                        "start": "T2",
+                        "end": "T3"
+                    },
+                    {
+                        "start": "T3",
+                        "end": "T4"
+                    },
+                    {
+                        "start": "T4",
+                        "end": "T5"
+                    },
+                    {
+                        "start": "T5",
+                        "end": "T6"
+                    },
+                    {
+                        "start": "T6",
+                        "end": "T7"
+                    },
+                    {
+                        "start": "T7",
+                        "end": "T8"
+                    },
+                    {
+                        "start": "T8",
+                        "end": "T9"
+                    },
+                    {
+                        "start": "T9",
+                        "end": "T10"
+                    },
+                    {
+                        "start": "T10",
+                        "end": "T11"
+                    },
+                    {
+                        "start": "T11",
+                        "end": "T12"
+                    },
+                    {
+                        "start": "T12",
+                        "end": "L1"
+                    }
+                ]
+            }
+        },
+        "腰椎": {
+            "whole_range": {
+                "start": "L1",
+                "end": "S1"
+            },
+            "interspace": {
+                "intervals": [
+                    {
+                        "start": "L1",
+                        "end": "L2"
+                    },
+                    {
+                        "start": "L2",
+                        "end": "L3"
+                    },
+                    {
+                        "start": "L3",
+                        "end": "L4"
+                    },
+                    {
+                        "start": "L4",
+                        "end": "L5"
+                    },
+                    {
+                        "start": "L5",
+                        "end": "S1"
+                    }
+                ]
+            }
+        },
+        "肺部": {
+            "whole_range": {
+                "start": "lung",
+                "end": "lung"
+            }
+        },
+        "颅脑": {
+            "whole_range": {
+                "start": "brain",
+                "end": "brain"
+            }
+        },
+        "眼眶": {
+            "whole_range": {
+                "start": "orbit",
+                "end": "orbit"
+            }
+        },
+        "颅骨": {
+            "whole_range": {
+                "start": "skull",
+                "end": "skull"
+            }
+        }
+    }
+}

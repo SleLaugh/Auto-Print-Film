@@ -9,11 +9,12 @@
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "args": [
-                "-i", "/home/peng/03_data/demo/Image/dicom/腰椎CT/1",
-                "-o", "/home/peng/03_data/demo/Image/dicom/腰椎CT/1Result",
-                "--body_part", "腰椎",
+                "-i", "/home/peng/03_data/demo/Image/dicom/颅脑CT/1",
+                "-o", "/home/peng/03_data/demo/Image/dicom/颅脑CT/1Result",
+                "--body_part", "颅脑",
                 "--check_type", "CT",
-                "--scan_thickness", "default"
+                "--scan_thickness", "default",
+                "--cut_mode", "whole_range"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"

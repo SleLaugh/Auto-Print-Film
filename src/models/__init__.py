@@ -10,6 +10,7 @@ from .enums import (
     BodyPartEnum,
     CheckTypeEnum,
     ScanThicknessEnum,
+    CutModeEnum,
     PositioningModeEnum,
     PlaneTypeEnum,
     ProcessingStatusEnum
@@ -20,6 +21,7 @@ __all__ = [
     'BodyPartEnum',
     'CheckTypeEnum',
     'ScanThicknessEnum',
+    'CutModeEnum',
     'PositioningModeEnum',
     'PlaneTypeEnum',
     'ProcessingStatusEnum'

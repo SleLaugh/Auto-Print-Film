@@ -7,18 +7,38 @@
     "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",
     "_model_rules": [
         {
+            "check_type": "CT",
             "body_part": "颅脑",
-            "check_type": "CT",
             "model_mapper": [
                 {
                     "scan_thickness": "default",
-                    "model_id": 294
+                    "model_id": 315
                 }
             ]
         },
         {
+            "body_part": "颅骨",
+            "check_type": "CT",
+            "model_mapper": [
+                {
+                    "scan_thickness": "default",
+                    "model_id": 315
+                }
+            ]
+        },
+        {
+            "body_part": "眼眶",
+            "check_type": "CT",
+            "model_mapper": [
+                {
+                    "scan_thickness": "default",
+                    "model_id": 315
+                }
+            ]
+        },
+        {
+            "check_type": "CT",
             "body_part": "颈椎",
-            "check_type": "CT",
             "model_mapper": [
                 {
                     "scan_thickness": "default",
@@ -27,8 +47,8 @@
             ]
         },
         {
+            "check_type": "CT",
             "body_part": "胸椎",
-            "check_type": "CT",
             "model_mapper": [
                 {
                     "scan_thickness": "default",
@@ -37,8 +57,8 @@
             ]
         },
         {
-            "body_part": "腰椎",
             "check_type": "CT",
+            "body_part": "腰椎",
             "model_mapper": [
                 {
                     "scan_thickness": "default",
@@ -55,8 +75,8 @@
             ]
         },
         {
-            "body_part": "肺部",
             "check_type": "CT",
+            "body_part": "肺部",
             "model_mapper": [
                 {
                     "scan_thickness": "default",
@@ -65,8 +85,8 @@
             ]
         },
         {
-            "body_part": "骶骨",
             "check_type": "CT",
+            "body_part": "骶骨",
             "model_mapper": [
                 {
                     "scan_thickness": "default",
@@ -75,8 +95,8 @@
             ]
         },
         {
-            "body_part": "髋骨",
             "check_type": "CT",
+            "body_part": "髋骨",
             "model_mapper": [
                 {
                     "scan_thickness": "default",

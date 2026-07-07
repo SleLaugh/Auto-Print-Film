@@ -7,8 +7,10 @@ from enum import Enum
 
 
 class BodyPartEnum(Enum):
-    """身体部位枚举"""
+    """部位枚举"""
     颅脑 = "颅脑"
+    颅骨 = "颅骨"
+    眼眶 = "眼眶"
     颈椎 = "颈椎"
     胸椎 = "胸椎"
     腰椎 = "腰椎"
@@ -28,6 +30,12 @@ class ScanThicknessEnum(Enum):
     默认 = "default"
     三毫米 = "3mm"
     六毫米 = "6mm"
+
+
+class CutModeEnum(Enum):
+    """切割方式枚举"""
+    整切 = "whole_range"
+    椎间切 = "interspace"
 
 
 class PositioningModeEnum(Enum):

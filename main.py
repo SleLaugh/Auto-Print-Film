@@ -16,7 +16,7 @@ sys.path.insert(0, str(project_root))
 
 # ===== 导入（在 sys.path 操作之后）=====
 from src.core import Pipeline
-from src.models import Request, BodyPartEnum, CheckTypeEnum, ScanThicknessEnum
+from src.models import Request, BodyPartEnum, CheckTypeEnum, ScanThicknessEnum, CutModeEnum
 from src.utils import RunLog, ErrorLog, DebugLog  
 
 
@@ -55,11 +55,13 @@ def parse_arguments():
     parser.add_argument(
         '--body_part',
         '--body-part',
+        '--target_part',
+        '--target-part',
         dest='body_part',
         type=str,
         default='腰椎',
         choices=body_part_choices,
-        help=f'部位类型，可选值: {", ".join(body_part_choices)}'
+        help=f'部位，可选值: {", ".join(body_part_choices)}'
     )
 
     parser.add_argument(
@@ -81,6 +83,16 @@ def parse_arguments():
         choices=[e.value for e in ScanThicknessEnum],
         help='扫描厚度档位，用于匹配对应模型'
     )
+
+    parser.add_argument(
+        '--cut_mode',
+        '--cut-mode',
+        dest='cut_mode',
+        type=str,
+        default=CutModeEnum.整切.value,
+        choices=[e.value for e in CutModeEnum],
+        help='切割方式：whole_range 表示整切，interspace 表示椎间切'
+    )
     
     # 解析命令行输入的参数
     # 比如运行：python script.py -i /path/to/dicom -o /path/to/output --body_part 颈椎
@@ -99,14 +111,20 @@ def main():
             output_dir=args.output,
             body_part=BodyPartEnum(args.body_part),
             check_type=CheckTypeEnum(args.check_type),
-            scan_thickness=ScanThicknessEnum(args.scan_thickness)
+            scan_thickness=ScanThicknessEnum(args.scan_thickness),
+            cut_mode=CutModeEnum(args.cut_mode)
         )
+
+        is_valid, error_message = request.validate()
+        if not is_valid:
+            raise ValueError(error_message)
         
         DebugLog(f"输入路径: {request.dicom_dir}")
         DebugLog(f"输出路径: {request.output_dir}")
-        DebugLog(f"部位类型: {request.body_part.value}")
+        DebugLog(f"部位: {request.body_part.value}")
         DebugLog(f"检查类型: {request.check_type.value}")
         DebugLog(f"扫描厚度: {request.scan_thickness.value}")
+        DebugLog(f"切割方式: {request.cut_mode.value}")
         
         pipeline = Pipeline()
         response = pipeline.run(request)

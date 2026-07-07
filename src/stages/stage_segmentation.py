@@ -173,6 +173,10 @@ class SegmentationStage(BaseStage):
     ) -> Dict[str, Any]:
         """
         根据身体部位、检查类型和扫描厚度档位匹配对应模型。
+
+        配置结构分两层：
+            1. _model_rules: 匹配 body_part + check_type
+            2. model_mapper: 在命中的 rule 内匹配 scan_thickness -> model_id
         
         Args:
             body_part: 身体部位名称（如 "腰椎"）
@@ -186,7 +190,7 @@ class SegmentationStage(BaseStage):
         normalized_scan_thickness = self._normalize_scan_thickness(scan_thickness)
 
         for rule in self._model_rules:
-            # 部位、检查类型、扫描厚度三项全部命中，才认为这条规则可用。
+            # 第一层：部位和检查类型命中，才进入该 rule 的扫描厚度映射。
             if rule.get('body_part') and rule['body_part'] != body_part:
                 continue
 
@@ -194,14 +198,7 @@ class SegmentationStage(BaseStage):
             if rule_check_type and rule_check_type != normalized_check_type:
                 continue
 
-            rule_scan_thickness = str(rule.get('scan_thickness', 'default')).strip().lower()
-            if rule_scan_thickness and rule_scan_thickness != normalized_scan_thickness:
-                continue
-
-            if 'model_id' not in rule:
-                raise ValueError(f"模型规则缺少 model_id: {rule}")
-
-            model_id = rule['model_id']
+            model_id = self._match_model_mapper(rule, normalized_scan_thickness)
             return {
                 'model_id': model_id,
                 'dataset_id': model_id,
@@ -214,6 +211,39 @@ class SegmentationStage(BaseStage):
         raise ValueError(
             "未找到匹配的模型规则: "
             f"body_part={body_part}, check_type={check_type}, scan_thickness={normalized_scan_thickness}"
+        )
+
+    @staticmethod
+    def _match_model_mapper(rule: Dict[str, Any], scan_thickness: str) -> Any:
+        """
+        在单条模型规则中匹配扫描厚度对应的模型 ID。
+
+        model_mapper 示例：
+            [
+                {"scan_thickness": "default", "model_id": 292},
+                {"scan_thickness": "3mm", "model_id": 292},
+                {"scan_thickness": "6mm", "model_id": 292}
+            ]
+
+        这里的 scan_thickness 对应 Request.scan_thickness，
+        model_id 对应 nnUNet 的 -d。
+        """
+        mapper = rule.get('model_mapper', [])
+        if not mapper:
+            raise ValueError(f"模型规则缺少 model_mapper: {rule}")
+
+        for item in mapper:
+            mapper_scan_thickness = str(item.get('scan_thickness', 'default')).strip().lower()
+            if mapper_scan_thickness != scan_thickness:
+                continue
+            if 'model_id' not in item:
+                raise ValueError(f"model_mapper 缺少 model_id: {item}")
+            return item['model_id']
+
+        raise ValueError(
+            "未找到匹配的扫描厚度模型: "
+            f"body_part={rule.get('body_part')}, check_type={rule.get('check_type')}, "
+            f"scan_thickness={scan_thickness}"
         )
 
     @staticmethod

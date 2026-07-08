@@ -55,14 +55,8 @@ class ReportingStage(BaseStage):
         
         report_data = {
             'success': not context.has_errors(),
-            'request': {
-                'dicom_dir': context.request.dicom_dir,
-                'output_dir': context.request.output_dir,
-                'body_part': context.request.body_part.value,
-                'check_type': context.request.check_type.value,
-                'scan_thickness': context.request.scan_thickness.value,
-                'cut_mode': context.request.cut_mode.value
-            },
+            # 请求参数统一由 Request.to_dict() 输出，避免新增字段后报告遗漏。
+            'request': context.request.to_dict(),
             'timings': context.timings,
             'total_time': context.get_total_time(),
             'errors': [

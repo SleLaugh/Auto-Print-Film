@@ -43,6 +43,7 @@ class PositioningModeEnum(Enum):
 
 class PlaneTypeEnum(Enum):
     """重建平面类型枚举"""
+    # 横状位、矢状位、冠状位会直接对应后续输出目录和 MPR 采样方向。
     横状位 = "横状位"
     矢状位 = "矢状位"
     冠状位 = "冠状位"
@@ -50,6 +51,8 @@ class PlaneTypeEnum(Enum):
 
 class WindowPresetEnum(Enum):
     """窗宽窗位预设枚举"""
+    # 这里只保存业务预设名，不在枚举里写死 WindowCenter / WindowWidth 数值；
+    # 具体窗宽窗位数值后续由重建/DICOM 输出阶段统一映射。
     骨窗 = "骨窗"
     肺窗 = "肺窗"
     纵隔窗 = "纵隔窗"

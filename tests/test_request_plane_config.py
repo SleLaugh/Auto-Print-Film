@@ -6,6 +6,7 @@ from src.models.enums import BodyPartEnum, PlaneTypeEnum
 
 class PlaneConfigRequestTest(unittest.TestCase):
     def test_plane_config_from_dict_converts_strings_to_enums(self):
+        # 外部 JSON 输入是字符串，业务代码内部应该统一拿到枚举。
         config = PlaneConfig.from_dict({
             "plane": "冠状位",
             "slice_thickness": 5,
@@ -23,6 +24,7 @@ class PlaneConfigRequestTest(unittest.TestCase):
         ])
 
     def test_request_from_dict_parses_plane_configs_and_to_dict_serializes_values(self):
+        # from_dict 负责把外部请求转成强约束对象；to_dict 再转回报告可写的结构。
         request = Request.from_dict({
             "dicom_dir": "/tmp/dicom",
             "output_dir": "/tmp/output",
@@ -48,6 +50,7 @@ class PlaneConfigRequestTest(unittest.TestCase):
         ])
 
     def test_request_uses_three_default_bone_window_plane_configs(self):
+        # 老命令不传 plane_configs 时，仍要得到三个状位的默认骨窗配置。
         request = Request(dicom_dir="/tmp/dicom", output_dir="/tmp/output")
 
         self.assertEqual(request.to_dict()["plane_configs"], [
@@ -133,6 +136,7 @@ class PlaneConfigRequestTest(unittest.TestCase):
         )
 
     def _assert_invalid(self, plane_configs, expected_message):
+        # 统一构造非法请求，避免每个校验用例重复写路径和断言。
         request = Request.from_dict({
             "dicom_dir": "/tmp/dicom",
             "output_dir": "/tmp/output",

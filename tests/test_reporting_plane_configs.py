@@ -10,6 +10,7 @@ from src.stages.stage_reporting import ReportingStage
 
 class ReportingPlaneConfigsTest(unittest.TestCase):
     def test_report_request_contains_plane_configs(self):
+        # 报告阶段应该完整记录请求参数，便于后续追溯每个状位的采样和窗宽窗位。
         with tempfile.TemporaryDirectory() as temp_dir:
             request = Request.from_dict({
                 "dicom_dir": "/tmp/dicom",
@@ -27,6 +28,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
 
             report_path = ReportingStage()._generate_report(context)
 
+            # report.json 是对外交付/排查问题的入口，必须包含 plane_configs。
             report = json.loads(Path(report_path).read_text(encoding="utf-8"))
             self.assertEqual(report["request"]["plane_configs"], [
                 {

@@ -101,6 +101,7 @@ def parse_arguments():
         dest='plane_configs',
         type=str,
         default=None,
+        # 这里先采用 JSON 字符串，避免为一个小参数组同时维护命令行文件入口。
         help='三平面重建参数 JSON 数组，例如: [{"plane":"冠状位","slice_thickness":5,"slice_spacing":10,"window_presets":["骨窗"]}]'
     )
     
@@ -122,11 +123,13 @@ def parse_plane_configs(value):
     try:
         raw_configs = json.loads(value)
     except json.JSONDecodeError as e:
+        # 保留原始 JSONDecodeError 作为 cause，调试时能看到具体列号。
         raise ValueError(f"plane_configs 不是合法 JSON: {e}") from e
 
     if not isinstance(raw_configs, list):
         raise ValueError("plane_configs 必须是 JSON 数组")
 
+    # 入口只负责 JSON 解析；单项结构和枚举合法性统一交给 PlaneConfig.from_dict。
     return [
         PlaneConfig.from_dict(item)
         for item in raw_configs
@@ -140,6 +143,8 @@ def main():
         args = parse_arguments()
 
         plane_configs = parse_plane_configs(args.plane_configs)
+        # 先组装基础参数，再按需放入 plane_configs。这样未传该参数时仍使用
+        # Request 的默认三平面骨窗配置，保持老命令兼容。
         request_kwargs = {
             'dicom_dir': args.input,
             'output_dir': args.output,

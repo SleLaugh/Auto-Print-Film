@@ -55,7 +55,8 @@ class ReportingStage(BaseStage):
         
         report_data = {
             'success': not context.has_errors(),
-            # 请求参数统一由 Request.to_dict() 输出，避免新增字段后报告遗漏。
+            # 请求参数统一由 Request.to_dict() 输出。这样 plane_configs 这类新增字段
+            # 只需要在 Request 中维护一次，报告不会因为手写字段列表而遗漏。
             'request': context.request.to_dict(),
             'timings': context.timings,
             'total_time': context.get_total_time(),

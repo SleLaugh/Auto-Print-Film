@@ -8,6 +8,7 @@ SpineMPRProcessor - 主入口
 
 import sys
 import argparse
+import json
 from pathlib import Path
 
 # ===== 添加项目根目录到Python路径（必须在import之前）=====
@@ -16,7 +17,7 @@ sys.path.insert(0, str(project_root))
 
 # ===== 导入（在 sys.path 操作之后）=====
 from src.core import Pipeline
-from src.models import Request, BodyPartEnum, CheckTypeEnum, ScanThicknessEnum, CutModeEnum
+from src.models import Request, BodyPartEnum, CheckTypeEnum, ScanThicknessEnum, CutModeEnum, PlaneConfig
 from src.utils import RunLog, ErrorLog, DebugLog  
 
 
@@ -93,6 +94,15 @@ def parse_arguments():
         choices=[e.value for e in CutModeEnum],
         help='切割方式：whole_range 表示整切，interspace 表示椎间切'
     )
+
+    parser.add_argument(
+        '--plane_configs',
+        '--plane-configs',
+        dest='plane_configs',
+        type=str,
+        default=None,
+        help='三平面重建参数 JSON 数组，例如: [{"plane":"冠状位","slice_thickness":5,"slice_spacing":10,"window_presets":["骨窗"]}]'
+    )
     
     # 解析命令行输入的参数
     # 比如运行：python script.py -i /path/to/dicom -o /path/to/output --body_part 颈椎
@@ -100,20 +110,48 @@ def parse_arguments():
     return parser.parse_args()
 
 
+def parse_plane_configs(value):
+    """
+    解析命令行传入的三平面配置 JSON。
+
+    返回 None 表示调用方没有显式传参，此时 Request 使用默认三平面骨窗配置。
+    """
+    if value is None:
+        return None
+
+    try:
+        raw_configs = json.loads(value)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"plane_configs 不是合法 JSON: {e}") from e
+
+    if not isinstance(raw_configs, list):
+        raise ValueError("plane_configs 必须是 JSON 数组")
+
+    return [
+        PlaneConfig.from_dict(item)
+        for item in raw_configs
+    ]
+
+
 def main():
     RunLog("SpineMPRProcessor v1.0.0 启动")
     
     try:
         args = parse_arguments()
-        
-        request = Request(
-            dicom_dir=args.input,
-            output_dir=args.output,
-            body_part=BodyPartEnum(args.body_part),
-            check_type=CheckTypeEnum(args.check_type),
-            scan_thickness=ScanThicknessEnum(args.scan_thickness),
-            cut_mode=CutModeEnum(args.cut_mode)
-        )
+
+        plane_configs = parse_plane_configs(args.plane_configs)
+        request_kwargs = {
+            'dicom_dir': args.input,
+            'output_dir': args.output,
+            'body_part': BodyPartEnum(args.body_part),
+            'check_type': CheckTypeEnum(args.check_type),
+            'scan_thickness': ScanThicknessEnum(args.scan_thickness),
+            'cut_mode': CutModeEnum(args.cut_mode),
+        }
+        if plane_configs is not None:
+            request_kwargs['plane_configs'] = plane_configs
+
+        request = Request(**request_kwargs)
 
         is_valid, error_message = request.validate()
         if not is_valid:
@@ -125,6 +163,7 @@ def main():
         DebugLog(f"检查类型: {request.check_type.value}")
         DebugLog(f"扫描厚度: {request.scan_thickness.value}")
         DebugLog(f"切割方式: {request.cut_mode.value}")
+        DebugLog(f"三平面参数: {request.to_dict()['plane_configs']}")
         
         pipeline = Pipeline()
         response = pipeline.run(request)

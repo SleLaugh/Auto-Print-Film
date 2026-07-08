@@ -5,7 +5,7 @@
 数据模型包
 """
 
-from .request import Request
+from .request import Request, PlaneConfig
 from .dicom_metadata import DicomMetadata
 from .localization import (
     VoxelPoint,
@@ -22,11 +22,13 @@ from .enums import (
     CutModeEnum,
     PositioningModeEnum,
     PlaneTypeEnum,
+    WindowPresetEnum,
     ProcessingStatusEnum
 )
 
 __all__ = [
     'Request',
+    'PlaneConfig',
     'DicomMetadata',
     'VoxelPoint',
     'VoxelBBox',
@@ -40,5 +42,6 @@ __all__ = [
     'CutModeEnum',
     'PositioningModeEnum',
     'PlaneTypeEnum',
+    'WindowPresetEnum',
     'ProcessingStatusEnum'
 ]

@@ -48,6 +48,13 @@ class PlaneTypeEnum(Enum):
     冠状位 = "冠状位"
 
 
+class WindowPresetEnum(Enum):
+    """窗宽窗位预设枚举"""
+    骨窗 = "骨窗"
+    肺窗 = "肺窗"
+    纵隔窗 = "纵隔窗"
+
+
 class ProcessingStatusEnum(Enum):
     """处理状态枚举"""
     待处理 = "pending"

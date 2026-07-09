@@ -13,6 +13,14 @@
                 {
                     "scan_thickness": "default",
                     "model_id": 294
+                },
+                {
+                    "scan_thickness": "3mm",
+                    "model_id": 297
+                },
+                {
+                    "scan_thickness": "6mm",
+                    "model_id": 298
                 }
             ]
         },
@@ -23,6 +31,14 @@
                 {
                     "scan_thickness": "default",
                     "model_id": 292
+                },
+                {
+                    "scan_thickness": "3mm",
+                    "model_id": 297
+                },
+                {
+                    "scan_thickness": "6mm",
+                    "model_id": 298
                 }
             ]
         },
@@ -33,6 +49,14 @@
                 {
                     "scan_thickness": "default",
                     "model_id": 292
+                },
+                {
+                    "scan_thickness": "3mm",
+                    "model_id": 297
+                },
+                {
+                    "scan_thickness": "6mm",
+                    "model_id": 298
                 }
             ]
         },
@@ -46,11 +70,11 @@
                 },
                 {
                     "scan_thickness": "3mm",
-                    "model_id": 292
+                    "model_id": 297
                 },
                 {
                     "scan_thickness": "6mm",
-                    "model_id": 292
+                    "model_id": 298
                 }
             ]
         },
@@ -71,6 +95,32 @@
                 {
                     "scan_thickness": "default",
                     "model_id": 292
+                },
+                {
+                    "scan_thickness": "3mm",
+                    "model_id": 297
+                },
+                {
+                    "scan_thickness": "6mm",
+                    "model_id": 298
+                }
+            ]
+        },
+        {
+            "check_type": "CT",
+            "body_part": "髋骨",
+            "model_mapper": [
+                {
+                    "scan_thickness": "default",
+                    "model_id": 294
+                },
+                {
+                    "scan_thickness": "3mm",
+                    "model_id": 297
+                },
+                {
+                    "scan_thickness": "6mm",
+                    "model_id": 298
                 }
             ]
         }

@@ -74,7 +74,7 @@ class Pipeline:
         按以下顺序执行：
             1. PreprocessingStage   - 预处理（DICOM → NIfTI）
             2. SegmentationStage    - 推理分割（模型匹配 + nnUNet推理）
-            3. LocalizationStage    - 定位与矫正（椎体定位 + 歪斜检测 + 回正）
+            3. LocalizationStage    - 定位与回正占位（目标定位 + bbox + 回正 TODO 状态）
             4. MappingStage         - 坐标映射（三平面范围映射）
             5. ReconstructionStage  - 重建与输出（MPR重建 + DICOM生成）
             6. ReportingStage       - 结果汇总（生成报告）

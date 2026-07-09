@@ -34,14 +34,22 @@ class ReconstructionStage(BaseStage):
         if not map_result:
             raise ValueError("前置阶段 'mapping' 结果不存在")
         
-        corrected_path = loc_result.get('corrected_raw_path')
+        # 阶段三现在会明确告诉后续阶段“实际该用哪张 raw 图像”。
+        # 未回正时这里是原始 raw_0000.nii.gz；发生回正时才是 raw_corrected.nii.gz。
+        # corrected_raw_path 只作为旧结果兼容字段保留。
+        image_path = (
+            loc_result.get('raw_for_reconstruction_path')
+            or loc_result.get('corrected_raw_path')
+        )
+        if not image_path:
+            raise ValueError("定位结果缺少 raw_for_reconstruction_path/corrected_raw_path")
         axial_params = map_result.get('axial_params', {})
         sagittal_params = map_result.get('sagittal_params', {})
         coronal_params = map_result.get('coronal_params', {})
         
         DebugLog("=" * 60)
         DebugLog("【阶段五】重建与输出 - MPR重建与DICOM生成")
-        DebugLog(f"  输入图像: {corrected_path}")
+        DebugLog(f"  输入图像: {image_path}")
         DebugLog(f"  输出目录: {request.output_dir}")
         DebugLog("=" * 60)
         
@@ -54,9 +62,9 @@ class ReconstructionStage(BaseStage):
             d.mkdir(parents=True, exist_ok=True)
         
         tasks = [
-            ('axial', self._process_axial, corrected_path, axial_dir, axial_params),
-            ('sagittal', self._process_sagittal, corrected_path, sagittal_dir, sagittal_params),
-            ('coronal', self._process_coronal, corrected_path, coronal_dir, coronal_params)
+            ('axial', self._process_axial, image_path, axial_dir, axial_params),
+            ('sagittal', self._process_sagittal, image_path, sagittal_dir, sagittal_params),
+            ('coronal', self._process_coronal, image_path, coronal_dir, coronal_params)
         ]
         
         if self.parallel:

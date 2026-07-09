@@ -14,6 +14,7 @@ class BodyPartEnum(Enum):
     腰椎 = "腰椎"
     肺部 = "肺部"
     骶骨 = "骶骨"
+    髋骨 = "髋骨"
 
 
 class CheckTypeEnum(Enum):

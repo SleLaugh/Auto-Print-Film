@@ -1,0 +1,110 @@
+# 阶段三定位与回正占位设计
+
+## 背景
+
+阶段三已经能根据 `body_part + cut_mode` 找到目标 label，并从
+`seg.nii.gz` 提取每个目标的 bbox、centroid 和整体目标 bbox。
+
+前一版尝试用椎体 label 的 XY 投影 PCA 计算横状位回正角，并生成
+`raw_corrected.nii.gz` / `seg_corrected.nii.gz`。真实颈椎 CT 验证后发现，
+该角度会把颈椎走形、椎体形态、金属和局部结构误当成病人体位旋转角，
+导致本来正的体数据被整体旋歪。
+
+因此当前阶段三只保留定位能力。回正流程位置保留，但回正算法先标记为
+TODO，不再自动改写 raw/seg。
+
+## 当前目标
+
+阶段三必须稳定输出：
+
+- `coords`：每个目标 label 的 bbox、centroid 和体素数量。
+- `correction_scope_bbox`：本次目标整体 bbox。
+- `debug_bbox_overlay_path`：研发期 ITK-SNAP 轴对齐 bbox 边框 overlay。
+- `debug_target_mask_overlay_path`：研发期 ITK-SNAP 真实目标 mask overlay。
+- `debug_label_mask_overlay_path`：研发期 ITK-SNAP 分 label mask overlay。
+- `raw_for_reconstruction_path`：当前固定指向原始 `raw_0000.nii.gz`。
+- `seg_for_reconstruction_path`：当前固定指向原始 `seg.nii.gz`。
+- `correction_applied`：当前固定为 `false`。
+- `correction_params`：写明回正被保留为 TODO，不输出可执行角度。
+
+阶段三不能在默认流程中生成或使用：
+
+- `raw_corrected.nii.gz`
+- `seg_corrected.nii.gz`
+
+## 回正字段语义
+
+当前 metadata 中回正相关字段的语义如下：
+
+- `correction_requested: true`：业务上存在“回正”阶段。
+- `correction_status: "todo"`：回正算法尚未实现。
+- `correction_applied: false`：没有真的执行图像旋转。
+- `correction_angle_degrees: 0.0`：当前不输出候选角，避免误用旧 PCA 角度。
+- `correction_todo_reason`：说明当前只输出定位坐标，不改写 raw/seg。
+
+兼容字段仍保留：
+
+- `corrected_raw_path`
+- `corrected_seg_path`
+- `is_skewed`
+- `skew_params`
+
+但未回正时，`corrected_raw_path` 等于 `raw_for_reconstruction_path`，
+`corrected_seg_path` 等于 `seg_for_reconstruction_path`。
+
+## 坐标约定
+
+SimpleITK 读取数组后顺序为 `z, y, x`。因此 JSON 里的 bbox 使用：
+
+```text
+z_min, z_max
+y_min, y_max
+x_min, x_max
+```
+
+这是一个轴对齐包围盒，6 个边界值足够表达盒子。需要展示 8 个角点时，
+可以由这 6 个边界值展开。
+
+这个 bbox 不是贴合解剖边界的旋转框。目标在矢状位/冠状位投影中如果是
+斜的，视觉上更像菱形或曲线包络；轴对齐 bbox 仍会显示成正放矩形，
+并且会被少量极值体素撑大。人工验证“目标本身有没有偏”时，应优先加载
+`debug_target_mask_overlay_path` 对应的 mask overlay；bbox overlay 只用来
+看全局 min/max 范围。
+
+如果需要进一步看 C1/C2/C3 等各自椎体位置，应加载
+`debug_label_mask_overlay_path` 对应的 overlay。它保留 `seg.nii.gz` 中的
+原始模型 label id，因此 ITK-SNAP 可以用不同 label/颜色显示各椎体区间。
+
+ITK-SNAP 游标通常显示 `x, y, z`，人工验证时需要交换顺序。
+
+## 下游约定
+
+后续阶段统一读取：
+
+```python
+raw_for_reconstruction_path = loc_result["raw_for_reconstruction_path"]
+seg_for_reconstruction_path = loc_result["seg_for_reconstruction_path"]
+```
+
+当前这两个字段都指向原始图像和原始分割。后续重建阶段不应直接读取
+`raw_corrected.nii.gz`。
+
+## 回正后续设计要求
+
+后续如果重新实现回正，必须重新设计角度来源，不能直接复用旧的
+`vertebrae_label_angle_aggregation` 作为可执行角度。
+
+新算法至少要满足：
+
+- 正位样例不能被误回正。
+- 角度来源必须能解释为体数据级别的刚性旋转。
+- 不稳定时必须拒绝回正。
+- 需要先生成诊断指标，再决定是否执行图像变换。
+- 回正必须是体数据级别的一次统一变换，不能逐张切片独立旋转。
+
+## 暂不实现
+
+- 不实现自动回正。
+- 不生成 corrected NIfTI。
+- 不实现矢状位/冠状位回正。
+- 不实现 MPR/DICOM 输出。

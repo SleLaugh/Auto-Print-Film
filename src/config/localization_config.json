@@ -24,7 +24,7 @@
         "L3": "vertebrae_L3",
         "L4": "vertebrae_L4",
         "L5": "vertebrae_L5",
-        "S1": "sacrum",
+        "S1": "vertebrae_S1",
         "lung": "lung",
         "skull": "skull"
     },
@@ -161,6 +161,12 @@
             "whole_range": {
                 "start": "skull",
                 "end": "skull"
+            }
+        },
+        "髋骨": {
+            "whole_range": {
+                "start": "hip_left",
+                "end": "hip_right"
             }
         }
     }

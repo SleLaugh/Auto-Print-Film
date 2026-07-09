@@ -1,0 +1,101 @@
+#!/src/models/reconstruction.py
+# -*- coding: utf-8 -*-
+
+"""
+重建规划模型
+
+这些实体是阶段四输出给阶段五的稳定契约。阶段四负责把切割路径展开成
+具体切片清单；阶段五只按这些切片逐张采样，不再反推切多少张或每张在哪里。
+"""
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List
+
+
+@dataclass
+class Point3D:
+    """物理坐标点或方向向量，坐标顺序为 x/y/z，单位通常是 mm。"""
+
+    x: float
+    y: float
+    z: float
+
+    def to_dict(self) -> Dict[str, float]:
+        return {"x": self.x, "y": self.y, "z": self.z}
+
+
+@dataclass
+class PlannedSlice:
+    """阶段四已经规划好的一张待切图。"""
+
+    index: int
+    center: Point3D
+    normal: Point3D
+    row_dir: Point3D
+    col_dir: Point3D
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "index": self.index,
+            "center": self.center.to_dict(),
+            "normal": self.normal.to_dict(),
+            "row_dir": self.row_dir.to_dict(),
+            "col_dir": self.col_dir.to_dict(),
+        }
+
+
+@dataclass
+class ExtentMM:
+    """单张输出图像覆盖的物理宽高范围。"""
+
+    width: float
+    height: float
+
+    def to_dict(self) -> Dict[str, float]:
+        return {"width": self.width, "height": self.height}
+
+
+@dataclass
+class SlicePlan:
+    """一组已经展开好的切片规划，供阶段五直接执行。"""
+
+    plan_id: str
+    body_part: str
+    cut_mode: str
+    plane: str
+    group_name: str
+    geometry_type: str
+    range_start: Point3D
+    range_end: Point3D
+    path_points: List[Point3D]
+    slices: List[PlannedSlice]
+    extent_mm: ExtentMM
+    output_spacing_mm: Point3D
+    slice_thickness: float
+    slice_spacing: float
+    window_presets: List[str]
+    source_labels: List[str]
+    confidence: float = 1.0
+    warnings: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "plan_id": self.plan_id,
+            "body_part": self.body_part,
+            "cut_mode": self.cut_mode,
+            "plane": self.plane,
+            "group_name": self.group_name,
+            "geometry_type": self.geometry_type,
+            "range_start": self.range_start.to_dict(),
+            "range_end": self.range_end.to_dict(),
+            "path_points": [point.to_dict() for point in self.path_points],
+            "slices": [planned_slice.to_dict() for planned_slice in self.slices],
+            "extent_mm": self.extent_mm.to_dict(),
+            "output_spacing_mm": self.output_spacing_mm.to_dict(),
+            "slice_thickness": self.slice_thickness,
+            "slice_spacing": self.slice_spacing,
+            "window_presets": self.window_presets,
+            "source_labels": self.source_labels,
+            "confidence": self.confidence,
+            "warnings": self.warnings,
+        }

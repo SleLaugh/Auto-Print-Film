@@ -1,0 +1,912 @@
+# 阶段四切片规划实现计划
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 把阶段四从硬编码占位改成切片规划阶段，输出第五步可直接执行的 `SlicePlan[]`。
+
+**Architecture:** 阶段四不新增流水线大阶段，但内部拆成 planner 和 expander 两层。planner 根据部位、切割方式和状位生成切割区间与路径；expander 根据层间距把路径展开成 `slices[]`，每个 slice 都包含中心点和方向。第五步后续只消费 `SlicePlan[]`，不再计算切多少张、每张在哪里。
+
+**Tech Stack:** Python dataclass、标准库 `json`、标准库 `math`、标准库 `pathlib`、标准库 `unittest`、现有 `numpy`。
+
+## Global Constraints
+
+- 文档、代码注释、测试注释使用中文。
+- 不执行 `git commit`，所有改动停在工作区，由用户审阅后自行提交。
+- 阶段四必须输出已经展开好的 `SlicePlan[]`。
+- 第五步不得根据 `range_start`、`range_end`、`slice_spacing` 重新计算切片数量或切片中心。
+- 阶段四不执行真实 MPR 采样、不写 DICOM、不做窗宽窗位应用。
+- 第一版只实现 `plane_stack` 数据结构和规划逻辑；`curved_stack` 保留枚举和结构字段，不实现曲面采样。
+
+---
+
+## 文件分工
+
+- 新增 `src/models/reconstruction.py`：定义 `Point3D`、`PlannedSlice`、`ExtentMM`、`SlicePlan`。
+- 修改 `src/models/__init__.py`：导出阶段四新增模型。
+- 新增 `src/planning/__init__.py`：导出 planner 入口。
+- 新增 `src/planning/geometry.py`：坐标转换、向量归一化、按层间距展开 slice。
+- 新增 `src/planning/base.py`：planner 基类、结果对象、planner 注册和选择。
+- 新增 `src/planning/single_label.py`：单目标整切兜底 planner。
+- 新增 `src/planning/spine_common.py`：脊柱中心点排序、整切路径、区间路径公共方法。
+- 新增 `src/planning/lumbar.py`：腰椎整切和腰椎区间切 planner。
+- 修改 `src/stages/stage_mapping.py`：调用 planner，输出 `plans` 和 `metadata/slice_plans.json`。
+- 新增 `tests/test_slice_plan_models.py`：模型序列化测试。
+- 新增 `tests/test_planning_geometry.py`：几何工具测试。
+- 新增 `tests/test_stage4_slice_planning.py`：阶段四 focused tests。
+
+## Task 1: 切片规划数据模型
+
+**Files:**
+- Create: `src/models/reconstruction.py`
+- Modify: `src/models/__init__.py`
+- Test: `tests/test_slice_plan_models.py`
+
+**Interfaces:**
+- Produces: `Point3D(x: float, y: float, z: float).to_dict() -> dict`
+- Produces: `PlannedSlice(index, center, normal, row_dir, col_dir).to_dict() -> dict`
+- Produces: `ExtentMM(width: float, height: float).to_dict() -> dict`
+- Produces: `SlicePlan(...).to_dict() -> dict`
+
+- [ ] **Step 1: Write the failing test**
+
+新增 `tests/test_slice_plan_models.py`：
+
+```python
+import unittest
+
+from src.models import ExtentMM, PlannedSlice, Point3D, SlicePlan
+
+
+class SlicePlanModelsTest(unittest.TestCase):
+    def test_slice_plan_to_dict_outputs_json_friendly_values(self):
+        plan = SlicePlan(
+            plan_id="腰椎_whole_range_横状位",
+            body_part="腰椎",
+            cut_mode="whole_range",
+            plane="横状位",
+            group_name="whole_range",
+            geometry_type="plane_stack",
+            range_start=Point3D(0.0, 0.0, 0.0),
+            range_end=Point3D(0.0, 0.0, 10.0),
+            path_points=[Point3D(0.0, 0.0, 0.0), Point3D(0.0, 0.0, 10.0)],
+            slices=[
+                PlannedSlice(
+                    index=1,
+                    center=Point3D(0.0, 0.0, 0.0),
+                    normal=Point3D(0.0, 0.0, 1.0),
+                    row_dir=Point3D(1.0, 0.0, 0.0),
+                    col_dir=Point3D(0.0, 1.0, 0.0),
+                )
+            ],
+            extent_mm=ExtentMM(width=160.0, height=160.0),
+            output_spacing_mm=Point3D(1.0, 1.0, 0.0),
+            slice_thickness=5.0,
+            slice_spacing=5.0,
+            window_presets=["骨窗"],
+            source_labels=["vertebrae_L1", "vertebrae_S1"],
+            confidence=1.0,
+            warnings=[],
+        )
+
+        self.assertEqual(plan.to_dict()["slices"][0]["center"], {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+        })
+        self.assertEqual(plan.to_dict()["slice_spacing"], 5.0)
+        self.assertEqual(plan.to_dict()["window_presets"], ["骨窗"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run:
+
+```bash
+python -m unittest tests/test_slice_plan_models.py -v
+```
+
+Expected: FAIL，原因是 `Point3D`、`PlannedSlice`、`ExtentMM`、`SlicePlan` 尚不存在。
+
+- [ ] **Step 3: Write minimal implementation**
+
+新增 `src/models/reconstruction.py`，所有注释使用中文：
+
+```python
+#!/src/models/reconstruction.py
+# -*- coding: utf-8 -*-
+
+"""
+重建规划模型
+
+这些实体是阶段四输出给阶段五的稳定契约。阶段四负责把切割路径展开成
+具体切片清单；阶段五只按这些切片逐张采样。
+"""
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List
+
+
+@dataclass
+class Point3D:
+    """物理坐标点或方向向量，坐标顺序为 x/y/z，单位通常是 mm。"""
+    x: float
+    y: float
+    z: float
+
+    def to_dict(self) -> Dict[str, float]:
+        return {"x": self.x, "y": self.y, "z": self.z}
+
+
+@dataclass
+class PlannedSlice:
+    """阶段四已经规划好的一张待切图。"""
+    index: int
+    center: Point3D
+    normal: Point3D
+    row_dir: Point3D
+    col_dir: Point3D
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "index": self.index,
+            "center": self.center.to_dict(),
+            "normal": self.normal.to_dict(),
+            "row_dir": self.row_dir.to_dict(),
+            "col_dir": self.col_dir.to_dict(),
+        }
+
+
+@dataclass
+class ExtentMM:
+    """单张输出图像覆盖的物理宽高范围。"""
+    width: float
+    height: float
+
+    def to_dict(self) -> Dict[str, float]:
+        return {"width": self.width, "height": self.height}
+
+
+@dataclass
+class SlicePlan:
+    """一组已经展开好的切片规划，供阶段五直接执行。"""
+    plan_id: str
+    body_part: str
+    cut_mode: str
+    plane: str
+    group_name: str
+    geometry_type: str
+    range_start: Point3D
+    range_end: Point3D
+    path_points: List[Point3D]
+    slices: List[PlannedSlice]
+    extent_mm: ExtentMM
+    output_spacing_mm: Point3D
+    slice_thickness: float
+    slice_spacing: float
+    window_presets: List[str]
+    source_labels: List[str]
+    confidence: float = 1.0
+    warnings: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "plan_id": self.plan_id,
+            "body_part": self.body_part,
+            "cut_mode": self.cut_mode,
+            "plane": self.plane,
+            "group_name": self.group_name,
+            "geometry_type": self.geometry_type,
+            "range_start": self.range_start.to_dict(),
+            "range_end": self.range_end.to_dict(),
+            "path_points": [point.to_dict() for point in self.path_points],
+            "slices": [planned_slice.to_dict() for planned_slice in self.slices],
+            "extent_mm": self.extent_mm.to_dict(),
+            "output_spacing_mm": self.output_spacing_mm.to_dict(),
+            "slice_thickness": self.slice_thickness,
+            "slice_spacing": self.slice_spacing,
+            "window_presets": self.window_presets,
+            "source_labels": self.source_labels,
+            "confidence": self.confidence,
+            "warnings": self.warnings,
+        }
+```
+
+修改 `src/models/__init__.py`，导出新模型：
+
+```python
+from .reconstruction import ExtentMM, PlannedSlice, Point3D, SlicePlan
+```
+
+并把这些名字加入 `__all__`。
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run:
+
+```bash
+python -m unittest tests/test_slice_plan_models.py -v
+```
+
+Expected: PASS。
+
+- [ ] **Step 5: Stop for review**
+
+不提交。保留工作区修改，继续 Task 2。
+
+## Task 2: 几何工具和切片展开
+
+**Files:**
+- Create: `src/planning/__init__.py`
+- Create: `src/planning/geometry.py`
+- Test: `tests/test_planning_geometry.py`
+
+**Interfaces:**
+- Consumes: `Point3D`, `PlannedSlice`
+- Produces: `normalize_vector(vector: Point3D) -> Point3D`
+- Produces: `interpolate_points(start: Point3D, end: Point3D, spacing: float) -> list[Point3D]`
+- Produces: `build_plane_stack_slices(path_points, slice_spacing, normal, row_dir, col_dir) -> list[PlannedSlice]`
+- Produces: `voxel_index_to_physical(index_xyz, image_info) -> Point3D`
+- Produces: `image_axis_direction(image_info, axis_index) -> Point3D`
+
+- [ ] **Step 1: Write the failing test**
+
+新增 `tests/test_planning_geometry.py`：
+
+```python
+import unittest
+
+from src.models import Point3D
+from src.planning.geometry import build_plane_stack_slices, interpolate_points, normalize_vector
+
+
+class PlanningGeometryTest(unittest.TestCase):
+    def test_interpolate_points_generates_centers_from_start_to_end_by_spacing(self):
+        points = interpolate_points(
+            start=Point3D(0.0, 0.0, 0.0),
+            end=Point3D(0.0, 0.0, 10.0),
+            spacing=5.0,
+        )
+
+        self.assertEqual([point.to_dict() for point in points], [
+            {"x": 0.0, "y": 0.0, "z": 0.0},
+            {"x": 0.0, "y": 0.0, "z": 5.0},
+            {"x": 0.0, "y": 0.0, "z": 10.0},
+        ])
+
+    def test_normalize_vector_rejects_zero_vector(self):
+        with self.assertRaisesRegex(ValueError, "方向向量长度不能为 0"):
+            normalize_vector(Point3D(0.0, 0.0, 0.0))
+
+    def test_build_plane_stack_slices_assigns_index_center_and_directions(self):
+        slices = build_plane_stack_slices(
+            path_points=[Point3D(0.0, 0.0, 0.0), Point3D(0.0, 0.0, 10.0)],
+            slice_spacing=5.0,
+            normal=Point3D(0.0, 0.0, 1.0),
+            row_dir=Point3D(1.0, 0.0, 0.0),
+            col_dir=Point3D(0.0, 1.0, 0.0),
+        )
+
+        self.assertEqual(len(slices), 3)
+        self.assertEqual(slices[1].index, 2)
+        self.assertEqual(slices[1].center.to_dict(), {"x": 0.0, "y": 0.0, "z": 5.0})
+        self.assertEqual(slices[1].normal.to_dict(), {"x": 0.0, "y": 0.0, "z": 1.0})
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run:
+
+```bash
+python -m unittest tests/test_planning_geometry.py -v
+```
+
+Expected: FAIL，原因是 `src.planning.geometry` 尚不存在。
+
+- [ ] **Step 3: Write minimal implementation**
+
+新增 `src/planning/__init__.py`：
+
+```python
+"""阶段四切片规划工具包。"""
+```
+
+新增 `src/planning/geometry.py`：
+
+```python
+#!/src/planning/geometry.py
+# -*- coding: utf-8 -*-
+
+"""
+阶段四几何工具
+
+这里不写任何部位业务，只处理点、方向和切片清单展开。
+"""
+
+import math
+from typing import List
+
+from src.models import PlannedSlice, Point3D
+
+
+def vector_length(vector: Point3D) -> float:
+    """计算三维向量长度。"""
+    return math.sqrt(vector.x ** 2 + vector.y ** 2 + vector.z ** 2)
+
+
+def normalize_vector(vector: Point3D) -> Point3D:
+    """把方向向量转成单位向量。"""
+    length = vector_length(vector)
+    if length == 0:
+        raise ValueError("方向向量长度不能为 0")
+    return Point3D(vector.x / length, vector.y / length, vector.z / length)
+
+
+def subtract_points(end: Point3D, start: Point3D) -> Point3D:
+    """计算从 start 指向 end 的向量。"""
+    return Point3D(end.x - start.x, end.y - start.y, end.z - start.z)
+
+
+def interpolate_points(start: Point3D, end: Point3D, spacing: float) -> List[Point3D]:
+    """按层间距从起点到终点生成切片中心点。"""
+    if spacing <= 0:
+        raise ValueError("层间距必须大于 0")
+
+    vector = subtract_points(end, start)
+    distance = vector_length(vector)
+    if distance == 0:
+        return [start]
+
+    direction = normalize_vector(vector)
+    step_count = int(math.floor(distance / spacing))
+    points = [
+        Point3D(
+            start.x + direction.x * spacing * index,
+            start.y + direction.y * spacing * index,
+            start.z + direction.z * spacing * index,
+        )
+        for index in range(step_count + 1)
+    ]
+
+    last = points[-1]
+    if vector_length(subtract_points(end, last)) > 1e-6:
+        points.append(end)
+
+    return points
+
+
+def build_plane_stack_slices(
+    path_points: List[Point3D],
+    slice_spacing: float,
+    normal: Point3D,
+    row_dir: Point3D,
+    col_dir: Point3D,
+) -> List[PlannedSlice]:
+    """把普通平面切割路径展开成第五步可执行的切片清单。"""
+    if len(path_points) < 2:
+        raise ValueError("普通平面切割路径至少需要 2 个点")
+
+    centers = interpolate_points(path_points[0], path_points[-1], slice_spacing)
+    normal = normalize_vector(normal)
+    row_dir = normalize_vector(row_dir)
+    col_dir = normalize_vector(col_dir)
+
+    return [
+        PlannedSlice(
+            index=index + 1,
+            center=center,
+            normal=normal,
+            row_dir=row_dir,
+            col_dir=col_dir,
+        )
+        for index, center in enumerate(centers)
+    ]
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run:
+
+```bash
+python -m unittest tests/test_planning_geometry.py -v
+```
+
+Expected: PASS。
+
+- [ ] **Step 5: Stop for review**
+
+不提交。保留工作区修改，继续 Task 3。
+
+## Task 3: planner 基类和单目标整切
+
+**Files:**
+- Create: `src/planning/base.py`
+- Create: `src/planning/single_label.py`
+- Test: `tests/test_stage4_slice_planning.py`
+
+**Interfaces:**
+- Consumes: `SlicePlan`, `Point3D`, `ExtentMM`
+- Produces: `PlanningResult(plans: list[SlicePlan], warnings: list[str], planner_name: str)`
+- Produces: `SingleLabelWholeRangePlanner.build_plans(request, localization_result) -> PlanningResult`
+
+- [ ] **Step 1: Write the failing test**
+
+新增 `tests/test_stage4_slice_planning.py` 的第一批测试：
+
+```python
+import tempfile
+import unittest
+
+from src.core.context import ProcessingContext
+from src.models import PlaneConfig, Request, WindowPresetEnum
+from src.models.enums import BodyPartEnum, CutModeEnum, PlaneTypeEnum
+from src.planning.single_label import SingleLabelWholeRangePlanner
+
+
+class Stage4SlicePlanningTest(unittest.TestCase):
+    def test_single_label_whole_range_planner_builds_axial_plan_from_bbox(self):
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.肺部,
+            cut_mode=CutModeEnum.整切,
+            plane_configs=[
+                PlaneConfig(
+                    plane=PlaneTypeEnum.横状位,
+                    slice_thickness=5.0,
+                    slice_spacing=5.0,
+                    window_presets=[WindowPresetEnum.肺窗],
+                )
+            ],
+        )
+        localization_result = {
+            "body_part": "肺部",
+            "cut_mode": "whole_range",
+            "correction_scope_bbox": {
+                "z_min": 0,
+                "z_max": 10,
+                "y_min": 20,
+                "y_max": 80,
+                "x_min": 30,
+                "x_max": 90,
+            },
+            "image": {
+                "spacing_xyz": [1.0, 1.0, 1.0],
+                "origin_xyz": [0.0, 0.0, 0.0],
+                "direction": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            },
+        }
+
+        result = SingleLabelWholeRangePlanner().build_plans(request, localization_result)
+
+        self.assertEqual(result.planner_name, "SingleLabelWholeRangePlanner")
+        self.assertEqual(len(result.plans), 1)
+        plan = result.plans[0]
+        self.assertEqual(plan.plan_id, "肺部_whole_range_横状位")
+        self.assertEqual(len(plan.slices), 3)
+        self.assertEqual(plan.slices[1].center.to_dict(), {"x": 60.0, "y": 50.0, "z": 5.0})
+        self.assertEqual(plan.window_presets, ["肺窗"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run:
+
+```bash
+python -m unittest tests/test_stage4_slice_planning.py -v
+```
+
+Expected: FAIL，原因是 planner 模块尚不存在。
+
+- [ ] **Step 3: Write minimal implementation**
+
+新增 `src/planning/base.py`：
+
+```python
+#!/src/planning/base.py
+# -*- coding: utf-8 -*-
+
+"""阶段四 planner 基础结构。"""
+
+from dataclasses import dataclass, field
+from typing import List
+
+from src.models import SlicePlan
+
+
+@dataclass
+class PlanningResult:
+    """阶段四 planner 的统一返回结果。"""
+    plans: List[SlicePlan] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    planner_name: str = ""
+```
+
+新增 `src/planning/single_label.py`：
+
+```python
+#!/src/planning/single_label.py
+# -*- coding: utf-8 -*-
+
+"""单目标整切 planner。"""
+
+from typing import Any, Dict
+
+from src.models import ExtentMM, Point3D, SlicePlan
+from src.models.enums import PlaneTypeEnum
+from src.planning.base import PlanningResult
+from src.planning.geometry import build_plane_stack_slices
+
+
+class SingleLabelWholeRangePlanner:
+    """肺部、头骨等单目标整切的兜底规划器。"""
+
+    planner_name = "SingleLabelWholeRangePlanner"
+
+    def build_plans(self, request: Any, localization_result: Dict[str, Any]) -> PlanningResult:
+        bbox = localization_result.get("correction_scope_bbox")
+        if not bbox:
+            raise ValueError("定位结果缺少 correction_scope_bbox")
+
+        plans = []
+        for plane_config in request.plane_configs:
+            if plane_config.plane != PlaneTypeEnum.横状位:
+                continue
+            plans.append(self._build_axial_plan(request, localization_result, bbox, plane_config))
+
+        return PlanningResult(plans=plans, planner_name=self.planner_name)
+
+    def _build_axial_plan(self, request, localization_result, bbox, plane_config) -> SlicePlan:
+        spacing = localization_result["image"]["spacing_xyz"]
+        origin = localization_result["image"]["origin_xyz"]
+        x_center = (bbox["x_min"] + bbox["x_max"]) / 2.0 * spacing[0] + origin[0]
+        y_center = (bbox["y_min"] + bbox["y_max"]) / 2.0 * spacing[1] + origin[1]
+        z_start = bbox["z_min"] * spacing[2] + origin[2]
+        z_end = bbox["z_max"] * spacing[2] + origin[2]
+
+        range_start = Point3D(x_center, y_center, z_start)
+        range_end = Point3D(x_center, y_center, z_end)
+        path_points = [range_start, range_end]
+        slices = build_plane_stack_slices(
+            path_points=path_points,
+            slice_spacing=plane_config.slice_spacing,
+            normal=Point3D(0.0, 0.0, 1.0),
+            row_dir=Point3D(1.0, 0.0, 0.0),
+            col_dir=Point3D(0.0, 1.0, 0.0),
+        )
+
+        return SlicePlan(
+            plan_id=f"{request.body_part.value}_whole_range_{plane_config.plane.value}",
+            body_part=request.body_part.value,
+            cut_mode=request.cut_mode.value,
+            plane=plane_config.plane.value,
+            group_name="whole_range",
+            geometry_type="plane_stack",
+            range_start=range_start,
+            range_end=range_end,
+            path_points=path_points,
+            slices=slices,
+            extent_mm=ExtentMM(width=(bbox["x_max"] - bbox["x_min"]) * spacing[0], height=(bbox["y_max"] - bbox["y_min"]) * spacing[1]),
+            output_spacing_mm=Point3D(spacing[0], spacing[1], 0.0),
+            slice_thickness=plane_config.slice_thickness,
+            slice_spacing=plane_config.slice_spacing,
+            window_presets=[window.value for window in plane_config.window_presets],
+            source_labels=["correction_scope_bbox"],
+        )
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run:
+
+```bash
+python -m unittest tests/test_stage4_slice_planning.py -v
+```
+
+Expected: PASS。
+
+- [ ] **Step 5: Stop for review**
+
+不提交。保留工作区修改，继续 Task 4。
+
+## Task 4: 腰椎整切和区间切 planner
+
+**Files:**
+- Create: `src/planning/spine_common.py`
+- Create: `src/planning/lumbar.py`
+- Test: `tests/test_stage4_slice_planning.py`
+
+**Interfaces:**
+- Consumes: `PlanningResult`, `SlicePlan`
+- Produces: `LumbarWholeRangePlanner.build_plans(request, localization_result) -> PlanningResult`
+- Produces: `LumbarInterspacePlanner.build_plans(request, localization_result) -> PlanningResult`
+
+- [ ] **Step 1: Add failing tests**
+
+在 `tests/test_stage4_slice_planning.py` 追加：
+
+```python
+from src.planning.lumbar import LumbarInterspacePlanner, LumbarWholeRangePlanner
+
+
+    def test_lumbar_whole_range_planner_expands_slices_from_l1_to_s1(self):
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            cut_mode=CutModeEnum.整切,
+            plane_configs=[
+                PlaneConfig(PlaneTypeEnum.横状位, 5.0, 5.0, [WindowPresetEnum.骨窗])
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+
+        result = LumbarWholeRangePlanner().build_plans(request, localization_result)
+
+        self.assertEqual(len(result.plans), 1)
+        plan = result.plans[0]
+        self.assertEqual(plan.plan_id, "腰椎_whole_range_横状位")
+        self.assertEqual(len(plan.slices), 3)
+        self.assertEqual(plan.slices[0].center.z, 0.0)
+        self.assertEqual(plan.slices[-1].center.z, 10.0)
+
+    def test_lumbar_interspace_planner_builds_one_plan_per_available_interval(self):
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            cut_mode=CutModeEnum.椎间切,
+            plane_configs=[
+                PlaneConfig(PlaneTypeEnum.横状位, 2.0, 2.0, [WindowPresetEnum.骨窗])
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+
+        result = LumbarInterspacePlanner().build_plans(request, localization_result)
+
+        self.assertEqual([plan.group_name for plan in result.plans], [
+            "L1-L2",
+            "L2-L3",
+            "L3-L4",
+            "L4-L5",
+            "L5-S1",
+        ])
+        self.assertTrue(all(plan.slices for plan in result.plans))
+
+    @staticmethod
+    def _lumbar_localization_result():
+        def coord(name, z):
+            return {
+                "label_name": f"vertebrae_{name}",
+                "label_ids": [1],
+                "voxel_count": 10,
+                "found": True,
+                "centroid": {"z": z, "y": 50.0, "x": 60.0},
+                "bbox": {
+                    "z_min": int(z),
+                    "z_max": int(z),
+                    "y_min": 45,
+                    "y_max": 55,
+                    "x_min": 55,
+                    "x_max": 65,
+                },
+            }
+
+        return {
+            "body_part": "腰椎",
+            "cut_mode": "whole_range",
+            "correction_scope_bbox": {
+                "z_min": 0,
+                "z_max": 10,
+                "y_min": 45,
+                "y_max": 55,
+                "x_min": 55,
+                "x_max": 65,
+            },
+            "image": {
+                "spacing_xyz": [1.0, 1.0, 1.0],
+                "origin_xyz": [0.0, 0.0, 0.0],
+                "direction": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            },
+            "coords": {
+                "vertebrae_L1": coord("L1", 0.0),
+                "vertebrae_L2": coord("L2", 2.0),
+                "vertebrae_L3": coord("L3", 4.0),
+                "vertebrae_L4": coord("L4", 6.0),
+                "vertebrae_L5": coord("L5", 8.0),
+                "vertebrae_S1": coord("S1", 10.0),
+            },
+        }
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run:
+
+```bash
+python -m unittest tests/test_stage4_slice_planning.py -v
+```
+
+Expected: FAIL，原因是 `src.planning.lumbar` 尚不存在。
+
+- [ ] **Step 3: Implement lumbar planners**
+
+新增 `src/planning/spine_common.py`，实现读取椎体中心点和构建路径的公共函数。
+新增 `src/planning/whole_range.py`，实现横状位整切的 bbox 公共方法。
+新增 `src/planning/lumbar.py`，实现：
+
+```python
+class LumbarWholeRangePlanner:
+    """腰椎整切 planner，第一版只生成横状位 plane_stack。"""
+
+class LumbarInterspacePlanner:
+    """腰椎区间切 planner，第一版只生成横状位 plane_stack。"""
+```
+
+实现规则：
+
+- 横状位整切统一使用 `correction_scope_bbox` 的最外侧 `z_min/z_max` 生成上下范围。
+- 横状位整切的中心范围按 `slice_thickness / 2` 向上下外扩，避免厚层图没有包住目标最外侧。
+- 横状位整切的总览 overlay 只画中心线；实际张数、层厚、层间距和是否存在未覆盖间隔写入 `slice_plans.json` 的 `diagnostics`。
+- 腰椎横状位整切与头骨、肺部等单目标横状位整切共用同一个 bbox 整切方法。
+- 腰椎横状位整切不依赖 L1/S1 质心；L1/S1 质心只属于区间切、中心线、斜切或曲面切等后续规则。
+- bbox/centroid 从体素索引换算到物理坐标时必须使用 `spacing + origin + direction`，不能只做 `origin + index * spacing`。
+- 腰椎区间切生成 `L1-L2`、`L2-L3`、`L3-L4`、`L4-L5`、`L5-S1` 五组 plan。
+- 缺任一端点时跳过该区间并写入 warning。
+- 每个 plan 都包含展开好的 `slices[]`。
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run:
+
+```bash
+python -m unittest tests/test_stage4_slice_planning.py -v
+```
+
+Expected: PASS。
+
+- [ ] **Step 5: Stop for review**
+
+不提交。保留工作区修改，继续 Task 5。
+
+## Task 5: 接入 MappingStage 并写出 JSON
+
+**Files:**
+- Modify: `src/planning/base.py`
+- Modify: `src/planning/__init__.py`
+- Modify: `src/stages/stage_mapping.py`
+- Test: `tests/test_stage4_slice_planning.py`
+
+**Interfaces:**
+- Produces: `select_planner(body_part: str, cut_mode: str)`
+- Produces: `MappingStage.execute(context)` sets `mapping = {"plans": [...], "warnings": [...], "planner": str, "plan_count": int, "metadata_path": str}`
+
+- [ ] **Step 1: Add failing stage integration test**
+
+在 `tests/test_stage4_slice_planning.py` 追加：
+
+```python
+from pathlib import Path
+import json
+
+from src.stages.stage_mapping import MappingStage
+
+
+    def test_mapping_stage_writes_slice_plans_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = Request(
+                dicom_dir="/tmp/dicom",
+                output_dir=temp_dir,
+                body_part=BodyPartEnum.腰椎,
+                cut_mode=CutModeEnum.整切,
+                plane_configs=[
+                    PlaneConfig(PlaneTypeEnum.横状位, 5.0, 5.0, [WindowPresetEnum.骨窗])
+                ],
+            )
+            context = ProcessingContext(request)
+            context.set_result("localization", self._lumbar_localization_result())
+
+            MappingStage().execute(context)
+
+            result = context.get_result("mapping")
+            metadata_path = Path(result["metadata_path"])
+            self.assertTrue(metadata_path.exists())
+            data = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["plan_count"], 1)
+            self.assertEqual(data["plans"][0]["plan_id"], "腰椎_whole_range_横状位")
+            self.assertIn("slices", data["plans"][0])
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run:
+
+```bash
+python -m unittest tests/test_stage4_slice_planning.py -v
+```
+
+Expected: FAIL，原因是 `MappingStage` 仍输出旧的 `axial_params` 占位。
+
+- [ ] **Step 3: Implement MappingStage integration**
+
+修改 `src/planning/base.py`，新增注册表：
+
+```python
+def select_planner(body_part: str, cut_mode: str):
+    key = (body_part, cut_mode)
+    planners = {
+        ("颈椎", "whole_range"): SingleLabelWholeRangePlanner,
+        ("胸椎", "whole_range"): SingleLabelWholeRangePlanner,
+        ("腰椎", "whole_range"): LumbarWholeRangePlanner,
+        ("腰椎", "interspace"): LumbarInterspacePlanner,
+        ("肺部", "whole_range"): SingleLabelWholeRangePlanner,
+        ("头骨", "whole_range"): SingleLabelWholeRangePlanner,
+        ("髋骨", "whole_range"): SingleLabelWholeRangePlanner,
+    }
+    if key not in planners:
+        raise ValueError(f"未找到阶段四 planner: body_part={body_part}, cut_mode={cut_mode}")
+    return planners[key]()
+```
+
+修改 `src/stages/stage_mapping.py`：
+
+- 删除旧的 `axial_params/sagittal_params/coronal_params` 硬编码。
+- 调用 `select_planner(request.body_part.value, request.cut_mode.value)`。
+- 写出 `metadata/slice_plans.json`。
+- `context.set_result("mapping", result)` 中写入 `plans`。
+
+- [ ] **Step 4: Run focused tests**
+
+Run:
+
+```bash
+python -m unittest tests/test_stage4_slice_planning.py -v
+```
+
+Expected: PASS。
+
+- [ ] **Step 5: Run existing regression tests**
+
+Run:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Expected: PASS。若阶段五旧测试依赖 `axial_params`，同步调整测试或保留兼容字段，但第五步后续应读取 `plans`。
+
+- [ ] **Step 6: Stop for user review**
+
+不提交。输出变更摘要、测试结果和建议提交信息。
+
+## Final Verification
+
+Run:
+
+```bash
+python -m unittest tests/test_slice_plan_models.py -v
+python -m unittest tests/test_planning_geometry.py -v
+python -m unittest tests/test_stage4_slice_planning.py -v
+python -m unittest discover -s tests -v
+python -B -c "import ast, pathlib; files=[pathlib.Path('main.py')]+list(pathlib.Path('src').glob('**/*.py'))+list(pathlib.Path('tests').glob('**/*.py')); [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in files]; print(f'parsed {len(files)} python files')"
+git status --short
+```
+
+Expected:
+
+- 所有 focused tests 通过。
+- 全量 unittest 通过。
+- Python 文件全部可解析。
+- 工作区只包含阶段四相关修改和用户已有文档修改。
+- 不执行提交。

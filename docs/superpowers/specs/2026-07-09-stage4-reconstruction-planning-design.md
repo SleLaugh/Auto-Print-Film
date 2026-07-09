@@ -35,14 +35,16 @@
 ## 目标
 
 阶段四输入第三步的定位结果和请求里的三平面配置，输出统一的
-`ReconstructionSpec[]`。
+`SlicePlan[]`。
 
-每个 `ReconstructionSpec` 可以理解成一张“切片施工单”。它告诉第五步：
+每个 `SlicePlan` 可以理解成一张“切片施工单”。它告诉第五步：
 
 - 要切哪个状位。
 - 这一组切片叫什么。
 - 是普通平面切，还是沿曲线/曲面切。
+- 整个切割区间从哪里开始、到哪里结束。
 - 切割线或曲线在哪里。
+- 这一组一共切多少张。
 - 每张切片中心在哪里。
 - 每张切片的方向怎么摆。
 - 每张图像显示多大范围。
@@ -61,7 +63,7 @@
 - 不重新设计阶段三定位逻辑。
 - 不在第一版覆盖眼眶、鼻窦、颞骨等需要更多关键结构 label 的复杂规则。
 
-这些能力后续可以基于同一个 `ReconstructionSpec` 接口继续扩展。
+这些能力后续可以基于同一个 `SlicePlan` 接口继续扩展。
 
 ## 阶段边界
 
@@ -109,6 +111,7 @@ L4-L5 区间切从哪里开始到哪里结束？
 ```text
 这次要输出哪些状位？
 每个状位有几组切片？
+每组切片的开始位置和结束位置在哪里？
 每组切片对应哪条直线或曲线？
 根据层间距应该生成哪些切片中心？
 每张切片怎么摆放？
@@ -117,6 +120,11 @@ L4-L5 区间切从哪里开始到哪里结束？
 
 阶段四不读取 raw 图像做插值采样，也不写 DICOM。
 
+阶段四需要使用层间距 `slice_spacing`，因为它要根据开始位置、结束位置和
+切割路径计算每一张切片的中心位置。阶段四不使用层厚 `slice_thickness`
+做像素平均；但横状位整切会用半个层厚向上下外扩中心范围，避免第一张或
+最后一张厚层图没有包住目标最外侧。真正的多层叠加、平均或 MIP 仍由第五步处理。
+
 ### 阶段五：重建
 
 阶段五只执行切割方案。
@@ -124,7 +132,7 @@ L4-L5 区间切从哪里开始到哪里结束？
 它回答：
 
 ```text
-给定 ReconstructionSpec，如何从 3D volume 采样出 2D 切片？
+给定 SlicePlan，如何从 3D volume 采样出 2D 切片？
 普通平面堆叠如何采样？
 曲面堆叠如何采样？
 层厚如何合成？
@@ -148,31 +156,175 @@ DICOM 文件如何按状位和窗宽窗位归档？
 
 阶段六也不应该重新计算切割线。
 
+## 阶段四规划流程
+
+阶段四不拆成新的流水线阶段，但它的代码内部要拆成两层：
+
+```text
+4A. planner：生成切割路径
+4B. expander：展开切片清单
+```
+
+这两层都属于“规划”，所以仍然放在阶段四。第五步只接收阶段四已经展开好的
+`SlicePlan[]`，不再根据开始位置、结束位置和层间距重新计算每张切片在哪里。
+
+阶段四的核心顺序是：
+
+```text
+1. 选 planner
+2. 找整个切割区间
+3. 生成切割路径
+4. 按层间距展开 `slices[]`
+5. 为 `slices[]` 里的每张切片生成中心点和方向
+6. 写出 SlicePlan
+```
+
+### 1. 选 planner
+
+根据请求中的 `body_part` 和 `cut_mode` 选择具体 planner。
+
+示例：
+
+```text
+腰椎 + whole_range  -> LumbarWholeRangePlanner
+腰椎 + interspace   -> LumbarInterspacePlanner
+颈椎 + whole_range  -> SingleLabelWholeRangePlanner
+胸椎 + whole_range  -> SingleLabelWholeRangePlanner
+肺部 + whole_range  -> SingleLabelWholeRangePlanner
+头骨 + whole_range  -> SingleLabelWholeRangePlanner
+髋骨 + whole_range  -> SingleLabelWholeRangePlanner
+```
+
+planner 的职责是把某个部位、某种切法、某个状位的业务规则转换成统一切割路径。
+
+### 2. 找整个切割区间
+
+这是阶段四最先要做的事。
+
+切割区间回答：
+
+```text
+这一组切片从哪里开始？
+这一组切片到哪里结束？
+```
+
+整切示例：
+
+```text
+腰椎整切：从 L1 上方范围到 S1 下方范围
+颈椎整切：从 C1 上方范围到 C7 下方范围
+肺部整切：从肺尖范围到肺底范围
+```
+
+区间切示例：
+
+```text
+L3-L4：从 L3/L4 椎间隙附近的局部上界到局部下界
+L4-L5：从 L4/L5 椎间隙附近的局部上界到局部下界
+L5-S1：从 L5/S1 椎间隙附近的局部上界到局部下界
+```
+
+这个区间可以来自两个端点，也可以来自 bbox 加 margin，也可以来自曲线的首尾点。
+
+### 3. 生成切割路径
+
+有了开始位置和结束位置后，planner 再生成切割路径。
+
+切割路径回答：
+
+```text
+从开始到结束，中间沿什么路线走？
+```
+
+普通直线切：
+
+```text
+path_points = [start_point, end_point]
+```
+
+曲线切：
+
+```text
+path_points = [p1, p2, p3, p4, p5, ...]
+```
+
+腰椎横状位整切第一版使用整体目标 bbox 的最外侧 `z_min/z_max` 作为上下范围，
+避免只切到 L1/S1 质心而漏掉最上方或最下方结构。后续如果需要更贴近截图里的
+曲面切割，可以改成椎管中心线、椎体后缘线或其他更合适的临床线。这类变化都
+应该只影响阶段四 planner。
+
+### 4. 按层间距展开 `slices[]`
+
+阶段四根据 `slice_spacing` 沿路径生成 `slices[]`。
+
+示例：
+
+```text
+切割路径长度 = 100mm
+slice_spacing = 5mm
+slices = 从开始到结束每隔 5mm 生成一张待切图
+```
+
+是否包含起点和终点由 planner 明确决定。第一版建议包含靠近起点和终点的中心点，
+同时避免因为浮点误差在末尾多生成一张明显超出范围的切片。
+
+### 5. 为 `slices[]` 里的每张切片生成中心点和方向
+
+每个 slice 至少包含：
+
+```text
+index
+center
+normal
+row_dir
+col_dir
+```
+
+普通直线切时，方向通常可以整组一致。曲线切时，方向可能需要沿路径逐点变化。
+
+### 6. 写出 SlicePlan
+
+最后把区间、路径、切片中心、方向、显示范围、层厚、层间距和窗宽窗位写入
+`SlicePlan`。
+
+阶段五按 `SlicePlan` 执行采样。后续如果切法变化，优先修改阶段四内部的
+planner 或 expander 逻辑。
+
 ## 坐标约定
 
 阶段三当前 bbox 和 centroid 使用体素数组习惯，即 `z, y, x`。SimpleITK 图像
 物理空间使用 `x, y, z`，单位通常是 mm。
+
+阶段四把第三步体素索引换成物理坐标时，必须使用：
+
+```text
+physical = origin + direction_matrix * (index_xyz * spacing_xyz)
+```
+
+不能简化成 `origin + index * spacing`。真实 CT/NIfTI 常会带非 identity
+方向矩阵，如果忽略 `image.direction`，切割线在 ITK-SNAP 里会投到错误层面，
+表现为最上方或最下方少线、线没有包住目标，甚至部分切片完全画到图像外。
 
 阶段四内部应同时支持两种坐标：
 
 - `voxel_zyx`：用于和阶段三结果、调试 overlay 对照。
 - `physical_xyz`：用于规划、重建采样和后续 DICOM 空间信息。
 
-第一版 `ReconstructionSpec` 的主坐标建议使用 `physical_xyz`。原因：
+第一版 `SlicePlan` 的主坐标建议使用 `physical_xyz`。原因：
 
 - 层厚和层间距是 mm 单位。
 - 图像 spacing 在不同轴上可能不一致。
 - 后续 DICOM 需要 ImagePositionPatient 和 ImageOrientationPatient。
 - 斜切和曲面切都更适合在物理坐标中表达。
 
-为了调试方便，spec 可以保留 `debug_voxel_zyx` 字段，但下游执行以
+为了调试方便，plan 可以保留 `debug_voxel_zyx` 字段，但下游执行以
 `physical_xyz` 为准。
 
 ## 统一输出结构
 
-阶段四统一输出 `ReconstructionSpec[]`。每个 spec 代表“一组切片”。
+阶段四统一输出 `SlicePlan[]`。每个 plan 代表“一组已经展开好的切片”。
 
-### `spec_id`
+### `plan_id`
 
 唯一标识这一组切片。用于日志、报告和输出目录。
 
@@ -270,11 +422,25 @@ curved_stack
 - `plane_stack`：普通平面堆叠。可以是正交切，也可以是斜切。
 - `curved_stack`：沿曲线或曲面展开，类似截图中的腰椎曲面切割。
 
+### `range_start`
+
+这一组切片的开始位置，使用物理坐标 `x, y, z`，单位 mm。
+
+业务含义是“这一组切片从哪里开始”。它不一定等于第一张切片的中心点，因为
+planner 可能会根据层间距把第一张切片中心放在区间内部。
+
+### `range_end`
+
+这一组切片的结束位置，使用物理坐标 `x, y, z`，单位 mm。
+
+业务含义是“这一组切片到哪里结束”。它不一定等于最后一张切片的中心点。
+
 ### `path_points`
 
 切割线或曲线上的点，使用物理坐标 `x, y, z`，单位 mm。
 
 这是第四步最重要的结果之一，可以理解成“医生在定位像上画出来的线”。
+`path_points` 应覆盖 `range_start` 到 `range_end` 之间的路线。
 
 直线至少两个点：
 
@@ -298,35 +464,36 @@ curved_stack
 普通平面切也可以使用 `path_points` 表达切片中心线。这样第五步不用关心这条线
 是直线还是由部位规则生成的曲线。
 
-### `slice_centers`
+### `slices`
 
-每张切片的中心点，使用物理坐标 `x, y, z`，单位 mm。
+第五步真正消费的切片清单。阶段四必须把“这一组到底切多少张、每张在哪里、
+每张怎么摆”全部展开到 `slices[]` 中。
 
-阶段四根据 `path_points` 和 `slice_spacing` 生成这些中心点。第五步逐张读取
-这些中心点采样。
+每一项表示一张待切图：
 
-例如线长 100mm，层间距 5mm，则大约生成 21 个中心点。是否包含首尾点由
-planner 明确决定。
-
-### `orientations`
-
-每张切片的方向信息。
-
-每一项对应一个 `slice_center`，包括：
-
-```text
-normal
-row_dir
-col_dir
+```json
+{
+  "index": 1,
+  "center": {"x": 10.0, "y": 20.0, "z": 30.0},
+  "normal": {"x": 0.0, "y": 0.0, "z": 1.0},
+  "row_dir": {"x": 1.0, "y": 0.0, "z": 0.0},
+  "col_dir": {"x": 0.0, "y": 1.0, "z": 0.0}
+}
 ```
 
-含义：
+字段含义：
 
-- `normal`：这一摞片子推进方向，也就是层间距方向。
+- `index`：这一组里的第几张切片。
+- `center`：这一张切片的中心点，使用物理坐标 `x, y, z`，单位 mm。
+- `normal`：这一张切片的推进方向，也就是层间距方向。
 - `row_dir`：输出 2D 图像从左到右的方向。
 - `col_dir`：输出 2D 图像从上到下的方向。
 
-普通平面堆叠里，每张切片的方向通常一致。曲面堆叠里，每个中心点附近的方向
+阶段四根据 `range_start`、`range_end`、`path_points` 和 `slice_spacing`
+生成 `slices[]`。第五步不再重新计算切片数量和切片中心，只逐张读取
+`slices[]` 执行采样。
+
+普通平面堆叠里，每张切片的方向通常一致。曲面堆叠里，每个 slice 的方向
 可能不同。
 
 方向向量必须是单位向量，并且尽量满足：
@@ -377,14 +544,24 @@ col_dir ⟂ normal
 
 层厚，来自请求中的 `PlaneConfig.slice_thickness`。
 
-第五步使用它决定厚层采样方式。第一版如果不做厚层平均，也应把它写入 spec 和
-报告，避免参数丢失。
+阶段四不根据层厚做像素平均。横状位整切中，阶段四只用半个层厚扩展
+`range_start/range_end`，让输出图像中心范围能包住目标最外侧。第五步使用
+完整层厚决定厚层采样方式，例如单层采样、多层平均、最大密度投影或其他
+厚层合成策略。
+
+第一版如果不做厚层平均，也应把它写入 plan 和报告，避免参数丢失。
 
 ### `slice_spacing`
 
 层间距，来自请求中的 `PlaneConfig.slice_spacing`。
 
-阶段四使用它生成 `slice_centers`。
+阶段四使用它沿切割区间生成 `slices[]`。它决定一组切片有多少张，以及每张
+切片中心在哪里。第五步不能再根据层间距重新决定切片数量。
+
+层间距和层厚不要混在一起：
+
+- `slice_spacing`：第四步用来摆放每张切片中心。
+- `slice_thickness`：第四步在整切时用于范围外扩；第五步用来决定每张切片覆盖多厚的体数据。
 
 ### `window_presets`
 
@@ -432,7 +609,7 @@ correction_scope_bbox
 - 所需 label 全部找到：`1.0`
 - 允许缺少非关键 label 并可插值补齐：`0.7`
 - 关键 label 缺失但仍使用 bbox 兜底：`0.4`
-- 无法生成可靠方案：不输出 spec 或输出 error。
+- 无法生成可靠方案：不输出 plan 或输出 error。
 
 ### `warnings`
 
@@ -473,7 +650,7 @@ src/planning/
 每个 planner 至少实现：
 
 ```text
-build_specs(request, localization_result, plane_configs) -> list[ReconstructionSpec]
+build_plans(request, localization_result, plane_configs) -> list[SlicePlan]
 ```
 
 ### `geometry.py`
@@ -485,8 +662,9 @@ build_specs(request, localization_result, plane_configs) -> list[ReconstructionS
 - 体素坐标转物理坐标。
 - 物理坐标转体素坐标。
 - 根据 bbox 加 margin。
+- 根据两个端点表达切割区间。
 - 根据点序列计算总长度。
-- 按层间距对直线或曲线重采样，生成 `slice_centers`。
+- 按层间距对直线或曲线重采样，生成 `slices`。
 - 根据两个点计算方向向量。
 - 根据中心线计算局部 tangent。
 - 根据 `normal` 和参考方向生成 `row_dir` / `col_dir`。
@@ -501,8 +679,24 @@ build_specs(request, localization_result, plane_configs) -> list[ReconstructionS
 - 从 `coords` 中按解剖顺序取出椎体中心点。
 - 根据椎体中心点生成脊柱中心线。
 - 根据相邻椎体中心点生成区间中点。
-- 根据整体 bbox 推导横状位、矢状位、冠状位基础范围。
-- 为脊柱整切生成普通平面堆叠 spec。
+- 为脊柱区间切生成普通平面堆叠 plan。
+
+### `whole_range.py`
+
+整切通用规划方法，先只处理横状位。
+
+横状位整切的第一版统一规则：
+
+- 先把目标看成一个整体块，不区分它是单个器官还是多个 label 合成的结构。
+- 从 `correction_scope_bbox.z_min` 切到 `correction_scope_bbox.z_max`。
+- `x/y` 取整体 bbox 中心，用来表达这一组横状位切片的中心路径。
+- `z_min/z_max` 和 `x/y` 中心都先按 `spacing/origin/direction` 转成物理坐标。
+- 横状位的 `normal`、`row_dir`、`col_dir` 取自图像 direction 矩阵对应的 z/x/y 轴。
+- 第四步在这里根据层间距展开每一张切片，输出 `SlicePlan.slices[]`。
+- 第五步只按 `slices[]` 执行采样，不重新计算切多少张、每张在哪里。
+
+因此，腰椎横状位整切和头骨、肺部横状位整切在第四步使用同一个公共方法。
+腰椎的 L1/S1 等椎体质心不参与整切范围计算，只参与区间切、中心线、斜切或曲面切等后续规则。
 
 ### `lumbar.py`
 
@@ -517,15 +711,15 @@ LumbarInterspacePlanner
 
 `LumbarWholeRangePlanner`：
 
-- 横状位：根据 L1-L5/S1 中心线生成斜横断位切片。
+- 横状位：调用 `whole_range.py` 的 bbox 整切公共方法，根据整体 bbox 的最外侧 z 范围生成整切切片。
 - 矢状位：第一版可生成普通 `plane_stack`；后续可生成 `curved_stack`，表达截图里沿腰椎曲线切割。
 - 冠状位：如果请求包含冠状位，则根据整体 bbox 和中心线生成范围；如果业务暂不需要，可输出 warning 或不输出。
 
 `LumbarInterspacePlanner`：
 
-- 横状位：对 L1-L2、L2-L3、L3-L4、L4-L5、L5-S1 分别生成 spec。
+- 横状位：对 L1-L2、L2-L3、L3-L4、L4-L5、L5-S1 分别生成 plan。
 - 每个区间以相邻椎体中心点推导局部方向和区间中心。
-- 如果任一端椎体缺失，该区间不生成 spec，并写入 warning。
+- 如果任一端椎体缺失，该区间不生成 plan，并写入 warning。
 
 ### `cervical.py`
 
@@ -567,6 +761,8 @@ ThoracicWholeRangePlanner
 
 它根据目标 bbox 加 margin 生成基础平面堆叠，不做复杂曲线推导。
 
+横状位第一版与腰椎整切共用 `whole_range.py` 的 bbox 整切公共方法。
+
 后续眼眶、鼻窦、颞骨如果有足够关键结构 label，应从这里拆出独立 planner。
 
 ## Planner 选择
@@ -578,11 +774,16 @@ ThoracicWholeRangePlanner
 ```text
 (腰椎, whole_range) -> LumbarWholeRangePlanner
 (腰椎, interspace) -> LumbarInterspacePlanner
-(颈椎, whole_range) -> CervicalWholeRangePlanner
-(胸椎, whole_range) -> ThoracicWholeRangePlanner
+(颈椎, whole_range) -> SingleLabelWholeRangePlanner
+(胸椎, whole_range) -> SingleLabelWholeRangePlanner
 (肺部, whole_range) -> SingleLabelWholeRangePlanner
 (头骨, whole_range) -> SingleLabelWholeRangePlanner
+(髋骨, whole_range) -> SingleLabelWholeRangePlanner
 ```
+
+当前第一版只维护横状位整切入口。颈椎、胸椎、髋骨先复用整体 bbox
+横状位整切公共逻辑；后续如果这些部位需要斜切、曲面切或专属范围规则，
+再拆出 `CervicalWholeRangePlanner`、`ThoracicWholeRangePlanner` 等独立类。
 
 如果没有匹配 planner：
 
@@ -599,11 +800,11 @@ ThoracicWholeRangePlanner
 ```text
 for plane_config in request.plane_configs:
     if plane_config.plane == 横状位:
-        build_axial_specs(plane_config)
+        build_axial_plans(plane_config)
     elif plane_config.plane == 矢状位:
-        build_sagittal_specs(plane_config)
+        build_sagittal_plans(plane_config)
     elif plane_config.plane == 冠状位:
-        build_coronal_specs(plane_config)
+        build_coronal_plans(plane_config)
 ```
 
 这样可以支持：
@@ -614,9 +815,9 @@ for plane_config in request.plane_configs:
 
 第一版建议：
 
-- 请求的状位能够生成时，输出 spec。
-- 请求的状位暂不支持时，不生成 spec，并在阶段四结果中写 warning。
-- 如果所有请求状位都无法生成 spec，则阶段四失败。
+- 请求的状位能够生成时，输出 plan。
+- 请求的状位暂不支持时，不生成 plan，并在阶段四结果中写 warning。
+- 如果所有请求状位都无法生成 plan，则阶段四失败。
 
 ## 普通平面切和曲面切
 
@@ -684,20 +885,22 @@ correction_scope_bbox
 阶段四输出：
 
 ```text
-spec: 腰椎_whole_range_横状位
+plan: 腰椎_whole_range_横状位
     geometry_type = plane_stack
+    range_start = 腰椎整切上界，通常来自 L1 附近并加 margin
+    range_end = 腰椎整切下界，通常来自 S1 附近并加 margin
     path_points = 根据 L1-L5/S1 中心点生成的脊柱中心线
-    slice_centers = 按 5mm 层间距沿中心线生成
-    orientations = 根据中心线局部方向生成斜横断位方向
+    slices = 按 5mm 层间距沿中心线生成，每项包含 center/normal/row_dir/col_dir
     extent_mm = 根据整体 bbox 加 margin
     slice_thickness = 5
     slice_spacing = 5
 
-spec: 腰椎_whole_range_矢状位
+plan: 腰椎_whole_range_矢状位
     geometry_type = plane_stack 或 curved_stack
+    range_start = 矢状位整切范围起点
+    range_end = 矢状位整切范围终点
     path_points = 腰椎中心线或曲线
-    slice_centers = 根据矢状位范围和层间距生成
-    orientations = 根据矢状位规则生成
+    slices = 根据矢状位范围、层间距和矢状位方向规则生成
 ```
 
 ## 腰椎区间切示例
@@ -712,7 +915,7 @@ plane_configs = [
 ]
 ```
 
-阶段四输出多组 spec：
+阶段四输出多组 plan：
 
 ```text
 腰椎_L1-L2_横状位
@@ -722,16 +925,17 @@ plane_configs = [
 腰椎_L5-S1_横状位
 ```
 
-每组 spec：
+每组 plan：
 
+- 先确定该区间的开始位置和结束位置。
 - 使用相邻椎体中心点推导区间中心。
 - 使用相邻椎体中心点方向推导局部斜切方向。
-- 使用层间距生成局部若干张切片中心。
-- 使用层厚写入 spec，交给第五步执行厚层采样。
+- 使用层间距生成局部若干张待切图，每张都有中心点和方向。
+- 使用层厚写入 plan，交给第五步执行厚层采样。
 
 如果 L5 或 S1 缺失：
 
-- 不生成 `L5-S1` spec。
+- 不生成 `L5-S1` plan。
 - 在阶段四结果 warnings 中记录原因。
 
 ## 阶段四结果结构
@@ -742,18 +946,18 @@ plane_configs = [
 
 ```json
 {
-  "specs": [],
+  "plans": [],
   "warnings": [],
   "planner": "LumbarWholeRangePlanner",
-  "spec_count": 0,
-  "metadata_path": "/output/metadata/reconstruction_specs.json"
+  "plan_count": 0,
+  "metadata_path": "/output/metadata/slice_plans.json"
 }
 ```
 
 同时写出：
 
 ```text
-metadata/reconstruction_specs.json
+metadata/slice_plans.json
 ```
 
 该文件用于：
@@ -761,20 +965,80 @@ metadata/reconstruction_specs.json
 - 人工检查第四步到底规划了哪些线。
 - 第五步重建失败时回溯输入。
 - 报告中记录切割方案。
+- 排查“看起来少线”时，直接查看 `diagnostics` 中的实际张数、区间长度、
+  层厚和层间距。
+
+`diagnostics` 每个 plan 一条，主要字段：
+
+```text
+slice_count：阶段四实际展开出的输出图张数
+range_length_mm：本 plan 的切割区间长度
+slice_thickness：层厚
+slice_spacing：层间距，也就是相邻输出图中心之间的距离
+spacing_minus_thickness：层间距减层厚；大于 0 时，厚层图之间会有未覆盖间隔
+calculation_note：中文解释当前张数是怎么按层间距算出来的
+```
 
 ## 调试产物
 
-第一版阶段四建议输出 JSON 即可。
+第一版阶段四除了输出 JSON，还会输出两个研发期调试 overlay：
 
-后续可以增加：
+```text
+metadata/slice_plan_lines_overlay.nii.gz
+metadata/slice_plan_overview_overlay.nii.gz
+```
 
-- 切割线 overlay。
-- 每组 spec 的中心点点云 overlay。
+它们与第三步的定位 overlay 使用同样思路：参考第三步的
+`seg_for_reconstruction_path`，保持同一套 size/spacing/origin/direction。
+如果第三步没有给出可用参考图，第四步不会因为调试 overlay 中断，只会把
+`debug_slice_plan_overlay_path` 和 `debug_slice_plan_overview_overlay_path` 留空。
+
+### 真实 3D overlay
+
+`slice_plan_lines_overlay.nii.gz` 用于核对真实 3D 坐标是否正确。每张 slice
+仍然画在自己真实所在的图层上。
+
+数值约定：
+
+```text
+plan_index * 10 + 1：该 plan 的中心路径线
+plan_index * 10 + 2：该 plan 已展开切片的中心点
+plan_index * 10 + 3：每张 slice 在自己平面内的十字引导线
+```
+
+例如第一个 plan 中，`11` 表示中心路径线，`12` 表示每张 slice 的中心点，
+`13` 表示每张 slice 的平面十字线。横状位整切时，`13` 会比 `11/12`
+更容易看见，因为它不是一个中心点，而是穿过该层面的引导线。
+
+### 单层总览 overlay
+
+`slice_plan_overview_overlay.nii.gz` 用于人工检查“整切范围是否均匀”。对
+腰椎整切的横状位计划，它会选择该组 slice 中心的 `x` 中线层，把所有横状位
+切线投影到这个矢状位层上。这样在一个图层里就能看到从开始位置到结束位置的
+所有切割线。
+
+数值约定：
+
+```text
+plan_index * 10 + 4：该 plan 的单层总览中心线
+```
+
+例如第一个 plan 中，`14` 表示单层总览中心线。总览 overlay 不再叠加
+厚层覆盖边界线，否则线会变得很密且难以判断。查看是否“少图”时，应优先看
+`slice_plans.json` 的 `diagnostics[].slice_count`、`slice_spacing` 和
+`spacing_minus_thickness`。
+
+这样在 ITK-SNAP 中加载第三步 label overlay、第四步真实 3D overlay 和第四步
+总览 overlay 时，可以分别核对定位结果、真实坐标和整切范围。
+
+后续还可以继续增加：
+
 - 曲线点 overlay。
-- 在 ITK-SNAP 中可加载的 mask 或 markups。
+- 曲面展开路径 overlay。
+- 更适合人工点选的 markups。
 
 调试 overlay 是研发期辅助产物，不应作为第五步执行的必要输入。第五步只依赖
-`ReconstructionSpec[]`。
+`SlicePlan[]`。
 
 ## 错误处理
 
@@ -792,7 +1056,7 @@ metadata/reconstruction_specs.json
 
 ### error
 
-无法生成任何有效 spec，阶段四失败。
+无法生成任何有效 plan，阶段四失败。
 
 示例：
 
@@ -806,29 +1070,31 @@ metadata/reconstruction_specs.json
 
 第一版测试应覆盖：
 
-- `ReconstructionSpec.to_dict()` 能输出 JSON 友好结构。
+- `SlicePlan.to_dict()` 能输出 JSON 友好结构。
 - `MappingStage` 能根据 `腰椎 + whole_range` 选择 `LumbarWholeRangePlanner`。
-- 腰椎整切能根据 L1-L5/S1 centroid 生成横状位 `plane_stack` spec。
-- 腰椎区间切能生成 L1-L2、L2-L3 等多个 spec。
+- 横状位整切公共方法能根据整体 bbox 最外侧 z 范围生成 `plane_stack` plan。
+- 腰椎整切横状位和单目标整切横状位共用同一套 bbox 整切逻辑。
+- plan 中包含 `range_start`、`range_end` 和按层间距生成的 `slices`。
+- 腰椎区间切能生成 L1-L2、L2-L3 等多个 plan。
 - 缺少某个区间端点时，该区间被跳过并记录 warning。
-- `SingleLabelWholeRangePlanner` 能根据整体 bbox 生成基础整切 spec。
+- `SingleLabelWholeRangePlanner` 能根据整体 bbox 生成基础整切 plan。
 - 不支持的 `body_part + cut_mode` 会给出明确错误。
-- 阶段四会写出 `metadata/reconstruction_specs.json`。
+- 阶段四会写出 `metadata/slice_plans.json`。
 
 暂不要求第一版测试真实 MPR 采样；那属于阶段五。
 
 ## 实现顺序建议
 
-1. 新增 `src/models/reconstruction.py`，定义 `Point3D`、`Orientation`、
-   `ReconstructionSpec` 等数据结构。
+1. 新增 `src/models/reconstruction.py`，定义 `Point3D`、`PlannedSlice`、
+   `SlicePlan` 等数据结构。
 2. 新增 `src/planning/geometry.py`，实现坐标转换、点序列长度、按层间距生成
-   `slice_centers` 等纯几何方法。
+   `slices`、根据区间端点生成路径等纯几何方法。
 3. 新增 `src/planning/base.py` 和 planner 注册表。
 4. 实现 `SingleLabelWholeRangePlanner`，作为简单兜底。
 5. 实现 `spine_common.py`，提供脊柱中心线和区间点生成方法。
 6. 实现 `LumbarWholeRangePlanner`。
 7. 实现 `LumbarInterspacePlanner`。
-8. 修改 `stage_mapping.py`，让它调用 planner 并写出 `reconstruction_specs.json`。
+8. 修改 `stage_mapping.py`，让它调用 planner 并写出 `slice_plans.json`。
 9. 补充阶段四 focused tests。
 
 ## 与第五步的接口约定
@@ -836,14 +1102,17 @@ metadata/reconstruction_specs.json
 第五步后续只读取：
 
 ```text
-map_result["specs"]
+map_result["plans"]
 loc_result["raw_for_reconstruction_path"]
 ```
+
+每个 plan 必须已经包含 `slices[]`。第五步不根据 `range_start`、`range_end`
+或 `slice_spacing` 重新计算切片数量和切片中心。
 
 然后根据：
 
 ```text
-spec.geometry_type
+plan.geometry_type
 ```
 
 选择：
@@ -859,8 +1128,8 @@ CurvedStackReslicer
 
 第六步报告应记录：
 
-- `metadata/reconstruction_specs.json` 路径。
-- 每个 spec 的 `spec_id`、`plane`、`group_name`、`geometry_type`。
+- `metadata/slice_plans.json` 路径。
+- 每个 plan 的 `plan_id`、`plane`、`group_name`、`geometry_type`。
 - warnings。
 - 第五步实际输出的文件路径。
 

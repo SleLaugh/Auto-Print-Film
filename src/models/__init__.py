@@ -16,6 +16,12 @@ from .localization import (
     NiftiImageInfo,
     LocalizationResult,
 )
+from .reconstruction import (
+    Point3D,
+    PlannedSlice,
+    ExtentMM,
+    SlicePlan,
+)
 from .enums import (
     BodyPartEnum,
     CheckTypeEnum,
@@ -37,6 +43,10 @@ __all__ = [
     'LabelCoordinate',
     'NiftiImageInfo',
     'LocalizationResult',
+    'Point3D',
+    'PlannedSlice',
+    'ExtentMM',
+    'SlicePlan',
     'BodyPartEnum',
     'CheckTypeEnum',
     'ScanThicknessEnum',

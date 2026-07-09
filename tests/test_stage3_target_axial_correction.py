@@ -573,6 +573,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertEqual(result["raw_for_reconstruction_path"], str(raw_path))
             self.assertEqual(result["seg_for_reconstruction_path"], str(seg_path))
             self.assertEqual(result["corrected_raw_path"], str(raw_path))
+            self.assertEqual(result["image"]["spacing_xyz"], [1.0, 1.0, 1.0])
+            self.assertEqual(result["image"], metadata["image"])
             self.assertEqual(metadata["raw_for_reconstruction_path"], str(raw_path))
             self.assertEqual(metadata["seg_for_reconstruction_path"], str(seg_path))
             self.assertIn("correction_scope_bbox", metadata)

@@ -231,6 +231,12 @@ class LocalizationStage(BaseStage):
         DebugLog(f"    调试分label mask overlay: {debug_label_mask_overlay_path}")
 
         localization_result_path = output_path / 'localization_result.json'
+        image_info = NiftiImageInfo(
+            size_xyz=list(image.GetSize()),
+            spacing_xyz=list(image.GetSpacing()),
+            origin_xyz=list(image.GetOrigin()),
+            direction=list(image.GetDirection()),
+        ).to_dict()
         result = {
             'coords': self._coordinates_to_dict(label_coordinates),
             'cut_config': cut_config,
@@ -238,6 +244,9 @@ class LocalizationStage(BaseStage):
             'label_targets': self._label_targets_to_dict(label_targets),
             'dataset_json_path': str(dataset_json_path),
             'localization_result_path': str(localization_result_path),
+            # 阶段四需要图像空间信息把第三步的 z/y/x 体素坐标换算成 x/y/z
+            # 物理坐标；这里只写 JSON 文件不够，必须同步放入 context 结果。
+            'image': image_info,
             'raw_for_reconstruction_path': correction_result['raw_for_reconstruction_path'],
             'seg_for_reconstruction_path': correction_result['seg_for_reconstruction_path'],
             'correction_applied': correction_result['correction_applied'],

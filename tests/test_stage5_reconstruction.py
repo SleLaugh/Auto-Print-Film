@@ -1,6 +1,9 @@
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import SimpleITK as sitk
@@ -20,6 +23,81 @@ from src.stages.stage_reconstruction import ReconstructionStage
 
 
 class Stage5ReconstructionTest(unittest.TestCase):
+    def test_plans_are_grouped_by_plane_without_changing_first_seen_order(self):
+        plans = [
+            {"plan_id": "横状位_1", "plane": "横状位"},
+            {"plan_id": "矢状位_1", "plane": "矢状位"},
+            {"plan_id": "横状位_2", "plane": "横状位"},
+            {"plan_id": "冠状位_1", "plane": "冠状位"},
+        ]
+
+        grouped = ReconstructionStage._group_plans_by_plane(plans)
+
+        self.assertEqual(list(grouped), ["横状位", "矢状位", "冠状位"])
+        self.assertEqual(
+            [plan["plan_id"] for plan in grouped["横状位"]],
+            ["横状位_1", "横状位_2"],
+        )
+
+    def test_parallel_windows_start_only_after_all_mpr_slices_are_sampled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._make_context_with_one_plan(
+                temp_dir,
+                slice_count=2,
+                window_presets=["骨窗", "脑窗"],
+            )
+            plan = context.get_result("mapping")["plans"][0]
+            sampled_indices = []
+            first_window_sample_count = []
+            active_workers = 0
+            max_active_workers = 0
+            worker_names = set()
+            lock = threading.Lock()
+
+            class RecordingResampler:
+                def sample_slice(self, image, current_plan, planned_slice):
+                    sampled_indices.append(planned_slice["index"])
+                    return planned_slice["index"]
+
+            def recording_window(sampled_image, window):
+                nonlocal active_workers, max_active_workers
+                with lock:
+                    if not first_window_sample_count:
+                        first_window_sample_count.append(len(sampled_indices))
+                    active_workers += 1
+                    max_active_workers = max(max_active_workers, active_workers)
+                    worker_names.add(threading.current_thread().name)
+                time.sleep(0.03)
+                with lock:
+                    active_workers -= 1
+                return sampled_image
+
+            stage = ReconstructionStage({
+                "parallel": True,
+                "max_window_workers": 2,
+            })
+            with mock.patch(
+                "src.stages.stage_reconstruction.PlaneStackResampler",
+                return_value=RecordingResampler(),
+            ), mock.patch(
+                "src.stages.stage_reconstruction.apply_window_to_image",
+                side_effect=recording_window,
+            ), mock.patch(
+                "src.stages.stage_reconstruction.write_ct_dicom",
+            ):
+                stage._execute_plan(
+                    image=object(),
+                    plan=plan,
+                    output_root=Path(context.request.output_dir),
+                    study_uid="1.2.3",
+                    source_metadata={},
+                )
+
+            self.assertEqual(sampled_indices, [1, 2])
+            self.assertEqual(first_window_sample_count, [2])
+            self.assertGreaterEqual(max_active_workers, 2)
+            self.assertGreaterEqual(len(worker_names), 2)
+
     def test_windowing_bakes_hu_into_fixed_uint16_grayscale(self):
         image = sitk.GetImageFromArray(
             np.asarray([[[-850, 400, 1650]]], dtype=np.int16),
@@ -156,7 +234,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 window_presets=["骨窗", "脑窗"],
             )
 
-            ReconstructionStage(config={"parallel": False}).execute(context)
+            # 多窗位使用并行路径，验证并发写出的两个 DICOM 序列都完整。
+            ReconstructionStage(config={"parallel": True}).execute(context)
 
             root = Path(context.request.output_dir)
             self.assertEqual(

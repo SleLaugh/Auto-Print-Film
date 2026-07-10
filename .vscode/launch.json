@@ -9,8 +9,8 @@
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "args": [
-                "-i", "/home/peng/03_data/demo/Image/dicom/盆腔CT/2",
-                "-o", "/home/peng/03_data/demo/Image/dicom/盆腔CT/2Result",
+                "-i", "/home/peng/03_data/demo/Image/dicom/盆腔CT/3",
+                "-o", "/home/peng/03_data/demo/Image/dicom/Result",
                 "--body_part", "腰椎",
                 "--check_type", "CT",
                 "--scan_thickness", "default",

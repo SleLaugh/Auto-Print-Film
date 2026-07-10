@@ -266,6 +266,28 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 second.GetMetaData("0008|0018"),
             )
 
+    def test_derived_dicom_decodes_gb18030_surrogate_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._make_context_with_one_plan(temp_dir, slice_count=1)
+            context.set_result("preprocessing", {
+                "source_dicom_metadata": {
+                    "0008|0005": "GB18030",
+                    "0008|1030": (
+                        "11_\udcd0\udcd8ȫ\udcb8\udcb9ƽɨ"
+                        "\udca3\udca8\udcb3\udcc9\udcc8ˣ\udca9"
+                    ),
+                    "0020|000d": "1.2.826.0.1.3680043.2.1125.500",
+                },
+            })
+
+            ReconstructionStage(config={"parallel": False}).execute(context)
+
+            dcm_path = next(Path(context.request.output_dir).rglob("*.dcm"))
+            image = sitk.ReadImage(str(dcm_path))
+            description = image.GetMetaData("0008|1030")
+            self.assertNotRegex(description, r"[\ud800-\udfff]")
+            self.assertEqual(description.strip(), "11_胸全腹平扫（成人）")
+
     @staticmethod
     def _make_context_with_one_plan(
         temp_dir: str,

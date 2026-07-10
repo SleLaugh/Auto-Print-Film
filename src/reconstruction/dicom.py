@@ -37,6 +37,15 @@ _INHERITED_TAGS = (
     "0020|0052",  # Frame of Reference UID
 )
 
+_DICOM_CHARSET_CODECS = {
+    "GB18030": "gb18030",
+    "GBK": "gbk",
+    "ISO 2022 IR 58": "gb2312",
+    "ISO_IR 192": "utf-8",
+    "ISO_IR 100": "latin-1",
+    "ISO_IR 6": "ascii",
+}
+
 
 def read_source_dicom_metadata(source: str | Path) -> Dict[str, str]:
     """读取原始序列的患者/检查级标签，供派生 DICOM 继承。"""
@@ -114,9 +123,14 @@ def write_ct_dicom(
         float(output_spacing["y"]),
     ))
 
-    for tag, value in (source_metadata or {}).items():
+    inherited_metadata = source_metadata or {}
+    specific_character_set = str(inherited_metadata.get("0008|0005", ""))
+    for tag, value in inherited_metadata.items():
         if tag in _INHERITED_TAGS:
-            image_2d.SetMetaData(tag, str(value))
+            image_2d.SetMetaData(
+                tag,
+                _normalize_metadata_value(value, specific_character_set),
+            )
 
     plan_id = str(plan.get("plan_id", "plan"))
     plane = str(plan.get("plane", ""))
@@ -179,6 +193,24 @@ def _extract_2d_image(image: sitk.Image) -> sitk.Image:
     if size[2] != 1:
         raise ValueError("plane_stack 输出图像必须只有一个 z 层")
     return sitk.Extract(image, [size[0], size[1], 0], [0, 0, 0])
+
+
+def _normalize_metadata_value(value: Any, specific_character_set: str) -> str:
+    """把含 surrogateescape 字节的 DICOM 文本恢复成合法 Unicode。"""
+
+    text = str(value)
+    if not any(0xD800 <= ord(character) <= 0xDFFF for character in text):
+        return text
+
+    # GDCM/SWIG 有时先按 UTF-8+surrogateescape 暴露 GB18030 原始字节。
+    # 先无损恢复原始字节，再依据 (0008,0005) 指定的字符集重新解码。
+    raw_value = text.encode("utf-8", errors="surrogateescape")
+    charset = specific_character_set.strip().upper()
+    codec = _DICOM_CHARSET_CODECS.get(charset, "utf-8")
+    try:
+        return raw_value.decode(codec)
+    except (LookupError, UnicodeDecodeError):
+        return raw_value.decode(codec, errors="replace")
 
 
 def _normalize(value: Dict[str, float]) -> tuple[float, float, float]:

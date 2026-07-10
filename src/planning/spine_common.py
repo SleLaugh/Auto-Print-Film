@@ -11,7 +11,7 @@ from src.planning.geometry import (
     image_axis_direction,
     voxel_index_to_physical,
 )
-from src.planning.whole_range import bbox_extent_mm
+from src.planning.whole_range import plane_extent_mm
 
 
 def voxel_centroid_to_physical(
@@ -86,7 +86,12 @@ def build_axial_spine_plan(
         range_end=range_end,
         path_points=path_points,
         slices=slices,
-        extent_mm=bbox_extent_mm(bbox, localization_result["image"]),
+        extent_mm=plane_extent_mm(
+            bbox,
+            localization_result["image"],
+            plane_config.plane,
+            plane_config.line_extent_mode,
+        ),
         output_spacing_mm=Point3D(spacing[0], spacing[1], 0.0),
         slice_thickness=plane_config.slice_thickness,
         slice_spacing=plane_config.slice_spacing,

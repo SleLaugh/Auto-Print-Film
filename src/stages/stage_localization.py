@@ -25,7 +25,7 @@ from src.models import (
     VoxelBBox,
     VoxelPoint,
 )
-from src.utils import DebugLog
+from src.utils import DebugLog, is_debug_log_file_enabled
 
 
 class LocalizationStage(BaseStage):
@@ -149,7 +149,8 @@ class LocalizationStage(BaseStage):
         DebugLog("=" * 60)
         
         output_path = Path(request.output_dir) / 'metadata'
-        output_path.mkdir(parents=True, exist_ok=True)
+        if is_debug_log_file_enabled():
+            output_path.mkdir(parents=True, exist_ok=True)
         
         # [1] resolve_labels: 获取Label列表
         DebugLog("  [1] resolve_labels: 获取目标Label列表...")
@@ -205,32 +206,37 @@ class LocalizationStage(BaseStage):
         # 研发期调试输出：给 ITK-SNAP 看的 bbox 边框 overlay。
         # 这不是业务结果，不参与后续阶段；后续稳定后删除这一处调用和
         # _write_debug_bbox_overlay 方法即可。
-        debug_bbox_overlay_path = output_path / 'localization_bbox_overlay.nii.gz'
-        self._write_debug_bbox_overlay(
+        debug_bbox_overlay_path = output_path / '定位框.nii.gz'
+        if is_debug_log_file_enabled():
+            self._write_debug_bbox_overlay(
             reference_image=image,
             label_coordinates=label_coordinates,
             correction_scope_bbox=correction_scope_bbox,
             output_path=debug_bbox_overlay_path,
         )
-        DebugLog(f"    调试bbox overlay: {debug_bbox_overlay_path}")
-        debug_target_mask_overlay_path = output_path / 'localization_target_mask_overlay.nii.gz'
-        self._write_debug_target_mask_overlay(
+            DebugLog(f"    调试bbox overlay: {debug_bbox_overlay_path}")
+        debug_target_mask_overlay_path = output_path / '目标掩膜.nii.gz'
+        if is_debug_log_file_enabled():
+            self._write_debug_target_mask_overlay(
             reference_image=image,
             seg_array=seg_array,
             label_targets=label_targets,
             output_path=debug_target_mask_overlay_path,
         )
-        DebugLog(f"    调试目标mask overlay: {debug_target_mask_overlay_path}")
-        debug_label_mask_overlay_path = output_path / 'localization_label_mask_overlay.nii.gz'
-        self._write_debug_label_mask_overlay(
+            DebugLog(f"    调试目标mask overlay: {debug_target_mask_overlay_path}")
+        debug_label_mask_overlay_path = output_path / '标签掩膜.nii.gz'
+        if is_debug_log_file_enabled():
+            self._write_debug_label_mask_overlay(
             reference_image=image,
             seg_array=seg_array,
             label_targets=label_targets,
             output_path=debug_label_mask_overlay_path,
         )
-        DebugLog(f"    调试分label mask overlay: {debug_label_mask_overlay_path}")
+            DebugLog(f"    调试分label mask overlay: {debug_label_mask_overlay_path}")
 
         localization_result_path = output_path / 'localization_result.json'
+        if not is_debug_log_file_enabled():
+            localization_result_path = ""
         image_info = NiftiImageInfo(
             size_xyz=list(image.GetSize()),
             spacing_xyz=list(image.GetSpacing()),
@@ -257,12 +263,13 @@ class LocalizationStage(BaseStage):
             'corrected_seg_path': correction_result['corrected_seg_path'],
             'is_skewed': correction_result['correction_applied'],
             'skew_params': correction_result['correction_params'],
-            'debug_bbox_overlay_path': str(debug_bbox_overlay_path),
-            'debug_target_mask_overlay_path': str(debug_target_mask_overlay_path),
-            'debug_label_mask_overlay_path': str(debug_label_mask_overlay_path),
+            'debug_bbox_overlay_path': str(debug_bbox_overlay_path) if is_debug_log_file_enabled() else '',
+            'debug_target_mask_overlay_path': str(debug_target_mask_overlay_path) if is_debug_log_file_enabled() else '',
+            'debug_label_mask_overlay_path': str(debug_label_mask_overlay_path) if is_debug_log_file_enabled() else '',
         }
 
-        self._write_localization_result(
+        if is_debug_log_file_enabled():
+            self._write_localization_result(
             localization_result_path,
             request=request,
             model_info=model_info,

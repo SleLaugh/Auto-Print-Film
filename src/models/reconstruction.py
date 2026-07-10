@@ -75,11 +75,13 @@ class SlicePlan:
     slice_spacing: float
     window_presets: List[str]
     source_labels: List[str]
+    target_start: Point3D | None = None
+    target_end: Point3D | None = None
     confidence: float = 1.0
     warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "plan_id": self.plan_id,
             "body_part": self.body_part,
             "cut_mode": self.cut_mode,
@@ -99,3 +101,8 @@ class SlicePlan:
             "confidence": self.confidence,
             "warnings": self.warnings,
         }
+        if self.target_start is not None:
+            data["target_start"] = self.target_start.to_dict()
+        if self.target_end is not None:
+            data["target_end"] = self.target_end.to_dict()
+        return data

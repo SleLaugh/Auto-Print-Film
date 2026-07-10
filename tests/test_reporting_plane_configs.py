@@ -36,6 +36,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
                     "slice_thickness": 5.0,
                     "slice_spacing": 10.0,
                     "window_presets": ["骨窗", "纵隔窗"],
+                    "line_extent_mode": "full_plane",
                 }
             ])
 

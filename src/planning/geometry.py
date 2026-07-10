@@ -108,7 +108,8 @@ def interpolate_points(start: Point3D, end: Point3D, spacing: float) -> List[Poi
         return [start]
 
     direction = normalize_vector(vector)
-    step_count = int(math.floor(distance / spacing))
+    tolerance = max(distance, spacing, 1.0) * 1e-9
+    step_count = int(math.floor((distance + tolerance) / spacing))
     points = [
         Point3D(
             start.x + direction.x * spacing * index,
@@ -117,11 +118,6 @@ def interpolate_points(start: Point3D, end: Point3D, spacing: float) -> List[Poi
         )
         for index in range(step_count + 1)
     ]
-
-    # 如果区间长度不是层间距的整数倍，末端仍要保留，避免漏掉定位范围终点。
-    last = points[-1]
-    if vector_length(subtract_points(end, last)) > 1e-6:
-        points.append(end)
 
     return points
 

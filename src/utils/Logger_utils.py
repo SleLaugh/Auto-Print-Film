@@ -286,4 +286,10 @@ def ErrorLog(message: str, exception: Optional[Exception] = None):
     _logger_manager.error_log(message, exception)
 
 
-__all__ = ['RunLog', 'DebugLog', 'ErrorLog']
+def is_debug_log_file_enabled() -> bool:
+    """返回是否保留调试文件产物。"""
+
+    return bool(_logger_manager.debug_log_file_enabled)
+
+
+__all__ = ['RunLog', 'DebugLog', 'ErrorLog', 'is_debug_log_file_enabled']

@@ -50,6 +50,12 @@ class PlaneTypeEnum(Enum):
     冠状位 = "冠状位"
 
 
+class CutLineExtentModeEnum(Enum):
+    """切割线在每张平面内的横向范围。"""
+    整平面 = "full_plane"
+    部位范围 = "target_bbox"
+
+
 class WindowPresetEnum(Enum):
     """窗宽窗位预设名称枚举。"""
     # 外部请求只传中文名称；具体窗宽和窗位由内部预设表统一维护。

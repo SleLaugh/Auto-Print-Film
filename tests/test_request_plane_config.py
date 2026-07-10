@@ -50,11 +50,23 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self.assertIs(config.plane, PlaneTypeEnum.冠状位)
         self.assertEqual(config.slice_thickness, 5.0)
         self.assertEqual(config.slice_spacing, 10.0)
+        self.assertEqual(config.line_extent_mode.value, "full_plane")
         self.assertEqual(config.window_presets, [
             WindowPresetEnum.骨窗,
             WindowPresetEnum.肺窗,
             WindowPresetEnum.纵隔窗,
         ])
+
+    def test_plane_config_parses_target_bbox_line_extent_mode(self):
+        config = PlaneConfig.from_dict({
+            "plane": "横状位",
+            "slice_thickness": 3,
+            "slice_spacing": 5,
+            "window_presets": ["骨窗"],
+            "line_extent_mode": "target_bbox",
+        })
+
+        self.assertEqual(config.line_extent_mode.value, "target_bbox")
 
     def test_request_from_dict_parses_plane_configs_and_to_dict_serializes_values(self):
         # from_dict 负责把外部请求转成强约束对象；to_dict 再转回报告可写的结构。
@@ -79,6 +91,7 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 "slice_thickness": 5.0,
                 "slice_spacing": 10.0,
                 "window_presets": ["骨窗", "肺窗"],
+                "line_extent_mode": "full_plane",
             }
         ])
 
@@ -92,18 +105,21 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 "slice_thickness": 1.0,
                 "slice_spacing": 1.0,
                 "window_presets": ["骨窗"],
+                "line_extent_mode": "full_plane",
             },
             {
                 "plane": "矢状位",
                 "slice_thickness": 1.0,
                 "slice_spacing": 1.0,
                 "window_presets": ["骨窗"],
+                "line_extent_mode": "full_plane",
             },
             {
                 "plane": "冠状位",
                 "slice_thickness": 1.0,
                 "slice_spacing": 1.0,
                 "window_presets": ["骨窗"],
+                "line_extent_mode": "full_plane",
             },
         ])
 

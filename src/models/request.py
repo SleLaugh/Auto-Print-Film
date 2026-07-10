@@ -14,6 +14,7 @@ from .enums import (
     CutModeEnum,
     PlaneTypeEnum,
     WindowPresetEnum,
+    CutLineExtentModeEnum,
 )
 
 
@@ -28,6 +29,7 @@ class PlaneConfig:
     slice_spacing: float
     # 一个状位可以同时输出多套窗宽窗位图像，例如骨窗和纵隔窗。
     window_presets: List[WindowPresetEnum]
+    line_extent_mode: CutLineExtentModeEnum = CutLineExtentModeEnum.整平面
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'PlaneConfig':
@@ -45,6 +47,9 @@ class PlaneConfig:
                 WindowPresetEnum(value)
                 for value in data.get('window_presets', [])
             ],
+            line_extent_mode=CutLineExtentModeEnum(
+                data.get('line_extent_mode', CutLineExtentModeEnum.整平面.value)
+            ),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -62,6 +67,7 @@ class PlaneConfig:
                 window.value
                 for window in self.window_presets
             ],
+            'line_extent_mode': self.line_extent_mode.value,
         }
 
 

@@ -19,9 +19,10 @@ import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
-from src.planning.geometry import subtract_points, vector_length
+from src.models import Point3D
+from src.planning.geometry import normalize_vector, subtract_points, vector_length
 from src.planning import select_planner
-from src.utils import DebugLog
+from src.utils import DebugLog, is_debug_log_file_enabled
 
 
 class MappingStage(BaseStage):
@@ -60,28 +61,36 @@ class MappingStage(BaseStage):
         plans = [plan.to_dict() for plan in planning_result.plans]
         diagnostics = self._build_plan_diagnostics(plans)
 
-        DebugLog("  [3] write_debug_overlay: 写出切割线 overlay...")
-        debug_overlay_path = self._write_slice_plan_overlay(
+        debug_overlay_path = ""
+        debug_overview_overlay_path = ""
+        debug_native_overview_overlay_path = ""
+        metadata_path = ""
+        if is_debug_log_file_enabled():
+            DebugLog("  [3] write_debug_overlay: 写出切割线 overlay...")
+            debug_overlay_path = self._write_slice_plan_overlay(
             context=context,
             localization_result=prev_result,
             plans=plans,
         )
-        debug_overview_overlay_path = self._write_slice_plan_overview_overlay(
-            context=context,
-            localization_result=prev_result,
-            plans=plans,
-        )
-
-        DebugLog("  [4] write_metadata: 写出 slice_plans.json...")
-        metadata_path = self._write_slice_plans(
-            context,
-            planner_name=planning_result.planner_name,
-            plans=plans,
-            diagnostics=diagnostics,
-            warnings=planning_result.warnings,
-            debug_overlay_path=debug_overlay_path,
-            debug_overview_overlay_path=debug_overview_overlay_path,
-        )
+            (
+                debug_overview_overlay_path,
+                debug_native_overview_overlay_path,
+            ) = self._write_slice_plan_overview_overlay(
+                context=context,
+                localization_result=prev_result,
+                plans=plans,
+            )
+            DebugLog("  [4] write_metadata: 写出 slice_plans.json...")
+            metadata_path = self._write_slice_plans(
+                context,
+                planner_name=planning_result.planner_name,
+                plans=plans,
+                diagnostics=diagnostics,
+                warnings=planning_result.warnings,
+                debug_overlay_path=debug_overlay_path,
+                debug_overview_overlay_path=debug_overview_overlay_path,
+                debug_native_overview_overlay_path=debug_native_overview_overlay_path,
+            )
 
         result = {
             'planner': planning_result.planner_name,
@@ -92,6 +101,7 @@ class MappingStage(BaseStage):
             'metadata_path': str(metadata_path),
             'debug_slice_plan_overlay_path': debug_overlay_path,
             'debug_slice_plan_overview_overlay_path': debug_overview_overlay_path,
+            'debug_slice_plan_native_overview_overlay_path': debug_native_overview_overlay_path,
         }
         
         context.set_result(self.name, result)
@@ -126,6 +136,7 @@ class MappingStage(BaseStage):
         warnings: list[str],
         debug_overlay_path: str,
         debug_overview_overlay_path: str,
+        debug_native_overview_overlay_path: str,
     ) -> Path:
         """把阶段四输出写入 metadata/slice_plans.json，方便第五步和人工检查。"""
 
@@ -141,6 +152,7 @@ class MappingStage(BaseStage):
             "warnings": warnings,
             "debug_slice_plan_overlay_path": debug_overlay_path,
             "debug_slice_plan_overview_overlay_path": debug_overview_overlay_path,
+            "debug_slice_plan_native_overview_overlay_path": debug_native_overview_overlay_path,
         }
         with open(metadata_path, "w", encoding="utf-8") as file:
             json.dump(data, file, ensure_ascii=False, indent=2)
@@ -169,16 +181,86 @@ class MappingStage(BaseStage):
                 ))
 
             slice_count = len(plan.get("slices", []))
+            slice_centers = [
+                self._dict_to_point(planned_slice["center"])
+                for planned_slice in plan.get("slices", [])
+                if planned_slice.get("center")
+            ]
+            actual_spacings = [
+                vector_length(subtract_points(end=current, start=previous))
+                for previous, current in zip(slice_centers, slice_centers[1:])
+            ]
+            actual_spacing_min = min(actual_spacings, default=0.0)
+            actual_spacing_max = max(actual_spacings, default=0.0)
+            has_nonuniform_spacing = any(
+                abs(actual_spacing - slice_spacing) > 1e-6
+                for actual_spacing in actual_spacings
+            )
             spacing_minus_thickness = slice_spacing - slice_thickness
             regular_center_count = (
                 int(math.floor(range_length / slice_spacing)) + 1
                 if slice_spacing > 0
                 else 0
             )
-            has_extra_endpoint_slice = slice_count > regular_center_count
+            has_extra_endpoint_slice = False
+            leading_uncovered = 0.0
+            trailing_uncovered = 0.0
+            target_start_data = plan.get("target_start")
+            target_end_data = plan.get("target_end")
+            target_length = 0.0
+            first_coverage_start = None
+            last_coverage_end = None
+            target_shorter_than_thickness = False
+            if target_start_data and target_end_data:
+                target_start = self._dict_to_point(target_start_data)
+                target_end = self._dict_to_point(target_end_data)
+                target_vector = subtract_points(end=target_end, start=target_start)
+                target_length = vector_length(target_vector)
+                target_shorter_than_thickness = target_length < slice_thickness
+            else:
+                target_start = self._dict_to_point(range_start) if range_start else None
+                target_end = self._dict_to_point(range_end) if range_end else None
+
+            if slice_centers and target_start is not None and target_end is not None:
+                target_vector = subtract_points(end=target_end, start=target_start)
+                if vector_length(target_vector) > 0:
+                    coverage_direction = normalize_vector(target_vector)
+                else:
+                    coverage_direction = Point3D(0.0, 0.0, 1.0)
+                half_thickness = slice_thickness / 2.0
+                first_coverage_start = Point3D(
+                    slice_centers[0].x - coverage_direction.x * half_thickness,
+                    slice_centers[0].y - coverage_direction.y * half_thickness,
+                    slice_centers[0].z - coverage_direction.z * half_thickness,
+                )
+                last_coverage_end = Point3D(
+                    slice_centers[-1].x + coverage_direction.x * half_thickness,
+                    slice_centers[-1].y + coverage_direction.y * half_thickness,
+                    slice_centers[-1].z + coverage_direction.z * half_thickness,
+                )
+                leading_delta = subtract_points(
+                    end=first_coverage_start,
+                    start=target_start,
+                )
+                trailing_delta = subtract_points(
+                    end=target_end,
+                    start=last_coverage_end,
+                )
+                leading_uncovered = max(
+                    leading_delta.x * coverage_direction.x
+                    + leading_delta.y * coverage_direction.y
+                    + leading_delta.z * coverage_direction.z,
+                    0.0,
+                )
+                trailing_uncovered = max(
+                    trailing_delta.x * coverage_direction.x
+                    + trailing_delta.y * coverage_direction.y
+                    + trailing_delta.z * coverage_direction.z,
+                    0.0,
+                )
             calculation_note = (
                 "阶段四按层间距从 range_start 到 range_end 展开每张输出图中心；"
-                "如果区间长度不是层间距整数倍，会追加终点中心。"
+                "区间末端不足一个完整层间距时不追加非等距中心。"
             )
             if spacing_minus_thickness > 0:
                 calculation_note += (
@@ -194,6 +276,21 @@ class MappingStage(BaseStage):
                 "slice_count": slice_count,
                 "regular_center_count": regular_center_count,
                 "has_extra_endpoint_slice": has_extra_endpoint_slice,
+                "actual_spacing_min_mm": round(actual_spacing_min, 3),
+                "actual_spacing_max_mm": round(actual_spacing_max, 3),
+                "has_nonuniform_spacing": has_nonuniform_spacing,
+                "target_start": target_start_data,
+                "target_end": target_end_data,
+                "target_length_mm": round(target_length, 3),
+                "target_shorter_than_thickness": target_shorter_than_thickness,
+                "first_coverage_start": (
+                    first_coverage_start.to_dict() if first_coverage_start else None
+                ),
+                "last_coverage_end": (
+                    last_coverage_end.to_dict() if last_coverage_end else None
+                ),
+                "leading_uncovered_mm": round(leading_uncovered, 3),
+                "trailing_uncovered_mm": round(trailing_uncovered, 3),
                 "slice_thickness": slice_thickness,
                 "slice_spacing": slice_spacing,
                 "spacing_minus_thickness": round(spacing_minus_thickness, 3),
@@ -218,7 +315,7 @@ class MappingStage(BaseStage):
         context: ProcessingContext,
         localization_result: Dict[str, Any],
         plans: list[Dict[str, Any]],
-    ) -> str:
+    ) -> tuple[str, str]:
         """
         写出第四步切割线调试 overlay。
 
@@ -273,7 +370,7 @@ class MappingStage(BaseStage):
                     value=center_value,
                 )
 
-        output_path = Path(context.request.output_dir) / "metadata" / "slice_plan_lines_overlay.nii.gz"
+        output_path = Path(context.request.output_dir) / "metadata" / "切片线.nii.gz"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         overlay_image = sitk.GetImageFromArray(overlay_array)
         overlay_image.CopyInformation(reference_image)
@@ -285,7 +382,7 @@ class MappingStage(BaseStage):
         context: ProcessingContext,
         localization_result: Dict[str, Any],
         plans: list[Dict[str, Any]],
-    ) -> str:
+    ) -> tuple[str, str]:
         """
         写出单层总览 overlay，方便人工检查整切范围。
 
@@ -296,34 +393,75 @@ class MappingStage(BaseStage):
 
         reference_path = localization_result.get("seg_for_reconstruction_path")
         if not reference_path:
-            return ""
+            return "", ""
 
         reference_path = Path(reference_path)
         if not reference_path.exists():
-            return ""
+            return "", ""
 
         reference_image = sitk.ReadImage(str(reference_path))
-        reference_array = sitk.GetArrayFromImage(reference_image)
-        overlay_array = np.zeros(reference_array.shape, dtype=np.uint16)
+        native_overlay_array = np.zeros(
+            tuple(reversed(reference_image.GetSize())),
+            dtype=np.uint16,
+        )
+        uniform_reference = self._build_uniform_overview_reference(reference_image)
+        uniform_overlay_array = np.zeros(
+            tuple(reversed(uniform_reference.GetSize())),
+            dtype=np.uint16,
+        )
 
         for plan_index, plan in enumerate(plans, start=1):
             # 第一版先服务腰椎整切的横状位总览。其他状位后续可以按同一入口扩展。
             if plan.get("plane") != "横状位":
                 continue
             overview_value = plan_index * 10 + 4
+            thickness_value = plan_index * 10 + 5
             self._paint_axial_plan_overview(
                 reference_image=reference_image,
-                overlay_array=overlay_array,
+                overlay_array=native_overlay_array,
                 plan=plan,
                 value=overview_value,
+                thickness_value=thickness_value,
+            )
+            self._paint_axial_plan_overview(
+                reference_image=uniform_reference,
+                overlay_array=uniform_overlay_array,
+                plan=plan,
+                value=overview_value,
+                thickness_value=thickness_value,
             )
 
-        output_path = Path(context.request.output_dir) / "metadata" / "slice_plan_overview_overlay.nii.gz"
+        metadata_dir = Path(context.request.output_dir) / "metadata"
+        output_path = metadata_dir / "切片总览.nii.gz"
+        native_output_path = metadata_dir / "切片原始网格总览.nii.gz"
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        overlay_image = sitk.GetImageFromArray(overlay_array)
-        overlay_image.CopyInformation(reference_image)
+        overlay_image = sitk.GetImageFromArray(uniform_overlay_array)
+        overlay_image.CopyInformation(uniform_reference)
         sitk.WriteImage(overlay_image, str(output_path))
-        return str(output_path)
+        native_overlay_image = sitk.GetImageFromArray(native_overlay_array)
+        native_overlay_image.CopyInformation(reference_image)
+        sitk.WriteImage(native_overlay_image, str(native_output_path))
+        return str(output_path), str(native_output_path)
+
+    @staticmethod
+    def _build_uniform_overview_reference(reference_image: sitk.Image) -> sitk.Image:
+        """创建 z=0.5mm 的同物理空间检查网格。"""
+
+        spacing = reference_image.GetSpacing()
+        size = reference_image.GetSize()
+        uniform_z_spacing = 0.5
+        physical_z_extent = (size[2] - 1) * spacing[2]
+        uniform_z_size = int(math.ceil(physical_z_extent / uniform_z_spacing)) + 1
+        uniform_reference = sitk.Image(
+            int(size[0]),
+            int(size[1]),
+            uniform_z_size,
+            sitk.sitkUInt16,
+        )
+        uniform_reference.SetSpacing((spacing[0], spacing[1], uniform_z_spacing))
+        uniform_reference.SetOrigin(reference_image.GetOrigin())
+        uniform_reference.SetDirection(reference_image.GetDirection())
+        return uniform_reference
 
     def _paint_axial_plan_overview(
         self,
@@ -331,71 +469,111 @@ class MappingStage(BaseStage):
         overlay_array: np.ndarray,
         plan: Dict[str, Any],
         value: int,
+        thickness_value: int,
     ) -> None:
         """
         把一组横状位 slice 投到固定 x 层上，形成单层矢状位总览。
 
-        总览图只画输出切片中心线。层厚、层间距和实际张数写在
-        slice_plans.json 的 diagnostics 里，避免把边界线也叠到图上后更难看。
+        总览图用不同标签画厚度覆盖带和输出切片中心线。
         """
 
         slices = plan.get("slices", [])
         if not slices:
             return
 
-        x_values = [
-            planned_slice["center"]["x"]
-            for planned_slice in slices
-            if "center" in planned_slice and "x" in planned_slice["center"]
-        ]
-        if not x_values:
-            return
-
-        overview_x = float(np.median(x_values))
         extent_mm = plan.get("extent_mm", {})
         half_height = float(extent_mm.get("height", 0.0)) / 2.0
         if half_height <= 0:
             return
 
-        for planned_slice in slices:
-            center = planned_slice["center"]
-            self._paint_axial_overview_line(
-                reference_image=reference_image,
+        center_indices = [
+            reference_image.TransformPhysicalPointToContinuousIndex((
+                float(planned_slice["center"]["x"]),
+                float(planned_slice["center"]["y"]),
+                float(planned_slice["center"]["z"]),
+            ))
+            for planned_slice in slices
+        ]
+        overview_x_index = int(round(float(np.median([
+            index_xyz[0] for index_xyz in center_indices
+        ]))))
+        half_height_voxels = half_height / reference_image.GetSpacing()[1]
+        half_thickness_voxels = (
+            float(plan.get("slice_thickness", 0.0))
+            / (2.0 * reference_image.GetSpacing()[2])
+        )
+
+        slice_thickness = float(plan.get("slice_thickness", 0.0))
+        center_tick_half_voxels = min(
+            half_height_voxels * 0.25,
+            5.0 / reference_image.GetSpacing()[1],
+        )
+        for center_index in center_indices:
+            if slice_thickness > 0:
+                self._paint_axial_overview_index_band(
+                    overlay_array=overlay_array,
+                    overview_x_index=overview_x_index,
+                    center_index=center_index,
+                    half_height_voxels=half_height_voxels,
+                    half_thickness_voxels=half_thickness_voxels,
+                    value=thickness_value,
+                )
+
+        # 中心线最后画，避免被同一张或相邻切片的厚度带覆盖。
+        for center_index in center_indices:
+            self._paint_axial_overview_index_line(
                 overlay_array=overlay_array,
-                overview_x=overview_x,
-                center=center,
-                half_height=half_height,
+                overview_x_index=overview_x_index,
+                center_y_index=center_index[1],
+                z_index=int(round(center_index[2])),
+                half_height_voxels=center_tick_half_voxels,
                 value=value,
             )
 
-    def _paint_axial_overview_line(
+    def _paint_axial_overview_index_band(
         self,
-        reference_image: sitk.Image,
         overlay_array: np.ndarray,
-        overview_x: float,
-        center: Dict[str, float],
-        half_height: float,
+        overview_x_index: int,
+        center_index: tuple[float, float, float],
+        half_height_voxels: float,
+        half_thickness_voxels: float,
         value: int,
     ) -> None:
-        """在固定 x 层上画一条横状位总览线。"""
+        """在图像轴索引空间按物理层厚填充总览覆盖带。"""
 
-        start_point = {
-            "x": overview_x,
-            "y": center["y"] - half_height,
-            "z": center["z"],
-        }
-        end_point = {
-            "x": overview_x,
-            "y": center["y"] + half_height,
-            "z": center["z"],
-        }
-        self._paint_physical_line(
-            reference_image=reference_image,
-            overlay_array=overlay_array,
-            start_point=start_point,
-            end_point=end_point,
-            value=value,
-        )
+        z_start = int(math.ceil(center_index[2] - half_thickness_voxels - 1e-9))
+        z_end = int(math.ceil(center_index[2] + half_thickness_voxels - 1e-9)) - 1
+        for z_index in range(z_start, z_end + 1):
+            self._paint_axial_overview_index_line(
+                overlay_array=overlay_array,
+                overview_x_index=overview_x_index,
+                center_y_index=center_index[1],
+                z_index=z_index,
+                half_height_voxels=half_height_voxels,
+                value=value,
+            )
+
+    def _paint_axial_overview_index_line(
+        self,
+        overlay_array: np.ndarray,
+        overview_x_index: int,
+        center_y_index: float,
+        z_index: int,
+        half_height_voxels: float,
+        value: int,
+    ) -> None:
+        """在固定图像 x 索引层上画一条横状位总览线。"""
+
+        y_start = int(round(center_y_index - half_height_voxels))
+        y_end = int(round(center_y_index + half_height_voxels))
+        if not 0 <= z_index < overlay_array.shape[0]:
+            return
+        if not 0 <= overview_x_index < overlay_array.shape[2]:
+            return
+        y_start = max(y_start, 0)
+        y_end = min(y_end, overlay_array.shape[1] - 1)
+        if y_start <= y_end:
+            overlay_array[z_index, y_start:y_end + 1, overview_x_index] = value
 
     @staticmethod
     def _physical_point_to_array_index(

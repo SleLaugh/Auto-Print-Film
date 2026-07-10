@@ -17,7 +17,7 @@ import SimpleITK as sitk
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.models import DicomMetadata
-from src.utils import ErrorLog
+from src.utils import ErrorLog, is_debug_log_file_enabled
 
 # 设置警告过滤
 # 忽略警告信息（DICOM读取时可能产生大量无关警告）
@@ -92,7 +92,8 @@ class PreprocessingStage(BaseStage):
         
         
         output_file.parent.mkdir(parents=True, exist_ok=True) # 确保目标路径存在
-        metadata_file.parent.mkdir(parents=True, exist_ok=True)
+        if is_debug_log_file_enabled():
+            metadata_file.parent.mkdir(parents=True, exist_ok=True)
         try:
             read_result = self._read_dicom_series(str(input_dir)) # 读取dicom序列
             image = read_result['image'] if read_result else None
@@ -100,13 +101,16 @@ class PreprocessingStage(BaseStage):
                 image = self._ensure_3d(image) # 确保图像为3D格式
                 
                 sitk.WriteImage(image, str(output_file)) # 保存为NIfTI格式
-                metadata = self._build_metadata(image, read_result['series_file_names'])
-                with open(metadata_file, 'w', encoding='utf-8') as f:
-                    json.dump(metadata.to_dict(), f, ensure_ascii=False, indent=2)
+                metadata_path = ""
+                if is_debug_log_file_enabled():
+                    metadata = self._build_metadata(image, read_result['series_file_names'])
+                    with open(metadata_file, 'w', encoding='utf-8') as f:
+                        json.dump(metadata.to_dict(), f, ensure_ascii=False, indent=2)
+                    metadata_path = str(metadata_file)
                 
                 context.set_result(self.name, { # 记录成功结果，只保存路径
                     'nifti_path': str(output_file),
-                    'metadata_path': str(metadata_file)
+                    'metadata_path': metadata_path
                 }) 
             else:
                 raise ValueError('读取DICOM失败：未找到有效的DICOM序列')

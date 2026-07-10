@@ -6,29 +6,21 @@
 from typing import Any, Dict, List, Optional
 
 from src.models import ExtentMM, Point3D, SlicePlan
-from src.models.enums import PlaneTypeEnum
+from src.models.enums import PlaneTypeEnum, CutLineExtentModeEnum
 from src.planning.geometry import (
     build_plane_stack_slices,
     image_axis_direction,
+    normalize_vector,
+    subtract_points,
+    vector_length,
     voxel_index_to_physical,
 )
 
 
-def bbox_axial_range_points(
+def bbox_axial_target_points(
     localization_result: Dict[str, Any],
-    slice_thickness: float,
 ) -> tuple[Point3D, Point3D]:
-    """
-    用整体目标 bbox 的最外侧 z 范围生成横状位整切起止点。
-
-    横状位整切只关心“目标整体块”的上下界，不关心这个目标是单个器官，
-    还是由多个椎体合成的大块。x/y 取整体 bbox 中心，用来代表这一组
-    横状位切片的中心路径。
-
-    这里生成的是输出图像的中心范围。厚层图像会在第五步按中心点上下
-    各覆盖半个层厚，所以整切中心范围要向上下各外扩 half thickness，
-    否则调试线和后续输出图像都会显得没有包住目标最外侧。
-    """
+    """把包含端点的 bbox z 体素索引转换成目标物理外边界。"""
 
     bbox = localization_result.get("correction_scope_bbox")
     if not bbox:
@@ -37,16 +29,52 @@ def bbox_axial_range_points(
     image_info = localization_result["image"]
     x_center = (bbox["x_min"] + bbox["x_max"]) / 2.0
     y_center = (bbox["y_min"] + bbox["y_max"]) / 2.0
-    z_spacing = image_info["spacing_xyz"][2]
-    z_margin_voxels = (slice_thickness / 2.0) / z_spacing
+    target_start = voxel_index_to_physical(
+        Point3D(x_center, y_center, bbox["z_min"] - 0.5),
+        image_info,
+    )
+    target_end = voxel_index_to_physical(
+        Point3D(x_center, y_center, bbox["z_max"] + 0.5),
+        image_info,
+    )
+    return target_start, target_end
+
+
+def bbox_axial_range_points(
+    localization_result: Dict[str, Any],
+    slice_thickness: float,
+) -> tuple[Point3D, Point3D]:
+    """
+    用整体目标 bbox 的最外侧 z 范围生成横状位整切有效中心范围。
+
+    第一张和最后一张中心分别从真实目标边界向内缩半个层厚，使厚层覆盖
+    边界与目标边界对齐。目标短于层厚时，两端都取目标中点。
+    """
+
+    target_start, target_end = bbox_axial_target_points(localization_result)
+    target_vector = subtract_points(target_end, target_start)
+    target_length = vector_length(target_vector)
+    if target_length <= slice_thickness:
+        return (
+            Point3D(
+                (target_start.x + target_end.x) / 2.0,
+                (target_start.y + target_end.y) / 2.0,
+                (target_start.z + target_end.z) / 2.0,
+            ),
+        ) * 2
+
+    direction = normalize_vector(target_vector)
+    half_thickness = slice_thickness / 2.0
     return (
-        voxel_index_to_physical(
-            Point3D(x_center, y_center, bbox["z_min"] - z_margin_voxels),
-            image_info,
+        Point3D(
+            target_start.x + direction.x * half_thickness,
+            target_start.y + direction.y * half_thickness,
+            target_start.z + direction.z * half_thickness,
         ),
-        voxel_index_to_physical(
-            Point3D(x_center, y_center, bbox["z_max"] + z_margin_voxels),
-            image_info,
+        Point3D(
+            target_end.x - direction.x * half_thickness,
+            target_end.y - direction.y * half_thickness,
+            target_end.z - direction.z * half_thickness,
         ),
     )
 
@@ -58,6 +86,35 @@ def bbox_extent_mm(bbox: Dict[str, float], image_info: Dict[str, Any]) -> Extent
     return ExtentMM(
         width=(bbox["x_max"] - bbox["x_min"]) * spacing[0],
         height=(bbox["y_max"] - bbox["y_min"]) * spacing[1],
+    )
+
+
+def plane_extent_mm(
+    bbox: Dict[str, float],
+    image_info: Dict[str, Any],
+    plane: PlaneTypeEnum,
+    mode: CutLineExtentModeEnum = CutLineExtentModeEnum.整平面,
+) -> ExtentMM:
+    """计算切割线所在平面的横向/纵向物理范围。"""
+
+    if mode == CutLineExtentModeEnum.部位范围:
+        return bbox_extent_mm(bbox, image_info)
+
+    size = image_info.get("size_xyz")
+    if not size:
+        return bbox_extent_mm(bbox, image_info)
+    spacing = image_info["spacing_xyz"]
+    if plane == PlaneTypeEnum.横状位:
+        axes = (0, 1)
+    elif plane == PlaneTypeEnum.矢状位:
+        axes = (1, 2)
+    elif plane == PlaneTypeEnum.冠状位:
+        axes = (0, 2)
+    else:
+        raise ValueError(f"不支持的切割平面: {plane}")
+    return ExtentMM(
+        width=max(size[axes[0]] - 1, 1) * spacing[axes[0]],
+        height=max(size[axes[1]] - 1, 1) * spacing[axes[1]],
     )
 
 
@@ -86,6 +143,7 @@ def build_axial_whole_range_plan_from_bbox(
         localization_result,
         plane_config.slice_thickness,
     )
+    target_start, target_end = bbox_axial_target_points(localization_result)
     path_points = [range_start, range_end]
     slices = build_plane_stack_slices(
         path_points=path_points,
@@ -107,7 +165,12 @@ def build_axial_whole_range_plan_from_bbox(
         range_end=range_end,
         path_points=path_points,
         slices=slices,
-        extent_mm=bbox_extent_mm(bbox, localization_result["image"]),
+        extent_mm=plane_extent_mm(
+            bbox,
+            localization_result["image"],
+            plane_config.plane,
+            plane_config.line_extent_mode,
+        ),
         output_spacing_mm=Point3D(spacing[0], spacing[1], 0.0),
         slice_thickness=plane_config.slice_thickness,
         slice_spacing=plane_config.slice_spacing,
@@ -116,4 +179,6 @@ def build_axial_whole_range_plan_from_bbox(
             for window in plane_config.window_presets
         ],
         source_labels=source_labels or ["correction_scope_bbox"],
+        target_start=target_start,
+        target_end=target_end,
     )

@@ -22,6 +22,24 @@ class PlanningGeometryTest(unittest.TestCase):
             {"x": 0.0, "y": 0.0, "z": 10.0},
         ])
 
+    def test_interpolate_points_does_not_append_non_uniform_endpoint(self):
+        points = interpolate_points(
+            start=Point3D(0.0, 0.0, 0.0),
+            end=Point3D(0.0, 0.0, 12.6),
+            spacing=5.0,
+        )
+
+        self.assertEqual([point.z for point in points], [0.0, 5.0, 10.0])
+
+    def test_interpolate_points_keeps_theoretical_final_step_with_float_error(self):
+        points = interpolate_points(
+            start=Point3D(0.0, 0.0, 0.0),
+            end=Point3D(0.3, 0.4, 0.0),
+            spacing=0.1,
+        )
+
+        self.assertEqual(len(points), 6)
+
     def test_normalize_vector_rejects_zero_vector(self):
         with self.assertRaisesRegex(ValueError, "方向向量长度不能为 0"):
             normalize_vector(Point3D(0.0, 0.0, 0.0))

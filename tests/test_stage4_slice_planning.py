@@ -6,8 +6,12 @@ from pathlib import Path
 import SimpleITK as sitk
 import numpy as np
 
+from src.utils.Logger_utils import _logger_manager
+_logger_manager.debug_log_file_enabled = True
+
 from src.core.context import ProcessingContext
 from src.models import PlaneConfig, Request, WindowPresetEnum
+from src.models.enums import CutLineExtentModeEnum
 from src.models.enums import BodyPartEnum, CutModeEnum, PlaneTypeEnum
 from src.planning.base import select_planner
 from src.planning.lumbar import LumbarInterspacePlanner, LumbarWholeRangePlanner
@@ -88,15 +92,50 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
         self.assertEqual(plan.plan_id, "肺部_whole_range_横状位")
-        self.assertEqual(len(plan.slices), 4)
+        self.assertEqual(len(plan.slices), 2)
         self.assertEqual(plan.slices[1].center.to_dict(), {
             "x": 60.0,
             "y": 50.0,
-            "z": 2.5,
+            "z": 7.0,
         })
         self.assertEqual(plan.window_presets, ["肺窗"])
 
-    def test_axial_whole_range_expands_center_range_by_half_thickness(self):
+    def test_axial_whole_range_defaults_to_full_plane_extent(self):
+        request = Request(
+            dicom_dir="/tmp/dicom", output_dir="/tmp/output",
+            body_part=BodyPartEnum.肺部, cut_mode=CutModeEnum.整切,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.横状位, slice_thickness=3.0,
+                slice_spacing=5.0, window_presets=[WindowPresetEnum.肺窗],
+            )],
+        )
+        loc = self._lumbar_localization_result()
+        loc["image"]["size_xyz"] = [100, 120, 30]
+        loc["image"]["spacing_xyz"] = [1.0, 2.0, 3.0]
+
+        plan = SingleLabelWholeRangePlanner().build_plans(request, loc).plans[0]
+
+        self.assertEqual(plan.extent_mm.to_dict(), {"width": 99.0, "height": 238.0})
+
+    def test_axial_whole_range_can_limit_extent_to_target_bbox(self):
+        request = Request(
+            dicom_dir="/tmp/dicom", output_dir="/tmp/output",
+            body_part=BodyPartEnum.肺部, cut_mode=CutModeEnum.整切,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.横状位, slice_thickness=3.0,
+                slice_spacing=5.0, window_presets=[WindowPresetEnum.肺窗],
+                line_extent_mode=CutLineExtentModeEnum.部位范围,
+            )],
+        )
+        loc = self._lumbar_localization_result()
+        loc["image"]["size_xyz"] = [100, 120, 30]
+        loc["image"]["spacing_xyz"] = [1.0, 2.0, 3.0]
+
+        plan = SingleLabelWholeRangePlanner().build_plans(request, loc).plans[0]
+
+        self.assertEqual(plan.extent_mm.to_dict(), {"width": 10.0, "height": 20.0})
+
+    def test_axial_whole_range_insets_center_range_by_half_thickness(self):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
@@ -139,14 +178,40 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         )
 
         plan = result.plans[0]
-        self.assertEqual(plan.range_start.z, -2.5)
-        self.assertEqual(plan.range_end.z, 12.5)
+        self.assertEqual(plan.range_start.z, 2.0)
+        self.assertEqual(plan.range_end.z, 8.0)
         self.assertEqual([planned_slice.center.z for planned_slice in plan.slices], [
-            -2.5,
-            2.5,
-            7.5,
-            12.5,
+            2.0,
+            7.0,
         ])
+
+    def test_axial_whole_range_short_target_uses_midpoint(self):
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.肺部,
+            cut_mode=CutModeEnum.整切,
+            plane_configs=[
+                PlaneConfig(
+                    plane=PlaneTypeEnum.横状位,
+                    slice_thickness=5.0,
+                    slice_spacing=5.0,
+                    window_presets=[WindowPresetEnum.肺窗],
+                )
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["correction_scope_bbox"]["z_min"] = 4
+        localization_result["correction_scope_bbox"]["z_max"] = 6
+
+        plan = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.range_start.z, 5.0)
+        self.assertEqual(plan.range_end.z, 5.0)
+        self.assertEqual([planned_slice.center.z for planned_slice in plan.slices], [5.0])
 
     def test_lumbar_whole_range_planner_expands_slices_from_l1_to_s1(self):
         request = Request(
@@ -173,9 +238,9 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
         self.assertEqual(plan.plan_id, "腰椎_whole_range_横状位")
-        self.assertEqual(len(plan.slices), 4)
-        self.assertEqual(plan.slices[0].center.z, -2.5)
-        self.assertEqual(plan.slices[-1].center.z, 12.5)
+        self.assertEqual(len(plan.slices), 2)
+        self.assertEqual(plan.slices[0].center.z, 2.0)
+        self.assertEqual(plan.slices[-1].center.z, 7.0)
 
     def test_lumbar_whole_range_axial_uses_outer_bbox_z_range(self):
         request = Request(
@@ -204,14 +269,12 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         )
 
         plan = result.plans[0]
-        self.assertEqual(plan.range_start.z, -4.5)
-        self.assertEqual(plan.range_end.z, 14.5)
+        self.assertEqual(plan.range_start.z, 0.0)
+        self.assertEqual(plan.range_end.z, 10.0)
         self.assertEqual([planned_slice.center.z for planned_slice in plan.slices], [
-            -4.5,
-            0.5,
-            5.5,
-            10.5,
-            14.5,
+            0.0,
+            5.0,
+            10.0,
         ])
 
     def test_lumbar_whole_range_axial_uses_bbox_even_without_endpoint_centroids(self):
@@ -240,8 +303,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(result.warnings, [])
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
-        self.assertEqual(plan.range_start.z, -2.5)
-        self.assertEqual(plan.range_end.z, 12.5)
+        self.assertEqual(plan.range_start.z, 2.0)
+        self.assertEqual(plan.range_end.z, 8.0)
         self.assertEqual(plan.source_labels, ["correction_scope_bbox"])
 
     def test_lumbar_interspace_planner_builds_one_plan_per_available_interval(self):
@@ -303,11 +366,21 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(data["plan_count"], 1)
             self.assertEqual(data["plans"][0]["plan_id"], "腰椎_whole_range_横状位")
             self.assertIn("slices", data["plans"][0])
-            self.assertEqual(data["diagnostics"][0]["slice_count"], 4)
+            self.assertEqual(data["diagnostics"][0]["slice_count"], 2)
             self.assertEqual(data["diagnostics"][0]["slice_thickness"], 5.0)
             self.assertEqual(data["diagnostics"][0]["slice_spacing"], 5.0)
             self.assertEqual(data["diagnostics"][0]["spacing_minus_thickness"], 0.0)
             self.assertIn("按层间距", data["diagnostics"][0]["calculation_note"])
+            self.assertEqual(data["diagnostics"][0]["actual_spacing_min_mm"], 5.0)
+            self.assertEqual(data["diagnostics"][0]["actual_spacing_max_mm"], 5.0)
+            self.assertFalse(data["diagnostics"][0]["has_nonuniform_spacing"])
+            self.assertFalse(data["diagnostics"][0]["has_extra_endpoint_slice"])
+            self.assertEqual(data["diagnostics"][0]["leading_uncovered_mm"], 0.0)
+            self.assertEqual(data["diagnostics"][0]["trailing_uncovered_mm"], 1.0)
+            self.assertEqual(data["diagnostics"][0]["target_length_mm"], 11.0)
+            self.assertFalse(data["diagnostics"][0]["target_shorter_than_thickness"])
+            self.assertEqual(data["diagnostics"][0]["first_coverage_start"]["z"], -0.5)
+            self.assertEqual(data["diagnostics"][0]["last_coverage_end"]["z"], 9.5)
 
     def test_mapping_stage_writes_slice_plan_line_overlay(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -349,9 +422,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(overlay_image.GetSize(), image.GetSize())
             # 11 表示第一组 plan 的中心路径线，12 表示切片中心点。
             # 13 表示每张 slice 的平面引导线，应该离中心点有一段距离也能看到。
-            self.assertEqual(overlay_array[3, 50, 60], 11)
-            self.assertEqual(overlay_array[6, 50, 60], 12)
-            self.assertEqual(overlay_array[6, 50, 65], 13)
+            self.assertEqual(overlay_array[5, 50, 60], 12)
+            self.assertEqual(overlay_array[5, 50, 65], 13)
 
     def test_mapping_stage_writes_single_layer_overview_overlay(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -390,15 +462,17 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             overview_image = sitk.ReadImage(str(overview_path))
             overview_array = sitk.GetArrayFromImage(overview_image)
             self.assertTrue(overview_path.exists())
-            self.assertEqual(overview_image.GetSize(), image.GetSize())
-            # 14 表示第一组 plan 的单层总览线。所有横状位切片都画在 x=60 这个矢状位层上。
-            self.assertEqual(overview_array[1, 45, 60], 14)
-            self.assertEqual(overview_array[6, 50, 60], 14)
-            self.assertEqual(overview_array[11, 55, 60], 14)
-            self.assertEqual(overview_array[16, 50, 60], 14)
-            self.assertEqual(overview_array[6, 50, 61], 0)
+            self.assertEqual(overview_image.GetSpacing(), (1.0, 1.0, 0.5))
+            self.assertEqual(overview_image.GetSize(), (80, 80, 35))
+            # 5 mm 中心间距在 0.5 mm 检查网格上恒为 10 个体素。
+            center_rows = np.unique(np.argwhere(overview_array == 14)[:, 0])
+            self.assertEqual(center_rows.tolist(), [10, 20])
+            self.assertEqual(int(center_rows[1] - center_rows[0]), 10)
+            native_path = Path(result["debug_slice_plan_native_overview_overlay_path"])
+            native_image = sitk.ReadImage(str(native_path))
+            self.assertEqual(native_image.GetSize(), image.GetSize())
 
-    def test_mapping_stage_overview_overlay_only_draws_center_lines(self):
+    def test_mapping_stage_overview_draws_thickness_bands(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             seg_path = temp_path / "seg.nii.gz"
@@ -415,7 +489,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 plane_configs=[
                     PlaneConfig(
                         plane=PlaneTypeEnum.横状位,
-                        slice_thickness=5.0,
+                        slice_thickness=3.0,
                         slice_spacing=5.0,
                         window_presets=[WindowPresetEnum.骨窗],
                     )
@@ -433,13 +507,17 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             result = context.get_result("mapping")
             overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
             overview_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overview_path)))
-            # 总览图只画每张输出图的中心线。厚层覆盖范围用 slice_plans.json
-            # 里的 diagnostics 判断，不再叠加边界线，避免人工看图时更乱。
-            self.assertEqual(overview_array[1, 50, 60], 14)
-            self.assertEqual(overview_array[6, 50, 60], 14)
-            self.assertEqual(overview_array[11, 50, 60], 14)
-            self.assertEqual(overview_array[16, 50, 60], 14)
-            self.assertEqual(int((overview_array == 15).sum()), 0)
+            # bbox 3..13、层厚 3、中心间距 5：中心在 4 和 9，
+            # 对应两个厚度覆盖带，中间仍保留配置允许的空档。
+            center_rows = np.unique(np.argwhere(overview_array == 14)[:, 0])
+            self.assertEqual(center_rows.tolist(), [8, 18])
+            # 3 mm 层厚在 0.5 mm 网格上固定占 6 行；中心仅为短刻度，
+            # 不再把整条厚度带分成“黄色在上/黄色在下”。
+            band_rows = np.unique(np.argwhere(overview_array == 15)[:, 0])
+            self.assertEqual(band_rows.tolist(), [5, 6, 7, 8, 9, 10, 15, 16, 17, 18, 19, 20])
+            self.assertEqual(overview_array[8, 45, 60], 15)
+            self.assertEqual(overview_array[8, 50, 60], 14)
+            self.assertEqual(overview_array[12, 50, 60], 0)
 
     def test_mapping_stage_overview_overlay_respects_image_direction(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -449,8 +527,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             image.SetSpacing((1.0, 1.0, 1.0))
             image.SetOrigin((0.0, 0.0, 100.0))
             image.SetDirection((
+                0.0, -1.0, 0.0,
                 1.0, 0.0, 0.0,
-                0.0, 1.0, 0.0,
                 0.0, 0.0, -1.0,
             ))
             sitk.WriteImage(image, str(seg_path))
@@ -472,8 +550,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             localization_result = self._lumbar_localization_result()
             localization_result["image"]["origin_xyz"] = [0.0, 0.0, 100.0]
             localization_result["image"]["direction"] = [
+                0.0, -1.0, 0.0,
                 1.0, 0.0, 0.0,
-                0.0, 1.0, 0.0,
                 0.0, 0.0, -1.0,
             ]
             localization_result["correction_scope_bbox"]["z_min"] = 3
@@ -487,10 +565,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             result = context.get_result("mapping")
             overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
             overview_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overview_path)))
-            self.assertEqual(overview_array[1, 45, 60], 14)
-            self.assertEqual(overview_array[6, 50, 60], 14)
-            self.assertEqual(overview_array[11, 55, 60], 14)
-            self.assertEqual(overview_array[16, 50, 60], 14)
+            self.assertEqual(overview_array[10, 50, 60], 14)
+            self.assertEqual(overview_array[20, 50, 60], 14)
 
     @staticmethod
     def _lumbar_localization_result():

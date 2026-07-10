@@ -31,7 +31,7 @@ import time
 import shutil
 from pathlib import Path
 from typing import List, Optional, Any
-from src.utils import ErrorLog, DebugLog
+from src.utils import ErrorLog, DebugLog, is_debug_log_file_enabled
 from .base_stage import BaseStage
 from .context import ProcessingContext
 from .response import Response
@@ -143,6 +143,9 @@ class Pipeline:
                 break
         
         pipeline_elapsed = time.time() - pipeline_start # 生成响应
+
+        if not is_debug_log_file_enabled():
+            self._cleanup_debug_artifacts(request)
         
         response = Response(
             success=not context.has_errors(),
@@ -156,6 +159,18 @@ class Pipeline:
         DebugLog(f"总耗时: {pipeline_elapsed:.2f}s")
         
         return response
+
+    @staticmethod
+    def _cleanup_debug_artifacts(request: Any) -> None:
+        """关闭调试文件时删除阶段间临时目录，保留最终业务输出。"""
+
+        output_dir = Path(getattr(request, 'output_dir', ''))
+        if not output_dir:
+            return
+        for name in ('metadata', 'nifti', 'segmentation'):
+            path = output_dir / name
+            if path.exists():
+                shutil.rmtree(path)
 
     def _prepare_output_dir(self, request: Any) -> None:
         """

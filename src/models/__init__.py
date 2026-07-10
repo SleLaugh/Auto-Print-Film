@@ -22,6 +22,7 @@ from .reconstruction import (
     ExtentMM,
     SlicePlan,
 )
+from .window import WindowPreset, get_window_preset
 from .enums import (
     BodyPartEnum,
     CheckTypeEnum,
@@ -47,6 +48,8 @@ __all__ = [
     'PlannedSlice',
     'ExtentMM',
     'SlicePlan',
+    'WindowPreset',
+    'get_window_preset',
     'BodyPartEnum',
     'CheckTypeEnum',
     'ScanThicknessEnum',

@@ -1,0 +1,306 @@
+# 窗宽窗位预设实施计划
+
+> **执行要求：** 使用 `superpowers:executing-plans` 按任务逐项实施，并使用 `superpowers:test-driven-development` 完成每个红绿测试循环。
+
+**目标：** 外部请求只传中文窗名称，项目内部通过统一接口取得该名称对应的固定窗宽和窗位。
+
+**架构：** 保留 `WindowPresetEnum` 作为请求层的中文名称约束；新增独立的不可变 `WindowPreset` 模型和集中预设映射。请求解析与序列化仍只处理名称，后续阶段按需调用 `get_window_preset` 展开为数值。
+
+**技术栈：** Python 3.11、`dataclasses`、`enum.Enum`、标准库 `unittest`
+
+## 全局约束
+
+- 外部接口只接受中文预设名称，不接受英文名称。
+- 每个预设只保存 `name`、`window_width`、`window_center` 三个字段。
+- 外部请求不能覆盖项目内部定义的窗宽和窗位。
+- `PlaneConfig.to_dict()` 与 `Request.to_dict()` 只序列化中文名称。
+- 所有新增注释、文档和错误信息使用中文。
+- 不执行 `git add` 或 `git commit`，改动保留在工作区供用户审核。
+
+## 文件职责
+
+- 修改 `src/models/enums.py`：补齐 11 个中文窗名称。
+- 新建 `src/models/window.py`：定义不可变预设模型、固定映射和查询方法。
+- 修改 `src/models/__init__.py`：导出预设模型和查询方法。
+- 修改 `tests/test_request_plane_config.py`：验证新增中文名称的外部请求往返。
+- 新建 `tests/test_window_presets.py`：验证全部固定值、查询入口和非法名称。
+
+---
+
+### 任务一：扩充外部请求支持的中文窗名称
+
+**文件：**
+
+- 修改：`tests/test_request_plane_config.py`
+- 修改：`src/models/enums.py`
+
+**接口：**
+
+- 输入：`PlaneConfig.from_dict(data: Dict[str, Any])`
+- 输出：`PlaneConfig.window_presets: List[WindowPresetEnum]`
+- 序列化：`PlaneConfig.to_dict() -> Dict[str, Any]`
+
+- [ ] **步骤 1：先添加新增中文名称的失败测试**
+
+在 `PlaneConfigRequestTest` 中添加：
+
+```python
+def test_plane_config_supports_all_window_preset_names(self):
+    window_names = [
+        "脑窗",
+        "骨窗",
+        "肺窗",
+        "纵隔窗",
+        "软组织窗",
+        "腹部窗",
+        "肝窗",
+        "肾窗",
+        "胰腺窗",
+        "骨盆窗",
+        "脊柱窗",
+    ]
+    config = PlaneConfig.from_dict({
+        "plane": "横状位",
+        "slice_thickness": 5,
+        "slice_spacing": 5,
+        "window_presets": window_names,
+    })
+
+    self.assertEqual(
+        [preset.value for preset in config.window_presets],
+        window_names,
+    )
+    self.assertEqual(config.to_dict()["window_presets"], window_names)
+```
+
+- [ ] **步骤 2：运行测试并确认因新增名称尚未定义而失败**
+
+运行：
+
+```bash
+python -m unittest tests.test_request_plane_config.PlaneConfigRequestTest.test_plane_config_supports_all_window_preset_names -v
+```
+
+预期：测试失败，错误指向 `脑窗` 不是合法的 `WindowPresetEnum` 值。
+
+- [ ] **步骤 3：最小化扩充中文名称枚举**
+
+将 `WindowPresetEnum` 改为：
+
+```python
+class WindowPresetEnum(Enum):
+    """窗宽窗位预设名称枚举。"""
+    脑窗 = "脑窗"
+    骨窗 = "骨窗"
+    肺窗 = "肺窗"
+    纵隔窗 = "纵隔窗"
+    软组织窗 = "软组织窗"
+    腹部窗 = "腹部窗"
+    肝窗 = "肝窗"
+    肾窗 = "肾窗"
+    胰腺窗 = "胰腺窗"
+    骨盆窗 = "骨盆窗"
+    脊柱窗 = "脊柱窗"
+```
+
+- [ ] **步骤 4：运行请求模型测试并确认通过**
+
+运行：
+
+```bash
+python -m unittest tests.test_request_plane_config -v
+```
+
+预期：`PlaneConfigRequestTest` 全部通过，原有骨窗、肺窗和纵隔窗行为不变。
+
+### 任务二：新增内部窗宽窗位查询入口
+
+**文件：**
+
+- 新建：`tests/test_window_presets.py`
+- 新建：`src/models/window.py`
+- 修改：`src/models/__init__.py`
+
+**接口：**
+
+- 输入：`get_window_preset(preset: WindowPresetEnum | str)`
+- 输出：`WindowPreset(name: str, window_width: int, window_center: int)`
+- 依赖：任务一完整定义的 `WindowPresetEnum`
+
+- [ ] **步骤 1：先添加查询和值映射的失败测试**
+
+新建 `tests/test_window_presets.py`：
+
+```python
+import unittest
+
+import src.models as models
+from src.models import WindowPresetEnum
+
+
+class WindowPresetsTest(unittest.TestCase):
+    EXPECTED_PRESETS = {
+        "脑窗": (80, 40),
+        "骨窗": (2500, 400),
+        "肺窗": (1600, -600),
+        "纵隔窗": (350, 40),
+        "软组织窗": (400, 50),
+        "腹部窗": (350, 50),
+        "肝窗": (150, 60),
+        "肾窗": (350, 40),
+        "胰腺窗": (300, 40),
+        "骨盆窗": (400, 40),
+        "脊柱窗": (2000, 300),
+    }
+
+    def test_all_presets_have_expected_width_and_center(self):
+        get_window_preset = getattr(models, "get_window_preset", None)
+        self.assertIsNotNone(get_window_preset)
+
+        self.assertEqual(
+            {preset.value for preset in WindowPresetEnum},
+            set(self.EXPECTED_PRESETS),
+        )
+        for name, (width, center) in self.EXPECTED_PRESETS.items():
+            with self.subTest(name=name):
+                preset = get_window_preset(WindowPresetEnum(name))
+                self.assertEqual(preset.name, name)
+                self.assertEqual(preset.window_width, width)
+                self.assertEqual(preset.window_center, center)
+
+    def test_query_accepts_chinese_name(self):
+        get_window_preset = getattr(models, "get_window_preset", None)
+        self.assertIsNotNone(get_window_preset)
+
+        preset = get_window_preset("脑窗")
+
+        self.assertEqual(preset.name, "脑窗")
+        self.assertEqual(preset.window_width, 80)
+        self.assertEqual(preset.window_center, 40)
+
+    def test_query_rejects_english_name(self):
+        get_window_preset = getattr(models, "get_window_preset", None)
+        self.assertIsNotNone(get_window_preset)
+
+        with self.assertRaisesRegex(ValueError, "不支持的窗宽窗位预设"):
+            get_window_preset("Brain")
+
+    def test_query_rejects_unknown_chinese_name(self):
+        get_window_preset = getattr(models, "get_window_preset", None)
+        self.assertIsNotNone(get_window_preset)
+
+        with self.assertRaisesRegex(ValueError, "不支持的窗宽窗位预设"):
+            get_window_preset("血管窗")
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **步骤 2：运行测试并确认因查询入口尚不存在而失败**
+
+运行：
+
+```bash
+python -m unittest tests.test_window_presets -v
+```
+
+预期：测试失败，`get_window_preset` 为 `None`。
+
+- [ ] **步骤 3：实现不可变模型、固定映射和查询方法**
+
+新建 `src/models/window.py`：
+
+```python
+"""窗宽窗位固定预设。"""
+
+from dataclasses import dataclass
+from typing import Dict, Union
+
+from .enums import WindowPresetEnum
+
+
+@dataclass(frozen=True)
+class WindowPreset:
+    """一个不可变的窗宽窗位预设。"""
+
+    name: str
+    window_width: int
+    window_center: int
+
+
+_WINDOW_PRESETS: Dict[WindowPresetEnum, WindowPreset] = {
+    WindowPresetEnum.脑窗: WindowPreset("脑窗", 80, 40),
+    WindowPresetEnum.骨窗: WindowPreset("骨窗", 2500, 400),
+    WindowPresetEnum.肺窗: WindowPreset("肺窗", 1600, -600),
+    WindowPresetEnum.纵隔窗: WindowPreset("纵隔窗", 350, 40),
+    WindowPresetEnum.软组织窗: WindowPreset("软组织窗", 400, 50),
+    WindowPresetEnum.腹部窗: WindowPreset("腹部窗", 350, 50),
+    WindowPresetEnum.肝窗: WindowPreset("肝窗", 150, 60),
+    WindowPresetEnum.肾窗: WindowPreset("肾窗", 350, 40),
+    WindowPresetEnum.胰腺窗: WindowPreset("胰腺窗", 300, 40),
+    WindowPresetEnum.骨盆窗: WindowPreset("骨盆窗", 400, 40),
+    WindowPresetEnum.脊柱窗: WindowPreset("脊柱窗", 2000, 300),
+}
+
+
+def get_window_preset(
+    preset: Union[WindowPresetEnum, str],
+) -> WindowPreset:
+    """按枚举或中文名称返回内部固定的窗宽窗位。"""
+    try:
+        preset_enum = (
+            preset
+            if isinstance(preset, WindowPresetEnum)
+            else WindowPresetEnum(preset)
+        )
+        return _WINDOW_PRESETS[preset_enum]
+    except (TypeError, ValueError, KeyError) as exc:
+        raise ValueError(f"不支持的窗宽窗位预设: {preset}") from exc
+```
+
+在 `src/models/__init__.py` 中导出：
+
+```python
+from .window import WindowPreset, get_window_preset
+```
+
+并把以下名称加入 `__all__`：
+
+```python
+'WindowPreset',
+'get_window_preset',
+```
+
+- [ ] **步骤 4：运行查询测试并确认通过**
+
+运行：
+
+```bash
+python -m unittest tests.test_window_presets -v
+```
+
+预期：4 个查询测试全部通过。
+
+- [ ] **步骤 5：运行完整测试与静态检查**
+
+运行：
+
+```bash
+python -m unittest discover -s tests -v
+python -B -c "import ast, pathlib; files=[pathlib.Path('main.py')]+list(pathlib.Path('src').glob('**/*.py'))+list(pathlib.Path('tests').glob('**/*.py')); [ast.parse(path.read_text(encoding='utf-8'), filename=str(path)) for path in files]; print(f'parsed {len(files)} python files')"
+git diff --check
+```
+
+预期：全部单元测试通过；所有 Python 文件完成语法解析；`git diff --check` 无输出。
+
+- [ ] **步骤 6：检查工作区交付内容**
+
+运行：
+
+```bash
+git status --short
+git diff -- src/models/enums.py src/models/window.py src/models/__init__.py tests/test_request_plane_config.py tests/test_window_presets.py docs/superpowers/specs/2026-07-10-window-presets-design.md docs/superpowers/plans/2026-07-10-window-presets.md
+```
+
+预期：只展示本功能相关改动以及用户已有的其他工作区改动；不暂存、不提交。

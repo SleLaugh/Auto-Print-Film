@@ -5,6 +5,39 @@ from src.models.enums import BodyPartEnum, PlaneTypeEnum
 
 
 class PlaneConfigRequestTest(unittest.TestCase):
+    def test_plane_config_supports_all_window_preset_names(self):
+        # 外部只传中文预设名称，解析和序列化都不展开内部窗宽窗位数值。
+        window_names = [
+            "脑窗",
+            "骨窗",
+            "肺窗",
+            "纵隔窗",
+            "软组织窗",
+            "腹部窗",
+            "肝窗",
+            "肾窗",
+            "胰腺窗",
+            "骨盆窗",
+            "脊柱窗",
+        ]
+        self.assertEqual(
+            {preset.value for preset in WindowPresetEnum},
+            set(window_names),
+        )
+
+        config = PlaneConfig.from_dict({
+            "plane": "横状位",
+            "slice_thickness": 5,
+            "slice_spacing": 5,
+            "window_presets": window_names,
+        })
+
+        self.assertEqual(
+            [preset.value for preset in config.window_presets],
+            window_names,
+        )
+        self.assertEqual(config.to_dict()["window_presets"], window_names)
+
     def test_plane_config_from_dict_converts_strings_to_enums(self):
         # 外部 JSON 输入是字符串，业务代码内部应该统一拿到枚举。
         config = PlaneConfig.from_dict({

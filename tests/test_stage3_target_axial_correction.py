@@ -470,25 +470,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertLess(abs(after_centroid[1] - before_centroid[1]), 1.5)
         self.assertLess(abs(after_centroid[2] - before_centroid[2]), 1.5)
 
-    def test_reconstruction_prefers_raw_for_reconstruction_path(self):
-        # 阶段五以后统一读取阶段三声明的实际重建输入，旧 corrected_raw_path 只做兼容兜底。
-        class RecordingReconstructionStage(ReconstructionStage):
-            def __init__(self):
-                super().__init__({"parallel": False})
-                self.image_paths = []
-
-            def _process_axial(self, image_path: str, output_dir: Path, params: dict) -> dict:
-                self.image_paths.append(image_path)
-                return {"count": 0, "output_dir": str(output_dir)}
-
-            def _process_sagittal(self, image_path: str, output_dir: Path, params: dict) -> dict:
-                self.image_paths.append(image_path)
-                return {"count": 0, "output_dir": str(output_dir)}
-
-            def _process_coronal(self, image_path: str, output_dir: Path, params: dict) -> dict:
-                self.image_paths.append(image_path)
-                return {"count": 0, "output_dir": str(output_dir)}
-
+    def test_reconstruction_returns_empty_result_when_mapping_has_no_plans(self):
+        # 第五步只执行第四步 plans；没有计划时不读取旧的 axial_params 占位字段。
         with tempfile.TemporaryDirectory() as temp_dir:
             context = ProcessingContext(Request(dicom_dir="/tmp/dicom", output_dir=temp_dir))
             context.set_result("localization", {
@@ -496,19 +479,15 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                 "corrected_raw_path": "/tmp/old_raw.nii.gz",
             })
             context.set_result("mapping", {
-                "axial_params": {},
-                "sagittal_params": {},
-                "coronal_params": {},
+                "plans": [],
             })
-            stage = RecordingReconstructionStage()
+            stage = ReconstructionStage({"parallel": False})
 
             stage.execute(context)
 
-            self.assertEqual(stage.image_paths, [
-                "/tmp/new_raw.nii.gz",
-                "/tmp/new_raw.nii.gz",
-                "/tmp/new_raw.nii.gz",
-            ])
+            result = context.get_result("reconstruction")
+            self.assertEqual(result["plan_count"], 0)
+            self.assertEqual(result["slice_count"], 0)
 
     def test_execute_writes_reconstruction_paths_and_metadata(self):
         # 覆盖完整阶段三主流程：解析 label、定位、判断不回正、写出新旧兼容字段。

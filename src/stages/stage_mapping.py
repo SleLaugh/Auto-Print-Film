@@ -158,6 +158,41 @@ class MappingStage(BaseStage):
             json.dump(data, file, ensure_ascii=False, indent=2)
         return metadata_path
 
+    @staticmethod
+    def _debug_plan_suffix(plans: list[Dict[str, Any]]) -> str:
+        """把实际生成计划的状位和切割方式压缩成调试文件名后缀。"""
+
+        plane_labels = {
+            "横状位": "横",
+            "矢状位": "矢",
+            "冠状位": "冠",
+        }
+        cut_mode_labels = {
+            "whole_range": "整",
+            "整切": "整",
+            "interspace": "区",
+            "椎间切": "区",
+            "区间切": "区",
+        }
+
+        planes = []
+        cut_modes = []
+        for plan in plans:
+            plane = str(plan.get("plane", ""))
+            plane_label = plane_labels.get(plane, plane)
+            if plane_label and plane_label not in planes:
+                planes.append(plane_label)
+
+            cut_mode = str(plan.get("cut_mode", ""))
+            cut_mode_label = cut_mode_labels.get(cut_mode, cut_mode)
+            if cut_mode_label and cut_mode_label not in cut_modes:
+                cut_modes.append(cut_mode_label)
+
+        return (
+            f"{'+'.join(planes) or '未知'}_"
+            f"{'+'.join(cut_modes) or '未知'}"
+        )
+
     def _build_plan_diagnostics(self, plans: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
         """
         为每个 plan 生成可读诊断信息。
@@ -370,7 +405,11 @@ class MappingStage(BaseStage):
                     value=center_value,
                 )
 
-        output_path = Path(context.request.output_dir) / "metadata" / "切片线.nii.gz"
+        output_path = (
+            Path(context.request.output_dir)
+            / "metadata"
+            / f"切片线_{self._debug_plan_suffix(plans)}.nii.gz"
+        )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         overlay_image = sitk.GetImageFromArray(overlay_array)
         overlay_image.CopyInformation(reference_image)
@@ -432,8 +471,13 @@ class MappingStage(BaseStage):
             )
 
         metadata_dir = Path(context.request.output_dir) / "metadata"
-        output_path = metadata_dir / "切片总览.nii.gz"
-        native_output_path = metadata_dir / "切片原始网格总览.nii.gz"
+        overview_plans = [
+            plan for plan in plans
+            if plan.get("plane") == "横状位"
+        ]
+        debug_suffix = self._debug_plan_suffix(overview_plans)
+        output_path = metadata_dir / f"切片总览_{debug_suffix}.nii.gz"
+        native_output_path = metadata_dir / f"切片原始网格总览_{debug_suffix}.nii.gz"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         overlay_image = sitk.GetImageFromArray(uniform_overlay_array)
         overlay_image.CopyInformation(uniform_reference)

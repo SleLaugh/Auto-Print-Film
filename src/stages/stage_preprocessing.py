@@ -17,6 +17,7 @@ import SimpleITK as sitk
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.models import DicomMetadata
+from src.reconstruction.dicom import read_source_dicom_metadata
 from src.utils import ErrorLog, is_debug_log_file_enabled
 
 # 设置警告过滤
@@ -101,6 +102,9 @@ class PreprocessingStage(BaseStage):
                 image = self._ensure_3d(image) # 确保图像为3D格式
                 
                 sitk.WriteImage(image, str(output_file)) # 保存为NIfTI格式
+                source_metadata = read_source_dicom_metadata(
+                    read_result['series_file_names'][0]
+                )
                 metadata_path = ""
                 if is_debug_log_file_enabled():
                     metadata = self._build_metadata(image, read_result['series_file_names'])
@@ -110,7 +114,9 @@ class PreprocessingStage(BaseStage):
                 
                 context.set_result(self.name, { # 记录成功结果，只保存路径
                     'nifti_path': str(output_file),
-                    'metadata_path': metadata_path
+                    'metadata_path': metadata_path,
+                    # 随上下文传递，不属于调试文件；第五步用它继承患者/检查信息。
+                    'source_dicom_metadata': source_metadata,
                 }) 
             else:
                 raise ValueError('读取DICOM失败：未找到有效的DICOM序列')

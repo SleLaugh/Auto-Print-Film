@@ -4,16 +4,24 @@
 """
 阶段五：重建与输出
 MPR多平面重建与DICOM生成
-支持三平面并行处理
+按阶段四 SlicePlan 执行直线 plane_stack 重建
 """
 
 from pathlib import Path
 from typing import Dict, Any, List
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
-from src.utils import DebugLog, ErrorLog
+from src.reconstruction import PlaneStackResampler
+from src.reconstruction.dicom import (
+    new_uid,
+    read_source_dicom_metadata,
+    write_ct_dicom,
+)
+from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
+from src.utils import DebugLog
 
 
 class ReconstructionStage(BaseStage):
@@ -43,42 +51,48 @@ class ReconstructionStage(BaseStage):
         )
         if not image_path:
             raise ValueError("定位结果缺少 raw_for_reconstruction_path/corrected_raw_path")
-        axial_params = map_result.get('axial_params', {})
-        sagittal_params = map_result.get('sagittal_params', {})
-        coronal_params = map_result.get('coronal_params', {})
+
+        plans = map_result.get("plans", [])
+        if not isinstance(plans, list):
+            raise ValueError("阶段四输出 plans 必须是列表")
+        for plan in plans:
+            self._validate_plan(plan)
         
         DebugLog("=" * 60)
         DebugLog("【阶段五】重建与输出 - MPR重建与DICOM生成")
         DebugLog(f"  输入图像: {image_path}")
         DebugLog(f"  输出目录: {request.output_dir}")
+        DebugLog(f"  规划组数: {len(plans)}")
         DebugLog("=" * 60)
-        
-        output_path = Path(request.output_dir)
-        axial_dir = output_path / '横状位'
-        sagittal_dir = output_path / '矢状位'
-        coronal_dir = output_path / '冠状位'
-        
-        for d in [axial_dir, sagittal_dir, coronal_dir]:
-            d.mkdir(parents=True, exist_ok=True)
-        
-        tasks = [
-            ('axial', self._process_axial, image_path, axial_dir, axial_params),
-            ('sagittal', self._process_sagittal, image_path, sagittal_dir, sagittal_params),
-            ('coronal', self._process_coronal, image_path, coronal_dir, coronal_params)
-        ]
-        
-        if self.parallel:
-            DebugLog("  启动三平面并行处理...")
-            results = self._run_parallel(tasks)
-        else:
-            DebugLog("  三平面串行处理...")
-            results = self._run_serial(tasks)
-        
-        result = {
-            'axial': results.get('axial', {'count': 0, 'output_dir': str(axial_dir)}),
-            'sagittal': results.get('sagittal', {'count': 0, 'output_dir': str(sagittal_dir)}),
-            'coronal': results.get('coronal', {'count': 0, 'output_dir': str(coronal_dir)})
-        }
+
+        output_root = Path(request.output_dir)
+        if not plans:
+            result = self._build_plan_summary(plans, output_root)
+            context.set_result(self.name, result)
+            DebugLog("  没有可执行的切片计划")
+            return context
+
+        image = sitk.ReadImage(str(image_path))
+        preprocessing_result = context.get_result("preprocessing") or {}
+        source_metadata = dict(preprocessing_result.get("source_dicom_metadata") or {})
+        if not source_metadata:
+            source_metadata = read_source_dicom_metadata(request.dicom_dir)
+        study_uid = source_metadata.get("0020|000d") or new_uid()
+        plan_results = []
+        for plan in plans:
+            DebugLog(f"  执行 plan: {plan['plan_id']}")
+            plan_results.append(
+                self._execute_plan(
+                    image=image,
+                    plan=plan,
+                    output_root=output_root,
+                    study_uid=study_uid,
+                    source_metadata=source_metadata,
+                )
+            )
+
+        result = self._build_plan_summary(plans, output_root)
+        result["outputs"] = plan_results
         
         context.set_result(self.name, result)
         
@@ -86,51 +100,179 @@ class ReconstructionStage(BaseStage):
         DebugLog("=" * 60)
         
         return context
-    
-    def _run_serial(self, tasks: List[tuple]) -> Dict[str, Dict]:
-        results = {}
-        for plane, func, *args in tasks:
-            DebugLog(f"  [{plane}] 开始处理...")
-            results[plane] = func(*args)
-            DebugLog(f"  [{plane}] 完成")
-        return results
-    
-    def _run_parallel(self, tasks: List[tuple]) -> Dict[str, Dict]:
-        results = {}
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            future_map = {}
-            for plane, func, *args in tasks:
-                DebugLog(f"  [{plane}] 提交任务...")
-                future = executor.submit(func, *args)
-                future_map[future] = plane
-            
-            for future in as_completed(future_map):
-                plane = future_map[future]
-                try:
-                    results[plane] = future.result()
-                    DebugLog(f"  [{plane}] 完成")
-                except Exception as e:
-                    ErrorLog(f"  [{plane}] 失败", e)
-                    results[plane] = {'count': 0, 'error': str(e)}
-        return results
-    
-    def _process_axial(self, image_path: str, output_dir: Path, params: Dict) -> Dict:
-        DebugLog("    [横状位] MPR重建...")
-        # TODO: 实现 resample_axial
-        # TODO: 实现 apply_window
-        # TODO: 实现 generate_dicom
-        return {'count': 0}
-    
-    def _process_sagittal(self, image_path: str, output_dir: Path, params: Dict) -> Dict:
-        DebugLog("    [矢状位] MPR重建...")
-        # TODO: 实现 resample_sagittal
-        # TODO: 实现 apply_window
-        # TODO: 实现 generate_dicom
-        return {'count': 0}
-    
-    def _process_coronal(self, image_path: str, output_dir: Path, params: Dict) -> Dict:
-        DebugLog("    [冠状位] MPR重建...")
-        # TODO: 实现 resample_coronal
-        # TODO: 实现 apply_window
-        # TODO: 实现 generate_dicom
-        return {'count': 0}
+
+    def _execute_plan(
+        self,
+        image: sitk.Image,
+        plan: Dict[str, Any],
+        output_root: Path,
+        study_uid: str,
+        source_metadata: Dict[str, str],
+    ) -> Dict[str, Any]:
+        resampler = PlaneStackResampler()
+        windows = unique_window_presets(plan["window_presets"])
+        series_uids = {window.name: new_uid() for window in windows}
+        group_name = self._plan_group_name(plan)
+        output_dirs = {
+            window.name: output_root
+            / str(plan["plane"])
+            / window.name
+            / group_name
+            if group_name
+            else output_root / str(plan["plane"]) / window.name
+            for window in windows
+        }
+        for output_dir in output_dirs.values():
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+        for planned_slice in plan["slices"]:
+            sampled_image = resampler.sample_slice(image, plan, planned_slice)
+            for window in windows:
+                windowed_image = apply_window_to_image(sampled_image, window)
+                output_path = output_dirs[window.name] / (
+                    f"切片_{int(planned_slice['index']):04d}.dcm"
+                )
+                write_ct_dicom(
+                    image=windowed_image,
+                    output_path=output_path,
+                    plan=plan,
+                    planned_slice=planned_slice,
+                    window=window,
+                    series_uid=series_uids[window.name],
+                    study_uid=study_uid,
+                    total_slices=len(plan["slices"]),
+                    source_metadata=source_metadata,
+                )
+
+        return {
+            "plan_id": plan["plan_id"],
+            "plane": plan["plane"],
+            "group_name": plan.get("group_name", ""),
+            "slice_count": len(plan["slices"]),
+            "image_count": len(plan["slices"]) * len(windows),
+            "window_outputs": {
+                name: str(path)
+                for name, path in output_dirs.items()
+            },
+        }
+
+    @staticmethod
+    def _plan_group_name(plan: Dict[str, Any]) -> str:
+        if plan.get("cut_mode") in {"whole_range", "整切"}:
+            return ""
+        group_name = str(plan.get("group_name", ""))
+        if group_name in {"", "whole_range"}:
+            return "区间切"
+        if group_name in {"interspace", "区间切"}:
+            return "区间切"
+        return group_name.replace("/", "_").replace("\\", "_")
+
+    @staticmethod
+    def _validate_plan(plan: Dict[str, Any]) -> None:
+        plan_id = plan.get("plan_id", "<unknown>") if isinstance(plan, dict) else "<unknown>"
+        if not isinstance(plan, dict):
+            raise ValueError(f"plan_id={plan_id} 必须是对象")
+        if not plan.get("plan_id"):
+            raise ValueError("plan_id 不能为空")
+        if plan.get("geometry_type") != "plane_stack":
+            raise ValueError(
+                f"plan_id={plan_id} geometry_type={plan.get('geometry_type')} "
+                "当前阶段五仅支持 plane_stack"
+            )
+        for field_name in (
+            "plane",
+            "slices",
+            "extent_mm",
+            "output_spacing_mm",
+            "slice_thickness",
+            "slice_spacing",
+            "window_presets",
+        ):
+            if field_name not in plan:
+                raise ValueError(f"plan_id={plan_id} 缺少字段: {field_name}")
+        if not isinstance(plan["slices"], list):
+            raise ValueError(f"plan_id={plan_id} slices 必须是列表")
+        if not plan["slices"]:
+            raise ValueError(f"plan_id={plan_id} slices 不能为空")
+        if not isinstance(plan["extent_mm"], dict):
+            raise ValueError(f"plan_id={plan_id} extent_mm 必须是对象")
+        if not isinstance(plan["output_spacing_mm"], dict):
+            raise ValueError(f"plan_id={plan_id} output_spacing_mm 必须是对象")
+        if float(plan["slice_thickness"]) <= 0:
+            raise ValueError(f"plan_id={plan_id} slice_thickness 必须大于 0")
+        if float(plan["slice_spacing"]) <= 0:
+            raise ValueError(f"plan_id={plan_id} slice_spacing 必须大于 0")
+        if not isinstance(plan["window_presets"], list) or not plan["window_presets"]:
+            raise ValueError(f"plan_id={plan_id} window_presets 不能为空")
+        for field_name in ("width", "height"):
+            if float(plan["extent_mm"].get(field_name, 0.0)) < 0:
+                raise ValueError(f"plan_id={plan_id} extent_mm.{field_name} 不能小于 0")
+        for field_name in ("x", "y"):
+            if float(plan["output_spacing_mm"].get(field_name, 0.0)) <= 0:
+                raise ValueError(
+                    f"plan_id={plan_id} output_spacing_mm.{field_name} 必须大于 0"
+                )
+        for planned_slice in plan["slices"]:
+            for field_name in ("index", "center", "normal", "row_dir", "col_dir"):
+                if field_name not in planned_slice:
+                    raise ValueError(
+                        f"plan_id={plan_id} slice 缺少字段: {field_name}"
+                    )
+
+    @staticmethod
+    def _build_plan_summary(
+        plans: List[Dict[str, Any]],
+        output_root: Path,
+    ) -> Dict[str, Any]:
+        plane_summary = {}
+        for plan in plans:
+            plane = plan["plane"]
+            window_count = len(dict.fromkeys(plan["window_presets"]))
+            summary = plane_summary.setdefault(
+                plane,
+                {
+                    "plan_count": 0,
+                    "count": 0,
+                    "slice_count": 0,
+                    "image_count": 0,
+                    "output_dir": str(output_root / plane),
+                },
+            )
+            slice_count = len(plan["slices"])
+            summary["plan_count"] += 1
+            summary["count"] += slice_count
+            summary["slice_count"] += slice_count
+            summary["image_count"] += slice_count * window_count
+
+        slice_count = sum(summary["slice_count"] for summary in plane_summary.values())
+        image_count = sum(summary["image_count"] for summary in plane_summary.values())
+        result = {
+            "plan_count": len(plans),
+            "slice_count": slice_count,
+            "image_count": image_count,
+            "planes": plane_summary,
+        }
+        result.update({
+            "axial": plane_summary.get("横状位", {
+                "plan_count": 0,
+                "count": 0,
+                "slice_count": 0,
+                "image_count": 0,
+                "output_dir": str(output_root / "横状位"),
+            }),
+            "sagittal": plane_summary.get("矢状位", {
+                "plan_count": 0,
+                "count": 0,
+                "slice_count": 0,
+                "image_count": 0,
+                "output_dir": str(output_root / "矢状位"),
+            }),
+            "coronal": plane_summary.get("冠状位", {
+                "plan_count": 0,
+                "count": 0,
+                "slice_count": 0,
+                "image_count": 0,
+                "output_dir": str(output_root / "冠状位"),
+            }),
+        })
+        return result

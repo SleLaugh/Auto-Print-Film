@@ -20,6 +20,14 @@ from src.stages.stage_mapping import MappingStage
 
 
 class Stage4SlicePlanningTest(unittest.TestCase):
+    def test_debug_filename_suffix_uses_short_plane_and_cut_mode_labels(self):
+        self.assertEqual(
+            MappingStage._debug_plan_suffix([
+                {"plane": "冠状位", "cut_mode": "interspace"},
+            ]),
+            "冠_区",
+        )
+
     def test_select_planner_supports_configured_whole_range_body_parts(self):
         config_path = Path("src/config/localization_config.json")
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -416,6 +424,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
             result = context.get_result("mapping")
             overlay_path = Path(result["debug_slice_plan_overlay_path"])
+            self.assertEqual(overlay_path.name, "切片线_横_整.nii.gz")
             overlay_image = sitk.ReadImage(str(overlay_path))
             overlay_array = sitk.GetArrayFromImage(overlay_image)
             self.assertTrue(overlay_path.exists())
@@ -459,6 +468,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
             result = context.get_result("mapping")
             overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
+            self.assertEqual(overview_path.name, "切片总览_横_整.nii.gz")
             overview_image = sitk.ReadImage(str(overview_path))
             overview_array = sitk.GetArrayFromImage(overview_image)
             self.assertTrue(overview_path.exists())
@@ -469,6 +479,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(center_rows.tolist(), [10, 20])
             self.assertEqual(int(center_rows[1] - center_rows[0]), 10)
             native_path = Path(result["debug_slice_plan_native_overview_overlay_path"])
+            self.assertEqual(native_path.name, "切片原始网格总览_横_整.nii.gz")
             native_image = sitk.ReadImage(str(native_path))
             self.assertEqual(native_image.GetSize(), image.GetSize())
 

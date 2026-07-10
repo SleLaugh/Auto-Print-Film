@@ -1,0 +1,357 @@
+# AutoPrintFilm 框架基础收口设计
+
+## 1. 目标
+
+在不改变预处理、分割、定位、规划、重建和报告六个阶段医学逻辑的前提下，
+把当前可运行的脚本收口成可配置、可验证、可追踪、可安全扩展的处理框架。
+
+本轮只建设五个基础模块：
+
+1. 统一配置与启动前检查；
+2. 阶段输入输出契约；
+3. 任务和阶段生命周期；
+4. 任务目录与产物管理；
+5. 标准化错误体系。
+
+## 2. 非目标
+
+本轮不做以下工作：
+
+- 不实现或调整回正算法；
+- 不增加新的部位、切割方式、重建状位或模型；
+- 不改变现有层厚、层间距、窗宽窗位和 DICOM 生成规则；
+- 不引入数据库、消息队列、Web API、桌面界面或并发任务调度；
+- 不实现断点续跑、自动重试和任务取消，只为这些能力保留稳定接口；
+- 不迁移到 Pydantic 等新框架，继续使用标准库 `dataclasses`，避免扩大依赖面。
+
+## 3. 总体架构
+
+保留现有六阶段 Pipeline。新增的框架组件围绕 Pipeline 工作，不侵入各阶段的
+医学计算：
+
+```text
+CLI / Python caller
+        |
+        v
+ConfigLoader ---- CapabilityRegistry
+        |                  |
+        +------> PreflightValidator
+                         |
+                         v
+                    JobContext
+                         |
+                         v
+Request -> Pipeline -> StageContract[] -> Response
+              |              |
+              |              +--> typed StageResult
+              |
+              +--> ArtifactManager
+              +--> ErrorInfo / WarningInfo
+              +--> manifest.json
+```
+
+调用入口负责解析请求；配置加载器负责形成唯一的生效配置；预检器在任何输出目录
+变更或外部推理之前验证环境；Pipeline 只负责编排生命周期；阶段继续负责业务处理，
+但通过有类型的结果对象交接；产物管理器统一分配和清理路径；任务清单记录全过程。
+
+## 4. 模块边界
+
+### 4.1 配置模块
+
+新增 `src/config/settings.py`，定义：
+
+- `AppConfig`：应用总配置；
+- `NnUNetConfig`：nnUNet 路径和执行选项；
+- `LoggingConfig`：控制台、文件日志和调试产物开关；
+- `PipelineConfig`：失败策略和产物保留策略。
+
+新增 `src/config/loader.py`，只负责读取配置来源和合并，不执行业务校验。
+
+配置优先级固定为：
+
+```text
+显式调用参数 > 环境变量 > 本机配置 > 仓库默认配置
+```
+
+仓库默认配置不得包含开发者机器绝对路径。空的 nnUNet 路径表示沿用环境变量，
+不能被转换成当前工作目录。
+
+配置加载完成后形成不可变的 `AppConfig`，Pipeline 运行期间不得重新读取 JSON。
+现有阶段构造函数可暂时接收从 `AppConfig` 转换出的字典，以分批迁移并保持兼容。
+
+### 4.2 能力注册与预检
+
+新增 `src/core/capabilities.py`，集中声明当前实际支持的：
+
+- 检查类型；
+- 部位；
+- 切割方式；
+- 重建状位；
+- 模型规则。
+
+能力注册表是请求校验和 planner 选择的共同事实来源，CLI 的枚举仍可表达未来能力，
+但未注册的组合必须在 Pipeline 启动前返回明确错误，不能运行到阶段四才失败，也不能
+静默跳过请求状位。
+
+新增 `src/core/preflight.py`，按以下顺序执行只读检查：
+
+1. 请求结构合法；
+2. 请求组合在能力注册表中受支持；
+3. 输入目录存在且可读取；
+4. 输出目录的父目录可用；
+5. `nnUNetv2_predict` 可发现；
+6. nnUNet 必需目录和目标模型存在；
+7. 输入输出目录不是同一路径，输出目录不包含输入目录。
+
+预检失败时不得创建、清空或修改输出目录。
+
+### 4.3 阶段契约
+
+新增 `src/models/stage_results.py`，为各阶段提供顶层结果类型：
+
+- `PreprocessingResult`；
+- `SegmentationResult`；
+- `LocalizationStageResult`；
+- `MappingStageResult`；
+- `ReconstructionStageResult`；
+- `ReportingStageResult`。
+
+结果模型第一轮只约束阶段间真正使用的稳定字段。调试详情仍可放入
+`diagnostics: Dict[str, Any]`，避免一次性重写所有内部结构。
+
+每个结果共同包含：
+
+- `schema_version`；
+- `stage_name`；
+- `warnings`；
+- `artifacts`；
+- `diagnostics`。
+
+新增 `StageArtifact`，字段包括 `artifact_type`、`path`、`retention` 和可选的
+`description`。路径统一使用字符串序列化，在内存中由产物管理器转换为 `Path`。
+
+`ProcessingContext` 新增有类型的 `set_stage_result()` 和 `require_stage_result()`。
+旧的 `set_result()`、`get_result()` 在迁移期保留，但所有新代码必须使用有类型接口。
+类型不匹配或缺少前置结果时抛出框架错误，而不是在阶段内部出现 `KeyError`。
+
+### 4.4 任务和阶段生命周期
+
+新增以下枚举：
+
+```text
+JobStatus: pending, running, succeeded, failed, cancelled
+StageStatus: pending, running, succeeded, failed, skipped, cancelled
+```
+
+`ProcessingContext` 新增：
+
+- `job_id`：默认生成 UUID，可由调用方显式提供；
+- `job_status`；
+- `stage_records`；
+- `started_at`、`finished_at`；
+- `effective_config_summary`；
+- `software_version`。
+
+每个 `StageRecord` 记录状态、开始/结束时间、耗时、错误、警告和结果 schema 版本。
+Pipeline 是唯一允许改变任务和阶段状态的组件；Stage 只返回结果或抛出异常。
+
+状态转换规则固定为：
+
+```text
+job:   pending -> running -> succeeded | failed | cancelled
+stage: pending -> running -> succeeded | failed
+stage: pending -> skipped | cancelled
+```
+
+本轮继续采用 `fail_fast`：任一必需阶段失败后停止，后续阶段标记 `skipped`。
+配置中预留失败策略字段，但本轮不开放其他行为。
+
+### 4.5 任务目录与产物管理
+
+新增 `src/core/artifacts.py`，由 `ArtifactManager` 唯一负责路径创建和清理。
+
+每次任务继续使用项目现有输出目录结构。调试模式在根目录增加 `manifest.json`，
+非调试模式不生成；框架不预建 `final/`、`intermediate/`、`debug/` 或 `logs/` 等新
+分层目录。业务阶段按需创建现有的 `metadata/`、`nifti/`、`segmentation/` 和各状位目录。
+
+兼容要求：现有调用方传入的 `output_dir` 仍代表本次任务目录，不额外自动增加一层
+随机目录；`job_id` 写入 manifest。批处理系统以后应为每个任务传入独立目录。
+
+产物保留级别：
+
+```text
+final         始终保留
+intermediate  成功时按配置清理，失败时默认保留
+debug         只在 debug_artifacts_enabled=true 时生成并保留
+log           按日志配置保留
+```
+
+`output_dir` 定义为本次任务专用目录。所有只读预检通过后，Pipeline 删除已有输出目录
+并重新创建，避免旧结果混入本次任务；预检失败时不得修改输出目录。
+
+`ArtifactManager` 只负责任务开始前重建输出根目录、登记已有阶段产物以及写 manifest，
+不改变横状位、矢状位、冠状位等现有业务输出位置。
+
+### 4.6 标准化错误体系
+
+新增 `src/core/errors.py`：
+
+```text
+FrameworkError
+├── ConfigurationError
+├── RequestValidationError
+├── CapabilityError
+├── DependencyError
+├── StageInputError
+├── ExternalProcessError
+├── ArtifactError
+└── OutputValidationError
+```
+
+每个错误包含：
+
+- `code`：稳定机器码；
+- `message`：用户可读中文消息；
+- `stage`：可选阶段名；
+- `retryable`：是否适合上层重试；
+- `details`：不含患者敏感信息的诊断字段；
+- 原始异常通过异常链保存，不直接写入正常交付报告。
+
+未知异常统一包装成 `UNEXPECTED_ERROR`，详细堆栈只进入错误日志或 debug 报告。
+正常 `Response` 和 `manifest.json` 使用同一错误序列化格式。
+
+## 5. Manifest 设计
+
+任务开始后立即原子写入 `manifest.json`，阶段状态变化后更新。先写临时文件，再使用
+同目录替换，避免进程中断留下半个 JSON。
+
+最低结构：
+
+```json
+{
+  "schema_version": "job_manifest_v1",
+  "job_id": "uuid",
+  "status": "running",
+  "created_at": "ISO-8601",
+  "started_at": "ISO-8601",
+  "finished_at": null,
+  "software_version": "1.0.0",
+  "request": {},
+  "effective_config": {},
+  "stages": [],
+  "artifacts": [],
+  "warnings": [],
+  "errors": []
+}
+```
+
+`effective_config` 只保存可复现所需的非敏感摘要，不保存患者信息、环境变量全集或
+本机秘密。nnUNet 路径只记录配置来源和模型 ID，不要求记录完整绝对路径。
+
+## 6. 数据流与失败行为
+
+正常流程：
+
+1. CLI 解析 `Request` 和显式配置；
+2. `ConfigLoader` 形成 `AppConfig`；
+3. `PreflightValidator` 完成全部只读检查；
+4. `ArtifactManager` 安全初始化任务目录；
+5. Pipeline 创建 manifest，把任务设为 `running`；
+6. 每个阶段由 Pipeline 更新状态并执行；
+7. Stage 返回有类型结果，Context 校验并登记产物；
+8. 每个状态边界原子更新 manifest；
+9. 全部阶段完成后清理允许删除的中间产物；
+10. 任务标记 `succeeded` 并返回 Response。
+
+失败流程：
+
+1. 预检失败：不创建输出，不生成 manifest，直接返回标准错误；
+2. 目录初始化失败：不启动任何阶段；
+3. 阶段失败：阶段标记 `failed`，后续阶段标记 `skipped`；
+4. 中间产物默认保留用于排查；
+5. manifest 标记 `failed` 并记录标准错误；
+6. 清理过程失败只追加 warning，不覆盖原始业务错误。
+
+## 7. 兼容策略
+
+框架收口采用渐进迁移：
+
+- `Pipeline()` 仍可无参数构造；
+- `Request` 的现有字段和 CLI 参数保持不变；
+- `Response.to_dict()` 保留现有计数字段，同时新增 job 和状态信息；
+- 旧 Context 字典接口保留一个迁移周期；
+- 现有业务输出路径暂不移动；
+- 现有 75 个测试必须继续通过；
+- 新框架测试不得依赖真实 nnUNet 模型或患者数据。
+
+废弃接口要在代码注释和文档中标记，不在本轮直接删除。
+
+## 8. 测试策略
+
+### 8.1 单元测试
+
+- 配置来源合并优先级；
+- 空路径不覆盖环境变量；
+- 能力组合允许和拒绝；
+- 错误序列化；
+- 状态转换合法性；
+- 产物路径和保留策略；
+- manifest 原子写入内容；
+- 有类型阶段结果的存取和类型错误。
+
+### 8.2 Pipeline 契约测试
+
+使用假 Stage 验证：
+
+- 六阶段均成功；
+- 中间阶段失败后后续阶段为 `skipped`；
+- warning 不导致任务失败；
+- 失败时保留中间产物；
+- 非框架输出目录不会被删除；
+- manifest 状态与 Response 一致。
+
+### 8.3 回归测试
+
+继续使用：
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+本轮把项目虚拟环境中的 Python 固化为文档和脚本入口，但不要求引入 pytest。
+
+## 9. 安全与隐私约束
+
+- 日志、错误详情和 manifest 不记录患者姓名、患者 ID、出生日期等 DICOM 敏感字段；
+- 不记录完整环境变量；
+- 输出目录删除必须经过 ArtifactManager 的所有权校验；
+- 预检期间不修改输入目录；
+- 输入路径和输出路径必须经过规范化后再比较；
+- 调试产物默认关闭，生产配置不得默认保留分割或中间 NIfTI。
+
+## 10. 实施分组
+
+框架建设拆成五个可独立验收的任务组：
+
+1. 配置模型、加载器和预检；
+2. 错误模型、任务状态和阶段记录；
+3. 产物管理器和安全输出目录；
+4. 有类型阶段结果和 Context 兼容层；
+5. Pipeline 集成、manifest、回归测试和文档。
+
+每一组都先增加失败测试，再做最小实现；不在同一任务中修改具体医学算法。
+
+## 11. 完成标准
+
+满足以下条件才算框架基础收口完成：
+
+- 所有配置通过单一入口形成不可变的生效配置；
+- 不支持的请求在输出目录发生变化前被拒绝；
+- Pipeline 不再递归删除未知目录；
+- 每个任务和阶段都有明确状态与时间记录；
+- 阶段间稳定数据通过有类型结果交接；
+- Response、manifest 和日志可通过同一个 job_id 关联；
+- 已知错误具有稳定错误码；
+- 原有 75 个测试和新增框架测试全部通过；
+- README 给出安装、配置、预检、运行和测试的唯一推荐命令；
+- 没有新增对真实患者数据或真实模型的自动测试依赖。

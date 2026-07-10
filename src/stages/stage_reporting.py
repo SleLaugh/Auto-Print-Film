@@ -15,6 +15,7 @@ import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
+from src.models import ReportingStageResult
 from src.utils import DebugLog, is_debug_log_file_enabled
 
 
@@ -63,7 +64,7 @@ class ReportingStage(BaseStage):
             ),
         }
         
-        context.set_result(self.name, result)
+        context.set_stage_result(ReportingStageResult(payload=result))
         
         DebugLog(f"  ✅ 阶段六完成，总耗时: {context.get_total_time():.2f}s")
         DebugLog("=" * 60)

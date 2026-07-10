@@ -95,27 +95,13 @@ class PlaneConfigRequestTest(unittest.TestCase):
             }
         ])
 
-    def test_request_uses_three_default_bone_window_plane_configs(self):
-        # 老命令不传 plane_configs 时，仍要得到三个状位的默认骨窗配置。
+    def test_request_defaults_to_currently_supported_axial_plane(self):
+        # 默认请求只能声明当前框架实际支持的能力，其他状位必须显式请求并预检。
         request = Request(dicom_dir="/tmp/dicom", output_dir="/tmp/output")
 
         self.assertEqual(request.to_dict()["plane_configs"], [
             {
                 "plane": "横状位",
-                "slice_thickness": 1.0,
-                "slice_spacing": 1.0,
-                "window_presets": ["骨窗"],
-                "line_extent_mode": "full_plane",
-            },
-            {
-                "plane": "矢状位",
-                "slice_thickness": 1.0,
-                "slice_spacing": 1.0,
-                "window_presets": ["骨窗"],
-                "line_extent_mode": "full_plane",
-            },
-            {
-                "plane": "冠状位",
                 "slice_thickness": 1.0,
                 "slice_spacing": 1.0,
                 "window_presets": ["骨窗"],

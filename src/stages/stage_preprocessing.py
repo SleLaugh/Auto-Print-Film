@@ -16,7 +16,7 @@ import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
-from src.models import DicomMetadata
+from src.models import DicomMetadata, PreprocessingResult
 from src.reconstruction.dicom import read_source_dicom_metadata
 from src.utils import ErrorLog, is_debug_log_file_enabled
 
@@ -112,12 +112,11 @@ class PreprocessingStage(BaseStage):
                         json.dump(metadata.to_dict(), f, ensure_ascii=False, indent=2)
                     metadata_path = str(metadata_file)
                 
-                context.set_result(self.name, { # 记录成功结果，只保存路径
-                    'nifti_path': str(output_file),
-                    'metadata_path': metadata_path,
-                    # 随上下文传递，不属于调试文件；第五步用它继承患者/检查信息。
-                    'source_dicom_metadata': source_metadata,
-                }) 
+                context.set_stage_result(PreprocessingResult(
+                    nifti_path=str(output_file),
+                    metadata_path=metadata_path,
+                    source_dicom_metadata=source_metadata,
+                ))
             else:
                 raise ValueError('读取DICOM失败：未找到有效的DICOM序列')
                 

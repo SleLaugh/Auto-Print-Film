@@ -5,6 +5,8 @@ from pathlib import Path
 from src.core.pipeline import Pipeline
 from src.models import Request
 from src.utils.Logger_utils import _logger_manager
+from src.config import LoggingConfig
+from src.utils import configure_logging
 
 
 class DebugArtifactRetentionTest(unittest.TestCase):
@@ -32,6 +34,16 @@ class DebugArtifactRetentionTest(unittest.TestCase):
             self.assertFalse(is_debug_log_file_enabled())
             _logger_manager.debug_log_file_enabled = True
             self.assertTrue(is_debug_log_file_enabled())
+        finally:
+            _logger_manager.debug_log_file_enabled = original
+
+    def test_loaded_logging_config_can_be_applied_once(self):
+        original = _logger_manager.debug_log_file_enabled
+        try:
+            configure_logging(LoggingConfig(debug_log_file_enabled=False))
+            self.assertFalse(_logger_manager.debug_log_file_enabled)
+            configure_logging(LoggingConfig(debug_log_file_enabled=True))
+            self.assertTrue(_logger_manager.debug_log_file_enabled)
         finally:
             _logger_manager.debug_log_file_enabled = original
 

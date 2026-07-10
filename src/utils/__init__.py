@@ -6,6 +6,18 @@
 导出所有工具函数
 """
 
-from .Logger_utils import RunLog, ErrorLog, DebugLog, is_debug_log_file_enabled
+from .Logger_utils import (
+    RunLog,
+    ErrorLog,
+    DebugLog,
+    configure_logging,
+    is_debug_log_file_enabled,
+)
 
-__all__ = ['RunLog', 'ErrorLog', 'DebugLog', 'is_debug_log_file_enabled']
+__all__ = [
+    'RunLog',
+    'ErrorLog',
+    'DebugLog',
+    'configure_logging',
+    'is_debug_log_file_enabled',
+]

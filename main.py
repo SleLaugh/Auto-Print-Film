@@ -17,8 +17,9 @@ sys.path.insert(0, str(project_root))
 
 # ===== 导入（在 sys.path 操作之后）=====
 from src.core import Pipeline
+from src.config import load_app_config
 from src.models import Request, BodyPartEnum, CheckTypeEnum, ScanThicknessEnum, CutModeEnum, PlaneConfig
-from src.utils import RunLog, ErrorLog, DebugLog  
+from src.utils import RunLog, ErrorLog, DebugLog, configure_logging
 
 
 def parse_arguments():
@@ -104,7 +105,7 @@ def parse_arguments():
         # 这里先采用 JSON 字符串，避免为一个小参数组同时维护命令行文件入口。
         help='三平面重建参数 JSON 数组，例如: [{"plane":"冠状位","slice_thickness":5,"slice_spacing":10,"window_presets":["骨窗"]}]'
     )
-    
+
     # 解析命令行输入的参数
     # 比如运行：python script.py -i /path/to/dicom -o /path/to/output --body_part 颈椎
     # 就会把参数解析成对象返回
@@ -137,10 +138,12 @@ def parse_plane_configs(value):
 
 
 def main():
-    RunLog("SpineMPRProcessor v1.0.0 启动")
-    
     try:
         args = parse_arguments()
+
+        app_config = load_app_config()
+        configure_logging(app_config.logging)
+        RunLog("SpineMPRProcessor v1.0.0 启动")
 
         plane_configs = parse_plane_configs(args.plane_configs)
         # 先组装基础参数，再按需放入 plane_configs。这样未传该参数时仍使用
@@ -170,7 +173,7 @@ def main():
         DebugLog(f"切割方式: {request.cut_mode.value}")
         DebugLog(f"三平面参数: {request.to_dict()['plane_configs']}")
         
-        pipeline = Pipeline()
+        pipeline = Pipeline(config=app_config)
         response = pipeline.run(request)
         
         if response.success:

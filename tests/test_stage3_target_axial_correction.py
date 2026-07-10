@@ -11,7 +11,14 @@ from src.utils.Logger_utils import _logger_manager
 _logger_manager.debug_log_file_enabled = True
 
 from src.core.context import ProcessingContext
-from src.models import LabelCoordinate, LabelTarget, Request, VoxelBBox, VoxelPoint
+from src.models import (
+    LabelCoordinate,
+    LabelTarget,
+    LocalizationStageResult,
+    Request,
+    VoxelBBox,
+    VoxelPoint,
+)
 from src.stages.stage_localization import LocalizationStage
 from src.stages.stage_reconstruction import ReconstructionStage
 
@@ -548,6 +555,12 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             stage.execute(context)
 
             result = context.get_result("localization")
+            self.assertIsInstance(
+                context.require_stage_result(
+                    "localization", LocalizationStageResult
+                ),
+                LocalizationStageResult,
+            )
             metadata = json.loads(
                 (temp_path / "metadata" / "localization_result.json").read_text(encoding="utf-8")
             )

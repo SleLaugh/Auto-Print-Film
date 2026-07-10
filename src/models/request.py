@@ -73,15 +73,13 @@ class PlaneConfig:
 
 def default_plane_configs() -> List[PlaneConfig]:
     """
-    默认输出三个状位的骨窗配置。
+    默认输出当前已实现的横状位骨窗配置。
 
-    旧命令没有传 plane_configs 时仍然能构造 Request；后续重建阶段
-    可以直接读取这个列表，不需要再判断 None。
+    未实现的矢状位和冠状位必须由调用方显式请求，并由能力预检给出清晰错误，
+    避免默认参数宣称超过 planner 的真实能力。
     """
     return [
         PlaneConfig(PlaneTypeEnum.横状位, 1.0, 1.0, [WindowPresetEnum.骨窗]),
-        PlaneConfig(PlaneTypeEnum.矢状位, 1.0, 1.0, [WindowPresetEnum.骨窗]),
-        PlaneConfig(PlaneTypeEnum.冠状位, 1.0, 1.0, [WindowPresetEnum.骨窗]),
     ]
 
 @dataclass

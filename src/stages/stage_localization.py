@@ -21,6 +21,7 @@ from src.models import (
     LabelCoordinate,
     LabelTarget,
     LocalizationResult,
+    LocalizationStageResult,
     NiftiImageInfo,
     VoxelBBox,
     VoxelPoint,
@@ -57,6 +58,18 @@ class LocalizationStage(BaseStage):
         )
         self._load_config()
         self._load_nnunet_config()
+        self._apply_injected_nnunet_config()
+
+    def _apply_injected_nnunet_config(self):
+        """用 Pipeline 注入的统一配置覆盖旧的阶段内文件配置。"""
+
+        project_root = Path(__file__).resolve().parents[2]
+        for key in ('nnUNet_raw', 'nnUNet_preprocessed', 'nnUNet_results'):
+            if key in self.config:
+                self._nnunet_paths[key] = self._resolve_config_path(
+                    self.config.get(key, ''),
+                    project_root,
+                )
 
     def _load_config(self):
         """
@@ -88,6 +101,15 @@ class LocalizationStage(BaseStage):
         定位阶段不重新匹配模型，只复用 segmentation 阶段得到的 model_id。
         这里读取路径配置，是为了把 label 名称转换成真实 label id。
         """
+        project_root = Path(__file__).resolve().parents[2]
+        injected_keys = ('nnUNet_raw', 'nnUNet_preprocessed', 'nnUNet_results')
+        if any(key in self.config for key in injected_keys):
+            self._nnunet_paths = {
+                key: self._resolve_config_path(self.config.get(key, ''), project_root)
+                for key in injected_keys
+            }
+            return
+
         config_paths = [
             Path.cwd() / "config" / "nnuNet_config.json",
             Path.cwd() / "nnuNet_config.json",
@@ -95,7 +117,6 @@ class LocalizationStage(BaseStage):
         ]
 
         self._nnunet_paths = {}
-        project_root = Path(__file__).resolve().parents[2]
         for config_path in config_paths:
             if not config_path.exists():
                 continue
@@ -295,7 +316,7 @@ class LocalizationStage(BaseStage):
             skew_params=result['skew_params'],
         )
         
-        context.set_result(self.name, result)
+        context.set_stage_result(LocalizationStageResult(payload=result))
         
         DebugLog("  ✅ 阶段三完成")
         DebugLog("=" * 60)

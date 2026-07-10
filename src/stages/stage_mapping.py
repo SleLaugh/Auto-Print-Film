@@ -19,7 +19,7 @@ import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
-from src.models import Point3D
+from src.models import MappingStageResult, Point3D
 from src.planning.geometry import normalize_vector, subtract_points, vector_length
 from src.planning import select_planner
 from src.utils import DebugLog, is_debug_log_file_enabled
@@ -104,7 +104,7 @@ class MappingStage(BaseStage):
             'debug_slice_plan_native_overview_overlay_path': debug_native_overview_overlay_path,
         }
         
-        context.set_result(self.name, result)
+        context.set_stage_result(MappingStageResult(payload=result))
         
         DebugLog(f"    切片计划数量: {len(plans)}")
         for diagnostic in diagnostics:

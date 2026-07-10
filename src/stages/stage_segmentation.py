@@ -15,6 +15,7 @@ import os
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
+from src.models import SegmentationResult
 from src.utils import DebugLog, ErrorLog
 
 
@@ -43,28 +44,30 @@ class SegmentationStage(BaseStage):
             "nnUNet_results": ""
         }
         
-        # 尝试加载外部配置文件
-        config_paths = [
-            Path.cwd() / "config" / "nnuNet_config.json",
-            Path.cwd() / "nnuNet_config.json",
-            Path(__file__).parent.parent / "config" / "nnuNet_config.json",
-        ]
-        
-        config_loaded = False
-        for config_path in config_paths:
-            if config_path.exists():
+        if self.config:
+            # Pipeline 已通过统一 ConfigLoader 形成生效配置，不再重复读取 JSON。
+            default_config.update(self.config)
+        else:
+            # 保留文件加载只为兼容直接构造 Stage 的旧调用。
+            config_paths = [
+                Path.cwd() / "config" / "nnuNet_config.json",
+                Path.cwd() / "nnuNet_config.json",
+                Path(__file__).parent.parent / "config" / "nnuNet_config.json",
+            ]
+            config_loaded = False
+            for config_path in config_paths:
+                if not config_path.exists():
+                    continue
                 try:
                     with open(config_path, 'r', encoding='utf-8') as f:
-                        config = json.load(f)
-                    default_config.update(config)
+                        default_config.update(json.load(f))
                     config_loaded = True
                     print(f"[推理与分割] 加载配置文件: {config_path}")
                     break
                 except Exception as e:
                     print(f"[警告] 加载配置文件失败: {config_path}, 错误: {e}")
-        
-        if not config_loaded:
-            print("[推理与分割] 未找到外部配置文件，使用默认配置")
+            if not config_loaded:
+                print("[推理与分割] 未找到外部配置文件，使用默认配置")
         
         # 应用配置
         self._configuration = default_config.get('_configuration', "3d_fullres")
@@ -158,7 +161,7 @@ class SegmentationStage(BaseStage):
             'model': model_info
         }
         
-        context.set_result(self.name, result)
+        context.set_stage_result(SegmentationResult(**result))
         
         DebugLog(f"  ✅ 分割结果保存至: {output_path}")
         DebugLog("=" * 60)

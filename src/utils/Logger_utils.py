@@ -292,4 +292,20 @@ def is_debug_log_file_enabled() -> bool:
     return bool(_logger_manager.debug_log_file_enabled)
 
 
-__all__ = ['RunLog', 'DebugLog', 'ErrorLog', 'is_debug_log_file_enabled']
+def configure_logging(config) -> None:
+    """应用统一加载后的日志配置，供入口在任务开始前调用。"""
+
+    _logger_manager.console_enabled = bool(config.console_enabled)
+    _logger_manager.run_log_file_enabled = bool(config.run_log_file_enabled)
+    _logger_manager.debug_log_file_enabled = bool(config.debug_log_file_enabled)
+    _logger_manager.error_log_file_enabled = bool(config.error_log_file_enabled)
+    _logger_manager.base_dir = Path(config.base_dir)
+
+
+__all__ = [
+    'RunLog',
+    'DebugLog',
+    'ErrorLog',
+    'is_debug_log_file_enabled',
+    'configure_logging',
+]

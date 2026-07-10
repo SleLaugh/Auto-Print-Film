@@ -96,6 +96,16 @@ class Response:
             字典 {阶段名称: 耗时(秒)}
         """
         return self.context.timings
+
+    @property
+    def status(self) -> str:
+        """任务生命周期状态。"""
+
+        return self.context.job_status.value
+
+    @property
+    def warnings(self) -> List[Dict[str, Any]]:
+        return list(self.context.warnings)
     
     def get_stage_result(self, stage_name: str) -> Optional[Any]:
         """
@@ -171,5 +181,12 @@ class Response:
             'timings': self.timings,
             'axial_count': self.get_axial_count(),
             'sagittal_count': self.get_sagittal_count(),
-            'coronal_count': self.get_coronal_count()
+            'coronal_count': self.get_coronal_count(),
+            'job_id': self.context.job_id,
+            'status': self.status,
+            'warnings': self.warnings,
+            'stages': {
+                name: record.status.value
+                for name, record in self.context.stage_records.items()
+            },
         }

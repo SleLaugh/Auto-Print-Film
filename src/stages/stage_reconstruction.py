@@ -14,6 +14,7 @@ import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
+from src.models import ReconstructionStageResult
 from src.reconstruction import PlaneStackResampler
 from src.reconstruction.dicom import (
     new_uid,
@@ -68,7 +69,7 @@ class ReconstructionStage(BaseStage):
         output_root = Path(request.output_dir)
         if not plans:
             result = self._build_plan_summary(plans, output_root)
-            context.set_result(self.name, result)
+            context.set_stage_result(ReconstructionStageResult(payload=result))
             DebugLog("  没有可执行的切片计划")
             return context
 
@@ -94,7 +95,7 @@ class ReconstructionStage(BaseStage):
         result = self._build_plan_summary(plans, output_root)
         result["outputs"] = plan_results
         
-        context.set_result(self.name, result)
+        context.set_stage_result(ReconstructionStageResult(payload=result))
         
         DebugLog("  ✅ 阶段五完成")
         DebugLog("=" * 60)

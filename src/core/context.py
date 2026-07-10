@@ -21,6 +21,9 @@
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from dataclasses import dataclass, field
+import uuid
+
+from .lifecycle import JobStatus, StageRecord
 
 
 @dataclass
@@ -77,7 +80,7 @@ class ProcessingContext:
             file_path = prev.get("output")
     """
     
-    def __init__(self, request: Any):
+    def __init__(self, request: Any, stage_names: Optional[List[str]] = None):
         """
         初始化处理上下文
         
@@ -86,9 +89,34 @@ class ProcessingContext:
         """
         self.request = request
         """原始输入请求对象"""
+
+        self.job_id = str(uuid.uuid4())
+        """本次任务唯一 ID，用于关联 Response、manifest 和日志。"""
+        self.job_status = JobStatus.PENDING
+        """整个任务的当前生命周期状态，由 Pipeline 统一修改。"""
+        self.created_at = datetime.now().astimezone().isoformat()
+        """Context 创建时间，使用带时区 ISO-8601 格式。"""
+        self.started_at: Optional[str] = None
+        """任务正式开始执行的时间；预检前保持为空。"""
+        self.finished_at: Optional[str] = None
+        """任务成功、失败或取消后的结束时间。"""
+        self.stage_records: Dict[str, StageRecord] = {
+            name: StageRecord(name)
+            for name in (stage_names or [])
+        }
+        """按阶段名保存生命周期、耗时、警告和错误记录。"""
+        self.warnings: List[Dict[str, Any]] = []
+        """不导致任务失败的框架级警告。"""
+        self.effective_config_summary: Dict[str, Any] = {}
+        """不含绝对模型路径和隐私信息的生效配置摘要。"""
+        self.software_version = "1.0.0"
+        """生成本次结果的软件版本，写入 manifest 供追溯。"""
         
         self.results: Dict[str, Any] = {}
         """各阶段执行结果，键为阶段名称，值为任意类型的结果数据"""
+
+        self.stage_results: Dict[str, Any] = {}
+        """新框架使用的有类型阶段结果。"""
         
         self.metadata: Dict[str, Any] = {}
         """元数据存储，用于记录额外信息"""
@@ -147,6 +175,42 @@ class ProcessingContext:
             该阶段的执行结果，如果不存在则返回 None
         """
         return self.results.get(stage_name)
+
+    def set_stage_result(self, result: Any) -> None:
+        """保存有类型结果，并同步旧字典接口供迁移期代码读取。"""
+
+        stage_name = getattr(result, 'stage_name', '')
+        to_dict = getattr(result, 'to_dict', None)
+        if not stage_name or not callable(to_dict):
+            from .errors import StageInputError
+            raise StageInputError("阶段结果缺少 stage_name 或 to_dict()")
+        self.stage_results[stage_name] = result
+        legacy_data = to_dict()
+        legacy_data.pop('stage_name', None)
+        legacy_data.pop('schema_version', None)
+        self.set_result(stage_name, legacy_data)
+
+    def require_stage_result(self, stage_name: str, expected_type: Any) -> Any:
+        """读取指定类型的前置结果；缺失或类型错误时给出标准错误。"""
+
+        from .errors import StageInputError
+
+        result = self.stage_results.get(stage_name)
+        if result is None:
+            raise StageInputError(
+                f"前置阶段结果不存在: {stage_name}",
+                stage=self._current_stage,
+            )
+        if not isinstance(result, expected_type):
+            raise StageInputError(
+                f"前置阶段结果类型错误: {stage_name}",
+                stage=self._current_stage,
+                details={
+                    "expected": expected_type.__name__,
+                    "actual": type(result).__name__,
+                },
+            )
+        return result
     
     def add_error(self, stage_name: str, exception: Exception) -> None:
         """

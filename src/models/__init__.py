@@ -23,6 +23,15 @@ from .reconstruction import (
     SlicePlan,
 )
 from .window import WindowPreset, get_window_preset
+from .stage_results import (
+    StageResult,
+    PreprocessingResult,
+    SegmentationResult,
+    LocalizationStageResult,
+    MappingStageResult,
+    ReconstructionStageResult,
+    ReportingStageResult,
+)
 from .enums import (
     BodyPartEnum,
     CheckTypeEnum,
@@ -57,5 +66,12 @@ __all__ = [
     'PositioningModeEnum',
     'PlaneTypeEnum',
     'WindowPresetEnum',
-    'ProcessingStatusEnum'
+    'ProcessingStatusEnum',
+    'StageResult',
+    'PreprocessingResult',
+    'SegmentationResult',
+    'LocalizationStageResult',
+    'MappingStageResult',
+    'ReconstructionStageResult',
+    'ReportingStageResult',
 ]

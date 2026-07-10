@@ -108,6 +108,28 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         })
         self.assertEqual(plan.window_presets, ["肺窗"])
 
+    def test_single_label_planner_warns_when_future_plane_is_not_implemented(self):
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.肺部,
+            cut_mode=CutModeEnum.整切,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.矢状位,
+                slice_thickness=3.0,
+                slice_spacing=5.0,
+                window_presets=[WindowPresetEnum.肺窗],
+            )],
+        )
+
+        result = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            self._lumbar_localization_result(),
+        )
+
+        self.assertEqual(result.plans, [])
+        self.assertEqual(result.warnings, ["暂不支持肺部整切状位: 矢状位"])
+
     def test_axial_whole_range_defaults_to_full_plane_extent(self):
         request = Request(
             dicom_dir="/tmp/dicom", output_dir="/tmp/output",

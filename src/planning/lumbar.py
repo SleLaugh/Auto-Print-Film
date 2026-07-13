@@ -11,7 +11,7 @@ from src.planning.spine_common import (
     build_axial_spine_plan,
     get_label_center,
 )
-from src.planning.whole_range import build_axial_whole_range_plan_from_bbox
+from src.planning.whole_range import build_whole_range_plan_from_bbox
 
 
 LUMBAR_LABELS = [
@@ -33,25 +33,22 @@ LUMBAR_INTERVALS: List[Tuple[str, str, str]] = [
 
 
 class LumbarWholeRangePlanner:
-    """腰椎整切 planner，第一版只生成横状位 plane_stack。"""
+    """复用整体 bbox 生成腰椎三状位默认直线整切计划。"""
 
     planner_name = "LumbarWholeRangePlanner"
+    """写入阶段四结果和调试报告的稳定 planner 名称。"""
 
     def build_plans(
         self,
         request: Any,
         localization_result: Dict[str, Any],
     ) -> PlanningResult:
-        """按腰椎整体 bbox 最外侧范围展开横状位整切切片。"""
+        """按腰椎整体 bbox 为请求中的每个状位展开整切切片。"""
 
-        warnings: List[str] = []
         plans = []
         for plane_config in request.plane_configs:
-            if plane_config.plane != PlaneTypeEnum.横状位:
-                warnings.append(f"暂不支持腰椎整切状位: {plane_config.plane.value}")
-                continue
             plans.append(
-                build_axial_whole_range_plan_from_bbox(
+                build_whole_range_plan_from_bbox(
                     request=request,
                     plane_config=plane_config,
                     localization_result=localization_result,
@@ -60,7 +57,7 @@ class LumbarWholeRangePlanner:
 
         return PlanningResult(
             plans=plans,
-            warnings=warnings,
+            warnings=[],
             planner_name=self.planner_name,
         )
 

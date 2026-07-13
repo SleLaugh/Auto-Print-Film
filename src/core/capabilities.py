@@ -26,10 +26,13 @@ class CapabilityRegistry:
     def current(cls) -> "CapabilityRegistry":
         """创建与当前 planner 实现一致的正式能力表。"""
         whole_range_parts = ("颈椎", "胸椎", "腰椎", "肺部", "头骨", "髋骨")
+        whole_range_planes = ("横状位", "矢状位", "冠状位")
         combinations = {
-            (part, "whole_range", "横状位")
+            (part, "whole_range", plane)
             for part in whole_range_parts
+            for plane in whole_range_planes
         }
+        # 椎间切仍是后续的“直线部分切”范围，本轮保持只支持横状位。
         combinations.add(("腰椎", "interspace", "横状位"))
         return cls(frozenset(combinations))
 

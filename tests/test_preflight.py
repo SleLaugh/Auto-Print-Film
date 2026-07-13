@@ -31,6 +31,18 @@ def make_request(body_part, cut_mode, plane, input_dir="/tmp/dicom", output_dir=
 
 
 class PreflightTest(unittest.TestCase):
+    def test_current_capabilities_register_three_planes_for_whole_range(self):
+        """所有已支持整切的部位都应对外声明三个默认直线状位。"""
+
+        combinations = set(CapabilityRegistry.current().combinations())
+        for body_part in ("颈椎", "胸椎", "腰椎", "肺部", "头骨", "髋骨"):
+            for plane in ("横状位", "矢状位", "冠状位"):
+                with self.subTest(body_part=body_part, plane=plane):
+                    self.assertIn(
+                        (body_part, "whole_range", plane),
+                        combinations,
+                    )
+
     def test_registry_accepts_current_lumbar_axial_whole_range(self):
         CapabilityRegistry.current().validate(
             make_request("腰椎", "whole_range", "横状位")

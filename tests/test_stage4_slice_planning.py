@@ -16,6 +16,10 @@ from src.models.enums import BodyPartEnum, CutModeEnum, PlaneTypeEnum
 from src.planning.base import select_planner
 from src.planning.lumbar import LumbarInterspacePlanner, LumbarWholeRangePlanner
 from src.planning.single_label import SingleLabelWholeRangePlanner
+from src.planning.whole_range import (
+    build_whole_range_plan_from_bbox,
+    plane_extent_mm,
+)
 from src.stages.stage_mapping import MappingStage
 
 
@@ -104,11 +108,13 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.slices[1].center.to_dict(), {
             "x": 60.0,
             "y": 50.0,
-            "z": 7.0,
+            "z": 3.0,
         })
         self.assertEqual(plan.window_presets, ["肺窗"])
 
-    def test_single_label_planner_warns_when_future_plane_is_not_implemented(self):
+    def test_single_label_planner_builds_sagittal_whole_range_plan(self):
+        """单目标整切 planner 应把矢状位交给通用直线构造器。"""
+
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
@@ -127,8 +133,153 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self._lumbar_localization_result(),
         )
 
-        self.assertEqual(result.plans, [])
-        self.assertEqual(result.warnings, ["暂不支持肺部整切状位: 矢状位"])
+        self.assertEqual(len(result.plans), 1)
+        self.assertEqual(result.plans[0].plane, "矢状位")
+        self.assertEqual(result.warnings, [])
+
+    def test_whole_range_builder_builds_all_straight_planes(self):
+        """通用整切构造器应按请求顺序生成横、矢、冠三种默认直线几何。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.肺部,
+            cut_mode=CutModeEnum.整切,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.横状位,
+                    3.0,
+                    5.0,
+                    [WindowPresetEnum.肺窗],
+                ),
+                PlaneConfig(
+                    PlaneTypeEnum.矢状位,
+                    3.0,
+                    5.0,
+                    [WindowPresetEnum.肺窗],
+                ),
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位,
+                    3.0,
+                    5.0,
+                    [WindowPresetEnum.肺窗],
+                ),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["image"]["spacing_xyz"] = [1.0, 2.0, 3.0]
+        localization_result["image"]["size_xyz"] = [100, 120, 30]
+
+        plans = []
+        for plane_config in request.plane_configs:
+            try:
+                plans.append(build_whole_range_plan_from_bbox(
+                    request,
+                    plane_config,
+                    localization_result,
+                ))
+            except ValueError as error:
+                self.fail(
+                    f"默认直线整切不应拒绝{plane_config.plane.value}: {error}"
+                )
+        axial, sagittal, coronal = plans
+
+        self.assertEqual(
+            [axial.plane, sagittal.plane, coronal.plane],
+            ["横状位", "矢状位", "冠状位"],
+        )
+        self.assertEqual(
+            axial.output_spacing_mm.to_dict(),
+            {"x": 1.0, "y": 2.0, "z": 0.0},
+        )
+        self.assertEqual(
+            sagittal.output_spacing_mm.to_dict(),
+            {"x": 2.0, "y": 3.0, "z": 0.0},
+        )
+        self.assertEqual(
+            coronal.output_spacing_mm.to_dict(),
+            {"x": 1.0, "y": 3.0, "z": 0.0},
+        )
+        self.assertEqual(
+            sagittal.slices[0].normal.to_dict(),
+            {"x": -1.0, "y": 0.0, "z": 0.0},
+        )
+        self.assertEqual(
+            sagittal.slices[0].col_dir.to_dict(),
+            {"x": 0.0, "y": 0.0, "z": -1.0},
+        )
+        self.assertEqual(
+            coronal.slices[0].normal.to_dict(),
+            {"x": 0.0, "y": 1.0, "z": 0.0},
+        )
+        self.assertEqual(
+            coronal.slices[0].col_dir.to_dict(),
+            {"x": 0.0, "y": 0.0, "z": -1.0},
+        )
+        self.assertGreater(sagittal.range_start.x, sagittal.range_end.x)
+        self.assertLess(coronal.range_start.y, coronal.range_end.y)
+
+    def test_axial_whole_range_orders_slices_from_superior_to_inferior(self):
+        """横状位应从头侧向足侧输出，同时保持单张图像的方向不变。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            cut_mode=CutModeEnum.整切,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.横状位,
+                slice_thickness=3.0,
+                slice_spacing=5.0,
+                window_presets=[WindowPresetEnum.骨窗],
+            )],
+        )
+
+        plan = build_whole_range_plan_from_bbox(
+            request,
+            request.plane_configs[0],
+            self._lumbar_localization_result(),
+        )
+
+        # 测试数据采用单位方向矩阵，物理 z 越大越靠头侧。
+        self.assertGreater(plan.range_start.z, plan.range_end.z)
+        self.assertGreater(plan.slices[0].center.z, plan.slices[-1].center.z)
+        # 序列倒序不能连带翻转单张横状位图像及其 DICOM 平面法向。
+        self.assertEqual(
+            plan.slices[0].row_dir.to_dict(),
+            {"x": 1.0, "y": 0.0, "z": 0.0},
+        )
+        self.assertEqual(
+            plan.slices[0].col_dir.to_dict(),
+            {"x": 0.0, "y": 1.0, "z": 0.0},
+        )
+        self.assertEqual(
+            plan.slices[0].normal.to_dict(),
+            {"x": 0.0, "y": 0.0, "z": 1.0},
+        )
+
+    def test_whole_range_target_extent_uses_plane_axes(self):
+        """部位范围模式应选取当前平面内的两个 bbox 轴。"""
+
+        localization_result = self._lumbar_localization_result()
+        localization_result["image"]["spacing_xyz"] = [1.0, 2.0, 3.0]
+        bbox = localization_result["correction_scope_bbox"]
+        image_info = localization_result["image"]
+        expected_extents = {
+            PlaneTypeEnum.横状位: {"width": 10.0, "height": 20.0},
+            PlaneTypeEnum.矢状位: {"width": 20.0, "height": 30.0},
+            PlaneTypeEnum.冠状位: {"width": 10.0, "height": 30.0},
+        }
+
+        for plane, expected in expected_extents.items():
+            with self.subTest(plane=plane.value):
+                extent = plane_extent_mm(
+                    bbox,
+                    image_info,
+                    plane,
+                    CutLineExtentModeEnum.部位范围,
+                )
+                self.assertEqual(extent.to_dict(), expected)
 
     def test_axial_whole_range_defaults_to_full_plane_extent(self):
         request = Request(
@@ -208,11 +359,11 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         )
 
         plan = result.plans[0]
-        self.assertEqual(plan.range_start.z, 2.0)
-        self.assertEqual(plan.range_end.z, 8.0)
+        self.assertEqual(plan.range_start.z, 8.0)
+        self.assertEqual(plan.range_end.z, 2.0)
         self.assertEqual([planned_slice.center.z for planned_slice in plan.slices], [
-            2.0,
-            7.0,
+            8.0,
+            3.0,
         ])
 
     def test_axial_whole_range_short_target_uses_midpoint(self):
@@ -269,8 +420,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         plan = result.plans[0]
         self.assertEqual(plan.plan_id, "腰椎_whole_range_横状位")
         self.assertEqual(len(plan.slices), 2)
-        self.assertEqual(plan.slices[0].center.z, 2.0)
-        self.assertEqual(plan.slices[-1].center.z, 7.0)
+        self.assertEqual(plan.slices[0].center.z, 8.0)
+        self.assertEqual(plan.slices[-1].center.z, 3.0)
 
     def test_lumbar_whole_range_axial_uses_outer_bbox_z_range(self):
         request = Request(
@@ -299,12 +450,12 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         )
 
         plan = result.plans[0]
-        self.assertEqual(plan.range_start.z, 0.0)
-        self.assertEqual(plan.range_end.z, 10.0)
+        self.assertEqual(plan.range_start.z, 10.0)
+        self.assertEqual(plan.range_end.z, 0.0)
         self.assertEqual([planned_slice.center.z for planned_slice in plan.slices], [
-            0.0,
-            5.0,
             10.0,
+            5.0,
+            0.0,
         ])
 
     def test_lumbar_whole_range_axial_uses_bbox_even_without_endpoint_centroids(self):
@@ -333,9 +484,43 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(result.warnings, [])
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
-        self.assertEqual(plan.range_start.z, 2.0)
-        self.assertEqual(plan.range_end.z, 8.0)
+        self.assertEqual(plan.range_start.z, 8.0)
+        self.assertEqual(plan.range_end.z, 2.0)
         self.assertEqual(plan.source_labels, ["correction_scope_bbox"])
+
+    def test_lumbar_whole_range_planner_builds_three_straight_planes(self):
+        """腰椎整切也应复用通用构造器生成三个默认直线状位。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            cut_mode=CutModeEnum.整切,
+            plane_configs=[
+                PlaneConfig(
+                    plane=plane,
+                    slice_thickness=3.0,
+                    slice_spacing=5.0,
+                    window_presets=[WindowPresetEnum.骨窗],
+                )
+                for plane in (
+                    PlaneTypeEnum.横状位,
+                    PlaneTypeEnum.矢状位,
+                    PlaneTypeEnum.冠状位,
+                )
+            ],
+        )
+
+        result = LumbarWholeRangePlanner().build_plans(
+            request,
+            self._lumbar_localization_result(),
+        )
+
+        self.assertEqual(
+            [plan.plane for plan in result.plans],
+            ["横状位", "矢状位", "冠状位"],
+        )
+        self.assertEqual(result.warnings, [])
 
     def test_lumbar_interspace_planner_builds_one_plan_per_available_interval(self):
         request = Request(
@@ -409,8 +594,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(data["diagnostics"][0]["trailing_uncovered_mm"], 1.0)
             self.assertEqual(data["diagnostics"][0]["target_length_mm"], 11.0)
             self.assertFalse(data["diagnostics"][0]["target_shorter_than_thickness"])
-            self.assertEqual(data["diagnostics"][0]["first_coverage_start"]["z"], -0.5)
-            self.assertEqual(data["diagnostics"][0]["last_coverage_end"]["z"], 9.5)
+            self.assertEqual(data["diagnostics"][0]["first_coverage_start"]["z"], 10.5)
+            self.assertEqual(data["diagnostics"][0]["last_coverage_end"]["z"], 0.5)
 
     def test_mapping_stage_writes_slice_plan_line_overlay(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -453,8 +638,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(overlay_image.GetSize(), image.GetSize())
             # 11 表示第一组 plan 的中心路径线，12 表示切片中心点。
             # 13 表示每张 slice 的平面引导线，应该离中心点有一段距离也能看到。
-            self.assertEqual(overlay_array[5, 50, 60], 12)
-            self.assertEqual(overlay_array[5, 50, 65], 13)
+            self.assertEqual(overlay_array[6, 50, 60], 12)
+            self.assertEqual(overlay_array[6, 50, 65], 13)
 
     def test_mapping_stage_writes_single_layer_overview_overlay(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -498,7 +683,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(overview_image.GetSize(), (80, 80, 35))
             # 5 mm 中心间距在 0.5 mm 检查网格上恒为 10 个体素。
             center_rows = np.unique(np.argwhere(overview_array == 14)[:, 0])
-            self.assertEqual(center_rows.tolist(), [10, 20])
+            self.assertEqual(center_rows.tolist(), [12, 22])
             self.assertEqual(int(center_rows[1] - center_rows[0]), 10)
             native_path = Path(result["debug_slice_plan_native_overview_overlay_path"])
             self.assertEqual(native_path.name, "切片原始网格总览_横_整.nii.gz")
@@ -540,17 +725,20 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             result = context.get_result("mapping")
             overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
             overview_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overview_path)))
-            # bbox 3..13、层厚 3、中心间距 5：中心在 4 和 9，
+            # bbox 3..13、层厚 3、中心间距 5：从上向下的中心在 12 和 7，
             # 对应两个厚度覆盖带，中间仍保留配置允许的空档。
             center_rows = np.unique(np.argwhere(overview_array == 14)[:, 0])
-            self.assertEqual(center_rows.tolist(), [8, 18])
+            self.assertEqual(center_rows.tolist(), [14, 24])
             # 3 mm 层厚在 0.5 mm 网格上固定占 6 行；中心仅为短刻度，
             # 不再把整条厚度带分成“黄色在上/黄色在下”。
             band_rows = np.unique(np.argwhere(overview_array == 15)[:, 0])
-            self.assertEqual(band_rows.tolist(), [5, 6, 7, 8, 9, 10, 15, 16, 17, 18, 19, 20])
-            self.assertEqual(overview_array[8, 45, 60], 15)
-            self.assertEqual(overview_array[8, 50, 60], 14)
-            self.assertEqual(overview_array[12, 50, 60], 0)
+            self.assertEqual(band_rows.tolist(), [
+                11, 12, 13, 14, 15, 16,
+                21, 22, 23, 24, 25, 26,
+            ])
+            self.assertEqual(overview_array[14, 45, 60], 15)
+            self.assertEqual(overview_array[14, 50, 60], 14)
+            self.assertEqual(overview_array[19, 50, 60], 0)
 
     def test_mapping_stage_overview_overlay_respects_image_direction(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -641,12 +829,12 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 ],
             },
             "coords": {
-                "vertebrae_L1": coord("L1", 0.0),
-                "vertebrae_L2": coord("L2", 2.0),
-                "vertebrae_L3": coord("L3", 4.0),
-                "vertebrae_L4": coord("L4", 6.0),
-                "vertebrae_L5": coord("L5", 8.0),
-                "vertebrae_S1": coord("S1", 10.0),
+                "vertebrae_L1": coord("L1", 10.0),
+                "vertebrae_L2": coord("L2", 8.0),
+                "vertebrae_L3": coord("L3", 6.0),
+                "vertebrae_L4": coord("L4", 4.0),
+                "vertebrae_L5": coord("L5", 2.0),
+                "vertebrae_S1": coord("S1", 0.0),
             },
         }
 

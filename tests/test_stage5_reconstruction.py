@@ -17,6 +17,7 @@ from src.models import (
     Request,
     WindowPresetEnum,
 )
+from src.planning.whole_range import build_whole_range_plan_from_bbox
 from src.reconstruction.plane_stack import PlaneStackResampler
 from src.reconstruction.windowing import apply_window_to_image
 from src.stages.stage_reconstruction import ReconstructionStage
@@ -138,6 +139,79 @@ class Stage5ReconstructionTest(unittest.TestCase):
             float(sitk.GetArrayFromImage(output)[0, 0, 0]),
             200.0,
         )
+
+    def test_plane_stack_resampler_consumes_three_straight_whole_range_plans(self):
+        """第五阶段应直接执行通用构造器生成的横、矢、冠直线计划。"""
+
+        image = self._make_ramp_image(size=(12, 12, 12))
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.肺部,
+            cut_mode=CutModeEnum.整切,
+            plane_configs=[
+                PlaneConfig(
+                    plane=plane,
+                    slice_thickness=1.0,
+                    slice_spacing=2.0,
+                    window_presets=[WindowPresetEnum.肺窗],
+                )
+                for plane in (
+                    PlaneTypeEnum.横状位,
+                    PlaneTypeEnum.矢状位,
+                    PlaneTypeEnum.冠状位,
+                )
+            ],
+        )
+        localization_result = {
+            "correction_scope_bbox": {
+                "x_min": 2,
+                "x_max": 8,
+                "y_min": 1,
+                "y_max": 9,
+                "z_min": 3,
+                "z_max": 7,
+            },
+            "image": {
+                "size_xyz": [12, 12, 12],
+                "spacing_xyz": [1.0, 1.0, 1.0],
+                "origin_xyz": [0.0, 0.0, 0.0],
+                "direction": [
+                    1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0,
+                ],
+            },
+        }
+        resampler = PlaneStackResampler()
+
+        for plane_config in request.plane_configs:
+            with self.subTest(plane=plane_config.plane.value):
+                plan = build_whole_range_plan_from_bbox(
+                    request,
+                    plane_config,
+                    localization_result,
+                ).to_dict()
+                planned_slice = plan["slices"][0]
+
+                output = resampler.sample_slice(image, plan, planned_slice)
+
+                expected_direction = (
+                    planned_slice["row_dir"]["x"],
+                    planned_slice["col_dir"]["x"],
+                    planned_slice["normal"]["x"],
+                    planned_slice["row_dir"]["y"],
+                    planned_slice["col_dir"]["y"],
+                    planned_slice["normal"]["y"],
+                    planned_slice["row_dir"]["z"],
+                    planned_slice["col_dir"]["z"],
+                    planned_slice["normal"]["z"],
+                )
+                self.assertEqual(output.GetSize(), (12, 12, 1))
+                self.assertEqual(output.GetDirection(), expected_direction)
+                self.assertTrue(
+                    np.any(sitk.GetArrayFromImage(output) > -1024.0)
+                )
 
     def test_axis_aligned_slab_weights_partial_source_layers_by_overlap(self):
         image = sitk.GetImageFromArray(

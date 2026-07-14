@@ -186,6 +186,50 @@ def write_ct_dicom(
     writer.Execute(image_2d)
 
 
+def write_localizer_dicom(
+    image: sitk.Image,
+    output_path: Path,
+    window: WindowPreset,
+    series_uid: str,
+    study_uid: str,
+    source_metadata: Dict[str, str] | None = None,
+) -> None:
+    """写出不参与正式切片编号的定位图 DICOM。"""
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    image_2d = _extract_singleton_axis(image)
+    inherited_metadata = source_metadata or {}
+    specific_character_set = str(inherited_metadata.get("0008|0005", ""))
+    for tag, value in inherited_metadata.items():
+        if tag in _INHERITED_TAGS:
+            image_2d.SetMetaData(
+                tag,
+                _normalize_metadata_value(value, specific_character_set),
+            )
+
+    image_2d.SetMetaData("0008|0016", "1.2.840.10008.5.1.4.1.1.2")
+    image_2d.SetMetaData("0008|0018", new_uid())
+    image_2d.SetMetaData("0008|0008", "DERIVED\\SECONDARY\\LOCALIZER")
+    image_2d.SetMetaData("0008|0060", "CT")
+    image_2d.SetMetaData("0008|103e", f"Localizer-{window.name}")
+    image_2d.SetMetaData("0020|000d", study_uid)
+    image_2d.SetMetaData("0020|000e", series_uid)
+    image_2d.SetMetaData("0020|0013", "1")
+    image_2d.SetMetaData("0028|1050", "32768")
+    image_2d.SetMetaData("0028|1051", "65535")
+    image_2d.SetMetaData("0028|0002", "1")
+    image_2d.SetMetaData("0028|0004", "MONOCHROME2")
+    image_2d.SetMetaData("0028|0100", "16")
+    image_2d.SetMetaData("0028|0101", "16")
+    image_2d.SetMetaData("0028|0102", "15")
+    image_2d.SetMetaData("0028|0103", "0")
+
+    writer = sitk.ImageFileWriter()
+    writer.SetFileName(str(output_path))
+    writer.KeepOriginalImageUIDOn()
+    writer.Execute(image_2d)
+
+
 def _extract_2d_image(image: sitk.Image) -> sitk.Image:
     if image.GetDimension() == 2:
         return sitk.Image(image)
@@ -193,6 +237,19 @@ def _extract_2d_image(image: sitk.Image) -> sitk.Image:
     if size[2] != 1:
         raise ValueError("plane_stack 输出图像必须只有一个 z 层")
     return sitk.Extract(image, [size[0], size[1], 0], [0, 0, 0])
+
+
+def _extract_singleton_axis(image: sitk.Image) -> sitk.Image:
+    """从投影后的三维单层图像中移除唯一长度为 1 的轴。"""
+
+    if image.GetDimension() == 2:
+        return sitk.Image(image)
+    size = list(image.GetSize())
+    singleton_axes = [axis for axis, length in enumerate(size) if length == 1]
+    if len(singleton_axes) != 1:
+        raise ValueError("定位图投影必须且只能保留一个单体素轴")
+    size[singleton_axes[0]] = 0
+    return sitk.Extract(image, size, [0, 0, 0])
 
 
 def _normalize_metadata_value(value: Any, specific_character_set: str) -> str:

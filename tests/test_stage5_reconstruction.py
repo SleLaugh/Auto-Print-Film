@@ -118,6 +118,24 @@ class Stage5ReconstructionTest(unittest.TestCase):
 
         self.assertEqual(ReconstructionStage._plan_group_name(plan), "L1-L2")
 
+    def test_localizer_uses_representative_original_slice_instead_of_projection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_array = np.zeros((8, 8, 8), dtype=np.int16)
+            image_array[:, :, 2] = 100
+            image_array[:, :, 7] = 1000
+            image = sitk.GetImageFromArray(image_array)
+            plan = self._make_context_with_one_plan(
+                temp_dir,
+                slice_count=2,
+            ).get_result("mapping")["plans"][0]
+
+            localizer = ReconstructionStage._build_plan_localizer(image, plan)
+            localizer_array = sitk.GetArrayFromImage(localizer)
+
+            self.assertEqual(localizer.GetSize(), (8, 8))
+            self.assertEqual(float(localizer_array[0, 0]), 100.0)
+            self.assertGreater(float(np.max(localizer_array)), 1000.0)
+
     def test_multiple_interval_plans_write_to_independent_group_directories(self):
         """第五阶段应保留多个区间各自的名称和独立输出目录。"""
 
@@ -148,14 +166,22 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertEqual(
                 len(list(
                     (output_root / "横状位" / "骨窗" / "L1-L2")
-                    .glob("*.dcm")
+                    .glob("[0-9]*.dcm")
                 )),
                 1,
+            )
+            self.assertTrue(
+                (output_root / "横状位" / "骨窗" / "L1-L2" / "Localizer.dcm")
+                .exists()
+            )
+            self.assertTrue(
+                (output_root / "横状位" / "骨窗" / "L2-L3" / "Localizer.dcm")
+                .exists()
             )
             self.assertEqual(
                 len(list(
                     (output_root / "横状位" / "骨窗" / "L2-L3")
-                    .glob("*.dcm")
+                    .glob("[0-9]*.dcm")
                 )),
                 1,
             )
@@ -339,7 +365,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
 
             result = context.get_result("reconstruction")
             self.assertEqual(result["slice_count"], 1)
-            dcm_path = next(Path(temp_dir).rglob("*.dcm"))
+            dcm_path = next(Path(temp_dir).rglob("1.dcm"))
             output = sitk.ReadImage(str(dcm_path))
             expected_gray = round((10.0 + 850.0) / 2500.0 * 65535.0)
             self.assertEqual(
@@ -361,18 +387,22 @@ class Stage5ReconstructionTest(unittest.TestCase):
             root = Path(context.request.output_dir)
             self.assertEqual(
                 len(list((root / "横状位" / "骨窗").rglob("*.dcm"))),
-                2,
+                3,
             )
             self.assertEqual(
                 len(list((root / "横状位" / "脑窗").rglob("*.dcm"))),
-                2,
+                3,
             )
             self.assertEqual(
-                len(list((root / "横状位" / "骨窗").glob("切片_*.dcm"))),
+                len(list((root / "横状位" / "骨窗").glob("[0-9]*.dcm"))),
                 2,
             )
             self.assertFalse((root / "横状位" / "骨窗" / "整切").exists())
-            bone_paths = sorted((root / "横状位" / "骨窗").glob("切片_*.dcm"))
+            bone_paths = [
+                root / "横状位" / "骨窗" / "1.dcm",
+                root / "横状位" / "骨窗" / "2.dcm",
+            ]
+            self.assertTrue(all(path.exists() for path in bone_paths))
             bone_images = [sitk.ReadImage(str(path)) for path in bone_paths]
             self.assertEqual(
                 len({image.GetMetaData("0020|000e") for image in bone_images}),
@@ -395,7 +425,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
 
             ReconstructionStage(config={"parallel": False}).execute(context)
 
-            dcm_path = next(Path(context.request.output_dir).rglob("*.dcm"))
+            dcm_path = next(Path(context.request.output_dir).rglob("1.dcm"))
             image = sitk.ReadImage(str(dcm_path))
             self.assertEqual(image.GetMetaData("0008|0060"), "CT")
             self.assertEqual(float(image.GetMetaData("0018|0050")), 1.0)
@@ -404,6 +434,29 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertEqual(image.GetMetaData("0028|1051").strip(), "65535")
             self.assertIn("骨窗", image.GetMetaData("0008|103e"))
             self.assertIn("\\", image.GetMetaData("0020|0037"))
+
+    def test_stage_writes_localizer_without_counting_it_as_slice(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._make_context_with_one_plan(
+                temp_dir,
+                slice_count=2,
+                window_presets=["骨窗"],
+            )
+            ReconstructionStage(config={"parallel": False}).execute(context)
+
+            output_dir = Path(context.request.output_dir) / "横状位" / "骨窗"
+            self.assertTrue((output_dir / "1.dcm").exists())
+            self.assertTrue((output_dir / "2.dcm").exists())
+            localizer_path = output_dir / "Localizer.dcm"
+            self.assertTrue(localizer_path.exists())
+            localizer = sitk.ReadImage(str(localizer_path))
+            self.assertIn(
+                "LOCALIZER",
+                localizer.GetMetaData("0008|0008").upper(),
+            )
+            result = context.get_result("reconstruction")
+            self.assertEqual(result["slice_count"], 2)
+            self.assertEqual(result["image_count"], 2)
 
     def test_derived_dicom_inherits_source_study_and_patient_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -437,7 +490,10 @@ class Stage5ReconstructionTest(unittest.TestCase):
             )
             ReconstructionStage(config={"parallel": False}).execute(context)
 
-            output_paths = sorted(Path(context.request.output_dir).rglob("*.dcm"))
+            output_paths = [
+                Path(context.request.output_dir) / "横状位" / "骨窗" / "1.dcm",
+                Path(context.request.output_dir) / "横状位" / "骨窗" / "2.dcm",
+            ]
             first = sitk.ReadImage(str(output_paths[0]))
             second = sitk.ReadImage(str(output_paths[1]))
             self.assertEqual(first.GetMetaData("0010|0010").strip(), "TEST^PATIENT")
@@ -482,7 +538,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
 
             ReconstructionStage(config={"parallel": False}).execute(context)
 
-            dcm_path = next(Path(context.request.output_dir).rglob("*.dcm"))
+            dcm_path = next(Path(context.request.output_dir).rglob("1.dcm"))
             image = sitk.ReadImage(str(dcm_path))
             description = image.GetMetaData("0008|1030")
             self.assertNotRegex(description, r"[\ud800-\udfff]")

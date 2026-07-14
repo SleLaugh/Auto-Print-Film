@@ -172,7 +172,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             image.SetMetaData("0020|0013", str(index))
             writer = sitk.ImageFileWriter()
             writer.KeepOriginalImageUIDOn()
-            writer.SetFileName(str(directory / f"切片_{index:04d}.dcm"))
+            writer.SetFileName(str(directory / f"{index}.dcm"))
             writer.Execute(image)
 
 

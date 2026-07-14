@@ -11,9 +11,11 @@ MPR多平面重建与DICOM生成
 """
 
 from concurrent.futures import ThreadPoolExecutor
+import math
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
 
+import numpy as np
 import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
@@ -24,6 +26,7 @@ from src.reconstruction.dicom import (
     new_uid,
     read_source_dicom_metadata,
     write_ct_dicom,
+    write_localizer_dicom,
 )
 from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
 from src.utils import DebugLog
@@ -31,6 +34,12 @@ from src.utils import DebugLog
 
 class ReconstructionStage(BaseStage):
     """执行阶段四计划，并按窗位输出派生 CT DICOM 序列。"""
+
+    _LOCALIZER_DRAW_AXES = {
+        "横状位": (2, 1, 0),
+        "矢状位": (0, 2, 1),
+        "冠状位": (1, 2, 0),
+    }
     
     def __init__(self, config: Dict[str, Any] = None):
         """
@@ -132,6 +141,7 @@ class ReconstructionStage(BaseStage):
         output_root: Path,
         study_uid: str,
         source_metadata: Dict[str, str],
+        localizer_image: sitk.Image | None = None,
     ) -> Dict[str, Any]:
         """
         执行一个切片计划。
@@ -139,9 +149,13 @@ class ReconstructionStage(BaseStage):
         第一步把计划中的所有位置采样成 HU 图像；第二步再按窗位处理整套采样结果。
         先完整采样能保证窗位线程不触碰重采样器，也符合“先采集、后显示处理”的流程。
         """
+        if localizer_image is None and isinstance(image, sitk.Image):
+            localizer_image = self._build_plan_localizer(image, plan)
+
         resampler = PlaneStackResampler()
         windows = unique_window_presets(plan["window_presets"])
         series_uids = {window.name: new_uid() for window in windows}
+        localizer_series_uids = {window.name: new_uid() for window in windows}
         group_name = self._plan_group_name(plan)
         output_dirs = {
             window.name: output_root
@@ -189,6 +203,8 @@ class ReconstructionStage(BaseStage):
                         series_uid=series_uids[window.name],
                         study_uid=study_uid,
                         source_metadata=source_metadata,
+                        localizer_image=localizer_image,
+                        localizer_series_uid=localizer_series_uids[window.name],
                     )
                     for window in windows
                 ]
@@ -206,6 +222,8 @@ class ReconstructionStage(BaseStage):
                     series_uid=series_uids[window.name],
                     study_uid=study_uid,
                     source_metadata=source_metadata,
+                    localizer_image=localizer_image,
+                    localizer_series_uid=localizer_series_uids[window.name],
                 )
 
         return {
@@ -220,6 +238,107 @@ class ReconstructionStage(BaseStage):
             },
         }
 
+    @classmethod
+    def _build_plan_localizer(
+        cls,
+        image: sitk.Image,
+        plan: Dict[str, Any],
+    ) -> sitk.Image | None:
+        """从代表性原 CT 正交层烧录当前 plan 的层厚带与中心线。"""
+
+        axes = cls._LOCALIZER_DRAW_AXES.get(str(plan.get("plane", "")))
+        if axes is None:
+            return None
+        stack_axis, line_axis, fixed_axis = axes
+        center_indices = [
+            image.TransformPhysicalPointToContinuousIndex((
+                float(planned_slice["center"]["x"]),
+                float(planned_slice["center"]["y"]),
+                float(planned_slice["center"]["z"]),
+            ))
+            for planned_slice in plan.get("slices", [])
+        ]
+        if not center_indices:
+            return None
+        fixed_index = int(round(float(np.median([
+            index_xyz[fixed_axis] for index_xyz in center_indices
+        ]))))
+        fixed_index = min(max(fixed_index, 0), image.GetSize()[fixed_axis] - 1)
+        roi_index = [0, 0, 0]
+        roi_size = list(image.GetSize())
+        roi_index[fixed_axis] = fixed_index
+        roi_size[fixed_axis] = 1
+        representative_slice = sitk.RegionOfInterest(image, roi_size, roi_index)
+        representative_slice = sitk.Cast(representative_slice, sitk.sitkFloat32)
+        localizer_array = sitk.GetArrayFromImage(representative_slice)
+        source_array = sitk.GetArrayViewFromImage(image)
+        source_min = float(np.min(source_array))
+        source_max = float(np.max(source_array))
+        intensity_span = max(source_max - source_min, 1.0)
+        band_value = source_max + intensity_span
+        center_value = band_value + intensity_span
+        spacing = image.GetSpacing()
+        half_height_voxels = (
+            float(plan.get("extent_mm", {}).get("height", 0.0))
+            / (2.0 * spacing[line_axis])
+        )
+        half_thickness_voxels = (
+            float(plan.get("slice_thickness", 0.0))
+            / (2.0 * spacing[stack_axis])
+        )
+        size_xyz = representative_slice.GetSize()
+
+        def paint(stack_index: int, line_start: int, line_end: int, value: float) -> None:
+            if not 0 <= stack_index < size_xyz[stack_axis]:
+                return
+            line_start = max(line_start, 0)
+            line_end = min(line_end, size_xyz[line_axis] - 1)
+            for line_index in range(line_start, line_end + 1):
+                index_xyz = [0, 0, 0]
+                index_xyz[stack_axis] = stack_index
+                index_xyz[line_axis] = line_index
+                index_xyz[fixed_axis] = 0
+                localizer_array[
+                    index_xyz[2],
+                    index_xyz[1],
+                    index_xyz[0],
+                ] = value
+
+        for center_index in center_indices:
+            line_start = int(round(center_index[line_axis] - half_height_voxels))
+            line_end = int(round(center_index[line_axis] + half_height_voxels))
+            stack_start = int(math.ceil(
+                center_index[stack_axis] - half_thickness_voxels - 1e-9,
+            ))
+            stack_end = int(math.ceil(
+                center_index[stack_axis] + half_thickness_voxels - 1e-9,
+            )) - 1
+            for stack_index in range(stack_start, stack_end + 1):
+                paint(stack_index, line_start, line_end, band_value)
+
+        for center_index in center_indices:
+            line_start = int(round(center_index[line_axis] - half_height_voxels))
+            line_end = int(round(center_index[line_axis] + half_height_voxels))
+            paint(
+                int(round(center_index[stack_axis])),
+                line_start,
+                line_end,
+                center_value,
+            )
+
+        painted_slice = sitk.GetImageFromArray(localizer_array)
+        painted_slice.CopyInformation(representative_slice)
+        return cls._extract_projection_axis(painted_slice, fixed_axis)
+
+    @staticmethod
+    def _extract_projection_axis(
+        projection: sitk.Image,
+        projection_axis: int,
+    ) -> sitk.Image:
+        size = list(projection.GetSize())
+        size[projection_axis] = 0
+        return sitk.Extract(projection, size, [0, 0, 0])
+
     @staticmethod
     def _write_window_series(
         *,
@@ -230,6 +349,8 @@ class ReconstructionStage(BaseStage):
         series_uid: str,
         study_uid: str,
         source_metadata: Dict[str, str],
+        localizer_image: sitk.Image | None,
+        localizer_series_uid: str,
     ) -> None:
         """
         把一套已完成 MPR 的 HU 图像处理成一个窗位 DICOM 序列。
@@ -250,7 +371,7 @@ class ReconstructionStage(BaseStage):
         for planned_slice, sampled_image in sampled_slices:
             windowed_image = apply_window_to_image(sampled_image, window)
             output_path = output_dir / (
-                f"切片_{int(planned_slice['index']):04d}.dcm"
+                f"{int(planned_slice['index'])}.dcm"
             )
             write_ct_dicom(
                 image=windowed_image,
@@ -261,6 +382,19 @@ class ReconstructionStage(BaseStage):
                 series_uid=series_uid,
                 study_uid=study_uid,
                 total_slices=total_slices,
+                source_metadata=source_metadata,
+            )
+        if localizer_image is not None:
+            windowed_localizer = apply_window_to_image(
+                sitk.Image(localizer_image),
+                window,
+            )
+            write_localizer_dicom(
+                image=windowed_localizer,
+                output_path=output_dir / "Localizer.dcm",
+                window=window,
+                series_uid=localizer_series_uid,
+                study_uid=study_uid,
                 source_metadata=source_metadata,
             )
 

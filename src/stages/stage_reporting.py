@@ -279,7 +279,14 @@ class ReportingStage(BaseStage):
     ) -> Dict[str, Any]:
         errors: list[str] = []
         warnings: list[str] = []
-        files = sorted(directory.glob('切片_*.dcm')) if directory.exists() else []
+        numbered_files: list[tuple[int, Path]] = []
+        if directory.exists():
+            for file_path in directory.glob('*.dcm'):
+                match = re.fullmatch(r'(\d+)\.dcm', file_path.name)
+                if match:
+                    numbered_files.append((int(match.group(1)), file_path))
+        numbered_files.sort(key=lambda item: item[0])
+        files = [file_path for _, file_path in numbered_files]
         actual_count = len(files)
         if not directory.exists():
             errors.append(f'{plan_id}/{window_name} 输出目录不存在: {directory}')
@@ -292,7 +299,7 @@ class ReportingStage(BaseStage):
         series_uids = set()
         instance_numbers = []
         for file_path in files:
-            match = re.fullmatch(r'切片_(\d+)\.dcm', file_path.name)
+            match = re.fullmatch(r'(\d+)\.dcm', file_path.name)
             if not match:
                 errors.append(f'{plan_id}/{window_name} 文件名格式错误: {file_path.name}')
                 continue

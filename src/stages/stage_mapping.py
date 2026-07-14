@@ -11,6 +11,7 @@
 
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any
 
@@ -23,6 +24,28 @@ from src.models import MappingStageResult, Point3D
 from src.planning.geometry import normalize_vector, subtract_points, vector_length
 from src.planning import select_planner
 from src.utils import DebugLog, is_debug_log_file_enabled
+
+
+@dataclass(frozen=True)
+class _OverviewAxes:
+    """一个默认直线状位在输入图像索引空间中的总览轴配置。"""
+
+    stack_axis: int
+    """切片中心排列和层厚覆盖所在的输入轴，0/1/2 对应 x/y/z。"""
+
+    fixed_axis: int
+    """生成单层总览时固定不变的输入轴。"""
+
+    line_axis: int
+    """每条切片中心线和层厚覆盖带延伸的输入轴。"""
+
+
+_OVERVIEW_AXES = {
+    "横状位": _OverviewAxes(stack_axis=2, fixed_axis=0, line_axis=1),
+    "矢状位": _OverviewAxes(stack_axis=0, fixed_axis=1, line_axis=2),
+    "冠状位": _OverviewAxes(stack_axis=1, fixed_axis=0, line_axis=2),
+}
+"""横、矢、冠零角度直线计划对应的总览输入轴配置。"""
 
 
 class MappingStage(BaseStage):
@@ -64,21 +87,31 @@ class MappingStage(BaseStage):
         debug_overlay_path = ""
         debug_overview_overlay_path = ""
         debug_native_overview_overlay_path = ""
+        debug_overview_paths: Dict[str, str] = {}
+        debug_native_overview_paths: Dict[str, str] = {}
         metadata_path = ""
         if is_debug_log_file_enabled():
             DebugLog("  [3] write_debug_overlay: 写出切割线 overlay...")
             debug_overlay_path = self._write_slice_plan_overlay(
-            context=context,
-            localization_result=prev_result,
-            plans=plans,
-        )
-            (
-                debug_overview_overlay_path,
-                debug_native_overview_overlay_path,
-            ) = self._write_slice_plan_overview_overlay(
                 context=context,
                 localization_result=prev_result,
                 plans=plans,
+            )
+            (
+                debug_overview_paths,
+                debug_native_overview_paths,
+            ) = self._write_slice_plan_overview_overlays(
+                context=context,
+                localization_result=prev_result,
+                plans=plans,
+            )
+            debug_overview_overlay_path = self._legacy_overview_path(
+                debug_overview_paths,
+                plans,
+            )
+            debug_native_overview_overlay_path = self._legacy_overview_path(
+                debug_native_overview_paths,
+                plans,
             )
             DebugLog("  [4] write_metadata: 写出 slice_plans.json...")
             metadata_path = self._write_slice_plans(
@@ -90,6 +123,8 @@ class MappingStage(BaseStage):
                 debug_overlay_path=debug_overlay_path,
                 debug_overview_overlay_path=debug_overview_overlay_path,
                 debug_native_overview_overlay_path=debug_native_overview_overlay_path,
+                debug_overview_paths=debug_overview_paths,
+                debug_native_overview_paths=debug_native_overview_paths,
             )
 
         result = {
@@ -102,6 +137,8 @@ class MappingStage(BaseStage):
             'debug_slice_plan_overlay_path': debug_overlay_path,
             'debug_slice_plan_overview_overlay_path': debug_overview_overlay_path,
             'debug_slice_plan_native_overview_overlay_path': debug_native_overview_overlay_path,
+            'debug_slice_plan_overview_paths': debug_overview_paths,
+            'debug_slice_plan_native_overview_paths': debug_native_overview_paths,
         }
         
         context.set_stage_result(MappingStageResult(payload=result))
@@ -120,6 +157,8 @@ class MappingStage(BaseStage):
             DebugLog(f"    切割线 overlay: {debug_overlay_path}")
         if debug_overview_overlay_path:
             DebugLog(f"    切割线总览 overlay: {debug_overview_overlay_path}")
+        for plane, path in debug_native_overview_paths.items():
+            DebugLog(f"    {plane}原始网格总览 overlay: {path}")
         if planning_result.warnings:
             DebugLog(f"    warnings: {planning_result.warnings}")
         DebugLog("  ✅ 阶段四完成")
@@ -137,6 +176,8 @@ class MappingStage(BaseStage):
         debug_overlay_path: str,
         debug_overview_overlay_path: str,
         debug_native_overview_overlay_path: str,
+        debug_overview_paths: Dict[str, str],
+        debug_native_overview_paths: Dict[str, str],
     ) -> Path:
         """把阶段四输出写入 metadata/slice_plans.json，方便第五步和人工检查。"""
 
@@ -153,6 +194,8 @@ class MappingStage(BaseStage):
             "debug_slice_plan_overlay_path": debug_overlay_path,
             "debug_slice_plan_overview_overlay_path": debug_overview_overlay_path,
             "debug_slice_plan_native_overview_overlay_path": debug_native_overview_overlay_path,
+            "debug_slice_plan_overview_paths": debug_overview_paths,
+            "debug_slice_plan_native_overview_paths": debug_native_overview_paths,
         }
         with open(metadata_path, "w", encoding="utf-8") as file:
             json.dump(data, file, ensure_ascii=False, indent=2)
@@ -416,109 +459,149 @@ class MappingStage(BaseStage):
         sitk.WriteImage(overlay_image, str(output_path))
         return str(output_path)
 
-    def _write_slice_plan_overview_overlay(
+    def _write_slice_plan_overview_overlays(
         self,
         context: ProcessingContext,
         localization_result: Dict[str, Any],
         plans: list[Dict[str, Any]],
-    ) -> tuple[str, str]:
+    ) -> tuple[Dict[str, str], Dict[str, str]]:
         """
-        写出单层总览 overlay，方便人工检查整切范围。
+        按横、矢、冠状位分别写出普通检查网格和原始网格总览。
 
-        真实 3D overlay 会把每张横状位 slice 画在各自的 z 层上，临床语义
-        正确但人工检查时会显得“东一块西一块”。总览 overlay 会选一个固定
-        x 层，把同一组横状位 slice 的切割线都投到这个矢状位层上。
+        每个文件只包含一个状位，避免三组互相垂直的切割线叠在一起。普通检查
+        网格会把当前状位的堆叠轴细化到 0.5mm；原始网格则保留输入图像信息，
+        用于核对计划中心映射回真实体素后的取整位置。
         """
 
         reference_path = localization_result.get("seg_for_reconstruction_path")
         if not reference_path:
-            return "", ""
+            return {}, {}
 
         reference_path = Path(reference_path)
         if not reference_path.exists():
-            return "", ""
+            return {}, {}
 
         reference_image = sitk.ReadImage(str(reference_path))
-        native_overlay_array = np.zeros(
-            tuple(reversed(reference_image.GetSize())),
-            dtype=np.uint16,
-        )
-        uniform_reference = self._build_uniform_overview_reference(reference_image)
-        uniform_overlay_array = np.zeros(
-            tuple(reversed(uniform_reference.GetSize())),
-            dtype=np.uint16,
-        )
-
-        for plan_index, plan in enumerate(plans, start=1):
-            # 第一版先服务腰椎整切的横状位总览。其他状位后续可以按同一入口扩展。
-            if plan.get("plane") != "横状位":
+        plans_by_plane: Dict[str, list[Dict[str, Any]]] = {}
+        for plan in plans:
+            plane = str(plan.get("plane", ""))
+            if plane not in _OVERVIEW_AXES:
                 continue
-            overview_value = plan_index * 10 + 4
-            thickness_value = plan_index * 10 + 5
-            self._paint_axial_plan_overview(
-                reference_image=reference_image,
-                overlay_array=native_overlay_array,
-                plan=plan,
-                value=overview_value,
-                thickness_value=thickness_value,
-            )
-            self._paint_axial_plan_overview(
-                reference_image=uniform_reference,
-                overlay_array=uniform_overlay_array,
-                plan=plan,
-                value=overview_value,
-                thickness_value=thickness_value,
-            )
+            plans_by_plane.setdefault(plane, []).append(plan)
 
         metadata_dir = Path(context.request.output_dir) / "metadata"
-        overview_plans = [
-            plan for plan in plans
-            if plan.get("plane") == "横状位"
-        ]
-        debug_suffix = self._debug_plan_suffix(overview_plans)
-        output_path = metadata_dir / f"切片总览_{debug_suffix}.nii.gz"
-        native_output_path = metadata_dir / f"切片原始网格总览_{debug_suffix}.nii.gz"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        overlay_image = sitk.GetImageFromArray(uniform_overlay_array)
-        overlay_image.CopyInformation(uniform_reference)
-        sitk.WriteImage(overlay_image, str(output_path))
-        native_overlay_image = sitk.GetImageFromArray(native_overlay_array)
-        native_overlay_image.CopyInformation(reference_image)
-        sitk.WriteImage(native_overlay_image, str(native_output_path))
-        return str(output_path), str(native_output_path)
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        overview_paths: Dict[str, str] = {}
+        native_overview_paths: Dict[str, str] = {}
+        for plane, plane_plans in plans_by_plane.items():
+            axes = _OVERVIEW_AXES[plane]
+            native_overlay_array = np.zeros(
+                tuple(reversed(reference_image.GetSize())),
+                dtype=np.uint16,
+            )
+            uniform_reference = self._build_uniform_overview_reference(
+                reference_image,
+                axes.stack_axis,
+            )
+            uniform_overlay_array = np.zeros(
+                tuple(reversed(uniform_reference.GetSize())),
+                dtype=np.uint16,
+            )
+
+            for plan_index, plan in enumerate(plane_plans, start=1):
+                overview_value = plan_index * 10 + 4
+                thickness_value = plan_index * 10 + 5
+                self._paint_plan_overview(
+                    reference_image=reference_image,
+                    overlay_array=native_overlay_array,
+                    plan=plan,
+                    axes=axes,
+                    value=overview_value,
+                    thickness_value=thickness_value,
+                )
+                self._paint_plan_overview(
+                    reference_image=uniform_reference,
+                    overlay_array=uniform_overlay_array,
+                    plan=plan,
+                    axes=axes,
+                    value=overview_value,
+                    thickness_value=thickness_value,
+                )
+
+            debug_suffix = self._debug_plan_suffix(plane_plans)
+            output_path = metadata_dir / f"切片总览_{debug_suffix}.nii.gz"
+            native_output_path = (
+                metadata_dir
+                / f"切片原始网格总览_{debug_suffix}.nii.gz"
+            )
+            overlay_image = sitk.GetImageFromArray(uniform_overlay_array)
+            overlay_image.CopyInformation(uniform_reference)
+            sitk.WriteImage(overlay_image, str(output_path))
+            native_overlay_image = sitk.GetImageFromArray(native_overlay_array)
+            native_overlay_image.CopyInformation(reference_image)
+            sitk.WriteImage(native_overlay_image, str(native_output_path))
+            overview_paths[plane] = str(output_path)
+            native_overview_paths[plane] = str(native_output_path)
+
+        return overview_paths, native_overview_paths
 
     @staticmethod
-    def _build_uniform_overview_reference(reference_image: sitk.Image) -> sitk.Image:
-        """创建 z=0.5mm 的同物理空间检查网格。"""
+    def _legacy_overview_path(
+        paths_by_plane: Dict[str, str],
+        plans: list[Dict[str, Any]],
+    ) -> str:
+        """返回兼容旧单路径字段的横状位或第一个可用状位文件。"""
 
-        spacing = reference_image.GetSpacing()
-        size = reference_image.GetSize()
-        uniform_z_spacing = 0.5
-        physical_z_extent = (size[2] - 1) * spacing[2]
-        uniform_z_size = int(math.ceil(physical_z_extent / uniform_z_spacing)) + 1
+        if "横状位" in paths_by_plane:
+            return paths_by_plane["横状位"]
+        for plan in plans:
+            plane = str(plan.get("plane", ""))
+            if plane in paths_by_plane:
+                return paths_by_plane[plane]
+        return ""
+
+    @staticmethod
+    def _build_uniform_overview_reference(
+        reference_image: sitk.Image,
+        stack_axis: int,
+    ) -> sitk.Image:
+        """只把当前状位堆叠轴细化为 0.5mm，创建同物理范围检查网格。"""
+
+        if stack_axis not in (0, 1, 2):
+            raise ValueError("总览堆叠轴只能是 0、1、2")
+        spacing = list(reference_image.GetSpacing())
+        size = list(reference_image.GetSize())
+        uniform_spacing = 0.5
+        physical_extent = (size[stack_axis] - 1) * spacing[stack_axis]
+        size[stack_axis] = (
+            int(math.ceil(physical_extent / uniform_spacing)) + 1
+        )
+        spacing[stack_axis] = uniform_spacing
         uniform_reference = sitk.Image(
             int(size[0]),
             int(size[1]),
-            uniform_z_size,
+            int(size[2]),
             sitk.sitkUInt16,
         )
-        uniform_reference.SetSpacing((spacing[0], spacing[1], uniform_z_spacing))
+        uniform_reference.SetSpacing(tuple(spacing))
         uniform_reference.SetOrigin(reference_image.GetOrigin())
         uniform_reference.SetDirection(reference_image.GetDirection())
         return uniform_reference
 
-    def _paint_axial_plan_overview(
+    def _paint_plan_overview(
         self,
         reference_image: sitk.Image,
         overlay_array: np.ndarray,
         plan: Dict[str, Any],
+        axes: _OverviewAxes,
         value: int,
         thickness_value: int,
     ) -> None:
         """
-        把一组横状位 slice 投到固定 x 层上，形成单层矢状位总览。
+        把一组零角度直线 slice 投到当前状位的固定正交层上。
 
-        总览图用不同标签画厚度覆盖带和输出切片中心线。
+        总览图用不同标签绘制厚度覆盖带和输出切片中心线。当前方法使用输入
+        图像 x/y/z 索引轴，只适用于本阶段已经支持的零角度横、矢、冠计划。
         """
 
         slices = plan.get("slices", [])
@@ -538,26 +621,29 @@ class MappingStage(BaseStage):
             ))
             for planned_slice in slices
         ]
-        overview_x_index = int(round(float(np.median([
-            index_xyz[0] for index_xyz in center_indices
+        overview_fixed_index = int(round(float(np.median([
+            index_xyz[axes.fixed_axis] for index_xyz in center_indices
         ]))))
-        half_height_voxels = half_height / reference_image.GetSpacing()[1]
+        half_height_voxels = (
+            half_height / reference_image.GetSpacing()[axes.line_axis]
+        )
         half_thickness_voxels = (
             float(plan.get("slice_thickness", 0.0))
-            / (2.0 * reference_image.GetSpacing()[2])
+            / (2.0 * reference_image.GetSpacing()[axes.stack_axis])
         )
 
         slice_thickness = float(plan.get("slice_thickness", 0.0))
         center_tick_half_voxels = min(
             half_height_voxels * 0.25,
-            5.0 / reference_image.GetSpacing()[1],
+            5.0 / reference_image.GetSpacing()[axes.line_axis],
         )
         for center_index in center_indices:
             if slice_thickness > 0:
-                self._paint_axial_overview_index_band(
+                self._paint_overview_index_band(
                     overlay_array=overlay_array,
-                    overview_x_index=overview_x_index,
+                    overview_fixed_index=overview_fixed_index,
                     center_index=center_index,
+                    axes=axes,
                     half_height_voxels=half_height_voxels,
                     half_thickness_voxels=half_thickness_voxels,
                     value=thickness_value,
@@ -565,59 +651,77 @@ class MappingStage(BaseStage):
 
         # 中心线最后画，避免被同一张或相邻切片的厚度带覆盖。
         for center_index in center_indices:
-            self._paint_axial_overview_index_line(
+            self._paint_overview_index_line(
                 overlay_array=overlay_array,
-                overview_x_index=overview_x_index,
-                center_y_index=center_index[1],
-                z_index=int(round(center_index[2])),
+                overview_fixed_index=overview_fixed_index,
+                line_center_index=center_index[axes.line_axis],
+                stack_index=int(round(center_index[axes.stack_axis])),
+                axes=axes,
                 half_height_voxels=center_tick_half_voxels,
                 value=value,
             )
 
-    def _paint_axial_overview_index_band(
+    def _paint_overview_index_band(
         self,
         overlay_array: np.ndarray,
-        overview_x_index: int,
+        overview_fixed_index: int,
         center_index: tuple[float, float, float],
+        axes: _OverviewAxes,
         half_height_voxels: float,
         half_thickness_voxels: float,
         value: int,
     ) -> None:
-        """在图像轴索引空间按物理层厚填充总览覆盖带。"""
+        """沿当前状位堆叠轴按物理层厚填充总览覆盖带。"""
 
-        z_start = int(math.ceil(center_index[2] - half_thickness_voxels - 1e-9))
-        z_end = int(math.ceil(center_index[2] + half_thickness_voxels - 1e-9)) - 1
-        for z_index in range(z_start, z_end + 1):
-            self._paint_axial_overview_index_line(
+        stack_center = center_index[axes.stack_axis]
+        stack_start = int(math.ceil(
+            stack_center - half_thickness_voxels - 1e-9,
+        ))
+        stack_end = int(math.ceil(
+            stack_center + half_thickness_voxels - 1e-9,
+        )) - 1
+        for stack_index in range(stack_start, stack_end + 1):
+            self._paint_overview_index_line(
                 overlay_array=overlay_array,
-                overview_x_index=overview_x_index,
-                center_y_index=center_index[1],
-                z_index=z_index,
+                overview_fixed_index=overview_fixed_index,
+                line_center_index=center_index[axes.line_axis],
+                stack_index=stack_index,
+                axes=axes,
                 half_height_voxels=half_height_voxels,
                 value=value,
             )
 
-    def _paint_axial_overview_index_line(
+    def _paint_overview_index_line(
         self,
         overlay_array: np.ndarray,
-        overview_x_index: int,
-        center_y_index: float,
-        z_index: int,
+        overview_fixed_index: int,
+        line_center_index: float,
+        stack_index: int,
+        axes: _OverviewAxes,
         half_height_voxels: float,
         value: int,
     ) -> None:
-        """在固定图像 x 索引层上画一条横状位总览线。"""
+        """在固定正交层上沿当前状位线轴画一条总览线。"""
 
-        y_start = int(round(center_y_index - half_height_voxels))
-        y_end = int(round(center_y_index + half_height_voxels))
-        if not 0 <= z_index < overlay_array.shape[0]:
+        line_start = int(round(line_center_index - half_height_voxels))
+        line_end = int(round(line_center_index + half_height_voxels))
+        size_xyz = tuple(reversed(overlay_array.shape))
+        if not 0 <= stack_index < size_xyz[axes.stack_axis]:
             return
-        if not 0 <= overview_x_index < overlay_array.shape[2]:
+        if not 0 <= overview_fixed_index < size_xyz[axes.fixed_axis]:
             return
-        y_start = max(y_start, 0)
-        y_end = min(y_end, overlay_array.shape[1] - 1)
-        if y_start <= y_end:
-            overlay_array[z_index, y_start:y_end + 1, overview_x_index] = value
+        line_start = max(line_start, 0)
+        line_end = min(line_end, size_xyz[axes.line_axis] - 1)
+        for line_index in range(line_start, line_end + 1):
+            index_xyz = [0, 0, 0]
+            index_xyz[axes.stack_axis] = stack_index
+            index_xyz[axes.fixed_axis] = overview_fixed_index
+            index_xyz[axes.line_axis] = line_index
+            overlay_array[
+                index_xyz[2],
+                index_xyz[1],
+                index_xyz[0],
+            ] = value
 
     @staticmethod
     def _physical_point_to_array_index(

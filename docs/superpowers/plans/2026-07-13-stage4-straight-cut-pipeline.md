@@ -1,0 +1,277 @@
+# 第四阶段通用直线切割流水线 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 把整切和腰椎区间切统一为“解析一个或多个区间，再生成通用直线计划”的第四阶段流水线，并完整支持默认 `full_plane` 与显式 `target_bbox`。
+
+**Architecture:** 新增一个聚焦直线几何的 `src/planning/straight.py`，维护 `CutSegment`、`StraightPlaneFrame`、范围角点投影和通用 `SlicePlan` 构造。部位 planner 只解析区间：整切返回一个区间，腰椎区间切返回多个区间；第五阶段继续只执行既有 `plane_stack` 协议。
+
+**Tech Stack:** Python 3、dataclasses、SimpleITK 物理坐标、unittest、现有 `SlicePlan`/`PlaneStackResampler`。
+
+## Global Constraints
+
+- 本轮只实现零角度直线，不实现角度检测、曲线切、人体回正或曲线重建。
+- `line_extent_mode` 默认保持 `full_plane`；只有显式传入 `target_bbox` 才执行范围切。
+- 区间切只输出横状位，矢状位仅作为未来确定各区间倾斜角的参考平面。
+- 新增类、字段、方法和关键计算必须带完整中文注释。
+- 直接修改当前工作区，不创建分支，不执行 `git commit`。
+- 保持第五阶段状位串行、状位内多窗位并行行为不变。
+
+---
+
+### Task 1: 通用直线方向与范围投影
+
+**Files:**
+- Create: `src/planning/straight.py`
+- Modify: `tests/test_stage4_slice_planning.py`
+
+**Interfaces:**
+- Consumes: `PlaneTypeEnum`、定位结果中的 `image`、体素 bbox、`Point3D`。
+- Produces: `StraightPlaneFrame`、`ProjectedExtent`、`default_straight_frame(...)`、`bbox_physical_corners(...)`、`image_physical_corners(...)`、`project_region_extent(...)`。
+
+- [ ] **Step 1: 写默认方向和范围投影失败测试**
+
+在 `Stage4SlicePlanningTest` 增加测试，要求三个默认状位返回当前已有方向，并要求偏离原图中心的目标在 `full_plane` 下得到原图投影中心，在 `target_bbox` 下得到目标投影中心：
+
+```python
+def test_projected_extent_uses_selected_region_and_plane_frame(self):
+    localization_result = self._lumbar_localization_result()
+    localization_result["image"]["size_xyz"] = [100, 120, 30]
+    frame = default_straight_frame(
+        PlaneTypeEnum.横状位,
+        localization_result["image"],
+    )
+
+    full_extent = resolve_projected_extent(
+        CutLineExtentModeEnum.整平面,
+        localization_result,
+        localization_result["correction_scope_bbox"],
+        frame,
+    )
+    target_extent = resolve_projected_extent(
+        CutLineExtentModeEnum.部位范围,
+        localization_result,
+        localization_result["correction_scope_bbox"],
+        frame,
+    )
+
+    self.assertEqual(full_extent.extent_mm.to_dict(), {
+        "width": 99.0,
+        "height": 119.0,
+    })
+    self.assertEqual(full_extent.center_u, 49.5)
+    self.assertEqual(full_extent.center_v, 59.5)
+    self.assertEqual(target_extent.extent_mm.to_dict(), {
+        "width": 10.0,
+        "height": 10.0,
+    })
+    self.assertEqual(target_extent.center_u, 60.0)
+    self.assertEqual(target_extent.center_v, 50.0)
+```
+
+- [ ] **Step 2: 运行测试确认 RED**
+
+Run: `.venv/bin/python -m unittest tests.test_stage4_slice_planning.Stage4SlicePlanningTest.test_projected_extent_uses_selected_region_and_plane_frame -v`
+
+Expected: 因 `src.planning.straight` 或目标接口不存在而 FAIL/ERROR。
+
+- [ ] **Step 3: 实现带中文注释的内部结构和投影函数**
+
+在 `src/planning/straight.py` 实现：
+
+```python
+@dataclass(frozen=True)
+class StraightPlaneFrame:
+    """一组普通直线切片共同使用的物理坐标系。"""
+    row_dir: Point3D
+    col_dir: Point3D
+    normal: Point3D
+
+
+@dataclass(frozen=True)
+class ProjectedExtent:
+    """三维范围投影到切片平面后得到的宽高和中心坐标。"""
+    extent_mm: ExtentMM
+    center_u: float
+    center_v: float
+```
+
+`bbox_physical_corners(...)` 把 bbox 的八个体素中心角点转换成物理点；`image_physical_corners(...)` 使用 `[0, size-1]` 的八个体素中心角点；`project_region_extent(...)` 对每个物理点计算与 `row_dir/col_dir` 的点积，并返回最大最小差值及中点。`resolve_projected_extent(...)` 只负责根据 `line_extent_mode` 选择原图角点或当前区间 bbox 角点。
+
+- [ ] **Step 4: 运行投影测试确认 GREEN**
+
+Run: `.venv/bin/python -m unittest tests.test_stage4_slice_planning.Stage4SlicePlanningTest.test_projected_extent_uses_selected_region_and_plane_frame -v`
+
+Expected: PASS。
+
+---
+
+### Task 2: CutSegment 与通用直线计划构造器
+
+**Files:**
+- Modify: `src/planning/straight.py`
+- Modify: `src/planning/whole_range.py`
+- Modify: `tests/test_stage4_slice_planning.py`
+
+**Interfaces:**
+- Consumes: `CutSegment`、`StraightPlaneFrame`、`PlaneConfig`、定位结果。
+- Produces: `inset_segment_range(...)`、`build_straight_slice_plan(...) -> SlicePlan`；保留 `build_whole_range_plan_from_bbox(...)` 作为兼容入口。
+
+- [ ] **Step 1: 写统一构造器失败测试**
+
+构造一个 `CutSegment`，分别传入 `full_plane` 和 `target_bbox` 配置，断言：
+
+```python
+def test_straight_plan_recenters_full_plane_without_moving_slice_plane(self):
+    # 目标 bbox 中心是 (60, 50)，原图中心是 (49.5, 59.5)。
+    # full_plane 应把每张输出图的平面内中心移到原图中心，物理 z 区间不变。
+    self.assertEqual(plan.slices[0].center.x, 49.5)
+    self.assertEqual(plan.slices[0].center.y, 59.5)
+    self.assertEqual(plan.slices[0].center.z, expected_z)
+    self.assertEqual(plan.extent_mm.to_dict(), {
+        "width": 99.0,
+        "height": 119.0,
+    })
+```
+
+同时断言 `target_bbox` 计划仍以目标范围投影中心为中心，三个默认状位的零角度方向和横状位头侧到足侧顺序不变。
+
+- [ ] **Step 2: 运行统一构造器测试确认 RED**
+
+Run: `.venv/bin/python -m unittest tests.test_stage4_slice_planning.Stage4SlicePlanningTest.test_straight_plan_recenters_full_plane_without_moving_slice_plane -v`
+
+Expected: 通用构造器不存在或当前切片仍以目标 bbox 中心为平面内中心，测试失败。
+
+- [ ] **Step 3: 实现 CutSegment 和通用构造器**
+
+在 `src/planning/straight.py` 增加：
+
+```python
+@dataclass(frozen=True)
+class CutSegment:
+    """第四阶段准备交给通用直线构造器的一个待切区间。"""
+    group_name: str
+    target_start: Point3D
+    target_end: Point3D
+    target_region_bbox: Dict[str, float]
+    source_labels: tuple[str, ...]
+```
+
+`build_straight_slice_plan(...)` 按以下固定顺序执行：
+
+1. 将 `target_start/target_end` 向内缩半层厚得到有效中心范围。
+2. 解析 `ProjectedExtent`。
+3. 只沿 `row_dir/col_dir` 平移起止点到投影中心，保持它们在 `normal` 上的位置不变。
+4. 按层间距展开 `PlannedSlice`。
+5. 写入既有 `SlicePlan` 字段，不改变阶段五协议。
+
+把 `src/planning/whole_range.py` 中现有默认方向、范围宽高和计划拼装迁移到新入口；保留公开兼容函数并在中文注释中说明其只负责把整体 bbox 解析为一个 `CutSegment`。
+
+- [ ] **Step 4: 运行阶段四整切测试确认 GREEN**
+
+Run: `.venv/bin/python -m unittest tests.test_stage4_slice_planning -v`
+
+Expected: 新测试和原有整切测试全部 PASS；旧测试若断言偏心 `full_plane` 的旧中心，应更新为原图投影中心，但不得放宽切片数量、方向、层厚或顺序断言。
+
+---
+
+### Task 3: 腰椎区间解析与公共构造器接入
+
+**Files:**
+- Modify: `src/planning/lumbar.py`
+- Modify: `src/planning/spine_common.py`
+- Modify: `tests/test_stage4_slice_planning.py`
+- Modify: `tests/test_preflight.py`
+
+**Interfaces:**
+- Consumes: 定位结果中每个椎体的 `bbox`、`centroid`，以及 Task 2 的 `CutSegment`/`build_straight_slice_plan(...)`。
+- Produces: `resolve_lumbar_interspace_segments(...) -> list[CutSegment]`，每个可用区间一个独立横状位 `SlicePlan`。
+
+- [ ] **Step 1: 写腰椎多个区间失败测试**
+
+增加测试数据，使 L1、L2、L3 bbox 在物理头脚方向上存在明确间隙，断言：
+
+```python
+segments, warnings = resolve_lumbar_interspace_segments(localization_result)
+
+self.assertEqual([segment.group_name for segment in segments], [
+    "L1-L2",
+    "L2-L3",
+])
+self.assertGreater(segments[0].target_start.z, segments[0].target_end.z)
+self.assertEqual(segments[0].source_labels, (
+    "vertebrae_L1",
+    "vertebrae_L2",
+))
+```
+
+另加 planner 测试：每个区间分别调用公共构造器；`target_bbox` 使用当前两个椎体 bbox 并集；非横状位请求不能生成计划。
+
+- [ ] **Step 2: 运行区间测试确认 RED**
+
+Run: `.venv/bin/python -m unittest tests.test_stage4_slice_planning.Stage4SlicePlanningTest.test_lumbar_interspace_resolves_one_segment_per_available_gap -v`
+
+Expected: resolver 不存在，测试失败。
+
+- [ ] **Step 3: 实现默认区间 resolver**
+
+在 `src/planning/spine_common.py` 实现带完整中文注释的 bbox 读取、bbox 并集、物理相向表面中心计算和 `resolve_lumbar_interspace_segments(...)`：
+
+- 相邻两个 label 都有 bbox 时，使用上方椎体的足侧表面中心到下方椎体的头侧表面中心。
+- bbox 缺失但质心存在时，回退质心并记录 warning。
+- 任一端点完全缺失时跳过该区间并记录 warning。
+- 物理区间长度无效时跳过并明确说明 group name。
+
+- [ ] **Step 4: 让 LumbarInterspacePlanner 复用通用构造器**
+
+删除 planner 内固定 `image axis 0/1/2` 的计划拼装。对每个 `CutSegment` 只接受横状位配置，解析当前区间的默认横状位 `StraightPlaneFrame`，调用 `build_straight_slice_plan(...)`。当前每个区间仍为零角度，但调用位置必须位于区间循环内部，给未来逐区间角度留入口。
+
+- [ ] **Step 5: 运行阶段四和预检测试确认 GREEN**
+
+Run: `.venv/bin/python -m unittest tests.test_stage4_slice_planning tests.test_preflight -v`
+
+Expected: 全部 PASS，能力注册仍只允许 `腰椎 + interspace + 横状位`。
+
+---
+
+### Task 4: 第五阶段契约与完整回归验证
+
+**Files:**
+- Modify: `tests/test_stage5_reconstruction.py`
+- Modify: `docs/superpowers/specs/2026-07-13-straight-cut-process.svg`
+- Regenerate: `docs/superpowers/specs/2026-07-13-straight-cut-process.png`
+
+**Interfaces:**
+- Consumes: 重构后的整切和多区间 `SlicePlan.to_dict()`。
+- Produces: 阶段五对偏心 `full_plane`、`target_bbox` 和多区间计划的回归保障。
+
+- [ ] **Step 1: 增加第五阶段契约测试**
+
+增加两个测试：
+
+1. `PlaneStackResampler` 使用计划中已经平移后的 slice center 和投影宽高，输出尺寸及 origin 正确。
+2. 多个区间计划保持各自 `group_name` 和输出目录，且仍按计划顺序执行。
+
+- [ ] **Step 2: 运行第五阶段测试**
+
+Run: `.venv/bin/python -m unittest tests.test_stage5_reconstruction -v`
+
+Expected: PASS；生产阶段五不需要修改。
+
+- [ ] **Step 3: 更新流程图**
+
+把流程图第 ③ 步改为：`whole_range -> 1 个 CutSegment`、`interspace -> 多个 CutSegment`；在区间循环中标明“每个区间以后独立计算矢状参考角度，输出横状位”。使用 `rsvg-convert` 重新生成 PNG。
+
+- [ ] **Step 4: 运行完整测试和差异检查**
+
+Run: `.venv/bin/python -m unittest discover -s tests -v`
+
+Expected: 全部 PASS。
+
+Run: `git diff --check`
+
+Expected: 无输出，退出码为 0。
+
+Run: `git status --short`
+
+Expected: 只包含本轮设计图、设计文档、计划、第四阶段实现和对应测试；不提交。

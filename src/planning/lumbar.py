@@ -7,9 +7,11 @@ from typing import Any, Dict, List, Tuple
 
 from src.models.enums import PlaneTypeEnum
 from src.planning.base import PlanningResult
-from src.planning.spine_common import (
-    build_axial_spine_plan,
-    get_label_center,
+from src.planning.spine_common import resolve_spine_interspace_segments
+from src.planning.straight import (
+    CutSegment,
+    build_straight_slice_plan,
+    default_straight_frame,
 )
 from src.planning.whole_range import build_whole_range_plan_from_bbox
 
@@ -30,6 +32,17 @@ LUMBAR_INTERVALS: List[Tuple[str, str, str]] = [
     ("L4-L5", "vertebrae_L4", "vertebrae_L5"),
     ("L5-S1", "vertebrae_L5", "vertebrae_S1"),
 ]
+
+
+def resolve_lumbar_interspace_segments(
+    localization_result: Dict[str, Any],
+) -> Tuple[List[CutSegment], List[str]]:
+    """把腰椎相邻椎体解析成多个独立待切区间及其 warning。"""
+
+    return resolve_spine_interspace_segments(
+        localization_result,
+        LUMBAR_INTERVALS,
+    )
 
 
 class LumbarWholeRangePlanner:
@@ -72,30 +85,31 @@ class LumbarInterspacePlanner:
         request: Any,
         localization_result: Dict[str, Any],
     ) -> PlanningResult:
-        """逐个找到椎间区间，并为每个可用区间展开自己的切片清单。"""
+        """逐个解析椎间区间，并通过通用直线构造器生成横状位计划。"""
 
         plans = []
-        warnings: List[str] = []
-        for group_name, start_label, end_label in LUMBAR_INTERVALS:
-            start = get_label_center(localization_result, start_label)
-            end = get_label_center(localization_result, end_label)
-            if not start or not end:
-                warnings.append(f"跳过腰椎区间 {group_name}: 缺少端点 label")
-                continue
-
+        segments, warnings = resolve_lumbar_interspace_segments(
+            localization_result,
+        )
+        for segment in segments:
             for plane_config in request.plane_configs:
                 if plane_config.plane != PlaneTypeEnum.横状位:
                     warnings.append(f"暂不支持腰椎区间切状位: {plane_config.plane.value}")
                     continue
+
+                # 方向解析必须放在区间循环内部：当前返回零角度横状位；后续可在此
+                # 根据矢状位上的当前椎间隙方向，为每个 CutSegment 单独计算倾角。
+                frame = default_straight_frame(
+                    plane_config.plane,
+                    localization_result["image"],
+                )
                 plans.append(
-                    build_axial_spine_plan(
+                    build_straight_slice_plan(
                         request=request,
                         plane_config=plane_config,
-                        group_name=group_name,
-                        range_start=start,
-                        range_end=end,
                         localization_result=localization_result,
-                        source_labels=[start_label, end_label],
+                        segment=segment,
+                        frame=frame,
                     )
                 )
 

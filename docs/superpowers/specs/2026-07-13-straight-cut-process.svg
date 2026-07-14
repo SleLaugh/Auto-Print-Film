@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1450" viewBox="0 0 1100 1450">
+  <!-- 直线切割自上而下处理流程：曲线切割不在本图范围内。 -->
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fbff"/>
+      <stop offset="1" stop-color="#eef4fa"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="10" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,7 L10,3.5 z" fill="#45627f"/>
+    </marker>
+    <style>
+      .title { font: 700 34px sans-serif; fill: #17324d; }
+      .subtitle { font: 400 18px sans-serif; fill: #597187; }
+      .step-title { font: 700 23px sans-serif; fill: #18344f; }
+      .body { font: 400 18px sans-serif; fill: #2c485f; }
+      .small { font: 400 16px sans-serif; fill: #5a7083; }
+      .code { font: 600 17px monospace; fill: #24445f; }
+      .line { stroke: #45627f; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #7b91a5; stroke-width: 2; stroke-dasharray: 8 7; fill: none; }
+    </style>
+  </defs>
+
+  <rect width="1100" height="1450" rx="28" fill="url(#background)"/>
+  <text x="550" y="55" text-anchor="middle" class="title">直线切割：从请求到 DICOM 的完整流程</text>
+  <text x="550" y="88" text-anchor="middle" class="subtitle">整面切和范围切只在“选择覆盖范围”处分叉，之后共用同一套切割流程</text>
+
+  <!-- 步骤 1：接收外部参数。 -->
+  <rect x="210" y="120" width="680" height="120" rx="20" fill="#eaf4ff" stroke="#6d9dcb" stroke-width="2"/>
+  <text x="550" y="160" text-anchor="middle" class="step-title">① 接收切割请求</text>
+  <text x="550" y="196" text-anchor="middle" class="code">cut_mode + plane + line_extent_mode + 层厚 + 层间距</text>
+  <text x="550" y="224" text-anchor="middle" class="small">line_extent_mode 默认是 full_plane</text>
+  <path d="M550 240 L550 285" class="line"/>
+
+  <!-- 步骤 2：定位目标。 -->
+  <rect x="210" y="295" width="680" height="120" rx="20" fill="#eef8f1" stroke="#70a17d" stroke-width="2"/>
+  <text x="550" y="335" text-anchor="middle" class="step-title">② 定位目标部位</text>
+  <text x="550" y="371" text-anchor="middle" class="body">得到原图空间信息 + correction_scope_bbox</text>
+  <text x="550" y="399" text-anchor="middle" class="small">当前部位范围先使用定位阶段输出的 bbox</text>
+  <path d="M550 415 L550 460" class="line"/>
+
+  <!-- 步骤 3：根据切割方式确定纵向区间。 -->
+  <rect x="210" y="470" width="680" height="125" rx="20" fill="#f0f3fb" stroke="#7f8fc1" stroke-width="2"/>
+  <text x="550" y="510" text-anchor="middle" class="step-title">③ 确定“从哪里切到哪里”</text>
+  <text x="550" y="546" text-anchor="middle" class="body">whole_range：生成 1 个 CutSegment</text>
+  <text x="550" y="577" text-anchor="middle" class="body">interspace：生成多个独立 CutSegment</text>
+  <path d="M550 595 L550 640" class="line"/>
+
+  <!-- 步骤 4：确定直线坐标系，角度在此参与。 -->
+  <rect x="210" y="650" width="680" height="135" rx="20" fill="#edf9f2" stroke="#62a078" stroke-width="3"/>
+  <text x="550" y="690" text-anchor="middle" class="step-title">④ 确定直线切割方向</text>
+  <text x="550" y="727" text-anchor="middle" class="body">逐个 CutSegment 解析；当前横 / 矢 / 冠默认角度为 0</text>
+  <text x="550" y="758" text-anchor="middle" class="body">后续：区间切在矢状参考面逐段算角度，仍输出横状位</text>
+  <path d="M550 785 L550 830" class="line"/>
+
+  <!-- 步骤 5：范围模式分叉。 -->
+  <polygon points="550,835 730,920 550,1005 370,920" fill="#fff7e9" stroke="#c49348" stroke-width="3"/>
+  <text x="550" y="904" text-anchor="middle" class="step-title">⑤ 每张图切多大？</text>
+  <text x="550" y="940" text-anchor="middle" class="code">line_extent_mode</text>
+
+  <path d="M370 920 L205 920 L205 1000" class="line"/>
+  <text x="250" y="900" text-anchor="middle" class="code">full_plane</text>
+  <path d="M730 920 L895 920 L895 1000" class="line"/>
+  <text x="850" y="900" text-anchor="middle" class="code">target_bbox</text>
+
+  <rect x="45" y="1010" width="390" height="115" rx="18" fill="#eaf4ff" stroke="#6d9dcb" stroke-width="2"/>
+  <text x="240" y="1050" text-anchor="middle" class="step-title">整面切</text>
+  <text x="240" y="1085" text-anchor="middle" class="body">选择原图完整空间范围</text>
+  <text x="240" y="1112" text-anchor="middle" class="small">对应第一张照片</text>
+
+  <rect x="665" y="1010" width="390" height="115" rx="18" fill="#fff2df" stroke="#c49348" stroke-width="2"/>
+  <text x="860" y="1050" text-anchor="middle" class="step-title">范围切</text>
+  <text x="860" y="1085" text-anchor="middle" class="body">选择当前 CutSegment 的目标 bbox</text>
+  <text x="860" y="1112" text-anchor="middle" class="small">对应第二张照片</text>
+
+  <!-- 步骤 6：两种范围重新汇合，并结合角度计算最终切割盒。 -->
+  <path d="M240 1125 L240 1160 L475 1190" class="line"/>
+  <path d="M860 1125 L860 1160 L625 1190" class="line"/>
+  <rect x="190" y="1180" width="720" height="125" rx="20" fill="#ffffff" stroke="#456f97" stroke-width="3"/>
+  <text x="550" y="1220" text-anchor="middle" class="step-title">⑥ 用“范围 + 方向”计算最终直线切割盒</text>
+  <text x="550" y="1257" text-anchor="middle" class="body">得到切片起止点、图像宽高、中心、row_dir、col_dir、normal</text>
+  <text x="550" y="1286" text-anchor="middle" class="small">角度变化时仍走这一步，只是投影后的宽高和中心会变化</text>
+  <path d="M550 1305 L550 1340" class="line"/>
+
+  <!-- 步骤 7：统一执行。 -->
+  <rect x="75" y="1350" width="250" height="70" rx="16" fill="#e9f2fb" stroke="#7192b2" stroke-width="2"/>
+  <text x="200" y="1393" text-anchor="middle" class="step-title">⑦ 统一 MPR</text>
+  <path d="M325 1385 L420 1385" class="line"/>
+  <rect x="430" y="1350" width="240" height="70" rx="16" fill="#eaf7ef" stroke="#6f9e7e" stroke-width="2"/>
+  <text x="550" y="1393" text-anchor="middle" class="step-title">⑧ 窗位处理</text>
+  <path d="M670 1385 L765 1385" class="line"/>
+  <rect x="775" y="1350" width="250" height="70" rx="16" fill="#f8eee2" stroke="#b58b58" stroke-width="2"/>
+  <text x="900" y="1393" text-anchor="middle" class="step-title">⑨ DICOM 输出</text>
+</svg>

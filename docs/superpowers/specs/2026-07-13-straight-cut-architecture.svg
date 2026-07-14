@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900">
+  <!-- 直线切割统一架构图：当前只描述直线，不包含曲线规划与曲线重建。 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fbff"/>
+      <stop offset="1" stop-color="#eef4fb"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#47627f"/>
+    </marker>
+    <style>
+      .title { font: 700 34px sans-serif; fill: #17324d; }
+      .subtitle { font: 400 18px sans-serif; fill: #567089; }
+      .box-title { font: 700 23px sans-serif; fill: #18344f; }
+      .body { font: 400 18px sans-serif; fill: #29465f; }
+      .small { font: 400 16px sans-serif; fill: #526b80; }
+      .code { font: 600 17px monospace; fill: #24435f; }
+      .arrow { stroke: #47627f; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1400" height="900" rx="28" fill="url(#bg)"/>
+  <text x="700" y="55" text-anchor="middle" class="title">直线切割统一设计（暂不考虑曲线）</text>
+  <text x="700" y="88" text-anchor="middle" class="subtitle">切哪几层、以什么角度切、每张图切多大——三个维度独立组合</text>
+
+  <!-- 第一层：三个相互独立的输入维度。 -->
+  <rect x="55" y="125" width="385" height="190" rx="20" fill="#eaf4ff" stroke="#6ea3d5" stroke-width="2"/>
+  <text x="247" y="165" text-anchor="middle" class="box-title">① 切哪几层</text>
+  <text x="85" y="205" class="code">cut_mode</text>
+  <text x="85" y="240" class="body">whole_range：1 个 CutSegment</text>
+  <text x="85" y="275" class="body">interspace：多个 CutSegment</text>
+  <text x="85" y="302" class="small">每段独立保存起止边界和目标 bbox</text>
+
+  <rect x="507" y="125" width="385" height="190" rx="20" fill="#eef9f1" stroke="#69a77b" stroke-width="2"/>
+  <text x="699" y="165" text-anchor="middle" class="box-title">② 以什么方向切</text>
+  <text x="537" y="205" class="code">StraightPlaneFrame</text>
+  <text x="537" y="240" class="body">当前：横 / 矢 / 冠默认直线</text>
+  <text x="537" y="275" class="body">后续：默认方向 + 旋转角度</text>
+  <text x="537" y="302" class="small">产生 row_dir / col_dir / normal</text>
+
+  <rect x="959" y="125" width="385" height="190" rx="20" fill="#fff5e8" stroke="#d19a4a" stroke-width="2"/>
+  <text x="1151" y="165" text-anchor="middle" class="box-title">③ 每张图切多大</text>
+  <text x="989" y="205" class="code">line_extent_mode</text>
+  <text x="989" y="240" class="body">full_plane：选择整个原图范围</text>
+  <text x="989" y="275" class="body">target_bbox：选择当前区间目标范围</text>
+  <text x="989" y="302" class="small">默认仍为 full_plane</text>
+
+  <path d="M247 315 L247 358 L560 390" class="arrow"/>
+  <path d="M699 315 L699 378" class="arrow"/>
+  <path d="M1151 315 L1151 358 L840 390" class="arrow"/>
+
+  <!-- 第二层：统一规划。 -->
+  <rect x="400" y="380" width="600" height="205" rx="24" fill="#ffffff" stroke="#476f98" stroke-width="3"/>
+  <text x="700" y="422" text-anchor="middle" class="box-title">统一生成既有 SlicePlan（plane_stack）</text>
+  <line x1="430" y1="442" x2="970" y2="442" stroke="#cfdae5" stroke-width="2"/>
+  <text x="450" y="478" class="body">切片区间：range_start / range_end</text>
+  <text x="450" y="512" class="body">切片方向：row_dir / col_dir / normal</text>
+  <text x="450" y="546" class="body">图像范围：width_mm / height_mm / 中心</text>
+  <text x="450" y="575" class="small">先按最终方向对中再内缩；角度变化不更换构造器</text>
+
+  <path d="M700 585 L700 625" class="arrow"/>
+
+  <!-- 第三层：统一执行链。 -->
+  <rect x="185" y="635" width="290" height="85" rx="18" fill="#e8f0fa" stroke="#6d8eaf" stroke-width="2"/>
+  <text x="330" y="674" text-anchor="middle" class="box-title">统一 MPR 采样</text>
+  <text x="330" y="702" text-anchor="middle" class="small">层厚、层间距</text>
+  <path d="M475 678 L550 678" class="arrow"/>
+  <rect x="560" y="635" width="280" height="85" rx="18" fill="#e8f7ef" stroke="#6b9b7c" stroke-width="2"/>
+  <text x="700" y="674" text-anchor="middle" class="box-title">窗位处理</text>
+  <text x="700" y="702" text-anchor="middle" class="small">同状位多窗位并行</text>
+  <path d="M840 678 L915 678" class="arrow"/>
+  <rect x="925" y="635" width="290" height="85" rx="18" fill="#f8eee2" stroke="#b58b58" stroke-width="2"/>
+  <text x="1070" y="674" text-anchor="middle" class="box-title">DICOM 输出</text>
+  <text x="1070" y="702" text-anchor="middle" class="small">报告与校验复用</text>
+
+  <!-- 底部：两张参考照片对应的组合。 -->
+  <rect x="55" y="755" width="620" height="105" rx="18" fill="#f4f8fd" stroke="#89a8c5" stroke-width="2"/>
+  <text x="80" y="790" class="box-title">第一张照片：整面带角度</text>
+  <text x="80" y="826" class="code">whole_range + 带角度直线 + full_plane</text>
+  <text x="80" y="850" class="small">平行切片带角度，每张图覆盖整个原图平面</text>
+
+  <rect x="725" y="755" width="620" height="105" rx="18" fill="#fff8ee" stroke="#c9a36e" stroke-width="2"/>
+  <text x="750" y="790" class="box-title">第二张照片：范围带角度</text>
+  <text x="750" y="826" class="code">whole_range + 带角度直线 + target_bbox</text>
+  <text x="750" y="850" class="small">切片方向相同，但每张图只覆盖颈椎附近范围</text>
+</svg>

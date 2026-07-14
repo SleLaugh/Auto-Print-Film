@@ -9,13 +9,13 @@
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "args": [
-                "-i", "/home/peng/03_data/demo/Image/dicom/腰1_1mm",
+                "-i", "/home/peng/03_data/demo/Image/dicom/肺3_1mm",
                 "-o", "/home/peng/03_data/demo/Image/Result",
-                "--body_part", "腰椎",
+                "--body_part", "肺部",
                 "--check_type", "CT",
                 "--scan_thickness", "default",
                 "--cut_mode", "whole_range",
-                "--plane_configs", "[{\"plane\":\"横状位\",\"slice_thickness\":1,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"纵隔窗\"],\"line_extent_mode\":\"full_plane\"},{\"plane\":\"矢状位\",\"slice_thickness\":1,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"纵隔窗\"],\"line_extent_mode\":\"full_plane\"},{\"plane\":\"冠状位\",\"slice_thickness\":1,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"纵隔窗\"],\"line_extent_mode\":\"full_plane\"}]"
+                "--plane_configs", "[{\"plane\":\"横状位\",\"slice_thickness\":1,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"full_plane\"},{\"plane\":\"矢状位\",\"slice_thickness\":1,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"full_plane\"},{\"plane\":\"冠状位\",\"slice_thickness\":1,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"full_plane\"}]"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"

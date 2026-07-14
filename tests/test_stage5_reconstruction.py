@@ -1,3 +1,4 @@
+import copy
 import tempfile
 import threading
 import time
@@ -116,6 +117,52 @@ class Stage5ReconstructionTest(unittest.TestCase):
         plan = {"cut_mode": "interspace", "group_name": "L1-L2"}
 
         self.assertEqual(ReconstructionStage._plan_group_name(plan), "L1-L2")
+
+    def test_multiple_interval_plans_write_to_independent_group_directories(self):
+        """第五阶段应保留多个区间各自的名称和独立输出目录。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._make_context_with_one_plan(
+                temp_dir,
+                slice_count=1,
+                window_presets=["骨窗"],
+            )
+            first_plan = context.get_result("mapping")["plans"][0]
+            first_plan.update({
+                "plan_id": "腰椎_interspace_L1-L2_横状位",
+                "cut_mode": "interspace",
+                "group_name": "L1-L2",
+            })
+            second_plan = copy.deepcopy(first_plan)
+            second_plan.update({
+                "plan_id": "腰椎_interspace_L2-L3_横状位",
+                "group_name": "L2-L3",
+            })
+            context.set_result("mapping", {
+                "plans": [first_plan, second_plan],
+            })
+
+            ReconstructionStage(config={"parallel": False}).execute(context)
+
+            output_root = Path(context.request.output_dir)
+            self.assertEqual(
+                len(list(
+                    (output_root / "横状位" / "骨窗" / "L1-L2")
+                    .glob("*.dcm")
+                )),
+                1,
+            )
+            self.assertEqual(
+                len(list(
+                    (output_root / "横状位" / "骨窗" / "L2-L3")
+                    .glob("*.dcm")
+                )),
+                1,
+            )
+            self.assertEqual(
+                context.get_result("reconstruction")["plan_count"],
+                2,
+            )
 
     def test_plane_stack_resampler_uses_slice_center_and_in_plane_extent(self):
         image = self._make_ramp_image(size=(8, 8, 8))

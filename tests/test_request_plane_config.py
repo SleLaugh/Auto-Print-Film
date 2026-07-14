@@ -94,6 +94,9 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 "line_extent_mode": "full_plane",
             }
         ])
+        self.assertNotIn("cut_mode", request.to_dict())
+        self.assertFalse(hasattr(request, "cut_mode"))
+
 
     def test_request_defaults_to_currently_supported_axial_plane(self):
         # 默认请求只能声明当前框架实际支持的能力，其他状位必须显式请求并预检。

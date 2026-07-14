@@ -18,7 +18,7 @@ sys.path.insert(0, str(project_root))
 # ===== 导入（在 sys.path 操作之后）=====
 from src.core import Pipeline
 from src.config import load_app_config
-from src.models import Request, BodyPartEnum, CheckTypeEnum, ScanThicknessEnum, CutModeEnum, PlaneConfig
+from src.models import Request, BodyPartEnum, CheckTypeEnum, ScanThicknessEnum, PlaneConfig
 from src.utils import RunLog, ErrorLog, DebugLog, configure_logging
 
 
@@ -87,16 +87,6 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        '--cut_mode',
-        '--cut-mode',
-        dest='cut_mode',
-        type=str,
-        default=CutModeEnum.整切.value,
-        choices=[e.value for e in CutModeEnum],
-        help='切割方式：whole_range 表示整切，interspace 表示椎间切'
-    )
-
-    parser.add_argument(
         '--plane_configs',
         '--plane-configs',
         dest='plane_configs',
@@ -154,7 +144,6 @@ def main():
             'body_part': BodyPartEnum(args.body_part),
             'check_type': CheckTypeEnum(args.check_type),
             'scan_thickness': ScanThicknessEnum(args.scan_thickness),
-            'cut_mode': CutModeEnum(args.cut_mode),
         }
         if plane_configs is not None:
             request_kwargs['plane_configs'] = plane_configs
@@ -170,7 +159,6 @@ def main():
         DebugLog(f"部位: {request.body_part.value}")
         DebugLog(f"检查类型: {request.check_type.value}")
         DebugLog(f"扫描厚度: {request.scan_thickness.value}")
-        DebugLog(f"切割方式: {request.cut_mode.value}")
         DebugLog(f"三平面参数: {request.to_dict()['plane_configs']}")
         
         pipeline = Pipeline(config=app_config)

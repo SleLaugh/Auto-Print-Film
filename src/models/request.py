@@ -11,7 +11,6 @@ from .enums import (
     BodyPartEnum,
     CheckTypeEnum,
     ScanThicknessEnum,
-    CutModeEnum,
     PlaneTypeEnum,
     WindowPresetEnum,
     CutLineExtentModeEnum,
@@ -95,8 +94,6 @@ class Request:
     check_type: CheckTypeEnum = CheckTypeEnum.CT
     # 扫描厚度档位用于选择不同 nnUNet 模型。
     scan_thickness: ScanThicknessEnum = ScanThicknessEnum.默认
-    # 整切或椎间切，决定定位阶段读取哪一套范围配置。
-    cut_mode: CutModeEnum = CutModeEnum.整切
     # 三平面重建参数；调用方不传时使用 default_plane_configs。
     plane_configs: List[PlaneConfig] = field(default_factory=default_plane_configs)
 
@@ -117,7 +114,6 @@ class Request:
             'body_part': self.body_part.value,
             'check_type': self.check_type.value,
             'scan_thickness': self.scan_thickness.value,
-            'cut_mode': self.cut_mode.value,
             'plane_configs': [
                 plane_config.to_dict()
                 for plane_config in self.plane_configs
@@ -129,7 +125,7 @@ class Request:
         """
         从外部字典创建请求对象。
 
-        外部传入的部位、切割方式和三平面配置都是字符串；这里统一转成枚举和
+        外部传入的部位和三平面配置都是字符串；这里统一转成枚举和
         PlaneConfig，让后续 Pipeline 阶段处理的是强约束结构。
         """
         return cls(
@@ -138,7 +134,6 @@ class Request:
             body_part=BodyPartEnum(data.get('body_part', data.get('target_part', BodyPartEnum.腰椎.value))),
             check_type=CheckTypeEnum(data.get('check_type', CheckTypeEnum.CT.value)),
             scan_thickness=ScanThicknessEnum(data.get('scan_thickness', ScanThicknessEnum.默认.value)),
-            cut_mode=CutModeEnum(data.get('cut_mode', CutModeEnum.整切.value)),
             # 未提供 plane_configs 时走默认三平面配置，保证旧调用兼容。
             plane_configs=[
                 PlaneConfig.from_dict(item)

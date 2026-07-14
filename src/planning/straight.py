@@ -280,6 +280,7 @@ def _default_output_spacing(
 
 def build_straight_slice_plan(
     request: Any,
+    cut_mode: str,
     plane_config: Any,
     localization_result: Dict[str, Any],
     segment: CutSegment,
@@ -320,7 +321,7 @@ def build_straight_slice_plan(
         col_dir=frame.col_dir,
     )
 
-    plan_key = request.cut_mode.value
+    plan_key = cut_mode
     if segment.group_name != "whole_range":
         plan_key = f"{plan_key}_{segment.group_name}"
     return SlicePlan(
@@ -328,7 +329,7 @@ def build_straight_slice_plan(
             f"{request.body_part.value}_{plan_key}_{plane_config.plane.value}"
         ),
         body_part=request.body_part.value,
-        cut_mode=request.cut_mode.value,
+        cut_mode=cut_mode,
         plane=plane_config.plane.value,
         group_name=segment.group_name,
         geometry_type="plane_stack",

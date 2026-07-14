@@ -224,6 +224,7 @@ def build_whole_range_plan_from_bbox(
     )
     return build_straight_slice_plan(
         request=request,
+        cut_mode="whole_range",
         plane_config=plane_config,
         localization_result=localization_result,
         segment=segment,

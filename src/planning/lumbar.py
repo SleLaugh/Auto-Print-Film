@@ -106,6 +106,7 @@ class LumbarInterspacePlanner:
                 plans.append(
                     build_straight_slice_plan(
                         request=request,
+                        cut_mode="interspace",
                         plane_config=plane_config,
                         localization_result=localization_result,
                         segment=segment,

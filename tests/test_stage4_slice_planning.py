@@ -24,6 +24,41 @@ from src.stages.stage_mapping import MappingStage
 
 
 class Stage4SlicePlanningTest(unittest.TestCase):
+    def test_mapping_derives_lumbar_axial_interspace_and_sagittal_whole_range(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = Request(
+                dicom_dir="/tmp/dicom",
+                output_dir=temp_dir,
+                body_part=BodyPartEnum.腰椎,
+                plane_configs=[
+                    PlaneConfig(
+                        PlaneTypeEnum.横状位, 1.0, 3.0,
+                        [WindowPresetEnum.骨窗],
+                    ),
+                    PlaneConfig(
+                        PlaneTypeEnum.矢状位, 1.0, 3.0,
+                        [WindowPresetEnum.骨窗],
+                    ),
+                ],
+            )
+            context = ProcessingContext(request)
+            context.set_result("localization", self._lumbar_localization_result())
+
+            MappingStage().execute(context)
+
+            plans = context.get_result("mapping")["plans"]
+            self.assertEqual(
+                [(plan["plane"], plan["cut_mode"]) for plan in plans],
+                [
+                    ("横状位", "interspace"),
+                    ("横状位", "interspace"),
+                    ("横状位", "interspace"),
+                    ("横状位", "interspace"),
+                    ("横状位", "interspace"),
+                    ("矢状位", "whole_range"),
+                ],
+            )
+
     def test_overview_with_image_preserves_ct_and_highlights_overlay_labels(self):
         raw_array = np.array([
             [[0, 10], [20, 30]],
@@ -97,7 +132,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.肺部,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -153,7 +187,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.肺部,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.矢状位,
                 slice_thickness=3.0,
@@ -178,7 +211,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.肺部,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.横状位,
@@ -260,7 +292,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=3.0,
@@ -370,7 +401,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=3.0,
@@ -398,6 +428,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
         plan = build_straight_slice_plan(
             request=request,
+            cut_mode="whole_range",
             plane_config=request.plane_configs[0],
             localization_result=localization_result,
             segment=segment,
@@ -426,7 +457,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
-            cut_mode=CutModeEnum.椎间切,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=2.0,
@@ -452,6 +482,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
         plan = build_straight_slice_plan(
             request=request,
+            cut_mode="interspace",
             plane_config=request.plane_configs[0],
             localization_result=localization_result,
             segment=segment,
@@ -476,7 +507,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=3.0,
@@ -500,7 +530,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
     def test_axial_whole_range_defaults_to_full_plane_extent(self):
         request = Request(
             dicom_dir="/tmp/dicom", output_dir="/tmp/output",
-            body_part=BodyPartEnum.肺部, cut_mode=CutModeEnum.整切,
+            body_part=BodyPartEnum.肺部,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位, slice_thickness=3.0,
                 slice_spacing=5.0, window_presets=[WindowPresetEnum.肺窗],
@@ -517,7 +547,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
     def test_axial_whole_range_can_limit_extent_to_target_bbox(self):
         request = Request(
             dicom_dir="/tmp/dicom", output_dir="/tmp/output",
-            body_part=BodyPartEnum.肺部, cut_mode=CutModeEnum.整切,
+            body_part=BodyPartEnum.肺部,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位, slice_thickness=3.0,
                 slice_spacing=5.0, window_presets=[WindowPresetEnum.肺窗],
@@ -537,7 +567,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.肺部,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -587,7 +616,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.肺部,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -615,7 +643,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -644,7 +671,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -679,7 +705,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -711,7 +736,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[
                 PlaneConfig(
                     plane=plane,
@@ -743,7 +767,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
-            cut_mode=CutModeEnum.椎间切,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -807,7 +830,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
-            cut_mode=CutModeEnum.椎间切,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=0.5,
@@ -853,8 +875,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             request = Request(
                 dicom_dir="/tmp/dicom",
                 output_dir=temp_dir,
-                body_part=BodyPartEnum.腰椎,
-                cut_mode=CutModeEnum.整切,
+                body_part=BodyPartEnum.肺部,
                 plane_configs=[
                     PlaneConfig(
                         plane=PlaneTypeEnum.横状位,
@@ -874,7 +895,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertTrue(metadata_path.exists())
             data = json.loads(metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(data["plan_count"], 1)
-            self.assertEqual(data["plans"][0]["plan_id"], "腰椎_whole_range_横状位")
+            self.assertEqual(data["plans"][0]["plan_id"], "肺部_whole_range_横状位")
             self.assertIn("slices", data["plans"][0])
             self.assertEqual(data["diagnostics"][0]["slice_count"], 2)
             self.assertEqual(data["diagnostics"][0]["slice_thickness"], 5.0)
@@ -904,8 +925,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             request = Request(
                 dicom_dir="/tmp/dicom",
                 output_dir=temp_dir,
-                body_part=BodyPartEnum.腰椎,
-                cut_mode=CutModeEnum.整切,
+                body_part=BodyPartEnum.肺部,
                 plane_configs=[
                     PlaneConfig(
                         plane=PlaneTypeEnum.横状位,
@@ -965,7 +985,6 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 dicom_dir="/tmp/dicom",
                 output_dir=temp_dir,
                 body_part=BodyPartEnum.腰椎,
-                cut_mode=CutModeEnum.整切,
                 plane_configs=[
                     PlaneConfig(
                         plane=plane,
@@ -1079,8 +1098,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             request = Request(
                 dicom_dir="/tmp/dicom",
                 output_dir=temp_dir,
-                body_part=BodyPartEnum.腰椎,
-                cut_mode=CutModeEnum.整切,
+                body_part=BodyPartEnum.肺部,
                 plane_configs=[
                     PlaneConfig(
                         plane=PlaneTypeEnum.横状位,
@@ -1133,8 +1151,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             request = Request(
                 dicom_dir="/tmp/dicom",
                 output_dir=temp_dir,
-                body_part=BodyPartEnum.腰椎,
-                cut_mode=CutModeEnum.整切,
+                body_part=BodyPartEnum.肺部,
                 plane_configs=[
                     PlaneConfig(
                         plane=PlaneTypeEnum.横状位,
@@ -1204,8 +1221,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             request = Request(
                 dicom_dir="/tmp/dicom",
                 output_dir=temp_dir,
-                body_part=BodyPartEnum.腰椎,
-                cut_mode=CutModeEnum.整切,
+                body_part=BodyPartEnum.肺部,
                 plane_configs=[
                     PlaneConfig(
                         plane=PlaneTypeEnum.横状位,

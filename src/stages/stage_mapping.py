@@ -11,6 +11,7 @@
 
 import json
 import math
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any
@@ -23,6 +24,7 @@ from src.core.context import ProcessingContext
 from src.models import MappingStageResult, Point3D
 from src.planning.geometry import normalize_vector, subtract_points, vector_length
 from src.planning import select_planner
+from src.planning.cut_policy import cut_mode_for_plane
 from src.utils import DebugLog, is_debug_log_file_enabled
 
 
@@ -66,22 +68,33 @@ class MappingStage(BaseStage):
         DebugLog("=" * 60)
         DebugLog("【阶段四】切片规划 - 生成第五步执行计划")
         DebugLog(f"  部位: {request.body_part.value}")
-        DebugLog(f"  切割方式: {request.cut_mode.value}")
+        DebugLog("  切割方式: 按部位和状位自动推导")
         DebugLog(f"  定位坐标数量: {len(coords)}")
         DebugLog("=" * 60)
         
         # 第四步内部拆成 planner + expander。planner 负责找区间和路径；
         # expander 已在 planner 内部调用，把路径展开成每张图的 slices[]。
         DebugLog("  [1] select_planner: 选择部位/切法 planner...")
-        planner = select_planner(
-            request.body_part.value,
-            request.cut_mode.value,
-        )
-        DebugLog(f"    planner: {planner.planner_name}")
+        grouped_configs: Dict[str, list[Any]] = {}
+        for plane_config in request.plane_configs:
+            mode = cut_mode_for_plane(request.body_part, plane_config.plane)
+            grouped_configs.setdefault(mode, []).append(plane_config)
 
         DebugLog("  [2] build_plans: 生成并展开切片计划...")
-        planning_result = planner.build_plans(request, prev_result)
-        plans = [plan.to_dict() for plan in planning_result.plans]
+        all_plans = []
+        all_warnings = []
+        planner_names = []
+        for cut_mode, plane_configs in grouped_configs.items():
+            planner = select_planner(request.body_part.value, cut_mode)
+            planner_names.append(planner.planner_name)
+            DebugLog(f"    planner: {planner.planner_name}")
+            scoped_request = copy(request)
+            scoped_request.plane_configs = plane_configs
+            partial_result = planner.build_plans(scoped_request, prev_result)
+            all_plans.extend(partial_result.plans)
+            all_warnings.extend(partial_result.warnings)
+        planner_name = "+".join(planner_names)
+        plans = [plan.to_dict() for plan in all_plans]
         diagnostics = self._build_plan_diagnostics(plans)
 
         debug_overlay_path = ""
@@ -116,10 +129,10 @@ class MappingStage(BaseStage):
             DebugLog("  [4] write_metadata: 写出 slice_plans.json...")
             metadata_path = self._write_slice_plans(
                 context,
-                planner_name=planning_result.planner_name,
+                planner_name=planner_name,
                 plans=plans,
                 diagnostics=diagnostics,
-                warnings=planning_result.warnings,
+                warnings=all_warnings,
                 debug_overlay_path=debug_overlay_path,
                 debug_overview_overlay_path=debug_overview_overlay_path,
                 debug_native_overview_overlay_path=debug_native_overview_overlay_path,
@@ -128,9 +141,9 @@ class MappingStage(BaseStage):
             )
 
         result = {
-            'planner': planning_result.planner_name,
+            'planner': planner_name,
             'plans': plans,
-            'warnings': planning_result.warnings,
+            'warnings': all_warnings,
             'diagnostics': diagnostics,
             'plan_count': len(plans),
             'metadata_path': str(metadata_path),
@@ -160,8 +173,8 @@ class MappingStage(BaseStage):
             DebugLog(f"    切割线总览 overlay: {debug_overview_overlay_path}")
         for plane, path in debug_native_overview_paths.items():
             DebugLog(f"    {plane}原始网格总览 overlay: {path}")
-        if planning_result.warnings:
-            DebugLog(f"    warnings: {planning_result.warnings}")
+        if all_warnings:
+            DebugLog(f"    warnings: {all_warnings}")
         DebugLog("  ✅ 阶段四完成")
         DebugLog("=" * 60)
         

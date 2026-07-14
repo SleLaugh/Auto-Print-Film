@@ -221,7 +221,6 @@ class Stage5ReconstructionTest(unittest.TestCase):
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.肺部,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[
                 PlaneConfig(
                     plane=plane,
@@ -604,7 +603,6 @@ class Stage5ReconstructionTest(unittest.TestCase):
             dicom_dir=dicom_dir,
             output_dir=str(output_dir),
             body_part=BodyPartEnum.腰椎,
-            cut_mode=CutModeEnum.整切,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,

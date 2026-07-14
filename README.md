@@ -115,14 +115,14 @@ Linux / macOS：
 
 ```bash
 source .venv/bin/activate
-python main.py -i /path/to/dicom_dir -o /path/to/output_dir --body_part 腰椎 --check_type CT --scan_thickness 3mm --cut_mode whole_range
+python main.py -i /path/to/dicom_dir -o /path/to/output_dir --body_part 腰椎 --check_type CT --scan_thickness 3mm
 ```
 
 Windows PowerShell：
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python main.py -i D:\data\dicom_dir -o D:\data\output_dir --body_part 腰椎 --check_type CT --scan_thickness 3mm --cut_mode whole_range
+python main.py -i D:\data\dicom_dir -o D:\data\output_dir --body_part 腰椎 --check_type CT --scan_thickness 3mm
 ```
 
 支持的 `--body_part`：
@@ -139,14 +139,19 @@ python main.py -h
 
 ### 当前能力范围
 
-当前正式注册的能力只包含 CT 横状位：
+当前正式注册 CT 的横状位、矢状位和冠状位直线重建能力：
 
 - 颈椎、胸椎、腰椎、肺部、头骨、髋骨整切；
-- 腰椎椎间切。
+- 系统不再接收 `cut_mode` 参数，而是根据部位和状位自动选择切法；
+- 腰椎横状位自动按椎间区间切；
+- 腰椎矢状位、冠状位以及其他部位的所有状位自动整切。
 
-未传 `--plane_configs` 时默认请求横状位骨窗。MR、骶骨以及颈椎/胸椎椎间切会在
-处理输出前由预检明确拒绝。矢状位和冠状位参数允许继续传入，便于后续逐步实现；
-当前阶段四只执行已经支持的横状位计划，并在调试报告中记录未实现状位 warning。
+未传 `--plane_configs` 时默认请求横状位骨窗。MR 和骶骨会在处理输出前由预检明确拒绝。
+
+已知限制：当前腰椎横状位区间切依赖相邻椎体分割 bbox 的相向边界。部分真实数据中，
+椎体附件会导致相邻 bbox 在头脚方向重叠，此时对应的 `L1-L2` 至 `L5-S1` 区间会被
+阶段四跳过并写入 `slice_plans.json` 的 `warnings`。腰椎矢状位整切及其他整切流程不受
+该限制影响；重叠 bbox 的区间范围算法留待后续单独修正。
 
 阶段五对每个切片计划先完成全部 MPR HU 图像采样，再按窗位使用线程池处理整套图像。
 不同窗位不会重复执行 MPR，默认最多同时运行 4 个窗位线程；阶段五会等待所有窗位

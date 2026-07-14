@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import FrozenSet, Iterable, Tuple
 
 from .errors import CapabilityError
+from src.planning.cut_policy import cut_mode_for_plane
 
 
 CapabilityKey = Tuple[str, str, str]
@@ -45,15 +46,13 @@ class CapabilityRegistry:
         """
         check_type = _value(request.check_type)
         body_part = _value(request.body_part)
-        cut_mode = _value(request.cut_mode)
         if check_type != "CT":
-            raise self._error(check_type, body_part, cut_mode, None)
-        supported_workflows = {
-            (supported_body_part, supported_cut_mode)
-            for supported_body_part, supported_cut_mode, _ in self.supported
-        }
-        if (body_part, cut_mode) not in supported_workflows:
-            raise self._error(check_type, body_part, cut_mode, None)
+            raise self._error(check_type, body_part, "", None)
+        for plane_config in request.plane_configs:
+            plane = _value(plane_config.plane)
+            cut_mode = cut_mode_for_plane(body_part, plane)
+            if (body_part, cut_mode, plane) not in self.supported:
+                raise self._error(check_type, body_part, cut_mode, plane)
 
     def _error(
         self,

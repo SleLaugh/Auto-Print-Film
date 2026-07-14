@@ -547,7 +547,10 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                         "whole_range": {
                             "start": "L1",
                             "end": "S1",
-                        }
+                        },
+                        "interspace": {
+                            "intervals": [{"start": "L1", "end": "S1"}],
+                        },
                     }
                 },
             }

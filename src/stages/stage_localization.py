@@ -162,9 +162,10 @@ class LocalizationStage(BaseStage):
         DebugLog(f"  输入原图: {raw_path}")
         DebugLog(f"  输入分割: {seg_path}")
         DebugLog(f"  部位: {request.body_part.value}")
-        cut_config = self._resolve_cut_config(request)
+        cut_mode = self._resolve_request_cut_mode(request)
+        cut_config = self._resolve_cut_config(request, cut_mode)
         resolved_cut_config = self._resolve_label_aliases(cut_config)
-        DebugLog(f"  切割方式: {request.cut_mode.value}")
+        DebugLog(f"  定位范围模式: {cut_mode}")
         DebugLog(f"  切割配置: {cut_config}")
         DebugLog(f"  标签配置: {resolved_cut_config}")
         DebugLog("=" * 60)
@@ -1262,7 +1263,7 @@ class LocalizationStage(BaseStage):
         """写出定位结果，供后续映射、MPR 和调试使用。"""
         localization_result = LocalizationResult(
             body_part=request.body_part.value,
-            cut_mode=request.cut_mode.value,
+            cut_mode=LocalizationStage._resolve_request_cut_mode(request),
             seg_path=str(seg_path),
             model=model_info,
             dataset_json_path=str(dataset_json_path),
@@ -1307,16 +1308,25 @@ class LocalizationStage(BaseStage):
             for name, coord in label_coordinates.items()
         }
 
-    def _resolve_cut_config(self, request) -> Dict[str, Any]:
-        """
-        根据请求中的部位和切割方式查找配置。
+    @staticmethod
+    def _resolve_request_cut_mode(request) -> str:
+        from src.planning.cut_policy import localization_cut_mode
 
-        外部只传 cut_mode；具体范围统一从 localization_config.json 读取。
+        return localization_cut_mode(
+            request.body_part,
+            (config.plane for config in request.plane_configs),
+        )
+
+    def _resolve_cut_config(self, request, cut_mode: str | None = None) -> Dict[str, Any]:
+        """
+        根据请求部位和自动推导的定位范围模式查找配置。
+
+        具体范围统一从 localization_config.json 读取。
         whole_range 使用 start/end；interspace 的每个 interval 也使用
         start/end，避免同一配置里混用 labels、数组等多种形态。
         """
         body_part = getattr(request.body_part, 'value', request.body_part)
-        cut_mode = getattr(request.cut_mode, 'value', request.cut_mode)
+        cut_mode = cut_mode or self._resolve_request_cut_mode(request)
         target_configs = self._localization_config.get('targets', {})
         target_config = target_configs.get(body_part)
         if not target_config:

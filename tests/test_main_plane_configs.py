@@ -6,6 +6,18 @@ from src.models.enums import PlaneTypeEnum, WindowPresetEnum
 
 
 class MainPlaneConfigsTest(unittest.TestCase):
+    def test_parse_arguments_no_longer_accepts_cut_mode(self):
+        original_argv = sys.argv
+        try:
+            sys.argv = [
+                "main.py", "-i", "/tmp/dicom", "-o", "/tmp/output",
+                "--cut_mode", "whole_range",
+            ]
+            with self.assertRaises(SystemExit):
+                main.parse_arguments()
+        finally:
+            sys.argv = original_argv
+
     def test_parse_plane_configs_json_string(self):
         # CLI 收到的是一整段 JSON 字符串，解析后应得到 PlaneConfig 对象。
         configs = main.parse_plane_configs(

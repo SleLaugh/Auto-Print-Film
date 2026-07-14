@@ -13,6 +13,14 @@ from src.models.enums import (
     PlaneTypeEnum,
     WindowPresetEnum,
 )
+from src.planning.cut_policy import cut_mode_for_plane
+
+
+class CutPolicyTest(unittest.TestCase):
+    def test_only_lumbar_axial_uses_interspace(self):
+        self.assertEqual(cut_mode_for_plane("腰椎", "横状位"), "interspace")
+        self.assertEqual(cut_mode_for_plane("腰椎", "矢状位"), "whole_range")
+        self.assertEqual(cut_mode_for_plane("颈椎", "横状位"), "whole_range")
 
 
 def make_request(body_part, cut_mode, plane, input_dir="/tmp/dicom", output_dir="/tmp/output"):
@@ -20,7 +28,6 @@ def make_request(body_part, cut_mode, plane, input_dir="/tmp/dicom", output_dir=
         dicom_dir=input_dir,
         output_dir=output_dir,
         body_part=BodyPartEnum(body_part),
-        cut_mode=CutModeEnum(cut_mode),
         plane_configs=[PlaneConfig(
             PlaneTypeEnum(plane),
             1.0,
@@ -48,13 +55,10 @@ class PreflightTest(unittest.TestCase):
             make_request("腰椎", "whole_range", "横状位")
         )
 
-    def test_registry_rejects_unimplemented_cervical_interspace(self):
-        with self.assertRaises(CapabilityError) as captured:
-            CapabilityRegistry.current().validate(
-                make_request("颈椎", "interspace", "横状位")
-            )
-
-        self.assertEqual(captured.exception.details["body_part"], "颈椎")
+    def test_registry_derives_cervical_axial_as_whole_range(self):
+        CapabilityRegistry.current().validate(
+            make_request("颈椎", "interspace", "横状位")
+        )
 
     def test_registry_allows_future_planes_for_a_supported_workflow(self):
         # 状位由阶段四逐步实现；预检不能阻断同一部位/切法下的后续扩展参数。

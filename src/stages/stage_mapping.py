@@ -91,7 +91,7 @@ class MappingStage(BaseStage):
         debug_native_overview_paths: Dict[str, str] = {}
         metadata_path = ""
         if is_debug_log_file_enabled():
-            DebugLog("  [3] write_debug_overlay: 写出切割线 overlay...")
+            DebugLog("  [3] write_debug_overlay: 写出切割线和含原图总览...")
             debug_overlay_path = self._write_slice_plan_overlay(
                 context=context,
                 localization_result=prev_result,
@@ -138,6 +138,7 @@ class MappingStage(BaseStage):
             'debug_slice_plan_overview_overlay_path': debug_overview_overlay_path,
             'debug_slice_plan_native_overview_overlay_path': debug_native_overview_overlay_path,
             'debug_slice_plan_overview_paths': debug_overview_paths,
+            'debug_slice_plan_overview_with_image_paths': debug_overview_paths,
             'debug_slice_plan_native_overview_paths': debug_native_overview_paths,
         }
         
@@ -195,6 +196,7 @@ class MappingStage(BaseStage):
             "debug_slice_plan_overview_overlay_path": debug_overview_overlay_path,
             "debug_slice_plan_native_overview_overlay_path": debug_native_overview_overlay_path,
             "debug_slice_plan_overview_paths": debug_overview_paths,
+            "debug_slice_plan_overview_with_image_paths": debug_overview_paths,
             "debug_slice_plan_native_overview_paths": debug_native_overview_paths,
         }
         with open(metadata_path, "w", encoding="utf-8") as file:
@@ -466,11 +468,12 @@ class MappingStage(BaseStage):
         plans: list[Dict[str, Any]],
     ) -> tuple[Dict[str, str], Dict[str, str]]:
         """
-        按横、矢、冠状位分别写出普通检查网格和原始网格总览。
+        按横、矢、冠状位分别写出含 CT 背景和原始网格总览。
 
-        每个文件只包含一个状位，避免三组互相垂直的切割线叠在一起。普通检查
-        网格会把当前状位的堆叠轴细化到 0.5mm；原始网格则保留输入图像信息，
-        用于核对计划中心映射回真实体素后的取整位置。
+        每个文件只包含一个状位，避免三组互相垂直的切割线叠在一起。含原图
+        总览会把当前状位的堆叠轴细化到 0.5mm，并将层厚带和中心线烧录到
+        重采样后的 CT 中；原始网格总览保留输入图像网格，用于核对取整位置。
+        缺少原始 CT 时只写原始网格总览。
         """
 
         reference_path = localization_result.get("seg_for_reconstruction_path")
@@ -482,6 +485,10 @@ class MappingStage(BaseStage):
             return {}, {}
 
         reference_image = sitk.ReadImage(str(reference_path))
+        raw_path = localization_result.get("raw_for_reconstruction_path")
+        raw_image = None
+        if raw_path and Path(raw_path).exists():
+            raw_image = sitk.ReadImage(str(raw_path))
         plans_by_plane: Dict[str, list[Dict[str, Any]]] = {}
         for plan in plans:
             plane = str(plan.get("plane", ""))
@@ -529,18 +536,22 @@ class MappingStage(BaseStage):
                 )
 
             debug_suffix = self._debug_plan_suffix(plane_plans)
-            output_path = metadata_dir / f"切片总览_{debug_suffix}.nii.gz"
+            output_path = metadata_dir / f"切片总览含原图_{debug_suffix}.nii.gz"
             native_output_path = (
                 metadata_dir
                 / f"切片原始网格总览_{debug_suffix}.nii.gz"
             )
-            overlay_image = sitk.GetImageFromArray(uniform_overlay_array)
-            overlay_image.CopyInformation(uniform_reference)
-            sitk.WriteImage(overlay_image, str(output_path))
+            if raw_image is not None:
+                overview_image = self._build_overview_with_image(
+                    raw_image,
+                    uniform_reference,
+                    uniform_overlay_array,
+                )
+                sitk.WriteImage(overview_image, str(output_path))
+                overview_paths[plane] = str(output_path)
             native_overlay_image = sitk.GetImageFromArray(native_overlay_array)
             native_overlay_image.CopyInformation(reference_image)
             sitk.WriteImage(native_overlay_image, str(native_output_path))
-            overview_paths[plane] = str(output_path)
             native_overview_paths[plane] = str(native_output_path)
 
         return overview_paths, native_overview_paths
@@ -559,6 +570,41 @@ class MappingStage(BaseStage):
             if plane in paths_by_plane:
                 return paths_by_plane[plane]
         return ""
+
+    @staticmethod
+    def _build_overview_with_image(
+        raw_image: sitk.Image,
+        reference_image: sitk.Image,
+        overlay_array: np.ndarray,
+    ) -> sitk.Image:
+        """把 CT 重采样到总览网格，并烧录层厚带和中心线。"""
+
+        raw_array = sitk.GetArrayViewFromImage(raw_image)
+        source_min = float(np.min(raw_array))
+        source_max = float(np.max(raw_array))
+        int16_min = int(np.iinfo(np.int16).min)
+        int16_max = int(np.iinfo(np.int16).max)
+        resampled = sitk.Resample(
+            raw_image,
+            reference_image,
+            sitk.Transform(),
+            sitk.sitkLinear,
+            min(max(source_min, int16_min), int16_max),
+            sitk.sitkInt16,
+        )
+        result_array = sitk.GetArrayFromImage(resampled)
+        intensity_span = max(source_max - source_min, 1.0)
+        band_value = min(int(round(source_max + intensity_span)), int16_max - 1)
+        center_value = min(int(round(band_value + intensity_span)), int16_max)
+        if center_value <= band_value:
+            band_value = int16_max - 1
+            center_value = int16_max
+        result_array[overlay_array % 10 == 5] = band_value
+        result_array[overlay_array % 10 == 4] = center_value
+
+        result = sitk.GetImageFromArray(result_array)
+        result.CopyInformation(reference_image)
+        return result
 
     @staticmethod
     def _build_uniform_overview_reference(

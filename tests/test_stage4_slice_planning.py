@@ -24,6 +24,40 @@ from src.stages.stage_mapping import MappingStage
 
 
 class Stage4SlicePlanningTest(unittest.TestCase):
+    def test_overview_with_image_preserves_ct_and_highlights_overlay_labels(self):
+        raw_array = np.array([
+            [[0, 10], [20, 30]],
+            [[40, 50], [60, 70]],
+        ], dtype=np.int16)
+        raw_image = sitk.GetImageFromArray(raw_array)
+        raw_image.SetSpacing((1.0, 1.0, 1.0))
+
+        reference_image = sitk.Image(2, 3, 2, sitk.sitkUInt16)
+        reference_image.SetSpacing((1.0, 0.5, 1.0))
+        overlay_array = np.zeros((2, 3, 2), dtype=np.uint16)
+        overlay_array[0, 1, 0] = 15
+        overlay_array[0, 1, 1] = 14
+
+        result = MappingStage._build_overview_with_image(
+            raw_image,
+            reference_image,
+            overlay_array,
+        )
+        result_array = sitk.GetArrayFromImage(result)
+
+        self.assertEqual(result.GetSize(), reference_image.GetSize())
+        self.assertEqual(result.GetPixelID(), sitk.sitkInt16)
+        self.assertEqual(result.GetSpacing(), reference_image.GetSpacing())
+        self.assertEqual(result.GetOrigin(), reference_image.GetOrigin())
+        self.assertEqual(result.GetDirection(), reference_image.GetDirection())
+        self.assertAlmostEqual(float(result_array[0, 0, 0]), 0.0)
+        self.assertAlmostEqual(float(result_array[0, 2, 1]), 30.0)
+        self.assertGreater(float(result_array[0, 1, 0]), 70.0)
+        self.assertGreater(
+            float(result_array[0, 1, 1]),
+            float(result_array[0, 1, 0]),
+        )
+
     def test_debug_filename_suffix_uses_short_plane_and_cut_mode_labels(self):
         self.assertEqual(
             MappingStage._debug_plan_suffix([
@@ -901,6 +935,15 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             # 13 表示每张 slice 的平面引导线，应该离中心点有一段距离也能看到。
             self.assertEqual(overlay_array[6, 50, 60], 12)
             self.assertEqual(overlay_array[6, 50, 65], 13)
+            self.assertEqual(result["debug_slice_plan_overview_paths"], {})
+            self.assertEqual(
+                result["debug_slice_plan_overview_with_image_paths"],
+                {},
+            )
+            self.assertEqual(
+                set(result["debug_slice_plan_native_overview_paths"]),
+                {"横状位"},
+            )
 
     def test_mapping_stage_writes_separate_overviews_for_three_planes(self):
         """横、矢、冠应分别生成普通检查网格和原始网格总览。"""
@@ -908,12 +951,15 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             seg_path = temp_path / "seg.nii.gz"
+            raw_path = temp_path / "raw.nii.gz"
             image = sitk.GetImageFromArray(
                 np.zeros((18, 80, 80), dtype=np.uint8),
             )
             image.SetSpacing((1.0, 2.0, 3.0))
             image.SetOrigin((0.0, 0.0, 0.0))
             sitk.WriteImage(image, str(seg_path))
+            raw_image = sitk.Cast(image, sitk.sitkInt16) + 100
+            sitk.WriteImage(raw_image, str(raw_path))
 
             request = Request(
                 dicom_dir="/tmp/dicom",
@@ -937,6 +983,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             localization_result = self._lumbar_localization_result()
             localization_result["image"]["spacing_xyz"] = [1.0, 2.0, 3.0]
             localization_result["seg_for_reconstruction_path"] = str(seg_path)
+            localization_result["raw_for_reconstruction_path"] = str(raw_path)
             context = ProcessingContext(request)
             context.set_result("localization", localization_result)
 
@@ -944,9 +991,13 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
             result = context.get_result("mapping")
             overview_paths = result["debug_slice_plan_overview_paths"]
+            overview_with_image_paths = result[
+                "debug_slice_plan_overview_with_image_paths"
+            ]
             native_paths = result["debug_slice_plan_native_overview_paths"]
             expected_planes = {"横状位", "矢状位", "冠状位"}
             self.assertEqual(set(overview_paths), expected_planes)
+            self.assertEqual(overview_with_image_paths, overview_paths)
             self.assertEqual(set(native_paths), expected_planes)
             self.assertEqual(
                 Path(native_paths["矢状位"]).name,
@@ -964,6 +1015,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             }
             for plane, path in overview_paths.items():
                 with self.subTest(kind="uniform", plane=plane):
+                    self.assertIn("切片总览含原图_", Path(path).name)
                     overview_image = sitk.ReadImage(path)
                     overview_array = sitk.GetArrayFromImage(overview_image)
                     self.assertEqual(
@@ -971,6 +1023,10 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                         expected_spacing[plane],
                     )
                     self.assertTrue(np.any(overview_array > 0))
+
+            self.assertFalse(any(
+                temp_path.glob("metadata/切片总览_*.nii.gz")
+            ))
 
             for plane, path in native_paths.items():
                 with self.subTest(kind="native", plane=plane):
@@ -1001,6 +1057,10 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 overview_paths,
             )
             self.assertEqual(
+                metadata["debug_slice_plan_overview_with_image_paths"],
+                overview_paths,
+            )
+            self.assertEqual(
                 metadata["debug_slice_plan_native_overview_paths"],
                 native_paths,
             )
@@ -1009,10 +1069,12 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             seg_path = temp_path / "seg.nii.gz"
+            raw_path = temp_path / "raw.nii.gz"
             image = sitk.GetImageFromArray(np.zeros((18, 80, 80), dtype=np.uint8))
             image.SetSpacing((1.0, 1.0, 1.0))
             image.SetOrigin((0.0, 0.0, 0.0))
             sitk.WriteImage(image, str(seg_path))
+            sitk.WriteImage(sitk.Cast(image, sitk.sitkInt16), str(raw_path))
 
             request = Request(
                 dicom_dir="/tmp/dicom",
@@ -1032,6 +1094,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             localization_result["correction_scope_bbox"]["z_min"] = 3
             localization_result["correction_scope_bbox"]["z_max"] = 13
             localization_result["seg_for_reconstruction_path"] = str(seg_path)
+            localization_result["raw_for_reconstruction_path"] = str(raw_path)
             context = ProcessingContext(request)
             context.set_result("localization", localization_result)
 
@@ -1039,14 +1102,16 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
             result = context.get_result("mapping")
             overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
-            self.assertEqual(overview_path.name, "切片总览_横_整.nii.gz")
+            self.assertEqual(overview_path.name, "切片总览含原图_横_整.nii.gz")
             overview_image = sitk.ReadImage(str(overview_path))
             overview_array = sitk.GetArrayFromImage(overview_image)
             self.assertTrue(overview_path.exists())
             self.assertEqual(overview_image.GetSpacing(), (1.0, 1.0, 0.5))
             self.assertEqual(overview_image.GetSize(), (80, 80, 35))
+            self.assertEqual(overview_image.GetPixelID(), sitk.sitkInt16)
+            self.assertEqual(overview_image.GetOrigin(), (0.0, 0.0, 0.0))
             # 5 mm 中心间距在 0.5 mm 检查网格上恒为 10 个体素。
-            center_rows = np.unique(np.argwhere(overview_array == 14)[:, 0])
+            center_rows = np.unique(np.argwhere(overview_array == 2)[:, 0])
             self.assertEqual(center_rows.tolist(), [12, 22])
             self.assertEqual(int(center_rows[1] - center_rows[0]), 10)
             native_path = Path(result["debug_slice_plan_native_overview_overlay_path"])
@@ -1058,10 +1123,12 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             seg_path = temp_path / "seg.nii.gz"
+            raw_path = temp_path / "raw.nii.gz"
             image = sitk.GetImageFromArray(np.zeros((18, 80, 80), dtype=np.uint8))
             image.SetSpacing((1.0, 1.0, 1.0))
             image.SetOrigin((0.0, 0.0, 0.0))
             sitk.WriteImage(image, str(seg_path))
+            sitk.WriteImage(sitk.Cast(image, sitk.sitkInt16), str(raw_path))
 
             request = Request(
                 dicom_dir="/tmp/dicom",
@@ -1081,6 +1148,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             localization_result["correction_scope_bbox"]["z_min"] = 3
             localization_result["correction_scope_bbox"]["z_max"] = 13
             localization_result["seg_for_reconstruction_path"] = str(seg_path)
+            localization_result["raw_for_reconstruction_path"] = str(raw_path)
             context = ProcessingContext(request)
             context.set_result("localization", localization_result)
 
@@ -1088,26 +1156,40 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
             result = context.get_result("mapping")
             overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
-            overview_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overview_path)))
+            overview_image = sitk.ReadImage(str(overview_path))
+            overview_array = sitk.GetArrayFromImage(overview_image)
             # bbox 3..13、层厚 3、中心间距 5：从上向下的中心在 12 和 7，
             # 对应两个厚度覆盖带，中间仍保留配置允许的空档。
-            center_rows = np.unique(np.argwhere(overview_array == 14)[:, 0])
+            center_rows = np.unique(np.argwhere(overview_array == 2)[:, 0])
             self.assertEqual(center_rows.tolist(), [14, 24])
             # 3 mm 层厚在 0.5 mm 网格上固定占 6 行；中心仅为短刻度，
             # 不再把整条厚度带分成“黄色在上/黄色在下”。
-            band_rows = np.unique(np.argwhere(overview_array == 15)[:, 0])
+            band_rows = np.unique(np.argwhere(overview_array == 1)[:, 0])
             self.assertEqual(band_rows.tolist(), [
                 11, 12, 13, 14, 15, 16,
                 21, 22, 23, 24, 25, 26,
             ])
-            self.assertEqual(overview_array[14, 45, 60], 15)
-            self.assertEqual(overview_array[14, 50, 60], 14)
-            self.assertEqual(overview_array[19, 50, 60], 0)
+            band_index = MappingStage._physical_point_to_array_index(
+                overview_image,
+                {"x": 60.0, "y": 45.0, "z": 7.0},
+            )
+            center_index = MappingStage._physical_point_to_array_index(
+                overview_image,
+                {"x": 60.0, "y": 50.0, "z": 7.0},
+            )
+            gap_index = MappingStage._physical_point_to_array_index(
+                overview_image,
+                {"x": 60.0, "y": 50.0, "z": 9.5},
+            )
+            self.assertEqual(overview_array[band_index], 1)
+            self.assertEqual(overview_array[center_index], 2)
+            self.assertEqual(overview_array[gap_index], 0)
 
     def test_mapping_stage_overview_overlay_respects_image_direction(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             seg_path = temp_path / "seg.nii.gz"
+            raw_path = temp_path / "raw.nii.gz"
             image = sitk.GetImageFromArray(np.zeros((18, 80, 80), dtype=np.uint8))
             image.SetSpacing((1.0, 1.0, 1.0))
             image.SetOrigin((0.0, 0.0, 100.0))
@@ -1117,6 +1199,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 0.0, 0.0, -1.0,
             ))
             sitk.WriteImage(image, str(seg_path))
+            sitk.WriteImage(sitk.Cast(image, sitk.sitkInt16), str(raw_path))
 
             request = Request(
                 dicom_dir="/tmp/dicom",
@@ -1142,6 +1225,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             localization_result["correction_scope_bbox"]["z_min"] = 3
             localization_result["correction_scope_bbox"]["z_max"] = 13
             localization_result["seg_for_reconstruction_path"] = str(seg_path)
+            localization_result["raw_for_reconstruction_path"] = str(raw_path)
             context = ProcessingContext(request)
             context.set_result("localization", localization_result)
 
@@ -1149,9 +1233,10 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
             result = context.get_result("mapping")
             overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
-            overview_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overview_path)))
-            self.assertEqual(overview_array[10, 50, 60], 14)
-            self.assertEqual(overview_array[20, 50, 60], 14)
+            overview_image = sitk.ReadImage(str(overview_path))
+            overview_array = sitk.GetArrayFromImage(overview_image)
+            center_rows = np.unique(np.argwhere(overview_array == 2)[:, 0])
+            self.assertEqual(center_rows.tolist(), [10, 20])
 
     @staticmethod
     def _lumbar_localization_result():

@@ -56,22 +56,6 @@ class CutLineExtentModeEnum(Enum):
     部位范围 = "target_bbox"
 
 
-class WindowPresetEnum(Enum):
-    """窗宽窗位预设名称枚举。"""
-    # 外部请求只传中文名称；具体窗宽和窗位由内部预设表统一维护。
-    脑窗 = "脑窗"
-    骨窗 = "骨窗"
-    肺窗 = "肺窗"
-    纵隔窗 = "纵隔窗"
-    软组织窗 = "软组织窗"
-    腹部窗 = "腹部窗"
-    肝窗 = "肝窗"
-    肾窗 = "肾窗"
-    胰腺窗 = "胰腺窗"
-    骨盆窗 = "骨盆窗"
-    脊柱窗 = "脊柱窗"
-
-
 class ProcessingStatusEnum(Enum):
     """处理状态枚举"""
     待处理 = "pending"

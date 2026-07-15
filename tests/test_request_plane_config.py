@@ -1,6 +1,6 @@
 import unittest
 
-from src.models import PlaneConfig, Request, WindowPresetEnum
+from src.models import PlaneConfig, Request
 from src.models.enums import BodyPartEnum, PlaneTypeEnum
 
 
@@ -20,11 +20,6 @@ class PlaneConfigRequestTest(unittest.TestCase):
             "骨盆窗",
             "脊柱窗",
         ]
-        self.assertEqual(
-            {preset.value for preset in WindowPresetEnum},
-            set(window_names),
-        )
-
         config = PlaneConfig.from_dict({
             "plane": "横状位",
             "slice_thickness": 5,
@@ -33,13 +28,12 @@ class PlaneConfigRequestTest(unittest.TestCase):
         })
 
         self.assertEqual(
-            [preset.value for preset in config.window_presets],
+            config.window_presets,
             window_names,
         )
         self.assertEqual(config.to_dict()["window_presets"], window_names)
 
-    def test_plane_config_from_dict_converts_strings_to_enums(self):
-        # 外部 JSON 输入是字符串，业务代码内部应该统一拿到枚举。
+    def test_plane_config_from_dict_keeps_window_names_as_strings(self):
         config = PlaneConfig.from_dict({
             "plane": "冠状位",
             "slice_thickness": 5,
@@ -51,11 +45,7 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self.assertEqual(config.slice_thickness, 5.0)
         self.assertEqual(config.slice_spacing, 10.0)
         self.assertEqual(config.line_extent_mode.value, "full_plane")
-        self.assertEqual(config.window_presets, [
-            WindowPresetEnum.骨窗,
-            WindowPresetEnum.肺窗,
-            WindowPresetEnum.纵隔窗,
-        ])
+        self.assertEqual(config.window_presets, ["骨窗", "肺窗", "纵隔窗"])
 
     def test_plane_config_parses_target_bbox_line_extent_mode(self):
         config = PlaneConfig.from_dict({
@@ -171,6 +161,17 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 }
             ],
             "窗宽窗位不能为空",
+        )
+
+    def test_request_validate_rejects_unknown_window_preset(self):
+        self._assert_invalid(
+            [{
+                "plane": "横状位",
+                "slice_thickness": 1,
+                "slice_spacing": 1,
+                "window_presets": ["血管窗"],
+            }],
+            "不支持的窗宽窗位预设",
         )
 
     def _assert_invalid(self, plane_configs, expected_message):

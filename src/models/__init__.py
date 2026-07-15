@@ -39,7 +39,6 @@ from .enums import (
     CutModeEnum,
     PositioningModeEnum,
     PlaneTypeEnum,
-    WindowPresetEnum,
     ProcessingStatusEnum
 )
 
@@ -65,7 +64,6 @@ __all__ = [
     'CutModeEnum',
     'PositioningModeEnum',
     'PlaneTypeEnum',
-    'WindowPresetEnum',
     'ProcessingStatusEnum',
     'StageResult',
     'PreprocessingResult',

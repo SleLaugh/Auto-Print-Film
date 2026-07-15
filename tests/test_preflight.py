@@ -11,7 +11,6 @@ from src.models.enums import (
     BodyPartEnum,
     CutModeEnum,
     PlaneTypeEnum,
-    WindowPresetEnum,
 )
 from src.planning.cut_policy import cut_mode_for_plane
 
@@ -32,7 +31,7 @@ def make_request(body_part, cut_mode, plane, input_dir="/tmp/dicom", output_dir=
             PlaneTypeEnum(plane),
             1.0,
             1.0,
-            [WindowPresetEnum.骨窗],
+            ["骨窗"],
         )],
     )
 

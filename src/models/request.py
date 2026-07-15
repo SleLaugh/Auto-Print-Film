@@ -12,9 +12,9 @@ from .enums import (
     CheckTypeEnum,
     ScanThicknessEnum,
     PlaneTypeEnum,
-    WindowPresetEnum,
     CutLineExtentModeEnum,
 )
+from .window import get_window_preset
 
 
 @dataclass
@@ -27,7 +27,7 @@ class PlaneConfig:
     # 目标层间距，单位按业务输入约定使用 mm。
     slice_spacing: float
     # 一个状位可以同时输出多套窗宽窗位图像，例如骨窗和纵隔窗。
-    window_presets: List[WindowPresetEnum]
+    window_presets: List[str]
     line_extent_mode: CutLineExtentModeEnum = CutLineExtentModeEnum.整平面
 
     @classmethod
@@ -42,10 +42,7 @@ class PlaneConfig:
             plane=PlaneTypeEnum(data['plane']),
             slice_thickness=float(data['slice_thickness']),
             slice_spacing=float(data['slice_spacing']),
-            window_presets=[
-                WindowPresetEnum(value)
-                for value in data.get('window_presets', [])
-            ],
+            window_presets=[str(value) for value in data.get('window_presets', [])],
             line_extent_mode=CutLineExtentModeEnum(
                 data.get('line_extent_mode', CutLineExtentModeEnum.整平面.value)
             ),
@@ -62,10 +59,7 @@ class PlaneConfig:
             'plane': self.plane.value,
             'slice_thickness': self.slice_thickness,
             'slice_spacing': self.slice_spacing,
-            'window_presets': [
-                window.value
-                for window in self.window_presets
-            ],
+            'window_presets': list(self.window_presets),
             'line_extent_mode': self.line_extent_mode.value,
         }
 
@@ -78,7 +72,7 @@ def default_plane_configs() -> List[PlaneConfig]:
     避免默认参数宣称超过 planner 的真实能力。
     """
     return [
-        PlaneConfig(PlaneTypeEnum.横状位, 1.0, 1.0, [WindowPresetEnum.骨窗]),
+        PlaneConfig(PlaneTypeEnum.横状位, 1.0, 1.0, ["骨窗"]),
     ]
 
 @dataclass
@@ -185,5 +179,10 @@ class Request:
             # 没有窗宽窗位就无法决定最终图像显示版本。
             if not plane_config.window_presets:
                 return False, f"{plane_value} 窗宽窗位不能为空"
+            for window_name in plane_config.window_presets:
+                try:
+                    get_window_preset(window_name)
+                except ValueError as exc:
+                    return False, str(exc)
 
         return True, None

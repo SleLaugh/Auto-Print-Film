@@ -16,7 +16,6 @@ from src.models import (
     PlaneConfig,
     PlaneTypeEnum,
     Request,
-    WindowPresetEnum,
 )
 from src.planning.whole_range import build_whole_range_plan_from_bbox
 from src.reconstruction.plane_stack import PlaneStackResampler
@@ -274,7 +273,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                     plane=plane,
                     slice_thickness=1.0,
                     slice_spacing=2.0,
-                    window_presets=[WindowPresetEnum.肺窗],
+                    window_presets=["肺窗"],
                 )
                 for plane in (
                     PlaneTypeEnum.横状位,
@@ -660,7 +659,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                     plane=PlaneTypeEnum.横状位,
                     slice_thickness=1.0,
                     slice_spacing=2.0,
-                    window_presets=[WindowPresetEnum.骨窗],
+                    window_presets=["骨窗"],
                 ),
             ],
         )

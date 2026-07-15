@@ -2,7 +2,7 @@ import sys
 import unittest
 
 import main
-from src.models.enums import PlaneTypeEnum, WindowPresetEnum
+from src.models.enums import PlaneTypeEnum
 
 
 class MainPlaneConfigsTest(unittest.TestCase):
@@ -28,8 +28,8 @@ class MainPlaneConfigsTest(unittest.TestCase):
         self.assertEqual(configs[0].slice_thickness, 5.0)
         self.assertEqual(configs[0].slice_spacing, 10.0)
         self.assertEqual(configs[0].window_presets, [
-            WindowPresetEnum.骨窗,
-            WindowPresetEnum.肺窗,
+            "骨窗",
+            "肺窗",
         ])
 
     def test_parse_plane_configs_none_uses_request_default(self):

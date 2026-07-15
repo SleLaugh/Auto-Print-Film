@@ -1,0 +1,13 @@
+[
+  {"name": "脑窗", "window_width": 80, "window_center": 40},
+  {"name": "骨窗", "window_width": 2500, "window_center": 400},
+  {"name": "肺窗", "window_width": 1600, "window_center": -600},
+  {"name": "纵隔窗", "window_width": 350, "window_center": 40},
+  {"name": "软组织窗", "window_width": 400, "window_center": 50},
+  {"name": "腹部窗", "window_width": 350, "window_center": 50},
+  {"name": "肝窗", "window_width": 150, "window_center": 60},
+  {"name": "肾窗", "window_width": 350, "window_center": 40},
+  {"name": "胰腺窗", "window_width": 300, "window_center": 40},
+  {"name": "骨盆窗", "window_width": 400, "window_center": 40},
+  {"name": "脊柱窗", "window_width": 2000, "window_center": 300}
+]

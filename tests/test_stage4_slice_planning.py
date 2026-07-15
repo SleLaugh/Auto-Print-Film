@@ -10,7 +10,7 @@ from src.utils.Logger_utils import _logger_manager
 _logger_manager.debug_log_file_enabled = True
 
 from src.core.context import ProcessingContext
-from src.models import PlaneConfig, Request, WindowPresetEnum
+from src.models import PlaneConfig, Request
 from src.models.enums import CutLineExtentModeEnum
 from src.models.enums import BodyPartEnum, CutModeEnum, PlaneTypeEnum
 from src.planning.base import select_planner
@@ -33,11 +33,11 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 plane_configs=[
                     PlaneConfig(
                         PlaneTypeEnum.横状位, 1.0, 3.0,
-                        [WindowPresetEnum.骨窗],
+                        ["骨窗"],
                     ),
                     PlaneConfig(
                         PlaneTypeEnum.矢状位, 1.0, 3.0,
-                        [WindowPresetEnum.骨窗],
+                        ["骨窗"],
                     ),
                 ],
             )
@@ -135,7 +135,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     plane=PlaneTypeEnum.横状位,
                     slice_thickness=5.0,
                     slice_spacing=5.0,
-                    window_presets=[WindowPresetEnum.肺窗],
+                    window_presets=["肺窗"],
                 )
             ],
         )
@@ -189,7 +189,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 plane=PlaneTypeEnum.矢状位,
                 slice_thickness=3.0,
                 slice_spacing=5.0,
-                window_presets=[WindowPresetEnum.肺窗],
+                window_presets=["肺窗"],
             )],
         )
 
@@ -214,19 +214,19 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     PlaneTypeEnum.横状位,
                     3.0,
                     5.0,
-                    [WindowPresetEnum.肺窗],
+                    ["肺窗"],
                 ),
                 PlaneConfig(
                     PlaneTypeEnum.矢状位,
                     3.0,
                     5.0,
-                    [WindowPresetEnum.肺窗],
+                    ["肺窗"],
                 ),
                 PlaneConfig(
                     PlaneTypeEnum.冠状位,
                     3.0,
                     5.0,
-                    [WindowPresetEnum.肺窗],
+                    ["肺窗"],
                 ),
             ],
         )
@@ -294,7 +294,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=3.0,
                 slice_spacing=5.0,
-                window_presets=[WindowPresetEnum.骨窗],
+                window_presets=["骨窗"],
             )],
         )
 
@@ -403,7 +403,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=3.0,
                 slice_spacing=5.0,
-                window_presets=[WindowPresetEnum.骨窗],
+                window_presets=["骨窗"],
             )],
         )
         localization_result = self._lumbar_localization_result()
@@ -459,7 +459,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=2.0,
                 slice_spacing=2.0,
-                window_presets=[WindowPresetEnum.骨窗],
+                window_presets=["骨窗"],
                 line_extent_mode=CutLineExtentModeEnum.部位范围,
             )],
         )
@@ -509,7 +509,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=3.0,
                 slice_spacing=5.0,
-                window_presets=[WindowPresetEnum.骨窗],
+                window_presets=["骨窗"],
             )],
         )
         localization_result = self._lumbar_localization_result()
@@ -531,7 +531,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             body_part=BodyPartEnum.肺部,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位, slice_thickness=3.0,
-                slice_spacing=5.0, window_presets=[WindowPresetEnum.肺窗],
+                slice_spacing=5.0, window_presets=["肺窗"],
             )],
         )
         loc = self._lumbar_localization_result()
@@ -548,7 +548,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             body_part=BodyPartEnum.肺部,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位, slice_thickness=3.0,
-                slice_spacing=5.0, window_presets=[WindowPresetEnum.肺窗],
+                slice_spacing=5.0, window_presets=["肺窗"],
                 line_extent_mode=CutLineExtentModeEnum.部位范围,
             )],
         )
@@ -570,7 +570,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     plane=PlaneTypeEnum.横状位,
                     slice_thickness=5.0,
                     slice_spacing=5.0,
-                    window_presets=[WindowPresetEnum.肺窗],
+                    window_presets=["肺窗"],
                 )
             ],
         )
@@ -619,7 +619,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     plane=PlaneTypeEnum.横状位,
                     slice_thickness=5.0,
                     slice_spacing=5.0,
-                    window_presets=[WindowPresetEnum.肺窗],
+                    window_presets=["肺窗"],
                 )
             ],
         )
@@ -646,7 +646,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     plane=PlaneTypeEnum.横状位,
                     slice_thickness=5.0,
                     slice_spacing=5.0,
-                    window_presets=[WindowPresetEnum.骨窗],
+                    window_presets=["骨窗"],
                 )
             ],
         )
@@ -674,7 +674,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     plane=PlaneTypeEnum.横状位,
                     slice_thickness=5.0,
                     slice_spacing=5.0,
-                    window_presets=[WindowPresetEnum.骨窗],
+                    window_presets=["骨窗"],
                 )
             ],
         )
@@ -708,7 +708,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     plane=PlaneTypeEnum.横状位,
                     slice_thickness=5.0,
                     slice_spacing=5.0,
-                    window_presets=[WindowPresetEnum.骨窗],
+                    window_presets=["骨窗"],
                 )
             ],
         )
@@ -739,7 +739,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     plane=plane,
                     slice_thickness=3.0,
                     slice_spacing=5.0,
-                    window_presets=[WindowPresetEnum.骨窗],
+                    window_presets=["骨窗"],
                 )
                 for plane in (
                     PlaneTypeEnum.横状位,
@@ -770,7 +770,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     plane=PlaneTypeEnum.横状位,
                     slice_thickness=2.0,
                     slice_spacing=2.0,
-                    window_presets=[WindowPresetEnum.骨窗],
+                    window_presets=["骨窗"],
                 )
             ],
         )
@@ -832,7 +832,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=0.5,
                 slice_spacing=1.0,
-                window_presets=[WindowPresetEnum.骨窗],
+                window_presets=["骨窗"],
                 line_extent_mode=CutLineExtentModeEnum.部位范围,
             )],
         )
@@ -879,7 +879,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                         plane=PlaneTypeEnum.横状位,
                         slice_thickness=5.0,
                         slice_spacing=5.0,
-                        window_presets=[WindowPresetEnum.骨窗],
+                        window_presets=["骨窗"],
                     )
                 ],
             )
@@ -929,7 +929,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                         plane=PlaneTypeEnum.横状位,
                         slice_thickness=5.0,
                         slice_spacing=5.0,
-                        window_presets=[WindowPresetEnum.骨窗],
+                        window_presets=["骨窗"],
                     )
                 ],
             )
@@ -988,7 +988,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                         plane=plane,
                         slice_thickness=3.0,
                         slice_spacing=5.0,
-                        window_presets=[WindowPresetEnum.骨窗],
+                        window_presets=["骨窗"],
                     )
                     for plane in (
                         PlaneTypeEnum.横状位,
@@ -1102,7 +1102,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                         plane=PlaneTypeEnum.横状位,
                         slice_thickness=5.0,
                         slice_spacing=5.0,
-                        window_presets=[WindowPresetEnum.骨窗],
+                        window_presets=["骨窗"],
                     )
                 ],
             )
@@ -1155,7 +1155,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                         plane=PlaneTypeEnum.横状位,
                         slice_thickness=3.0,
                         slice_spacing=5.0,
-                        window_presets=[WindowPresetEnum.骨窗],
+                        window_presets=["骨窗"],
                     )
                 ],
             )
@@ -1202,7 +1202,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                         plane=PlaneTypeEnum.横状位,
                         slice_thickness=5.0,
                         slice_spacing=5.0,
-                        window_presets=[WindowPresetEnum.骨窗],
+                        window_presets=["骨窗"],
                     )
                 ],
             )

@@ -1,0 +1,35 @@
+# 窗宽窗位配置化设计
+
+## 目标
+
+将窗宽窗位名称、窗宽和窗位从 Python 固定枚举和字典迁移到 JSON 配置。外部请求仍只传名称，支持的名称集合以配置文件为唯一来源。
+
+## 配置格式
+
+`src/config/window_presets.json` 是对象数组，每项只包含：
+
+- `name`：外部传入的中文名称。
+- `window_width`：大于 0 的数值。
+- `window_center`：数值，允许负数。
+
+## 模型和数据流
+
+- 保留现有不可变 `WindowPreset` 实体。
+- 删除 `WindowPresetEnum` 及 Python 固定预设字典。
+- `PlaneConfig.window_presets` 使用 `List[str]`，序列化格式不变。
+- `get_window_preset(name)` 从配置缓存查找并返回 `WindowPreset`。
+- 请求校验通过同一查找函数确认名称受支持。
+
+## 错误处理
+
+配置顶层不是数组、条目缺少字段、名称为空、名称重复、窗宽非正数或数值类型非法时，抛出包含具体原因的 `ValueError`。请求使用不存在的名称时返回“不支持的窗宽窗位预设”。
+
+## 兼容性和测试
+
+- CLI 和 API 仍使用 `"window_presets": ["骨窗"]`。
+- 现有预设名称及数值原样迁入 JSON。
+- 测试覆盖配置加载、自定义名称、请求序列化、未知名称和非法配置。
+
+## 不在本轮范围
+
+定位线颜色配置和彩色 DICOM 不在本轮处理。

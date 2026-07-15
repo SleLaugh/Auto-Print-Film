@@ -8,7 +8,7 @@ from src.core.base_stage import BaseStage
 from src.core.lifecycle import JobStatus, StageStatus
 from src.core.pipeline import Pipeline
 from src.models import PlaneConfig, Request
-from src.models.enums import PlaneTypeEnum, WindowPresetEnum
+from src.models.enums import PlaneTypeEnum
 
 
 class SuccessfulStage(BaseStage):
@@ -41,7 +41,7 @@ def make_request(output_dir):
             PlaneTypeEnum.横状位,
             1.0,
             1.0,
-            [WindowPresetEnum.骨窗],
+            ["骨窗"],
         )],
     )
 

@@ -344,10 +344,7 @@ def build_straight_slice_plan(
         ),
         slice_thickness=plane_config.slice_thickness,
         slice_spacing=plane_config.slice_spacing,
-        window_presets=[
-            window.value
-            for window in plane_config.window_presets
-        ],
+        window_presets=list(plane_config.window_presets),
         source_labels=list(segment.source_labels),
         target_start=centered_target_start,
         target_end=centered_target_end,

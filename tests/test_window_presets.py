@@ -1,7 +1,10 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import src.models as models
-from src.models import WindowPresetEnum
+from src.models.window import load_window_presets
 
 
 class WindowPresetsTest(unittest.TestCase):
@@ -20,17 +23,14 @@ class WindowPresetsTest(unittest.TestCase):
     }
 
     def test_all_presets_have_expected_width_and_center(self):
-        # 每个中文枚举都必须存在唯一的内部数值定义，避免新增名称后漏配参数。
+        # 配置文件是支持名称和数值的唯一来源。
         get_window_preset = getattr(models, "get_window_preset", None)
         self.assertIsNotNone(get_window_preset)
 
-        self.assertEqual(
-            {preset.value for preset in WindowPresetEnum},
-            set(self.EXPECTED_PRESETS),
-        )
+        self.assertEqual(set(load_window_presets()), set(self.EXPECTED_PRESETS))
         for name, (width, center) in self.EXPECTED_PRESETS.items():
             with self.subTest(name=name):
-                preset = get_window_preset(WindowPresetEnum(name))
+                preset = get_window_preset(name)
                 self.assertEqual(preset.name, name)
                 self.assertEqual(preset.window_width, width)
                 self.assertEqual(preset.window_center, center)
@@ -59,6 +59,34 @@ class WindowPresetsTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "不支持的窗宽窗位预设"):
             get_window_preset("血管窗")
+
+    def test_loader_accepts_new_name_without_python_enum(self):
+        presets = self._load_temp_config([
+            {"name": "血管窗", "window_width": 700, "window_center": 100},
+        ])
+
+        self.assertEqual(presets["血管窗"].window_width, 700)
+        self.assertEqual(presets["血管窗"].window_center, 100)
+
+    def test_loader_rejects_duplicate_names(self):
+        with self.assertRaisesRegex(ValueError, "重复"):
+            self._load_temp_config([
+                {"name": "骨窗", "window_width": 1000, "window_center": 100},
+                {"name": "骨窗", "window_width": 2000, "window_center": 200},
+            ])
+
+    def test_loader_rejects_non_positive_width(self):
+        with self.assertRaisesRegex(ValueError, "window_width"):
+            self._load_temp_config([
+                {"name": "骨窗", "window_width": 0, "window_center": 100},
+            ])
+
+    @staticmethod
+    def _load_temp_config(entries):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "window_presets.json"
+            path.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+            return load_window_presets(path)
 
 
 if __name__ == "__main__":

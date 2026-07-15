@@ -70,12 +70,14 @@ class CutSegment:
 def anatomical_straight_frame(
     plane: PlaneTypeEnum,
     anatomical_frame: AnatomicalFrame,
+    image_info: Dict[str, Any],
 ) -> StraightPlaneFrame:
     """
     把统一解剖坐标系映射成横、矢、冠状位切片坐标系。
 
     row_dir、col_dir 决定切片画面的左右和上下，normal 决定切片堆叠方向；
-    矢状位和冠状位翻转头脚轴是为了保持现有 DICOM 输出的显示方向约定。
+    矢状位的切割法向沿用解剖坐标，但画面上下方向取自原图头脚轴在该平面
+    内的投影，避免成片随脊柱轴旋转；冠状位仍使用解剖头脚轴显示。
     """
 
     lr = anatomical_frame.left_right_axis
@@ -86,10 +88,23 @@ def anatomical_straight_frame(
         return StraightPlaneFrame(row_dir=lr, col_dir=ap, normal=si)
     # 矢状位画面使用前后/脚头轴，并按右到左方向推进。
     if plane == PlaneTypeEnum.矢状位:
+        normal = _scale_direction(lr, -1.0)
+        original_inferior = normalize_vector(_scale_direction(
+            image_axis_direction(image_info, 2),
+            -1.0,
+        ))
+        # 只移除原图足侧轴在切片法向上的分量，因此新 col_dir 仍严格位于
+        # 原来的矢状切割平面内，不会改变已经确认正确的切割平面和定位线。
+        col_dir = normalize_vector(Point3D(
+            original_inferior.x - normal.x * _dot(original_inferior, normal),
+            original_inferior.y - normal.y * _dot(original_inferior, normal),
+            original_inferior.z - normal.z * _dot(original_inferior, normal),
+        ))
+        row_dir = normalize_vector(_cross_direction(col_dir, normal))
         return StraightPlaneFrame(
-            row_dir=ap,
-            col_dir=_scale_direction(si, -1.0),
-            normal=_scale_direction(lr, -1.0),
+            row_dir=row_dir,
+            col_dir=col_dir,
+            normal=normal,
         )
     # 冠状位画面使用左右/脚头轴，沿前后方向推进。
     if plane == PlaneTypeEnum.冠状位:
@@ -108,6 +123,16 @@ def _scale_direction(direction: Point3D, sign: float) -> Point3D:
         direction.x * sign,
         direction.y * sign,
         direction.z * sign,
+    )
+
+
+def _cross_direction(first: Point3D, second: Point3D) -> Point3D:
+    """计算两个物理方向的叉积，用于构造右手切片显示坐标系。"""
+
+    return Point3D(
+        first.y * second.z - first.z * second.y,
+        first.z * second.x - first.x * second.z,
+        first.x * second.y - first.y * second.x,
     )
 
 

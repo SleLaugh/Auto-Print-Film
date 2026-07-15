@@ -201,12 +201,24 @@ def build_whole_range_plan_from_bbox(
     """
     根据整体 bbox 构建指定状位的默认直线整切计划。
 
-    不管目标是多个椎体组成的整体，还是头骨、肺部这种单个目标，只要第三步
-    已经给出 correction_scope_bbox，这里都会按当前状位的堆叠轴生成同一种
-    plane_stack 协议。部位特殊角度不属于本方法职责。
+    肺部、颈椎和胸椎在第三步提供解剖坐标时，使用该坐标生成同角度的三状位
+    平行切片；其他部位仍按输入图像的默认三轴生成 plane_stack 协议。
     """
 
-    if request.body_part.value == "肺部" and localization_result.get("anatomical_geometry"):
+    anatomical_frame_parts = {"肺部", "颈椎", "胸椎"}
+    # 胸椎横状位按临床要求保持原图默认水平横切；只有胸椎矢状位和冠状位
+    # 继续使用 C7-L1 确定的整体脊柱轴。颈椎三状位仍全部使用解剖坐标。
+    uses_anatomical_frame = (
+        request.body_part.value in anatomical_frame_parts
+        and not (
+            request.body_part.value == "胸椎"
+            and plane_config.plane == PlaneTypeEnum.横状位
+        )
+    )
+    if (
+        uses_anatomical_frame
+        and localization_result.get("anatomical_geometry")
+    ):
         geometry = AnatomicalGeometryResult.from_dict(
             localization_result["anatomical_geometry"]
         )
@@ -287,11 +299,13 @@ def _build_whole_range_plan_from_anatomical_frame(
     plane = plane_config.plane
     # 起止点始终穿过目标的解剖中心，仅在当前状位的法向轴上取两端边界。
     if plane == PlaneTypeEnum.横状位:
+        # 横状位按患者解剖方向从上向下输出。第三步已经把 SI 轴符号统一到
+        # DICOM 的 superior 方向，因此起点必须使用最大投影，终点使用最小投影。
         target_start = _physical_point_from_projections(
-            anatomical_frame, lr_center, ap_center, bounds.superior_inferior.minimum
+            anatomical_frame, lr_center, ap_center, bounds.superior_inferior.maximum
         )
         target_end = _physical_point_from_projections(
-            anatomical_frame, lr_center, ap_center, bounds.superior_inferior.maximum
+            anatomical_frame, lr_center, ap_center, bounds.superior_inferior.minimum
         )
         target_extent = ExtentMM(
             bounds.left_right.maximum - bounds.left_right.minimum,
@@ -322,7 +336,11 @@ def _build_whole_range_plan_from_anatomical_frame(
     else:
         raise ValueError(f"不支持的切割平面: {plane}")
 
-    straight_frame = anatomical_straight_frame(plane, anatomical_frame)
+    straight_frame = anatomical_straight_frame(
+        plane,
+        anatomical_frame,
+        localization_result["image"],
+    )
     if plane_config.line_extent_mode == CutLineExtentModeEnum.整平面:
         target_bbox = localization_result.get("correction_scope_bbox")
         if not target_bbox:

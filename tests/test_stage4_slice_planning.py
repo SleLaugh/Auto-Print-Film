@@ -251,11 +251,12 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.slices[0].row_dir.to_dict(), {"x": 0.8, "y": 0.0, "z": 0.6})
         self.assertEqual(plan.slices[0].col_dir.to_dict(), {"x": 0.0, "y": 1.0, "z": 0.0})
         # 切片平面保持原目标层面，但画面中心移动到整张原图的投影中心。
-        self.assertAlmostEqual(plan.range_start.x, 43.84, places=6)
+        # 解剖 SI 轴已统一指向上方，因此横状位从最大投影向最小投影输出。
+        self.assertAlmostEqual(plan.range_start.x, 22.24, places=6)
         self.assertAlmostEqual(plan.range_start.y, 49.5, places=6)
-        self.assertAlmostEqual(plan.range_start.z, 60.38, places=6)
-        self.assertAlmostEqual(plan.range_end.x, 22.24, places=6)
-        self.assertAlmostEqual(plan.range_end.z, 89.18, places=6)
+        self.assertAlmostEqual(plan.range_start.z, 89.18, places=6)
+        self.assertAlmostEqual(plan.range_end.x, 43.84, places=6)
+        self.assertAlmostEqual(plan.range_end.z, 60.38, places=6)
         for previous, current in zip(plan.slices, plan.slices[1:]):
             distance = ((current.center.x - previous.center.x) ** 2
                         + (current.center.y - previous.center.y) ** 2
@@ -271,9 +272,121 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             target_plan.extent_mm.to_dict(),
             {"width": 100.0, "height": 60.0},
         )
-        self.assertAlmostEqual(target_plan.range_start.x, 26.8, places=6)
+        self.assertAlmostEqual(target_plan.range_start.x, 5.2, places=6)
         self.assertAlmostEqual(target_plan.range_start.y, 40.0, places=6)
-        self.assertAlmostEqual(target_plan.range_start.z, 47.6, places=6)
+        self.assertAlmostEqual(target_plan.range_start.z, 76.4, places=6)
+
+    def test_cervical_three_planes_follow_complete_spine_axis(self):
+        """颈椎三状位应沿脊柱轴切割，矢状画面按原图头脚方向摆正。"""
+
+        spine_axis = np.asarray([0.2, 0.3, 0.9327379053], dtype=float)
+        spine_axis /= np.linalg.norm(spine_axis)
+        dicom_lr = np.asarray([1.0, 0.0, 0.0])
+        left_right = dicom_lr - np.dot(dicom_lr, spine_axis) * spine_axis
+        left_right /= np.linalg.norm(left_right)
+        anterior_posterior = np.cross(spine_axis, left_right)
+
+        def vector(value):
+            return {"x": float(value[0]), "y": float(value[1]), "z": float(value[2])}
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.颈椎,
+            plane_configs=[
+                PlaneConfig(plane, 4.0, 10.0, ["骨窗"])
+                for plane in (
+                    PlaneTypeEnum.横状位,
+                    PlaneTypeEnum.矢状位,
+                    PlaneTypeEnum.冠状位,
+                )
+            ],
+        )
+        localization_result = {
+            "body_part": "颈椎",
+            "correction_scope_bbox": {
+                "z_min": 10, "z_max": 70,
+                "y_min": 10, "y_max": 70,
+                "x_min": 10, "x_max": 70,
+            },
+            "image": {
+                "size_xyz": [100, 100, 100],
+                "spacing_xyz": [1.0, 1.0, 1.0],
+                "origin_xyz": [0.0, 0.0, 0.0],
+                "direction": [
+                    1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0,
+                ],
+            },
+            "anatomical_geometry": {
+                "global_frame": {
+                    "origin": {"x": 40.0, "y": 40.0, "z": 40.0},
+                    "left_right_axis": vector(left_right),
+                    "anterior_posterior_axis": vector(anterior_posterior),
+                    "superior_inferior_axis": vector(spine_axis),
+                    "bounds": {
+                        "left_right": {"minimum": 10.0, "maximum": 50.0},
+                        "anterior_posterior": {"minimum": 5.0, "maximum": 45.0},
+                        "superior_inferior": {"minimum": 20.0, "maximum": 80.0},
+                    },
+                    "method": "spine_endpoint_centroids",
+                    "confidence": 1.0,
+                    "applied": True,
+                    "warnings": [],
+                },
+                "local_frames": {},
+            },
+        }
+
+        plans = SingleLabelWholeRangePlanner().build_plans(request, localization_result).plans
+
+        axial, sagittal, coronal = plans
+        axial_normal = np.asarray(list(axial.slices[0].normal.to_dict().values()))
+        self.assertTrue(np.allclose(axial_normal, spine_axis))
+        first_projection = np.dot(
+            list(axial.slices[0].center.to_dict().values()), spine_axis
+        )
+        last_projection = np.dot(
+            list(axial.slices[-1].center.to_dict().values()), spine_axis
+        )
+        self.assertGreater(first_projection, last_projection)
+        for plan in plans:
+            normals = [slice_.normal.to_dict() for slice_ in plan.slices]
+            self.assertTrue(all(value == normals[0] for value in normals))
+            for previous, current in zip(plan.slices, plan.slices[1:]):
+                self.assertAlmostEqual(
+                    np.linalg.norm(
+                        np.asarray(list(current.center.to_dict().values()))
+                        - np.asarray(list(previous.center.to_dict().values()))
+                    ),
+                    10.0,
+                    places=6,
+                )
+        for plan in (sagittal, coronal):
+            normal = np.asarray(list(plan.slices[0].normal.to_dict().values()))
+            self.assertAlmostEqual(float(np.dot(normal, spine_axis)), 0.0, places=6)
+
+        # 矢状位切割平面不变，但画面上下应尽量贴近原图默认的足侧方向，
+        # 不能继续把负脊柱轴直接作为 col_dir 导致整张成片跟着旋转。
+        sagittal_normal = np.asarray(
+            list(sagittal.slices[0].normal.to_dict().values())
+        )
+        original_inferior = np.asarray([0.0, 0.0, -1.0])
+        expected_col = original_inferior - np.dot(
+            original_inferior, sagittal_normal
+        ) * sagittal_normal
+        expected_col /= np.linalg.norm(expected_col)
+        sagittal_row = np.asarray(
+            list(sagittal.slices[0].row_dir.to_dict().values())
+        )
+        sagittal_col = np.asarray(
+            list(sagittal.slices[0].col_dir.to_dict().values())
+        )
+        self.assertTrue(np.allclose(sagittal_col, expected_col))
+        self.assertTrue(
+            np.allclose(np.cross(sagittal_row, sagittal_col), sagittal_normal)
+        )
 
     def test_non_lung_keeps_legacy_axes_even_if_anatomical_geometry_is_present(self):
         """验证 `test_non_lung_keeps_legacy_axes_even_if_anatomical_geometry_is_present` 场景符合预期。"""
@@ -306,6 +419,58 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         plan = SingleLabelWholeRangePlanner().build_plans(request, localization_result).plans[0]
 
         self.assertEqual(plan.slices[0].normal.to_dict(), {"x": 0.0, "y": 0.0, "z": 1.0})
+
+    def test_thoracic_axial_uses_default_image_axis_but_sagittal_keeps_spine_axis(self):
+        """胸椎横状位应水平切，矢状位仍应使用胸椎整体走向。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.胸椎,
+            plane_configs=[
+                PlaneConfig(PlaneTypeEnum.横状位, 2.0, 5.0, ["骨窗"]),
+                PlaneConfig(PlaneTypeEnum.矢状位, 2.0, 5.0, ["骨窗"]),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["body_part"] = "胸椎"
+        localization_result["image"]["size_xyz"] = [120, 120, 120]
+        localization_result["anatomical_geometry"] = {
+            "global_frame": {
+                "origin": {"x": 60.0, "y": 50.0, "z": 50.0},
+                "left_right_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "anterior_posterior_axis": {
+                    "x": 0.0, "y": 0.8944271909999159, "z": -0.4472135954999579,
+                },
+                "superior_inferior_axis": {
+                    "x": 0.0, "y": 0.4472135954999579, "z": 0.8944271909999159,
+                },
+                "bounds": {
+                    "left_right": {"minimum": 50.0, "maximum": 70.0},
+                    "anterior_posterior": {"minimum": 10.0, "maximum": 30.0},
+                    "superior_inferior": {"minimum": 20.0, "maximum": 80.0},
+                },
+                "method": "spine_endpoint_centroids",
+                "confidence": 1.0,
+                "applied": True,
+                "warnings": [],
+            },
+            "local_frames": {},
+        }
+
+        axial, sagittal = SingleLabelWholeRangePlanner().build_plans(
+            request, localization_result
+        ).plans
+
+        self.assertEqual(
+            axial.slices[0].normal.to_dict(),
+            {"x": 0.0, "y": 0.0, "z": 1.0},
+        )
+        self.assertGreater(axial.slices[0].center.z, axial.slices[-1].center.z)
+        self.assertEqual(
+            sagittal.slices[0].normal.to_dict(),
+            {"x": -1.0, "y": -0.0, "z": -0.0},
+        )
 
     def test_oblique_plan_overview_draws_the_actual_sloped_guide(self):
         """验证 `test_oblique_plan_overview_draws_the_actual_sloped_guide` 场景符合预期。"""

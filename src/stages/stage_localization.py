@@ -28,6 +28,7 @@ from src.models import (
     VoxelPoint,
 )
 from src.anatomy.lung import estimate_lung_frame_with_diagnostics
+from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 from src.utils import DebugLog, is_debug_log_file_enabled
 
 
@@ -239,15 +240,24 @@ class LocalizationStage(BaseStage):
             DebugLog("    未执行回正，后续阶段继续使用原始 raw/seg")
 
         target_mask = self._build_target_mask(seg_array, label_targets)
+        label_masks = {
+            label_name: np.isin(seg_array, target.label_ids)
+            for label_name, target in label_targets.items()
+        }
+        start_labels = resolved_cut_config.get('start_labels') or []
+        end_labels = resolved_cut_config.get('end_labels') or []
         anatomical_geometry, anatomical_diagnostics = self._build_anatomical_geometry(
             body_part=request.body_part.value,
             target_mask=target_mask,
             image=image,
+            label_masks=label_masks,
+            start_label=start_labels[0] if start_labels else None,
+            end_label=end_labels[0] if end_labels else None,
         )
         if anatomical_geometry is not None:
             frame = anatomical_geometry.global_frame
             DebugLog(
-                "    肺部解剖坐标: "
+                "    部位解剖坐标: "
                 f"method={frame.method}, confidence={frame.confidence:.3f}, "
                 f"applied={frame.applied}"
             )
@@ -362,12 +372,24 @@ class LocalizationStage(BaseStage):
         body_part: str,
         target_mask: np.ndarray,
         image: sitk.Image,
+        label_masks: Dict[str, np.ndarray] | None = None,
+        start_label: str | None = None,
+        end_label: str | None = None,
     ) -> tuple[AnatomicalGeometryResult | None, Dict[str, Any]]:
         """只为已经适配的部位计算统一解剖坐标，其余部位保持旧行为。"""
 
-        if body_part != "肺部":
-            return None, {}
-        return estimate_lung_frame_with_diagnostics(target_mask, image)
+        if body_part == "肺部":
+            return estimate_lung_frame_with_diagnostics(target_mask, image)
+        if body_part in {"颈椎", "胸椎"}:
+            if not label_masks or not start_label or not end_label:
+                raise ValueError(f"{body_part} 解剖坐标缺少首尾椎体标签信息")
+            return estimate_spine_frame_with_diagnostics(
+                label_masks=label_masks,
+                start_label=start_label,
+                end_label=end_label,
+                image=image,
+            )
+        return None, {}
 
     def _find_dataset_json(self, model_info: Dict[str, Any], seg_path: str = None) -> Path:
         """

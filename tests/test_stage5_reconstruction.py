@@ -181,6 +181,45 @@ class Stage5ReconstructionTest(unittest.TestCase):
         self.assertGreater(int(np.ptp(highlighted[:, 0])), 2)
         self.assertGreater(int(np.ptp(highlighted[:, 1])), 2)
 
+    def test_full_xyz_oblique_plan_is_resampled_with_planned_direction(self):
+        """第五步应原样执行含 XYZ 三方向倾斜的通用平面计划。"""
+
+        image = sitk.GetImageFromArray(np.ones((32, 32, 32), dtype=np.int16))
+        normal = np.asarray([0.2, 0.3, 0.9327379053], dtype=float)
+        normal /= np.linalg.norm(normal)
+        row = np.asarray([1.0, 0.0, 0.0], dtype=float)
+        row -= np.dot(row, normal) * normal
+        row /= np.linalg.norm(row)
+        col = np.cross(normal, row)
+
+        def point(value):
+            return {"x": float(value[0]), "y": float(value[1]), "z": float(value[2])}
+
+        planned_slice = {
+            "index": 1,
+            "center": {"x": 15.5, "y": 15.5, "z": 15.5},
+            "normal": point(normal),
+            "row_dir": point(row),
+            "col_dir": point(col),
+        }
+        plan = {
+            "plane": "横状位",
+            "extent_mm": {"width": 20.0, "height": 20.0},
+            "output_spacing_mm": {"x": 1.0, "y": 1.0, "z": 0.0},
+            "slice_thickness": 1.0,
+            "slices": [planned_slice],
+        }
+
+        output = PlaneStackResampler().sample_slice(image, plan, planned_slice)
+        expected_direction = tuple(
+            component
+            for coordinate in range(3)
+            for component in (row[coordinate], col[coordinate], normal[coordinate])
+        )
+
+        self.assertTrue(np.allclose(output.GetDirection(), expected_direction))
+        self.assertTrue(np.any(sitk.GetArrayFromImage(output) > -1024.0))
+
     def test_localizer_puts_physical_superior_side_at_top(self):
         """验证 `test_localizer_puts_physical_superior_side_at_top` 场景符合预期。"""
 

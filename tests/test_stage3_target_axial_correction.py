@@ -64,6 +64,39 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertIsNone(geometry)
         self.assertEqual(diagnostics, {})
 
+    def test_cervical_and_thoracic_build_spine_geometry_from_configured_endpoints(self):
+        """颈椎和胸椎应共用首尾椎体质心确定的三维解剖坐标。"""
+
+        stage = LocalizationStage()
+        shape = (40, 32, 40)
+        image = sitk.GetImageFromArray(np.zeros(shape, dtype=np.uint8))
+        for body_part, start_label, end_label in (
+            ("颈椎", "vertebrae_C1", "vertebrae_C7"),
+            ("胸椎", "vertebrae_C7", "vertebrae_L1"),
+        ):
+            label_masks = {
+                start_label: np.zeros(shape, dtype=bool),
+                end_label: np.zeros(shape, dtype=bool),
+            }
+            label_masks[start_label][30:34, 8:12, 10:14] = True
+            label_masks[end_label][6:10, 20:24, 26:30] = True
+            target_mask = np.logical_or.reduce(list(label_masks.values()))
+
+            geometry, diagnostics = stage._build_anatomical_geometry(
+                body_part=body_part,
+                target_mask=target_mask,
+                image=image,
+                label_masks=label_masks,
+                start_label=start_label,
+                end_label=end_label,
+            )
+
+            self.assertIsNotNone(geometry)
+            self.assertEqual(geometry.global_frame.method, "spine_endpoint_centroids")
+            self.assertTrue(geometry.global_frame.applied)
+            self.assertEqual(diagnostics["start_label"], start_label)
+            self.assertEqual(diagnostics["end_label"], end_label)
+
     def test_target_mask_and_bbox_only_include_requested_labels(self):
         # 阶段三不能拿整套 volume 判断歪斜，必须先合成“本次任务真正关心的目标 mask”。
         """验证 `test_target_mask_and_bbox_only_include_requested_labels` 场景符合预期。"""

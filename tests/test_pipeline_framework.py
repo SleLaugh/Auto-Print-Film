@@ -12,13 +12,21 @@ from src.models.enums import PlaneTypeEnum
 
 
 class SuccessfulStage(BaseStage):
+    """汇总 `SuccessfulStage` 相关测试场景。"""
+
     def execute(self, context):
+        """为测试准备 `execute` 所需的数据或记录行为。"""
+
         context.set_result(self.name, {"ok": True})
         return context
 
 
 class FailingStage(BaseStage):
+    """汇总 `FailingStage` 相关测试场景。"""
+
     def execute(self, context):
+        """为测试准备 `execute` 所需的数据或记录行为。"""
+
         raise RuntimeError("boom")
 
 
@@ -26,6 +34,8 @@ class DebugArtifactStage(BaseStage):
     """模拟旧阶段在 metadata 目录写调试文件。"""
 
     def execute(self, context):
+        """为测试准备 `execute` 所需的数据或记录行为。"""
+
         metadata_dir = Path(context.request.output_dir) / "metadata"
         metadata_dir.mkdir(parents=True, exist_ok=True)
         (metadata_dir / "调试文件.txt").write_text("debug", encoding="utf-8")
@@ -34,6 +44,8 @@ class DebugArtifactStage(BaseStage):
 
 
 def make_request(output_dir):
+    """为测试准备 `make_request` 所需的数据或记录行为。"""
+
     return Request(
         dicom_dir="/tmp/dicom",
         output_dir=output_dir,
@@ -47,6 +59,8 @@ def make_request(output_dir):
 
 
 def make_pipeline(stages):
+    """为测试准备 `make_pipeline` 所需的数据或记录行为。"""
+
     return Pipeline(
         stages=stages,
         config=AppConfig(pipeline=PipelineConfig(run_preflight=False)),
@@ -54,7 +68,11 @@ def make_pipeline(stages):
 
 
 class PipelineFrameworkTest(unittest.TestCase):
+    """汇总 `PipelineFrameworkTest` 相关测试场景。"""
+
     def test_debug_enabled_keeps_intermediate_artifacts_after_success(self):
+        """验证 `test_debug_enabled_keeps_intermediate_artifacts_after_success` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             pipeline = Pipeline(
                 stages=[DebugArtifactStage("debug_stage")],
@@ -72,6 +90,8 @@ class PipelineFrameworkTest(unittest.TestCase):
             )
 
     def test_successful_pipeline_writes_succeeded_manifest(self):
+        """验证 `test_successful_pipeline_writes_succeeded_manifest` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             pipeline = Pipeline(
                 stages=[SuccessfulStage("one"), SuccessfulStage("two")],
@@ -95,6 +115,8 @@ class PipelineFrameworkTest(unittest.TestCase):
             )
 
     def test_non_debug_pipeline_does_not_write_manifest(self):
+        """验证 `test_non_debug_pipeline_does_not_write_manifest` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             response = make_pipeline([SuccessfulStage("one")]).run(
                 make_request(temp_dir)
@@ -104,6 +126,8 @@ class PipelineFrameworkTest(unittest.TestCase):
             self.assertFalse((Path(temp_dir) / "manifest.json").exists())
 
     def test_failed_stage_marks_remaining_stages_skipped(self):
+        """验证 `test_failed_stage_marks_remaining_stages_skipped` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             response = make_pipeline([
                 FailingStage("one"),
@@ -122,6 +146,8 @@ class PipelineFrameworkTest(unittest.TestCase):
             )
 
     def test_response_keeps_legacy_fields_and_adds_job_fields(self):
+        """验证 `test_response_keeps_legacy_fields_and_adds_job_fields` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             response = make_pipeline([SuccessfulStage("one")]).run(
                 make_request(temp_dir)

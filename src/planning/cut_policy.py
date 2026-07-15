@@ -25,4 +25,6 @@ def localization_cut_mode(body_part: object, planes: Iterable[object]) -> str:
 
 
 def _value(value: object) -> str:
+    """统一读取枚举值或普通字符串，便于按中文部位和状位匹配策略。"""
+
     return str(getattr(value, "value", value))

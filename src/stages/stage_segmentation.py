@@ -23,6 +23,8 @@ class SegmentationStage(BaseStage):
     """推理分割阶段"""
     
     def __init__(self, config: Dict[str, Any] = None):
+        """初始化分割阶段并加载模型匹配规则及 nnUNet 运行配置。"""
+
         super().__init__(name="segmentation", config=config)
         self._load_config()
     
@@ -101,6 +103,8 @@ class SegmentationStage(BaseStage):
         return str(path)
     
     def execute(self, context: ProcessingContext) -> ProcessingContext:
+        """匹配请求对应的 nnUNet 模型，执行推理并登记标准化分割输出。"""
+
         request = context.request
         prev_result = context.get_result('preprocessing')
         

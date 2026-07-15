@@ -21,6 +21,8 @@ class Point3D:
     z: float
 
     def to_dict(self) -> Dict[str, float]:
+        """将物理点或方向向量序列化为 x/y/z 字典。"""
+
         return {"x": self.x, "y": self.y, "z": self.z}
 
 
@@ -35,6 +37,8 @@ class PlannedSlice:
     col_dir: Point3D
 
     def to_dict(self) -> Dict[str, Any]:
+        """序列化单张计划切片的中心、法向和画面方向。"""
+
         return {
             "index": self.index,
             "center": self.center.to_dict(),
@@ -52,6 +56,8 @@ class ExtentMM:
     height: float
 
     def to_dict(self) -> Dict[str, float]:
+        """序列化单张切片覆盖的物理宽度和高度。"""
+
         return {"width": self.width, "height": self.height}
 
 
@@ -81,6 +87,8 @@ class SlicePlan:
     warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
+        """序列化阶段五可直接执行的一组完整切片计划。"""
+
         data = {
             "plan_id": self.plan_id,
             "body_part": self.body_part,

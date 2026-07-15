@@ -26,6 +26,8 @@ class DicomMetadata:
     z_index_to_dicom_file: Dict[str, str]  # NIfTI 数组 Z 索引到原始 DICOM 文件的映射
 
     def to_dict(self) -> Dict[str, Any]:
+        """序列化为预处理阶段写入 dicom_metadata.json 的字典。"""
+
         return {
             'raw_nifti_name': self.raw_nifti_name,
             'size_xyz': self.size_xyz,

@@ -8,6 +8,8 @@ from src.models.window import load_window_presets
 
 
 class WindowPresetsTest(unittest.TestCase):
+    """汇总 `WindowPresetsTest` 相关测试场景。"""
+
     EXPECTED_PRESETS = {
         "脑窗": (80, 40),
         "骨窗": (2500, 400),
@@ -24,6 +26,8 @@ class WindowPresetsTest(unittest.TestCase):
 
     def test_all_presets_have_expected_width_and_center(self):
         # 配置文件是支持名称和数值的唯一来源。
+        """验证 `test_all_presets_have_expected_width_and_center` 场景符合预期。"""
+
         get_window_preset = getattr(models, "get_window_preset", None)
         self.assertIsNotNone(get_window_preset)
 
@@ -37,6 +41,8 @@ class WindowPresetsTest(unittest.TestCase):
 
     def test_query_accepts_chinese_name(self):
         # 简单调用可以直接使用中文名称，查询结果仍来自同一份内部预设表。
+        """验证 `test_query_accepts_chinese_name` 场景符合预期。"""
+
         get_window_preset = getattr(models, "get_window_preset", None)
         self.assertIsNotNone(get_window_preset)
 
@@ -47,6 +53,8 @@ class WindowPresetsTest(unittest.TestCase):
         self.assertEqual(preset.window_center, 40)
 
     def test_query_rejects_english_name(self):
+        """验证 `test_query_rejects_english_name` 场景符合预期。"""
+
         get_window_preset = getattr(models, "get_window_preset", None)
         self.assertIsNotNone(get_window_preset)
 
@@ -54,6 +62,8 @@ class WindowPresetsTest(unittest.TestCase):
             get_window_preset("Brain")
 
     def test_query_rejects_unknown_chinese_name(self):
+        """验证 `test_query_rejects_unknown_chinese_name` 场景符合预期。"""
+
         get_window_preset = getattr(models, "get_window_preset", None)
         self.assertIsNotNone(get_window_preset)
 
@@ -61,6 +71,8 @@ class WindowPresetsTest(unittest.TestCase):
             get_window_preset("血管窗")
 
     def test_loader_accepts_new_name_without_python_enum(self):
+        """验证 `test_loader_accepts_new_name_without_python_enum` 场景符合预期。"""
+
         presets = self._load_temp_config([
             {"name": "血管窗", "window_width": 700, "window_center": 100},
         ])
@@ -69,6 +81,8 @@ class WindowPresetsTest(unittest.TestCase):
         self.assertEqual(presets["血管窗"].window_center, 100)
 
     def test_loader_rejects_duplicate_names(self):
+        """验证 `test_loader_rejects_duplicate_names` 场景符合预期。"""
+
         with self.assertRaisesRegex(ValueError, "重复"):
             self._load_temp_config([
                 {"name": "骨窗", "window_width": 1000, "window_center": 100},
@@ -76,6 +90,8 @@ class WindowPresetsTest(unittest.TestCase):
             ])
 
     def test_loader_rejects_non_positive_width(self):
+        """验证 `test_loader_rejects_non_positive_width` 场景符合预期。"""
+
         with self.assertRaisesRegex(ValueError, "window_width"):
             self._load_temp_config([
                 {"name": "骨窗", "window_width": 0, "window_center": 100},
@@ -83,6 +99,8 @@ class WindowPresetsTest(unittest.TestCase):
 
     @staticmethod
     def _load_temp_config(entries):
+        """为测试准备 `_load_temp_config` 所需的数据或记录行为。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "window_presets.json"
             path.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")

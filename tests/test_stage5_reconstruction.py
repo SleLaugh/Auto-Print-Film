@@ -24,7 +24,11 @@ from src.stages.stage_reconstruction import ReconstructionStage
 
 
 class Stage5ReconstructionTest(unittest.TestCase):
+    """汇总 `Stage5ReconstructionTest` 相关测试场景。"""
+
     def test_plans_are_grouped_by_plane_without_changing_first_seen_order(self):
+        """验证 `test_plans_are_grouped_by_plane_without_changing_first_seen_order` 场景符合预期。"""
+
         plans = [
             {"plan_id": "横状位_1", "plane": "横状位"},
             {"plan_id": "矢状位_1", "plane": "矢状位"},
@@ -41,6 +45,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
         )
 
     def test_parallel_windows_start_only_after_all_mpr_slices_are_sampled(self):
+        """验证 `test_parallel_windows_start_only_after_all_mpr_slices_are_sampled` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
                 temp_dir,
@@ -56,11 +62,17 @@ class Stage5ReconstructionTest(unittest.TestCase):
             lock = threading.Lock()
 
             class RecordingResampler:
+                """汇总 `RecordingResampler` 相关测试场景。"""
+
                 def sample_slice(self, image, current_plan, planned_slice):
+                    """为测试准备 `sample_slice` 所需的数据或记录行为。"""
+
                     sampled_indices.append(planned_slice["index"])
                     return planned_slice["index"]
 
             def recording_window(sampled_image, window):
+                """为测试准备 `recording_window` 所需的数据或记录行为。"""
+
                 nonlocal active_workers, max_active_workers
                 with lock:
                     if not first_window_sample_count:
@@ -100,6 +112,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertGreaterEqual(len(worker_names), 2)
 
     def test_windowing_bakes_hu_into_fixed_uint16_grayscale(self):
+        """验证 `test_windowing_bakes_hu_into_fixed_uint16_grayscale` 场景符合预期。"""
+
         image = sitk.GetImageFromArray(
             np.asarray([[[-850, 400, 1650]]], dtype=np.int16),
         )
@@ -113,11 +127,15 @@ class Stage5ReconstructionTest(unittest.TestCase):
         )
 
     def test_interval_plan_keeps_group_directory(self):
+        """验证 `test_interval_plan_keeps_group_directory` 场景符合预期。"""
+
         plan = {"cut_mode": "interspace", "group_name": "L1-L2"}
 
         self.assertEqual(ReconstructionStage._plan_group_name(plan), "L1-L2")
 
     def test_localizer_uses_representative_original_slice_instead_of_projection(self):
+        """验证 `test_localizer_uses_representative_original_slice_instead_of_projection` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             image_array = np.zeros((8, 8, 8), dtype=np.int16)
             image_array[:, :, 2] = 100
@@ -141,6 +159,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertEqual(highlighted_rows.tolist(), [3, 5])
 
     def test_localizer_puts_physical_superior_side_at_top(self):
+        """验证 `test_localizer_puts_physical_superior_side_at_top` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             for z_direction in (1.0, -1.0):
                 image_array = np.zeros((8, 8, 8), dtype=np.int16)
@@ -238,6 +258,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             )
 
     def test_plane_stack_resampler_uses_slice_center_and_in_plane_extent(self):
+        """验证 `test_plane_stack_resampler_uses_slice_center_and_in_plane_extent` 场景符合预期。"""
+
         image = self._make_ramp_image(size=(8, 8, 8))
         plan = {
             "extent_mm": {"width": 4.0, "height": 4.0},
@@ -333,6 +355,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 )
 
     def test_axis_aligned_slab_weights_partial_source_layers_by_overlap(self):
+        """验证 `test_axis_aligned_slab_weights_partial_source_layers_by_overlap` 场景符合预期。"""
+
         image = sitk.GetImageFromArray(
             np.asarray([[[0]], [[10]], [[20]], [[30]], [[40]], [[50]]], dtype=np.int16),
         )
@@ -360,6 +384,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
         )
 
     def test_reconstruction_consumes_mapping_plans_and_reports_physical_slice_count(self):
+        """验证 `test_reconstruction_consumes_mapping_plans_and_reports_physical_slice_count` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
                 temp_dir,
@@ -376,6 +402,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertEqual(result["planes"]["横状位"]["slice_count"], 2)
 
     def test_reconstruction_rejects_unsupported_geometry_type_with_plan_id(self):
+        """验证 `test_reconstruction_rejects_unsupported_geometry_type_with_plan_id` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
                 temp_dir,
@@ -386,6 +414,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 ReconstructionStage(config={"parallel": False}).execute(context)
 
     def test_slab_thickness_averages_source_planes_without_adding_slices(self):
+        """验证 `test_slab_thickness_averages_source_planes_without_adding_slices` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
                 temp_dir,
@@ -420,6 +450,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             )
 
     def test_reconstruction_writes_one_series_per_window_preset(self):
+        """验证 `test_reconstruction_writes_one_series_per_window_preset` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
                 temp_dir,
@@ -462,6 +494,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             )
 
     def test_written_dicom_contains_slice_geometry_and_window_tags(self):
+        """验证 `test_written_dicom_contains_slice_geometry_and_window_tags` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
                 temp_dir,
@@ -482,6 +516,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertIn("\\", image.GetMetaData("0020|0037"))
 
     def test_stage_writes_localizer_without_counting_it_as_slice(self):
+        """验证 `test_stage_writes_localizer_without_counting_it_as_slice` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
                 temp_dir,
@@ -509,6 +545,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertEqual(result["image_count"], 2)
 
     def test_derived_dicom_inherits_source_study_and_patient_metadata(self):
+        """验证 `test_derived_dicom_inherits_source_study_and_patient_metadata` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             source_dir = Path(temp_dir) / "source"
             source_dir.mkdir()
@@ -573,6 +611,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             )
 
     def test_derived_dicom_decodes_gb18030_surrogate_metadata(self):
+        """验证 `test_derived_dicom_decodes_gb18030_surrogate_metadata` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(temp_dir, slice_count=1)
             context.set_result("preprocessing", {
@@ -603,6 +643,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
         geometry_type: str = "plane_stack",
         dicom_dir: str = "/tmp/dicom",
     ) -> ProcessingContext:
+        """为测试准备 `_make_context_with_one_plan` 所需的数据或记录行为。"""
+
         output_dir = Path(temp_dir) / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
         raw_path = output_dir / "raw.nii.gz"
@@ -672,6 +714,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
 
     @staticmethod
     def _make_ramp_image(size: tuple[int, int, int]) -> sitk.Image:
+        """为测试准备 `_make_ramp_image` 所需的数据或记录行为。"""
+
         size_x, size_y, size_z = size
         array = np.zeros((size_z, size_y, size_x), dtype=np.int16)
         for z in range(size_z):

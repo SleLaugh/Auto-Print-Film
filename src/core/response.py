@@ -105,6 +105,8 @@ class Response:
 
     @property
     def warnings(self) -> List[Dict[str, Any]]:
+        """返回流水线执行期间收集的结构化警告列表。"""
+
         return list(self.context.warnings)
     
     def get_stage_result(self, stage_name: str) -> Optional[Any]:

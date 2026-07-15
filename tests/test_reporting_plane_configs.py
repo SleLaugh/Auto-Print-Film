@@ -13,7 +13,11 @@ from src.stages.stage_reporting import ReportingStage
 
 
 class ReportingPlaneConfigsTest(unittest.TestCase):
+    """汇总 `ReportingPlaneConfigsTest` 相关测试场景。"""
+
     def test_delivery_report_contains_only_simple_plane_configuration(self):
+        """验证 `test_delivery_report_contains_only_simple_plane_configuration` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             request = Request.from_dict({
                 "dicom_dir": "/tmp/dicom",
@@ -53,6 +57,8 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             ])
 
     def test_delivery_report_adds_plane_image_count_and_window_path(self):
+        """验证 `test_delivery_report_adds_plane_image_count_and_window_path` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
             dcm_dir = output_dir / "横状位" / "骨窗"
@@ -73,6 +79,8 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             )
 
     def test_debug_report_keeps_full_validation_details(self):
+        """验证 `test_debug_report_keeps_full_validation_details` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
             dcm_dir = output_dir / "横状位" / "骨窗"
@@ -96,6 +104,8 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             )
 
     def test_execute_stores_validation_summary_in_context(self):
+        """验证 `test_execute_stores_validation_summary_in_context` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
             dcm_dir = output_dir / "横状位" / "骨窗"
@@ -116,6 +126,8 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
 
     @staticmethod
     def _make_context(output_dir: Path, dcm_dir: Path, *, slice_count: int):
+        """为测试准备 `_make_context` 所需的数据或记录行为。"""
+
         request = Request(dicom_dir="/tmp/dicom", output_dir=str(output_dir))
         context = ProcessingContext(request)
         context.set_result("mapping", {
@@ -157,6 +169,8 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
 
     @staticmethod
     def _write_dicom_series(directory: Path, *, count: int, series_uid: str):
+        """为测试准备 `_write_dicom_series` 所需的数据或记录行为。"""
+
         directory.mkdir(parents=True, exist_ok=True)
         for index in range(1, count + 1):
             image = sitk.GetImageFromArray(np.zeros((1, 1), dtype=np.uint16))

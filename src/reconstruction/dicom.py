@@ -238,6 +238,8 @@ def write_localizer_dicom(
 
 
 def _extract_2d_image(image: sitk.Image) -> sitk.Image:
+    """把平面重建得到的单层三维图像压缩为可写 DICOM 的二维图像。"""
+
     if image.GetDimension() == 2:
         return sitk.Image(image)
     size = image.GetSize()
@@ -278,6 +280,8 @@ def _normalize_metadata_value(value: Any, specific_character_set: str) -> str:
 
 
 def _normalize(value: Dict[str, float]) -> tuple[float, float, float]:
+    """读取 x/y/z 方向字典并归一化为 DICOM 使用的单位向量。"""
+
     vector = (float(value["x"]), float(value["y"]), float(value["z"]))
     length = sum(component * component for component in vector) ** 0.5
     if length <= 0:
@@ -286,14 +290,20 @@ def _normalize(value: Dict[str, float]) -> tuple[float, float, float]:
 
 
 def _dot(point: Dict[str, float], vector: tuple[float, float, float]) -> float:
+    """计算物理点在指定单位方向上的标量投影。"""
+
     return sum(float(point[axis]) * vector[index] for index, axis in enumerate(("x", "y", "z")))
 
 
 def _format_point(point: Any) -> str:
+    """把坐标序列格式化为 DICOM 多值字段使用的反斜杠分隔文本。"""
+
     return "\\".join(_format_number(value) for value in point)
 
 
 def _format_number(value: Any) -> str:
+    """以紧凑且稳定的形式格式化 DICOM 小数字符串值。"""
+
     number = float(value)
     if number.is_integer():
         return str(int(number))

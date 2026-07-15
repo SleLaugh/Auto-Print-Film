@@ -23,9 +23,13 @@ class ReportingStage(BaseStage):
     """结果汇总阶段"""
     
     def __init__(self, config: Dict[str, Any] = None):
+        """初始化阶段六结果汇总组件。"""
+
         super().__init__(name="reporting", config=config)
     
     def execute(self, context: ProcessingContext) -> ProcessingContext:
+        """生成正常交付报告，并在 debug 模式下输出完整诊断和 DICOM 校验结果。"""
+
         request = context.request
         
         DebugLog("=" * 60)
@@ -118,6 +122,8 @@ class ReportingStage(BaseStage):
     def _actual_window_names_by_plane(
         reconstruction: Dict[str, Any],
     ) -> Dict[str, set[str]]:
+        """从阶段五实际输出中汇总每个状位已经生成的窗位名称。"""
+
         result: Dict[str, set[str]] = {}
         for output in reconstruction.get('outputs', []):
             plane = str(output.get('plane', ''))
@@ -186,6 +192,8 @@ class ReportingStage(BaseStage):
 
     @staticmethod
     def _write_report(context: ProcessingContext, report_data: Dict[str, Any]) -> Path:
+        """把精简交付结果写入输出根目录的 report.json。"""
+
         output_dir = Path(context.request.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         report_path = output_dir / 'report.json'
@@ -200,6 +208,8 @@ class ReportingStage(BaseStage):
         context: ProcessingContext,
         report_data: Dict[str, Any],
     ) -> Path:
+        """把完整阶段诊断写入 metadata 目录下的调试报告。"""
+
         metadata_dir = Path(context.request.output_dir) / 'metadata'
         metadata_dir.mkdir(parents=True, exist_ok=True)
         report_path = metadata_dir / '处理报告_调试.json'
@@ -210,6 +220,8 @@ class ReportingStage(BaseStage):
 
     @staticmethod
     def _plan_summary(plan: Dict[str, Any]) -> Dict[str, Any]:
+        """提取单个阶段四计划中适合写入调试报告的摘要字段。"""
+
         return {
             'plan_id': plan.get('plan_id', ''),
             'body_part': plan.get('body_part', ''),
@@ -228,6 +240,8 @@ class ReportingStage(BaseStage):
 
     @classmethod
     def _reconstruction_summary(cls, reconstruction: Dict[str, Any]) -> Dict[str, Any]:
+        """整理阶段五的计划、切片、图像及各状位输出统计。"""
+
         outputs = reconstruction.get('outputs', [])
         return {
             'plan_count': reconstruction.get('plan_count', len(outputs)),
@@ -242,6 +256,8 @@ class ReportingStage(BaseStage):
         cls,
         reconstruction: Dict[str, Any],
     ) -> Dict[str, Any]:
+        """逐个窗位检查阶段五声明的输出是否与磁盘 DICOM 序列一致。"""
+
         errors: list[str] = []
         warnings: list[str] = []
         series_results = []
@@ -277,6 +293,8 @@ class ReportingStage(BaseStage):
         directory: Path,
         expected_count: int,
     ) -> Dict[str, Any]:
+        """校验一个 DICOM 序列的文件数量、连续编号、UID 和 InstanceNumber。"""
+
         errors: list[str] = []
         warnings: list[str] = []
         numbered_files: list[tuple[int, Path]] = []
@@ -346,6 +364,8 @@ class ReportingStage(BaseStage):
 
     @staticmethod
     def _json_safe(value: Any) -> Any:
+        """递归把 Path 等调试结果转换成 JSON 可序列化的基础类型。"""
+
         if isinstance(value, Path):
             return str(value)
         if isinstance(value, dict):

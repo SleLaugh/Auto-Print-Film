@@ -1,3 +1,5 @@
+"""将目录中的 DICOM、NIfTI 或 NRRD 医学图像批量转换为 NIfTI。"""
+
 from __future__ import annotations
 
 import argparse
@@ -18,6 +20,8 @@ warnings.filterwarnings("ignore")
 
 
 def readdcm(filepath: str):
+    """按 GDCM 序列顺序读取目录中的 DICOM 文件并返回三维图像。"""
+
     reader = sitk.ImageSeriesReader()
     reader.MetaDataDictionaryArrayUpdateOn()
     reader.LoadPrivateTagsOn()
@@ -27,6 +31,8 @@ def readdcm(filepath: str):
 
 
 def convert_3d(image):
+    """压缩多余通道或维度，将 SimpleITK 图像整理为三维体数据。"""
+
     image_out = image
     image_array = sitk.GetArrayFromImage(image)
     if len(image_array.shape) > 3:
@@ -39,6 +45,8 @@ def convert_3d(image):
 
 
 def _normalize_nifti_array(image_array: np.ndarray) -> np.ndarray:
+    """将 NIfTI 像素数组统一整理为三维形状，同时保留原始轴顺序。"""
+
     if len(image_array.shape) > 3:
         image_array = image_array.squeeze()[(Ellipsis, 0)]
         width, height, *_ = image_array.shape
@@ -50,11 +58,15 @@ def _normalize_nifti_array(image_array: np.ndarray) -> np.ndarray:
 
 
 def _save_sitk_as_nii(image, output_path: str) -> None:
+    """创建输出目录并把 SimpleITK 图像写为指定 NIfTI 文件。"""
+
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     sitk.WriteImage(image, output_path)
 
 
 def _save_nrrd_fallback(file_path: str, output_path: str) -> bool:
+    """在常规读取失败时尝试把 NRRD 转为 NIfTI，并返回是否转换成功。"""
+
     try:
         nrrd_array, info = nrrd.read(file_path)
         if len(nrrd_array.shape) == 4:

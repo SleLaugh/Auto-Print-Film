@@ -103,6 +103,8 @@ class PlaneStackResampler:
         image: sitk.Image,
         normal: Tuple[float, float, float],
     ) -> Tuple[int, float] | None:
+        """识别切片法向是否与某个输入图像轴平行，并返回轴号及方向符号。"""
+
         direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
         normal_array = np.asarray(normal, dtype=float)
         for axis in range(3):
@@ -190,6 +192,8 @@ class PlaneStackResampler:
         spacing_y: float,
         normal_offset: float,
     ) -> np.ndarray:
+        """在给定法向偏移处重采样一个二维物理平面并返回浮点像素数组。"""
+
         origin = tuple(
             first_pixel[axis] + normal[axis] * normal_offset
             for axis in range(3)
@@ -209,10 +213,14 @@ class PlaneStackResampler:
 
     @staticmethod
     def _point(value: Dict[str, float]) -> Tuple[float, float, float]:
+        """按 x/y/z 顺序把方向或物理点字典转换为三元组。"""
+
         return float(value["x"]), float(value["y"]), float(value["z"])
 
     @staticmethod
     def _normalize(value: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        """把切片方向归一化为单位向量，并拒绝零长度方向。"""
+
         length = math.sqrt(sum(component * component for component in value))
         if length <= 0:
             raise ValueError("切片方向向量长度不能为 0")
@@ -220,6 +228,8 @@ class PlaneStackResampler:
 
     @staticmethod
     def _scale(value: Tuple[float, float, float], factor: float) -> Tuple[float, float, float]:
+        """将三维向量的每个分量乘以指定缩放系数。"""
+
         return tuple(component * factor for component in value)
 
     @staticmethod
@@ -227,6 +237,8 @@ class PlaneStackResampler:
         left: Tuple[float, float, float],
         right: Tuple[float, float, float],
     ) -> Tuple[float, float, float]:
+        """计算两个三维物理点或向量的逐分量差。"""
+
         return tuple(left[index] - right[index] for index in range(3))
 
     @staticmethod
@@ -235,6 +247,8 @@ class PlaneStackResampler:
         col_dir: Tuple[float, float, float],
         normal: Tuple[float, float, float],
     ) -> Tuple[float, ...]:
+        """按 SimpleITK 矩阵布局组装行、列、法向三个物理方向。"""
+
         return (
             row_dir[0], col_dir[0], normal[0],
             row_dir[1], col_dir[1], normal[1],

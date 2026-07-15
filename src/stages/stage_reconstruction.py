@@ -58,6 +58,13 @@ class ReconstructionStage(BaseStage):
         """窗位线程池上限；实际线程数不会超过当前窗位数量。"""
     
     def execute(self, context: ProcessingContext) -> ProcessingContext:
+        """
+        执行阶段四的全部平面切片计划并输出分窗位 DICOM 序列。
+
+        状位与计划串行执行，同一计划内的不同窗位可并行；每个切割组都会生成
+        自己的数字编号切片和 Localizer 定位图。
+        """
+
         request = context.request
         
         loc_result = context.get_result('localization')
@@ -283,6 +290,8 @@ class ReconstructionStage(BaseStage):
         size_xyz = representative_slice.GetSize()
 
         def paint(stack_index: int, line_start: int, line_end: int, value: float) -> None:
+            """在定位图数组的指定堆叠位置画一条有限长度切片线。"""
+
             if not 0 <= stack_index < size_xyz[stack_axis]:
                 return
             line_start = max(line_start, 0)
@@ -347,6 +356,8 @@ class ReconstructionStage(BaseStage):
         projection: sitk.Image,
         projection_axis: int,
     ) -> sitk.Image:
+        """移除最大强度投影后的单体素轴，得到可写定位图的二维图像。"""
+
         size = list(projection.GetSize())
         size[projection_axis] = 0
         return sitk.Extract(projection, size, [0, 0, 0])
@@ -440,6 +451,8 @@ class ReconstructionStage(BaseStage):
 
     @staticmethod
     def _plan_group_name(plan: Dict[str, Any]) -> str:
+        """返回用于输出目录的安全切割组名称；整切直接位于窗位目录。"""
+
         if plan.get("cut_mode") in {"whole_range", "整切"}:
             return ""
         group_name = str(plan.get("group_name", ""))
@@ -451,6 +464,8 @@ class ReconstructionStage(BaseStage):
 
     @staticmethod
     def _validate_plan(plan: Dict[str, Any]) -> None:
+        """校验阶段四计划包含平面重建所需字段及合法的尺寸、间距。"""
+
         plan_id = plan.get("plan_id", "<unknown>") if isinstance(plan, dict) else "<unknown>"
         if not isinstance(plan, dict):
             raise ValueError(f"plan_id={plan_id} 必须是对象")
@@ -506,6 +521,8 @@ class ReconstructionStage(BaseStage):
         plans: List[Dict[str, Any]],
         output_root: Path,
     ) -> Dict[str, Any]:
+        """按状位汇总计划数、切片数、窗位展开图像数和输出目录。"""
+
         plane_summary = {}
         for plan in plans:
             plane = plan["plane"]

@@ -5,8 +5,12 @@ from src.models.enums import BodyPartEnum, PlaneTypeEnum
 
 
 class PlaneConfigRequestTest(unittest.TestCase):
+    """汇总 `PlaneConfigRequestTest` 相关测试场景。"""
+
     def test_plane_config_supports_all_window_preset_names(self):
         # 外部只传中文预设名称，解析和序列化都不展开内部窗宽窗位数值。
+        """验证 `test_plane_config_supports_all_window_preset_names` 场景符合预期。"""
+
         window_names = [
             "脑窗",
             "骨窗",
@@ -34,6 +38,8 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self.assertEqual(config.to_dict()["window_presets"], window_names)
 
     def test_plane_config_from_dict_keeps_window_names_as_strings(self):
+        """验证 `test_plane_config_from_dict_keeps_window_names_as_strings` 场景符合预期。"""
+
         config = PlaneConfig.from_dict({
             "plane": "冠状位",
             "slice_thickness": 5,
@@ -48,6 +54,8 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self.assertEqual(config.window_presets, ["骨窗", "肺窗", "纵隔窗"])
 
     def test_plane_config_parses_target_bbox_line_extent_mode(self):
+        """验证 `test_plane_config_parses_target_bbox_line_extent_mode` 场景符合预期。"""
+
         config = PlaneConfig.from_dict({
             "plane": "横状位",
             "slice_thickness": 3,
@@ -60,6 +68,8 @@ class PlaneConfigRequestTest(unittest.TestCase):
 
     def test_request_from_dict_parses_plane_configs_and_to_dict_serializes_values(self):
         # from_dict 负责把外部请求转成强约束对象；to_dict 再转回报告可写的结构。
+        """验证 `test_request_from_dict_parses_plane_configs_and_to_dict_serializes_values` 场景符合预期。"""
+
         request = Request.from_dict({
             "dicom_dir": "/tmp/dicom",
             "output_dir": "/tmp/output",
@@ -90,6 +100,8 @@ class PlaneConfigRequestTest(unittest.TestCase):
 
     def test_request_defaults_to_currently_supported_axial_plane(self):
         # 默认请求只能声明当前框架实际支持的能力，其他状位必须显式请求并预检。
+        """验证 `test_request_defaults_to_currently_supported_axial_plane` 场景符合预期。"""
+
         request = Request(dicom_dir="/tmp/dicom", output_dir="/tmp/output")
 
         self.assertEqual(request.to_dict()["plane_configs"], [
@@ -103,9 +115,13 @@ class PlaneConfigRequestTest(unittest.TestCase):
         ])
 
     def test_request_validate_rejects_empty_plane_configs(self):
+        """验证 `test_request_validate_rejects_empty_plane_configs` 场景符合预期。"""
+
         self._assert_invalid([], "plane_configs 不能为空")
 
     def test_request_validate_rejects_duplicate_planes(self):
+        """验证 `test_request_validate_rejects_duplicate_planes` 场景符合预期。"""
+
         self._assert_invalid(
             [
                 {
@@ -125,6 +141,8 @@ class PlaneConfigRequestTest(unittest.TestCase):
         )
 
     def test_request_validate_rejects_non_positive_slice_thickness(self):
+        """验证 `test_request_validate_rejects_non_positive_slice_thickness` 场景符合预期。"""
+
         self._assert_invalid(
             [
                 {
@@ -138,6 +156,8 @@ class PlaneConfigRequestTest(unittest.TestCase):
         )
 
     def test_request_validate_rejects_non_positive_slice_spacing(self):
+        """验证 `test_request_validate_rejects_non_positive_slice_spacing` 场景符合预期。"""
+
         self._assert_invalid(
             [
                 {
@@ -151,6 +171,8 @@ class PlaneConfigRequestTest(unittest.TestCase):
         )
 
     def test_request_validate_rejects_empty_window_presets(self):
+        """验证 `test_request_validate_rejects_empty_window_presets` 场景符合预期。"""
+
         self._assert_invalid(
             [
                 {
@@ -164,6 +186,8 @@ class PlaneConfigRequestTest(unittest.TestCase):
         )
 
     def test_request_validate_rejects_unknown_window_preset(self):
+        """验证 `test_request_validate_rejects_unknown_window_preset` 场景符合预期。"""
+
         self._assert_invalid(
             [{
                 "plane": "横状位",
@@ -176,6 +200,8 @@ class PlaneConfigRequestTest(unittest.TestCase):
 
     def _assert_invalid(self, plane_configs, expected_message):
         # 统一构造非法请求，避免每个校验用例重复写路径和断言。
+        """为测试准备 `_assert_invalid` 所需的数据或记录行为。"""
+
         request = Request.from_dict({
             "dicom_dir": "/tmp/dicom",
             "output_dir": "/tmp/output",

@@ -11,7 +11,6 @@ MPR多平面重建与DICOM生成
 """
 
 from concurrent.futures import ThreadPoolExecutor
-import math
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
 
@@ -244,7 +243,7 @@ class ReconstructionStage(BaseStage):
         image: sitk.Image,
         plan: Dict[str, Any],
     ) -> sitk.Image | None:
-        """从代表性原 CT 正交层烧录当前 plan 的层厚带与中心线。"""
+        """从代表性原 CT 正交层烧录当前 plan 的最细中心线。"""
 
         axes = cls._LOCALIZER_DRAW_AXES.get(str(plan.get("plane", "")))
         if axes is None:
@@ -275,16 +274,11 @@ class ReconstructionStage(BaseStage):
         source_min = float(np.min(source_array))
         source_max = float(np.max(source_array))
         intensity_span = max(source_max - source_min, 1.0)
-        band_value = source_max + intensity_span
-        center_value = band_value + intensity_span
+        center_value = source_max + intensity_span
         spacing = image.GetSpacing()
         half_height_voxels = (
             float(plan.get("extent_mm", {}).get("height", 0.0))
             / (2.0 * spacing[line_axis])
-        )
-        half_thickness_voxels = (
-            float(plan.get("slice_thickness", 0.0))
-            / (2.0 * spacing[stack_axis])
         )
         size_xyz = representative_slice.GetSize()
 
@@ -307,18 +301,6 @@ class ReconstructionStage(BaseStage):
         for center_index in center_indices:
             line_start = int(round(center_index[line_axis] - half_height_voxels))
             line_end = int(round(center_index[line_axis] + half_height_voxels))
-            stack_start = int(math.ceil(
-                center_index[stack_axis] - half_thickness_voxels - 1e-9,
-            ))
-            stack_end = int(math.ceil(
-                center_index[stack_axis] + half_thickness_voxels - 1e-9,
-            )) - 1
-            for stack_index in range(stack_start, stack_end + 1):
-                paint(stack_index, line_start, line_end, band_value)
-
-        for center_index in center_indices:
-            line_start = int(round(center_index[line_axis] - half_height_voxels))
-            line_end = int(round(center_index[line_axis] + half_height_voxels))
             paint(
                 int(round(center_index[stack_axis])),
                 line_start,
@@ -328,7 +310,37 @@ class ReconstructionStage(BaseStage):
 
         painted_slice = sitk.GetImageFromArray(localizer_array)
         painted_slice.CopyInformation(representative_slice)
-        return cls._extract_projection_axis(painted_slice, fixed_axis)
+        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+        if float(direction[2, 2]) > 0.0:
+            # Localizer 降为二维 DICOM 后不能再依赖三维 z 轴
+            # 来决定头脚显示顺序。当原图 +z 指向物理头侧时，
+            # 把高 z 放到像素顶部；-z 指向头侧时则保持原序。
+            painted_slice = sitk.Flip(
+                painted_slice,
+                [False, False, True],
+                flipAboutOrigin=False,
+            )
+        localizer = cls._extract_projection_axis(painted_slice, fixed_axis)
+        remaining_axes = [axis for axis in range(3) if axis != fixed_axis]
+        localizer_direction = np.asarray(
+            painted_slice.GetDirection(),
+            dtype=float,
+        ).reshape(3, 3)
+        row_direction = localizer_direction[:, remaining_axes[0]]
+        column_direction = localizer_direction[:, remaining_axes[1]]
+        first_pixel = painted_slice.TransformIndexToPhysicalPoint((0, 0, 0))
+        localizer.SetMetaData(
+            "0020|0037",
+            "\\".join(
+                f"{float(value):.12g}"
+                for value in (*row_direction, *column_direction)
+            ),
+        )
+        localizer.SetMetaData(
+            "0020|0032",
+            "\\".join(f"{float(value):.12g}" for value in first_pixel),
+        )
+        return localizer
 
     @staticmethod
     def _extract_projection_axis(
@@ -389,6 +401,12 @@ class ReconstructionStage(BaseStage):
                 sitk.Image(localizer_image),
                 window,
             )
+            for geometry_tag in ("0020|0032", "0020|0037"):
+                if localizer_image.HasMetaDataKey(geometry_tag):
+                    windowed_localizer.SetMetaData(
+                        geometry_tag,
+                        localizer_image.GetMetaData(geometry_tag),
+                    )
             write_localizer_dicom(
                 image=windowed_localizer,
                 output_path=output_dir / "Localizer.dcm",

@@ -197,6 +197,11 @@ def write_localizer_dicom(
     """写出不参与正式切片编号的定位图 DICOM。"""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    geometry_metadata = {
+        tag: image.GetMetaData(tag)
+        for tag in ("0020|0032", "0020|0037")
+        if image.HasMetaDataKey(tag)
+    }
     image_2d = _extract_singleton_axis(image)
     inherited_metadata = source_metadata or {}
     specific_character_set = str(inherited_metadata.get("0008|0005", ""))
@@ -223,6 +228,8 @@ def write_localizer_dicom(
     image_2d.SetMetaData("0028|0101", "16")
     image_2d.SetMetaData("0028|0102", "15")
     image_2d.SetMetaData("0028|0103", "0")
+    for tag, value in geometry_metadata.items():
+        image_2d.SetMetaData(tag, value)
 
     writer = sitk.ImageFileWriter()
     writer.SetFileName(str(output_path))

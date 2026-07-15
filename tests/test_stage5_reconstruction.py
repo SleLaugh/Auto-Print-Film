@@ -128,6 +128,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 temp_dir,
                 slice_count=2,
             ).get_result("mapping")["plans"][0]
+            plan["slice_thickness"] = 5.0
 
             localizer = ReconstructionStage._build_plan_localizer(image, plan)
             localizer_array = sitk.GetArrayFromImage(localizer)
@@ -135,6 +136,53 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertEqual(localizer.GetSize(), (8, 8))
             self.assertEqual(float(localizer_array[0, 0]), 100.0)
             self.assertGreater(float(np.max(localizer_array)), 1000.0)
+            highlighted_rows = np.unique(
+                np.argwhere(localizer_array > 1000.0)[:, 0]
+            )
+            self.assertEqual(highlighted_rows.tolist(), [3, 5])
+
+    def test_localizer_puts_physical_superior_side_at_top(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for z_direction in (1.0, -1.0):
+                image_array = np.zeros((8, 8, 8), dtype=np.int16)
+                for z_index in range(8):
+                    superior_value = (
+                        z_index if z_direction > 0 else 7 - z_index
+                    )
+                    image_array[z_index, :, :] = superior_value * 100
+                image = sitk.GetImageFromArray(image_array)
+                image.SetDirection((
+                    1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, z_direction,
+                ))
+
+                for plane in ("横状位", "矢状位", "冠状位"):
+                    with self.subTest(z_direction=z_direction, plane=plane):
+                        plan = self._make_context_with_one_plan(
+                            temp_dir,
+                            slice_count=1,
+                        ).get_result("mapping")["plans"][0]
+                        plan["plane"] = plane
+                        plan["extent_mm"] = {"width": 0.0, "height": 0.0}
+
+                        localizer = ReconstructionStage._build_plan_localizer(
+                            image,
+                            plan,
+                        )
+                        localizer_array = sitk.GetArrayFromImage(localizer)
+
+                        self.assertGreater(
+                            float(np.median(localizer_array[0])),
+                            float(np.median(localizer_array[-1])),
+                        )
+                        orientation = tuple(float(value) for value in (
+                            localizer.GetMetaData("0020|0037").split("\\")
+                        ))
+                        self.assertEqual(len(orientation), 6)
+                        # DICOM 画面列方向必须真正沿物理头脚轴，
+                        # 且从画面上向下指向足侧。
+                        self.assertLess(orientation[5], 0.0)
 
     def test_multiple_interval_plans_write_to_independent_group_directories(self):
         """第五阶段应保留多个区间各自的名称和独立输出目录。"""
@@ -453,6 +501,10 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 "LOCALIZER",
                 localizer.GetMetaData("0008|0008").upper(),
             )
+            orientation = tuple(float(value) for value in (
+                localizer.GetMetaData("0020|0037").split("\\")
+            ))
+            self.assertEqual(orientation, (0.0, 1.0, 0.0, 0.0, 0.0, -1.0))
             result = context.get_result("reconstruction")
             self.assertEqual(result["slice_count"], 2)
             self.assertEqual(result["image_count"], 2)

@@ -87,11 +87,9 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(result.GetDirection(), reference_image.GetDirection())
         self.assertAlmostEqual(float(result_array[0, 0, 0]), 0.0)
         self.assertAlmostEqual(float(result_array[0, 2, 1]), 30.0)
-        self.assertGreater(float(result_array[0, 1, 0]), 70.0)
-        self.assertGreater(
-            float(result_array[0, 1, 1]),
-            float(result_array[0, 1, 0]),
-        )
+        # 旧层厚带标签不再烧录，只高亮最细中心线。
+        self.assertAlmostEqual(float(result_array[0, 1, 0]), 10.0)
+        self.assertGreater(float(result_array[0, 1, 1]), 70.0)
 
     def test_debug_filename_suffix_uses_short_plane_and_cut_mode_labels(self):
         self.assertEqual(
@@ -1128,8 +1126,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(overview_image.GetSize(), (80, 80, 35))
             self.assertEqual(overview_image.GetPixelID(), sitk.sitkInt16)
             self.assertEqual(overview_image.GetOrigin(), (0.0, 0.0, 0.0))
-            # 5 mm 中心间距在 0.5 mm 检查网格上恒为 10 个体素。
-            center_rows = np.unique(np.argwhere(overview_array == 2)[:, 0])
+            # 5 mm 真实间距在 0.5 mm 等距展示网格上恒定相差 10 行。
+            center_rows = np.unique(np.argwhere(overview_array > 0)[:, 0])
             self.assertEqual(center_rows.tolist(), [12, 22])
             self.assertEqual(int(center_rows[1] - center_rows[0]), 10)
             native_path = Path(result["debug_slice_plan_native_overview_overlay_path"])
@@ -1137,7 +1135,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             native_image = sitk.ReadImage(str(native_path))
             self.assertEqual(native_image.GetSize(), image.GetSize())
 
-    def test_mapping_stage_overview_draws_thickness_bands(self):
+    def test_mapping_stage_overview_uses_minimum_line_width(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             seg_path = temp_path / "seg.nii.gz"
@@ -1175,32 +1173,9 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
             overview_image = sitk.ReadImage(str(overview_path))
             overview_array = sitk.GetArrayFromImage(overview_image)
-            # bbox 3..13、层厚 3、中心间距 5：从上向下的中心在 12 和 7，
-            # 对应两个厚度覆盖带，中间仍保留配置允许的空档。
-            center_rows = np.unique(np.argwhere(overview_array == 2)[:, 0])
-            self.assertEqual(center_rows.tolist(), [14, 24])
-            # 3 mm 层厚在 0.5 mm 网格上固定占 6 行；中心仅为短刻度，
-            # 不再把整条厚度带分成“黄色在上/黄色在下”。
-            band_rows = np.unique(np.argwhere(overview_array == 1)[:, 0])
-            self.assertEqual(band_rows.tolist(), [
-                11, 12, 13, 14, 15, 16,
-                21, 22, 23, 24, 25, 26,
-            ])
-            band_index = MappingStage._physical_point_to_array_index(
-                overview_image,
-                {"x": 60.0, "y": 45.0, "z": 7.0},
-            )
-            center_index = MappingStage._physical_point_to_array_index(
-                overview_image,
-                {"x": 60.0, "y": 50.0, "z": 7.0},
-            )
-            gap_index = MappingStage._physical_point_to_array_index(
-                overview_image,
-                {"x": 60.0, "y": 50.0, "z": 9.5},
-            )
-            self.assertEqual(overview_array[band_index], 1)
-            self.assertEqual(overview_array[center_index], 2)
-            self.assertEqual(overview_array[gap_index], 0)
+            # 层厚不再决定显示宽度；每张切片只占等距网格一行。
+            painted_rows = np.unique(np.argwhere(overview_array > 0)[:, 0])
+            self.assertEqual(painted_rows.tolist(), [14, 24])
 
     def test_mapping_stage_overview_overlay_respects_image_direction(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1251,7 +1226,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
             overview_image = sitk.ReadImage(str(overview_path))
             overview_array = sitk.GetArrayFromImage(overview_image)
-            center_rows = np.unique(np.argwhere(overview_array == 2)[:, 0])
+            center_rows = np.unique(np.argwhere(overview_array > 0)[:, 0])
             self.assertEqual(center_rows.tolist(), [10, 20])
 
     @staticmethod

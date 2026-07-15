@@ -484,8 +484,9 @@ class MappingStage(BaseStage):
         按横、矢、冠状位分别写出含 CT 背景和原始网格总览。
 
         每个文件只包含一个状位，避免三组互相垂直的切割线叠在一起。含原图
-        总览会把当前状位的堆叠轴细化到 0.5mm，并将层厚带和中心线烧录到
-        重采样后的 CT 中；原始网格总览保留输入图像网格，用于核对取整位置。
+        含原图总览把当前状位的堆叠轴细化到 0.5mm，保证 ITK 中的
+        显示间距一致；原始网格总览仍用输入网格核对位置。两者都只画
+        最细中心线，不再按层厚铺满。
         缺少原始 CT 时只写原始网格总览。
         """
 
@@ -527,17 +528,14 @@ class MappingStage(BaseStage):
                 tuple(reversed(uniform_reference.GetSize())),
                 dtype=np.uint16,
             )
-
             for plan_index, plan in enumerate(plane_plans, start=1):
                 overview_value = plan_index * 10 + 4
-                thickness_value = plan_index * 10 + 5
                 self._paint_plan_overview(
                     reference_image=reference_image,
                     overlay_array=native_overlay_array,
                     plan=plan,
                     axes=axes,
                     value=overview_value,
-                    thickness_value=thickness_value,
                 )
                 self._paint_plan_overview(
                     reference_image=uniform_reference,
@@ -545,7 +543,6 @@ class MappingStage(BaseStage):
                     plan=plan,
                     axes=axes,
                     value=overview_value,
-                    thickness_value=thickness_value,
                 )
 
             debug_suffix = self._debug_plan_suffix(plane_plans)
@@ -590,7 +587,7 @@ class MappingStage(BaseStage):
         reference_image: sitk.Image,
         overlay_array: np.ndarray,
     ) -> sitk.Image:
-        """把 CT 重采样到总览网格，并烧录层厚带和中心线。"""
+        """把 CT 放到原始总览网格，并只烧录最细切片中心线。"""
 
         raw_array = sitk.GetArrayViewFromImage(raw_image)
         source_min = float(np.min(raw_array))
@@ -607,12 +604,7 @@ class MappingStage(BaseStage):
         )
         result_array = sitk.GetArrayFromImage(resampled)
         intensity_span = max(source_max - source_min, 1.0)
-        band_value = min(int(round(source_max + intensity_span)), int16_max - 1)
-        center_value = min(int(round(band_value + intensity_span)), int16_max)
-        if center_value <= band_value:
-            band_value = int16_max - 1
-            center_value = int16_max
-        result_array[overlay_array % 10 == 5] = band_value
+        center_value = min(int(round(source_max + intensity_span)), int16_max)
         result_array[overlay_array % 10 == 4] = center_value
 
         result = sitk.GetImageFromArray(result_array)
@@ -624,7 +616,7 @@ class MappingStage(BaseStage):
         reference_image: sitk.Image,
         stack_axis: int,
     ) -> sitk.Image:
-        """只把当前状位堆叠轴细化为 0.5mm，创建同物理范围检查网格。"""
+        """只细化当前状位堆叠轴，生成 0.5mm 等距展示网格。"""
 
         if stack_axis not in (0, 1, 2):
             raise ValueError("总览堆叠轴只能是 0、1、2")
@@ -632,9 +624,9 @@ class MappingStage(BaseStage):
         size = list(reference_image.GetSize())
         uniform_spacing = 0.5
         physical_extent = (size[stack_axis] - 1) * spacing[stack_axis]
-        size[stack_axis] = (
-            int(math.ceil(physical_extent / uniform_spacing)) + 1
-        )
+        size[stack_axis] = int(math.ceil(
+            physical_extent / uniform_spacing,
+        )) + 1
         spacing[stack_axis] = uniform_spacing
         uniform_reference = sitk.Image(
             int(size[0]),
@@ -654,12 +646,11 @@ class MappingStage(BaseStage):
         plan: Dict[str, Any],
         axes: _OverviewAxes,
         value: int,
-        thickness_value: int,
     ) -> None:
         """
         把一组零角度直线 slice 投到当前状位的固定正交层上。
 
-        总览图用不同标签绘制厚度覆盖带和输出切片中心线。当前方法使用输入
+        总览图只绘制输出切片中心线。当前方法使用输入
         图像 x/y/z 索引轴，只适用于本阶段已经支持的零角度横、矢、冠计划。
         """
 
@@ -686,65 +677,12 @@ class MappingStage(BaseStage):
         half_height_voxels = (
             half_height / reference_image.GetSpacing()[axes.line_axis]
         )
-        half_thickness_voxels = (
-            float(plan.get("slice_thickness", 0.0))
-            / (2.0 * reference_image.GetSpacing()[axes.stack_axis])
-        )
-
-        slice_thickness = float(plan.get("slice_thickness", 0.0))
-        center_tick_half_voxels = min(
-            half_height_voxels * 0.25,
-            5.0 / reference_image.GetSpacing()[axes.line_axis],
-        )
-        for center_index in center_indices:
-            if slice_thickness > 0:
-                self._paint_overview_index_band(
-                    overlay_array=overlay_array,
-                    overview_fixed_index=overview_fixed_index,
-                    center_index=center_index,
-                    axes=axes,
-                    half_height_voxels=half_height_voxels,
-                    half_thickness_voxels=half_thickness_voxels,
-                    value=thickness_value,
-                )
-
-        # 中心线最后画，避免被同一张或相邻切片的厚度带覆盖。
         for center_index in center_indices:
             self._paint_overview_index_line(
                 overlay_array=overlay_array,
                 overview_fixed_index=overview_fixed_index,
                 line_center_index=center_index[axes.line_axis],
                 stack_index=int(round(center_index[axes.stack_axis])),
-                axes=axes,
-                half_height_voxels=center_tick_half_voxels,
-                value=value,
-            )
-
-    def _paint_overview_index_band(
-        self,
-        overlay_array: np.ndarray,
-        overview_fixed_index: int,
-        center_index: tuple[float, float, float],
-        axes: _OverviewAxes,
-        half_height_voxels: float,
-        half_thickness_voxels: float,
-        value: int,
-    ) -> None:
-        """沿当前状位堆叠轴按物理层厚填充总览覆盖带。"""
-
-        stack_center = center_index[axes.stack_axis]
-        stack_start = int(math.ceil(
-            stack_center - half_thickness_voxels - 1e-9,
-        ))
-        stack_end = int(math.ceil(
-            stack_center + half_thickness_voxels - 1e-9,
-        )) - 1
-        for stack_index in range(stack_start, stack_end + 1):
-            self._paint_overview_index_line(
-                overlay_array=overlay_array,
-                overview_fixed_index=overview_fixed_index,
-                line_center_index=center_index[axes.line_axis],
-                stack_index=stack_index,
                 axes=axes,
                 half_height_voxels=half_height_voxels,
                 value=value,

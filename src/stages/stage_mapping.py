@@ -54,9 +54,18 @@ class MappingStage(BaseStage):
     """切片规划阶段"""
     
     def __init__(self, config: Dict[str, Any] = None):
+        """初始化阶段四切片规划组件及其调试输出配置。"""
+
         super().__init__(name="mapping", config=config)
     
     def execute(self, context: ProcessingContext) -> ProcessingContext:
+        """
+        根据阶段三定位结果生成阶段五可直接执行的切片计划。
+
+        请求中的每个状位先按部位策略选择整切或区间切 planner，再统一写出
+        `slice_plans.json`；debug 模式下额外生成定位线和原始图像总览。
+        """
+
         prev_result = context.get_result('localization')
         
         if not prev_result:
@@ -98,6 +107,7 @@ class MappingStage(BaseStage):
         diagnostics = self._build_plan_diagnostics(plans)
 
         debug_overlay_path = ""
+        debug_center_cross_overlay_path = ""
         debug_overview_overlay_path = ""
         debug_native_overview_overlay_path = ""
         debug_overview_paths: Dict[str, str] = {}
@@ -106,6 +116,11 @@ class MappingStage(BaseStage):
         if is_debug_log_file_enabled():
             DebugLog("  [3] write_debug_overlay: 写出切割线和含原图总览...")
             debug_overlay_path = self._write_slice_plan_overlay(
+                context=context,
+                localization_result=prev_result,
+                plans=plans,
+            )
+            debug_center_cross_overlay_path = self._write_center_cross_overlay(
                 context=context,
                 localization_result=prev_result,
                 plans=plans,
@@ -134,6 +149,7 @@ class MappingStage(BaseStage):
                 diagnostics=diagnostics,
                 warnings=all_warnings,
                 debug_overlay_path=debug_overlay_path,
+                debug_center_cross_overlay_path=debug_center_cross_overlay_path,
                 debug_overview_overlay_path=debug_overview_overlay_path,
                 debug_native_overview_overlay_path=debug_native_overview_overlay_path,
                 debug_overview_paths=debug_overview_paths,
@@ -148,6 +164,7 @@ class MappingStage(BaseStage):
             'plan_count': len(plans),
             'metadata_path': str(metadata_path),
             'debug_slice_plan_overlay_path': debug_overlay_path,
+            'debug_center_cross_overlay_path': debug_center_cross_overlay_path,
             'debug_slice_plan_overview_overlay_path': debug_overview_overlay_path,
             'debug_slice_plan_native_overview_overlay_path': debug_native_overview_overlay_path,
             'debug_slice_plan_overview_paths': debug_overview_paths,
@@ -169,6 +186,8 @@ class MappingStage(BaseStage):
             )
         if debug_overlay_path:
             DebugLog(f"    切割线 overlay: {debug_overlay_path}")
+        if debug_center_cross_overlay_path:
+            DebugLog(f"    十字中线 overlay: {debug_center_cross_overlay_path}")
         if debug_overview_overlay_path:
             DebugLog(f"    切割线总览 overlay: {debug_overview_overlay_path}")
         for plane, path in debug_native_overview_paths.items():
@@ -188,6 +207,7 @@ class MappingStage(BaseStage):
         diagnostics: list[Dict[str, Any]],
         warnings: list[str],
         debug_overlay_path: str,
+        debug_center_cross_overlay_path: str,
         debug_overview_overlay_path: str,
         debug_native_overview_overlay_path: str,
         debug_overview_paths: Dict[str, str],
@@ -206,6 +226,7 @@ class MappingStage(BaseStage):
             "diagnostics": diagnostics,
             "warnings": warnings,
             "debug_slice_plan_overlay_path": debug_overlay_path,
+            "debug_center_cross_overlay_path": debug_center_cross_overlay_path,
             "debug_slice_plan_overview_overlay_path": debug_overview_overlay_path,
             "debug_slice_plan_native_overview_overlay_path": debug_native_overview_overlay_path,
             "debug_slice_plan_overview_paths": debug_overview_paths,
@@ -474,6 +495,118 @@ class MappingStage(BaseStage):
         sitk.WriteImage(overlay_image, str(output_path))
         return str(output_path)
 
+    def _write_center_cross_overlay(
+        self,
+        context: ProcessingContext,
+        localization_result: Dict[str, Any],
+        plans: list[Dict[str, Any]],
+    ) -> str:
+        """
+        以阶段三部位中心为唯一交点，把本次状位需要的解剖轴合并绘制。
+
+        已适配部位使用 anatomical_geometry 的原点和三轴；其他部位回退到
+        correction_scope_bbox 的物理中心和原图方向轴。十字只用于核对部位
+        居中与方向，不使用整面切片的画布中心，也不参与第五步重建。
+        """
+
+        reference_path = localization_result.get("seg_for_reconstruction_path")
+        if not reference_path or not Path(reference_path).exists():
+            return ""
+
+        reference_image = sitk.ReadImage(str(reference_path))
+        overlay_array = np.zeros(
+            sitk.GetArrayFromImage(reference_image).shape,
+            dtype=np.uint16,
+        )
+        geometry = localization_result.get("anatomical_geometry") or {}
+        global_frame = geometry.get("global_frame") or {}
+        if global_frame:
+            center = {
+                axis: float(global_frame["origin"][axis])
+                for axis in ("x", "y", "z")
+            }
+            anatomical_axes = {
+                "left_right": global_frame["left_right_axis"],
+                "anterior_posterior": global_frame["anterior_posterior_axis"],
+                "superior_inferior": global_frame["superior_inferior_axis"],
+            }
+        else:
+            bbox = localization_result.get("correction_scope_bbox")
+            if not bbox:
+                return ""
+            center_point = reference_image.TransformContinuousIndexToPhysicalPoint((
+                (float(bbox["x_min"]) + float(bbox["x_max"])) / 2.0,
+                (float(bbox["y_min"]) + float(bbox["y_max"])) / 2.0,
+                (float(bbox["z_min"]) + float(bbox["z_max"])) / 2.0,
+            ))
+            center = dict(zip(("x", "y", "z"), center_point))
+            direction = np.asarray(
+                reference_image.GetDirection(),
+                dtype=float,
+            ).reshape(3, 3)
+            anatomical_axes = {
+                "left_right": dict(zip(("x", "y", "z"), direction[:, 0])),
+                "anterior_posterior": dict(zip(("x", "y", "z"), direction[:, 1])),
+                "superior_inferior": dict(zip(("x", "y", "z"), direction[:, 2])),
+            }
+
+        axes_by_plane = {
+            "横状位": ("left_right", "anterior_posterior"),
+            "矢状位": ("anterior_posterior", "superior_inferior"),
+            "冠状位": ("left_right", "superior_inferior"),
+        }
+        requested_planes = {
+            str(plan.get("plane"))
+            for plan in plans
+        }
+        axis_names = {
+            axis_name
+            for plane, plane_axes in axes_by_plane.items()
+            if plane in requested_planes
+            for axis_name in plane_axes
+        }
+        size = reference_image.GetSize()
+        physical_corners = np.asarray([
+            reference_image.TransformIndexToPhysicalPoint((x, y, z))
+            for x in (0, size[0] - 1)
+            for y in (0, size[1] - 1)
+            for z in (0, size[2] - 1)
+        ])
+        center_array = np.asarray([center["x"], center["y"], center["z"]])
+        white_value = int(np.iinfo(np.uint16).max)
+        for axis_name in axis_names:
+            direction = anatomical_axes[axis_name]
+            direction_array = np.asarray([
+                float(direction["x"]),
+                float(direction["y"]),
+                float(direction["z"]),
+            ])
+            direction_array /= np.linalg.norm(direction_array)
+            half_length = float(np.max(np.abs(
+                (physical_corners - center_array) @ direction_array
+            )))
+            self._paint_direction_line(
+                reference_image=reference_image,
+                overlay_array=overlay_array,
+                center=center,
+                direction=direction,
+                half_length=half_length,
+                value=white_value,
+            )
+
+        if not np.any(overlay_array):
+            return ""
+        output_path = (
+            Path(context.request.output_dir)
+            / "metadata"
+            / f"十字中线_{self._debug_plan_suffix(plans)}.nii.gz"
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        overlay_image = sitk.GetImageFromArray(overlay_array)
+        overlay_image.CopyInformation(reference_image)
+        sitk.WriteImage(overlay_image, str(output_path))
+        return str(output_path)
+
     def _write_slice_plan_overview_overlays(
         self,
         context: ProcessingContext,
@@ -661,6 +794,28 @@ class MappingStage(BaseStage):
         extent_mm = plan.get("extent_mm", {})
         half_height = float(extent_mm.get("height", 0.0)) / 2.0
         if half_height <= 0:
+            return
+
+        # 旧总览按输入索引轴画线，只适用于零角度计划。肺部等斜切计划必须
+        # 直接使用阶段四给出的物理 row_dir/col_dir，否则总览仍会显示成水平线，
+        # 与第五步真正执行的斜切方向不一致。
+        first_normal = slices[0].get("normal", {})
+        direction = np.asarray(reference_image.GetDirection(), dtype=float).reshape(3, 3)
+        expected_normal = direction[:, axes.stack_axis]
+        actual_normal = np.asarray([
+            float(first_normal.get("x", 0.0)),
+            float(first_normal.get("y", 0.0)),
+            float(first_normal.get("z", 0.0)),
+        ])
+        if abs(abs(float(np.dot(expected_normal, actual_normal))) - 1.0) > 1e-6:
+            for planned_slice in slices:
+                self._paint_planned_slice_guides(
+                    reference_image=reference_image,
+                    overlay_array=overlay_array,
+                    planned_slice=planned_slice,
+                    extent_mm=extent_mm,
+                    value=value,
+                )
             return
 
         center_indices = [

@@ -11,6 +11,8 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from .anatomy import AnatomicalGeometryResult
+
 
 @dataclass
 class VoxelPoint:
@@ -20,6 +22,8 @@ class VoxelPoint:
     x: float  # X 轴索引，SimpleITK 转 numpy 后数组的第 2 维
 
     def to_dict(self) -> Dict[str, float]:
+        """按 z/y/x 数组索引顺序序列化体素坐标。"""
+
         return {
             'z': self.z,
             'y': self.y,
@@ -38,6 +42,8 @@ class VoxelBBox:
     x_max: int  # 目标体素出现的最大 X 轴索引
 
     def to_dict(self) -> Dict[str, int]:
+        """序列化目标在三维数组中的闭区间包围盒。"""
+
         return {
             'z_min': self.z_min,
             'z_max': self.z_max,
@@ -55,6 +61,8 @@ class LabelTarget:
     label_ids: list[int]  # dataset.json 中对应的 label id，普通 label 通常只有一个
 
     def to_dict(self) -> Dict[str, Any]:
+        """序列化目标标签名称及其对应的模型标签编号。"""
+
         return {
             'label_name': self.label_name,
             'label_ids': self.label_ids,
@@ -72,6 +80,8 @@ class LabelCoordinate:
     bbox: Optional[VoxelBBox] = None  # 目标体素包围盒，未找到时为 None
 
     def to_dict(self) -> Dict[str, Any]:
+        """序列化单个标签的查找状态、质心和包围盒。"""
+
         return {
             'label_name': self.label_name,
             'label_ids': self.label_ids,
@@ -92,6 +102,8 @@ class NiftiImageInfo:
     array_order: str = "zyx"  # numpy 数组坐标顺序，SimpleITK GetArrayFromImage 固定为 z/y/x
 
     def to_dict(self) -> Dict[str, Any]:
+        """序列化解释体素坐标所需的 NIfTI 空间信息。"""
+
         return {
             'size_xyz': self.size_xyz,
             'spacing_xyz': self.spacing_xyz,
@@ -127,9 +139,12 @@ class LocalizationResult:
     debug_label_mask_overlay_path: str = ""  # 研发期 ITK-SNAP 分 label mask overlay；保留各椎体原始 label id
     is_skewed: bool = False  # 兼容旧字段；当前语义等同于 correction_applied，不再表示已可靠检测到歪斜
     skew_params: Dict[str, Any] = field(default_factory=dict)  # 兼容旧字段；语义等同于 correction_params
+    anatomical_geometry: Optional[AnatomicalGeometryResult] = None  # 第三步输出给第四步的统一解剖坐标；未适配部位为空
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        """序列化阶段三完整结果，供阶段四规划及调试文件使用。"""
+
+        data = {
             'body_part': self.body_part,
             'cut_mode': self.cut_mode,
             'seg_path': self.seg_path,
@@ -163,3 +178,6 @@ class LocalizationResult:
             'is_skewed': self.is_skewed,
             'skew_params': self.skew_params,
         }
+        if self.anatomical_geometry is not None:
+            data['anatomical_geometry'] = self.anatomical_geometry.to_dict()
+        return data

@@ -24,8 +24,50 @@ from src.stages.stage_reconstruction import ReconstructionStage
 
 
 class Stage3TargetAxialCorrectionTest(unittest.TestCase):
+    """汇总 `Stage3TargetAxialCorrectionTest` 相关测试场景。"""
+
+    def test_lung_builds_typed_anatomical_geometry_for_stage4(self):
+        """验证 `test_lung_builds_typed_anatomical_geometry_for_stage4` 场景符合预期。"""
+
+        stage = LocalizationStage()
+        mask = np.zeros((32, 24, 48), dtype=bool)
+        for x in range(6, 42):
+            top = 5 + int(round((x - 6) * 0.1))
+            mask[top:28, 4:20, x] = True
+        image = sitk.GetImageFromArray(mask.astype(np.uint8))
+
+        geometry, diagnostics = stage._build_anatomical_geometry(
+            body_part="肺部",
+            target_mask=mask,
+            image=image,
+        )
+
+        self.assertIsNotNone(geometry)
+        self.assertEqual(geometry.global_frame.method, "lung_dicom_axes")
+        self.assertFalse(geometry.global_frame.applied)
+        self.assertEqual(diagnostics["angle_source"], "disabled")
+        self.assertEqual(geometry.local_frames, {})
+
+    def test_non_lung_does_not_enable_anatomical_geometry_yet(self):
+        """验证 `test_non_lung_does_not_enable_anatomical_geometry_yet` 场景符合预期。"""
+
+        stage = LocalizationStage()
+        mask = np.ones((4, 4, 4), dtype=bool)
+        image = sitk.GetImageFromArray(mask.astype(np.uint8))
+
+        geometry, diagnostics = stage._build_anatomical_geometry(
+            body_part="头骨",
+            target_mask=mask,
+            image=image,
+        )
+
+        self.assertIsNone(geometry)
+        self.assertEqual(diagnostics, {})
+
     def test_target_mask_and_bbox_only_include_requested_labels(self):
         # 阶段三不能拿整套 volume 判断歪斜，必须先合成“本次任务真正关心的目标 mask”。
+        """验证 `test_target_mask_and_bbox_only_include_requested_labels` 场景符合预期。"""
+
         stage = LocalizationStage()
         seg_array = np.zeros((5, 12, 12), dtype=np.uint8)
         seg_array[1:3, 2:5, 4:7] = 5
@@ -52,6 +94,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_detect_axial_skew_uses_xy_projection_angle(self):
         # 横状位歪斜会影响后续矢状位/冠状位切片，所以第一版先检测 XY 投影主方向。
+        """验证 `test_detect_axial_skew_uses_xy_projection_angle` 场景符合预期。"""
+
         stage = LocalizationStage()
         target_mask = np.zeros((1, 80, 80), dtype=bool)
         expected_angle = 30.0
@@ -68,6 +112,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_detect_axial_skew_reports_not_enough_points(self):
         # 目标体素太少时 PCA 方向没有意义，应该明确标记而不是给一个假角度。
+        """验证 `test_detect_axial_skew_reports_not_enough_points` 场景符合预期。"""
+
         stage = LocalizationStage()
         target_mask = np.zeros((2, 5, 5), dtype=bool)
         target_mask[0, 2, 2] = True
@@ -80,6 +126,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_find_dataset_json_prefers_segmentation_sidecar_file(self):
         # nnUNet 模型目录可能有多个 dataset.json；seg 同目录的 sidecar 最贴近当前分割结果。
+        """验证 `test_find_dataset_json_prefers_segmentation_sidecar_file` 场景符合预期。"""
+
         stage = LocalizationStage()
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -111,6 +159,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_whole_range_expands_ordered_vertebrae_between_start_and_end(self):
         # 脊柱整切不能只定位两端点；C1 到 C7 应覆盖中间所有颈椎 label。
+        """验证 `test_whole_range_expands_ordered_vertebrae_between_start_and_end` 场景符合预期。"""
+
         stage = LocalizationStage()
         resolved_cut_config = {
             "start": "C1",
@@ -138,6 +188,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
     def test_s1_range_prefers_vertebrae_s1_over_sacrum_when_available(self):
         # S1 这个业务名表示第一骶椎。模型同时提供 vertebrae_S1 和 sacrum 时，
         # 整切范围应该纳入 vertebrae_S1，不能直接跳到整块骶骨。
+        """验证 `test_s1_range_prefers_vertebrae_s1_over_sacrum_when_available` 场景符合预期。"""
+
         stage = LocalizationStage()
         resolved_cut_config = {
             "start": "L1",
@@ -168,6 +220,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_s1_range_falls_back_to_sacrum_when_vertebrae_s1_missing(self):
         # 部分模型没有 vertebrae_S1，只提供 sacrum；这种情况下继续回退到 sacrum。
+        """验证 `test_s1_range_falls_back_to_sacrum_when_vertebrae_s1_missing` 场景符合预期。"""
+
         stage = LocalizationStage()
         resolved_cut_config = {
             "start": "L1",
@@ -197,6 +251,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_vertebrae_axial_skew_aggregates_per_label_angles_and_skips_boundary_labels(self):
         # 脊柱类目标用每个椎体的角度做稳健聚合；贴边残缺 label 不参与回正判断。
+        """验证 `test_vertebrae_axial_skew_aggregates_per_label_angles_and_skips_boundary_labels` 场景符合预期。"""
+
         stage = LocalizationStage({"correction_angle_threshold_degrees": 3.0})
         seg_array = np.zeros((3, 100, 100), dtype=np.uint8)
         self._draw_oriented_label(seg_array, label_id=20, z=1, center_y=35, center_x=40, angle_degrees=20.0)
@@ -218,6 +274,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_debug_bbox_overlay_writes_edges_on_reference_grid(self):
         # 研发期用这个 overlay 在 ITK-SNAP 里直接看定位框；它只画边框，不填满盒子。
+        """验证 `test_debug_bbox_overlay_writes_edges_on_reference_grid` 场景符合预期。"""
+
         stage = LocalizationStage()
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -277,6 +335,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
     def test_debug_target_mask_overlay_writes_only_requested_target_voxels(self):
         # bbox 是外接盒，矢状位/冠状位上会被极值体素撑大；研发期再输出一个
         # 真实目标 mask overlay，用来在 ITK-SNAP 里核对定位目标本身有没有偏。
+        """验证 `test_debug_target_mask_overlay_writes_only_requested_target_voxels` 场景符合预期。"""
+
         stage = LocalizationStage()
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -315,6 +375,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
     def test_debug_label_mask_overlay_keeps_each_requested_label_id(self):
         # 这个 overlay 用于查看每个椎体自己的位置区间：目标 label 保留原始
         # 模型 id，非本次目标 label 清零。
+        """验证 `test_debug_label_mask_overlay_keeps_each_requested_label_id` 场景符合预期。"""
+
         stage = LocalizationStage()
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -352,6 +414,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_no_correction_uses_original_raw_and_seg_paths(self):
         # 未超过阈值时不要生成假的 corrected 文件，后续阶段应直接吃原始 raw/seg。
+        """验证 `test_no_correction_uses_original_raw_and_seg_paths` 场景符合预期。"""
+
         stage = LocalizationStage({"correction_angle_threshold_degrees": 3.0})
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -375,6 +439,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_correction_step_is_todo_by_default_even_when_skewed(self):
         # 阶段三默认保留“回正”流程位置，但算法还是 TODO，不能自动改写体数据。
+        """验证 `test_correction_step_is_todo_by_default_even_when_skewed` 场景符合预期。"""
+
         stage = LocalizationStage({"correction_angle_threshold_degrees": 3.0})
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -404,6 +470,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_correction_writes_raw_and_seg_with_nearest_neighbor_labels(self):
         # 低层旋转 helper 保留给后续算法验证；主流程当前不会调用它写 corrected 文件。
+        """验证 `test_correction_writes_raw_and_seg_with_nearest_neighbor_labels` 场景符合预期。"""
+
         stage = LocalizationStage({"correction_angle_threshold_degrees": 3.0})
         seg_array = np.zeros((3, 32, 32), dtype=np.uint8)
         seg_array[:, 10:22, 12:20] = 7
@@ -422,6 +490,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_correction_reduces_detected_axial_angle(self):
         # 这是低层旋转 helper 的合成数据测试，不代表真实颈椎回正算法已可用。
+        """验证 `test_correction_reduces_detected_axial_angle` 场景符合预期。"""
+
         stage = LocalizationStage({"correction_angle_threshold_degrees": 3.0})
         seg_array = np.zeros((1, 80, 80), dtype=np.uint8)
         expected_angle = 30.0
@@ -449,6 +519,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
     def test_correction_uses_target_bbox_center_to_avoid_swinging_target(self):
         # 目标不在整张图像中心时，绕整图中心旋转会把目标甩到另一侧；
         # helper 显式开启时应绕目标 bbox 中心旋转，让定位目标的位置尽量稳定。
+        """验证 `test_correction_uses_target_bbox_center_to_avoid_swinging_target` 场景符合预期。"""
+
         stage = LocalizationStage({"correction_angle_threshold_degrees": 3.0})
         seg_array = np.zeros((1, 100, 100), dtype=np.uint8)
         radians = math.radians(25.0)
@@ -479,6 +551,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_reconstruction_returns_empty_result_when_mapping_has_no_plans(self):
         # 第五步只执行第四步 plans；没有计划时不读取旧的 axial_params 占位字段。
+        """验证 `test_reconstruction_returns_empty_result_when_mapping_has_no_plans` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             context = ProcessingContext(Request(dicom_dir="/tmp/dicom", output_dir=temp_dir))
             context.set_result("localization", {
@@ -498,6 +572,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     def test_execute_writes_reconstruction_paths_and_metadata(self):
         # 覆盖完整阶段三主流程：解析 label、定位、判断不回正、写出新旧兼容字段。
+        """验证 `test_execute_writes_reconstruction_paths_and_metadata` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             raw_path = temp_path / "nifti" / "raw_0000.nii.gz"
@@ -591,6 +667,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
     @staticmethod
     def _write_image(path: Path, array: np.ndarray) -> None:
+        """为测试准备 `_write_image` 所需的数据或记录行为。"""
+
         image = sitk.GetImageFromArray(array)
         image.SetSpacing((1.0, 1.0, 1.0))
         sitk.WriteImage(image, str(path))
@@ -604,6 +682,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         center_x: int,
         angle_degrees: float,
     ) -> None:
+        """为测试准备 `_draw_oriented_label` 所需的数据或记录行为。"""
+
         radians = math.radians(angle_degrees)
         for distance in np.linspace(-18, 18, 90):
             x = int(round(center_x + distance * math.cos(radians)))

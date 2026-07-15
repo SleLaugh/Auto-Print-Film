@@ -158,6 +158,29 @@ class Stage5ReconstructionTest(unittest.TestCase):
             )
             self.assertEqual(highlighted_rows.tolist(), [3, 5])
 
+    def test_oblique_axial_plan_draws_sloped_line_on_localizer(self):
+        """斜横状位计划应在定位图上显示与真实切片平面一致的斜线。"""
+
+        image = sitk.GetImageFromArray(np.zeros((32, 32, 32), dtype=np.int16))
+        plan = {
+            "plane": "横状位",
+            "extent_mm": {"width": 20.0, "height": 20.0},
+            "slices": [{
+                "index": 1,
+                "center": {"x": 15.0, "y": 15.0, "z": 15.0},
+                "normal": {"x": 0.4472136, "y": 0.0, "z": 0.8944272},
+                "row_dir": {"x": 0.8944272, "y": 0.0, "z": -0.4472136},
+                "col_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+            }],
+        }
+
+        localizer = ReconstructionStage._build_plan_localizer(image, plan)
+        highlighted = np.argwhere(sitk.GetArrayFromImage(localizer) > 0.0)
+
+        self.assertGreater(len(highlighted), 5)
+        self.assertGreater(int(np.ptp(highlighted[:, 0])), 2)
+        self.assertGreater(int(np.ptp(highlighted[:, 1])), 2)
+
     def test_localizer_puts_physical_superior_side_at_top(self):
         """验证 `test_localizer_puts_physical_superior_side_at_top` 场景符合预期。"""
 

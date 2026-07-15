@@ -6,16 +6,19 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from src.models import ExtentMM, Point3D, SlicePlan
+from src.models import AnatomicalFrame, AnatomicalGeometryResult, ExtentMM, Point3D, SlicePlan
 from src.models.enums import PlaneTypeEnum, CutLineExtentModeEnum
 from src.planning.geometry import (
+    build_plane_stack_slices,
     voxel_index_to_physical,
 )
 from src.planning.straight import (
+    anatomical_straight_frame,
     CutSegment,
     build_straight_slice_plan,
     default_straight_frame,
     inset_segment_range,
+    recenter_point_in_plane,
     resolve_projected_extent,
 )
 
@@ -203,6 +206,18 @@ def build_whole_range_plan_from_bbox(
     plane_stack 协议。部位特殊角度不属于本方法职责。
     """
 
+    if request.body_part.value == "肺部" and localization_result.get("anatomical_geometry"):
+        geometry = AnatomicalGeometryResult.from_dict(
+            localization_result["anatomical_geometry"]
+        )
+        return _build_whole_range_plan_from_anatomical_frame(
+            request=request,
+            plane_config=plane_config,
+            localization_result=localization_result,
+            anatomical_frame=geometry.global_frame,
+            source_labels=source_labels,
+        )
+
     bbox = localization_result.get("correction_scope_bbox")
     if not bbox:
         raise ValueError("定位结果缺少 correction_scope_bbox")
@@ -230,6 +245,170 @@ def build_whole_range_plan_from_bbox(
         segment=segment,
         frame=frame,
     )
+
+
+def _axis_midpoint(bounds) -> float:
+    """返回目标在某一解剖轴投影范围上的物理中点。"""
+
+    return (bounds.minimum + bounds.maximum) / 2.0
+
+
+def _physical_point_from_projections(
+    anatomical_frame: AnatomicalFrame,
+    left_right: float,
+    anterior_posterior: float,
+    superior_inferior: float,
+) -> Point3D:
+    """由正交解剖轴上的三个绝对投影坐标还原患者物理点。"""
+
+    lr = anatomical_frame.left_right_axis
+    ap = anatomical_frame.anterior_posterior_axis
+    si = anatomical_frame.superior_inferior_axis
+    return Point3D(
+        lr.x * left_right + ap.x * anterior_posterior + si.x * superior_inferior,
+        lr.y * left_right + ap.y * anterior_posterior + si.y * superior_inferior,
+        lr.z * left_right + ap.z * anterior_posterior + si.z * superior_inferior,
+    )
+
+
+def _build_whole_range_plan_from_anatomical_frame(
+    request: Any,
+    plane_config: Any,
+    localization_result: Dict[str, Any],
+    anatomical_frame: AnatomicalFrame,
+    source_labels: Optional[List[str]],
+) -> SlicePlan:
+    """用第三步给出的中心、方向和投影边界构造居中的平行整切计划。"""
+
+    bounds = anatomical_frame.bounds
+    lr_center = _axis_midpoint(bounds.left_right)
+    ap_center = _axis_midpoint(bounds.anterior_posterior)
+    si_center = _axis_midpoint(bounds.superior_inferior)
+    plane = plane_config.plane
+    # 起止点始终穿过目标的解剖中心，仅在当前状位的法向轴上取两端边界。
+    if plane == PlaneTypeEnum.横状位:
+        target_start = _physical_point_from_projections(
+            anatomical_frame, lr_center, ap_center, bounds.superior_inferior.minimum
+        )
+        target_end = _physical_point_from_projections(
+            anatomical_frame, lr_center, ap_center, bounds.superior_inferior.maximum
+        )
+        target_extent = ExtentMM(
+            bounds.left_right.maximum - bounds.left_right.minimum,
+            bounds.anterior_posterior.maximum - bounds.anterior_posterior.minimum,
+        )
+    elif plane == PlaneTypeEnum.矢状位:
+        target_start = _physical_point_from_projections(
+            anatomical_frame, bounds.left_right.maximum, ap_center, si_center
+        )
+        target_end = _physical_point_from_projections(
+            anatomical_frame, bounds.left_right.minimum, ap_center, si_center
+        )
+        target_extent = ExtentMM(
+            bounds.anterior_posterior.maximum - bounds.anterior_posterior.minimum,
+            bounds.superior_inferior.maximum - bounds.superior_inferior.minimum,
+        )
+    elif plane == PlaneTypeEnum.冠状位:
+        target_start = _physical_point_from_projections(
+            anatomical_frame, lr_center, bounds.anterior_posterior.minimum, si_center
+        )
+        target_end = _physical_point_from_projections(
+            anatomical_frame, lr_center, bounds.anterior_posterior.maximum, si_center
+        )
+        target_extent = ExtentMM(
+            bounds.left_right.maximum - bounds.left_right.minimum,
+            bounds.superior_inferior.maximum - bounds.superior_inferior.minimum,
+        )
+    else:
+        raise ValueError(f"不支持的切割平面: {plane}")
+
+    straight_frame = anatomical_straight_frame(plane, anatomical_frame)
+    if plane_config.line_extent_mode == CutLineExtentModeEnum.整平面:
+        target_bbox = localization_result.get("correction_scope_bbox")
+        if not target_bbox:
+            raise ValueError("定位结果缺少 correction_scope_bbox")
+        projected_extent = resolve_projected_extent(
+            CutLineExtentModeEnum.整平面,
+            localization_result,
+            target_bbox,
+            straight_frame,
+        )
+        # 只沿切片平面移动画面中心，不改变目标起止点所在的实际切片层面。
+        centered_target_start = recenter_point_in_plane(
+            target_start,
+            projected_extent,
+            straight_frame,
+        )
+        centered_target_end = recenter_point_in_plane(
+            target_end,
+            projected_extent,
+            straight_frame,
+        )
+        extent = projected_extent.extent_mm
+    elif plane_config.line_extent_mode == CutLineExtentModeEnum.部位范围:
+        centered_target_start = target_start
+        centered_target_end = target_end
+        extent = target_extent
+    else:
+        raise ValueError(
+            f"不支持的切割线范围模式: {plane_config.line_extent_mode}"
+        )
+
+    # 切片中心向两端各内收半个层厚，保证首尾切片的实际厚度不越出目标范围。
+    range_start, range_end = inset_segment_range(
+        centered_target_start,
+        centered_target_end,
+        plane_config.slice_thickness,
+    )
+    path_points = [range_start, range_end]
+    slices = build_plane_stack_slices(
+        path_points=path_points,
+        slice_spacing=plane_config.slice_spacing,
+        normal=straight_frame.normal,
+        row_dir=straight_frame.row_dir,
+        col_dir=straight_frame.col_dir,
+    )
+    return SlicePlan(
+        plan_id=f"{request.body_part.value}_whole_range_{plane.value}",
+        body_part=request.body_part.value,
+        cut_mode="whole_range",
+        plane=plane.value,
+        group_name="whole_range",
+        geometry_type="plane_stack",
+        range_start=range_start,
+        range_end=range_end,
+        path_points=path_points,
+        slices=slices,
+        extent_mm=extent,
+        output_spacing_mm=_default_output_spacing_for_anatomical_plane(
+            plane,
+            localization_result["image"],
+        ),
+        slice_thickness=plane_config.slice_thickness,
+        slice_spacing=plane_config.slice_spacing,
+        window_presets=list(plane_config.window_presets),
+        source_labels=list(source_labels or ["anatomical_geometry.global_frame"]),
+        target_start=centered_target_start,
+        target_end=centered_target_end,
+        warnings=list(anatomical_frame.warnings),
+        confidence=anatomical_frame.confidence,
+    )
+
+
+def _default_output_spacing_for_anatomical_plane(
+    plane: PlaneTypeEnum,
+    image_info: Dict[str, Any],
+) -> Point3D:
+    """斜切仍沿用对应标准状位的原始行列像素间距。"""
+
+    spacing = image_info["spacing_xyz"]
+    if plane == PlaneTypeEnum.横状位:
+        row_axis, col_axis = 0, 1
+    elif plane == PlaneTypeEnum.矢状位:
+        row_axis, col_axis = 1, 2
+    else:
+        row_axis, col_axis = 0, 2
+    return Point3D(float(spacing[row_axis]), float(spacing[col_axis]), 0.0)
 
 
 def build_axial_whole_range_plan_from_bbox(

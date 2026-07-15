@@ -22,6 +22,12 @@ from .reconstruction import (
     ExtentMM,
     SlicePlan,
 )
+from .anatomy import (
+    AxisBounds,
+    AnatomicalBounds,
+    AnatomicalFrame,
+    AnatomicalGeometryResult,
+)
 from .window import WindowPreset, get_window_preset
 from .stage_results import (
     StageResult,
@@ -56,6 +62,10 @@ __all__ = [
     'PlannedSlice',
     'ExtentMM',
     'SlicePlan',
+    'AxisBounds',
+    'AnatomicalBounds',
+    'AnatomicalFrame',
+    'AnatomicalGeometryResult',
     'WindowPreset',
     'get_window_preset',
     'BodyPartEnum',

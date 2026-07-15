@@ -250,12 +250,16 @@ class ReconstructionStage(BaseStage):
         image: sitk.Image,
         plan: Dict[str, Any],
     ) -> sitk.Image | None:
-        """从代表性原 CT 正交层烧录当前 plan 的最细中心线。"""
+        """从代表性原 CT 正交层烧录每张计划切片与定位面的真实交线。"""
 
         axes = cls._LOCALIZER_DRAW_AXES.get(str(plan.get("plane", "")))
         if axes is None:
             return None
-        stack_axis, line_axis, fixed_axis = axes
+        stack_axis, line_axis, fixed_axis = cls._resolve_localizer_axes(
+            image,
+            plan,
+            axes,
+        )
         center_indices = [
             image.TransformPhysicalPointToContinuousIndex((
                 float(planned_slice["center"]["x"]),
@@ -282,40 +286,63 @@ class ReconstructionStage(BaseStage):
         source_max = float(np.max(source_array))
         intensity_span = max(source_max - source_min, 1.0)
         center_value = source_max + intensity_span
-        spacing = image.GetSpacing()
-        half_height_voxels = (
-            float(plan.get("extent_mm", {}).get("height", 0.0))
-            / (2.0 * spacing[line_axis])
-        )
         size_xyz = representative_slice.GetSize()
 
-        def paint(stack_index: int, line_start: int, line_end: int, value: float) -> None:
-            """在定位图数组的指定堆叠位置画一条有限长度切片线。"""
+        def paint(start_xyz: np.ndarray, end_xyz: np.ndarray, value: float) -> None:
+            """把物理交线两端转换后的连续索引烧录到代表性定位层。"""
 
-            if not 0 <= stack_index < size_xyz[stack_axis]:
-                return
-            line_start = max(line_start, 0)
-            line_end = min(line_end, size_xyz[line_axis] - 1)
-            for line_index in range(line_start, line_end + 1):
+            difference = end_xyz - start_xyz
+            steps = max(
+                int(np.ceil(abs(difference[stack_axis]))),
+                int(np.ceil(abs(difference[line_axis]))),
+                1,
+            )
+            for step in range(steps + 1):
+                index = start_xyz + difference * step / steps
                 index_xyz = [0, 0, 0]
-                index_xyz[stack_axis] = stack_index
-                index_xyz[line_axis] = line_index
+                index_xyz[stack_axis] = int(round(float(index[stack_axis])))
+                index_xyz[line_axis] = int(round(float(index[line_axis])))
                 index_xyz[fixed_axis] = 0
+                if not all(
+                    0 <= index_xyz[axis] < size_xyz[axis]
+                    for axis in range(3)
+                ):
+                    continue
                 localizer_array[
                     index_xyz[2],
                     index_xyz[1],
                     index_xyz[0],
                 ] = value
 
-        for center_index in center_indices:
-            line_start = int(round(center_index[line_axis] - half_height_voxels))
-            line_end = int(round(center_index[line_axis] + half_height_voxels))
-            paint(
-                int(round(center_index[stack_axis])),
-                line_start,
-                line_end,
-                center_value,
+        fixed_plane_index = [0, 0, 0]
+        fixed_plane_index[fixed_axis] = fixed_index
+        fixed_plane_point = np.asarray(
+            image.TransformIndexToPhysicalPoint(fixed_plane_index),
+            dtype=float,
+        )
+        fixed_plane_normal = np.asarray(
+            image.GetDirection(),
+            dtype=float,
+        ).reshape(3, 3)[:, fixed_axis]
+        for planned_slice in plan.get("slices", []):
+            segment = cls._slice_localizer_intersection(
+                planned_slice=planned_slice,
+                extent_mm=plan.get("extent_mm", {}),
+                fixed_plane_point=fixed_plane_point,
+                fixed_plane_normal=fixed_plane_normal,
             )
+            if segment is None:
+                continue
+            start_point, end_point = segment
+            start_xyz = np.asarray(
+                image.TransformPhysicalPointToContinuousIndex(tuple(start_point)),
+                dtype=float,
+            )
+            end_xyz = np.asarray(
+                image.TransformPhysicalPointToContinuousIndex(tuple(end_point)),
+                dtype=float,
+            )
+            paint(start_xyz, end_xyz, center_value)
 
         painted_slice = sitk.GetImageFromArray(localizer_array)
         painted_slice.CopyInformation(representative_slice)
@@ -350,6 +377,105 @@ class ReconstructionStage(BaseStage):
             "\\".join(f"{float(value):.12g}" for value in first_pixel),
         )
         return localizer
+
+    @classmethod
+    def _resolve_localizer_axes(
+        cls,
+        image: sitk.Image,
+        plan: Dict[str, Any],
+        default_axes: tuple[int, int, int],
+    ) -> tuple[int, int, int]:
+        """为斜切计划选择最能显示倾斜角度的原图正交定位面。"""
+
+        stack_axis, _, default_fixed_axis = default_axes
+        slices = plan.get("slices", [])
+        if not slices:
+            return default_axes
+        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+        normal = cls._vector(slices[0].get("normal", {}))
+        stack_direction = direction[:, stack_axis]
+        # 零角度计划保持原有定位面，避免已有输出方向发生不必要变化。
+        if abs(abs(float(np.dot(normal, stack_direction))) - 1.0) <= 1e-6:
+            return default_axes
+
+        candidate_fixed_axes = [axis for axis in range(3) if axis != stack_axis]
+        fixed_axis = max(
+            candidate_fixed_axes,
+            key=lambda axis: abs(float(np.dot(
+                np.cross(normal, direction[:, axis]),
+                stack_direction,
+            ))),
+        )
+        line_axis = next(
+            axis for axis in range(3)
+            if axis not in {stack_axis, fixed_axis}
+        )
+        if fixed_axis == default_fixed_axis:
+            return stack_axis, line_axis, fixed_axis
+        return stack_axis, line_axis, fixed_axis
+
+    @classmethod
+    def _slice_localizer_intersection(
+        cls,
+        *,
+        planned_slice: Dict[str, Any],
+        extent_mm: Dict[str, Any],
+        fixed_plane_point: np.ndarray,
+        fixed_plane_normal: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """计算有限切片矩形与原图正交定位面的物理交线端点。"""
+
+        center = cls._vector(planned_slice.get("center", {}), normalize=False)
+        normal = cls._vector(planned_slice.get("normal", {}))
+        row_dir = cls._vector(planned_slice.get("row_dir", {}))
+        col_dir = cls._vector(planned_slice.get("col_dir", {}))
+        fixed_plane_normal = cls._normalize_array(fixed_plane_normal)
+
+        in_slice_normal = (
+            fixed_plane_normal
+            - float(np.dot(fixed_plane_normal, normal)) * normal
+        )
+        denominator = float(np.dot(fixed_plane_normal, in_slice_normal))
+        if abs(denominator) <= 1e-8:
+            return None
+        distance = float(np.dot(center - fixed_plane_point, fixed_plane_normal))
+        intersection_center = center - in_slice_normal * distance / denominator
+        line_direction = cls._normalize_array(np.cross(normal, fixed_plane_normal))
+
+        half_width = max(0.0, float(extent_mm.get("width", 0.0)) / 2.0)
+        half_height = max(0.0, float(extent_mm.get("height", 0.0)) / 2.0)
+        limits = []
+        row_component = abs(float(np.dot(line_direction, row_dir)))
+        col_component = abs(float(np.dot(line_direction, col_dir)))
+        if row_component > 1e-8:
+            limits.append(half_width / row_component)
+        if col_component > 1e-8:
+            limits.append(half_height / col_component)
+        half_length = min(limits) if limits else 0.0
+        return (
+            intersection_center - line_direction * half_length,
+            intersection_center + line_direction * half_length,
+        )
+
+    @staticmethod
+    def _vector(value: Dict[str, Any], *, normalize: bool = True) -> np.ndarray:
+        """读取 x/y/z 字典；方向默认归一化，物理点可保留原值。"""
+
+        vector = np.asarray([
+            float(value["x"]),
+            float(value["y"]),
+            float(value["z"]),
+        ])
+        return ReconstructionStage._normalize_array(vector) if normalize else vector
+
+    @staticmethod
+    def _normalize_array(vector: np.ndarray) -> np.ndarray:
+        """将 NumPy 三维向量归一化，并拒绝零长度或非有限方向。"""
+
+        length = float(np.linalg.norm(vector))
+        if not np.isfinite(length) or length <= 0.0:
+            raise ValueError("定位图方向向量长度无效")
+        return vector / length
 
     @staticmethod
     def _extract_projection_axis(

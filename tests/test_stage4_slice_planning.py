@@ -24,7 +24,11 @@ from src.stages.stage_mapping import MappingStage
 
 
 class Stage4SlicePlanningTest(unittest.TestCase):
+    """汇总 `Stage4SlicePlanningTest` 相关测试场景。"""
+
     def test_mapping_derives_lumbar_axial_interspace_and_sagittal_whole_range(self):
+        """验证 `test_mapping_derives_lumbar_axial_interspace_and_sagittal_whole_range` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             request = Request(
                 dicom_dir="/tmp/dicom",
@@ -60,6 +64,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             )
 
     def test_overview_with_image_preserves_ct_and_highlights_overlay_labels(self):
+        """验证 `test_overview_with_image_preserves_ct_and_highlights_overlay_labels` 场景符合预期。"""
+
         raw_array = np.array([
             [[0, 10], [20, 30]],
             [[40, 50], [60, 70]],
@@ -92,6 +98,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertGreater(float(result_array[0, 1, 1]), 70.0)
 
     def test_debug_filename_suffix_uses_short_plane_and_cut_mode_labels(self):
+        """验证 `test_debug_filename_suffix_uses_short_plane_and_cut_mode_labels` 场景符合预期。"""
+
         self.assertEqual(
             MappingStage._debug_plan_suffix([
                 {"plane": "冠状位", "cut_mode": "interspace"},
@@ -100,6 +108,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         )
 
     def test_select_planner_supports_configured_whole_range_body_parts(self):
+        """验证 `test_select_planner_supports_configured_whole_range_body_parts` 场景符合预期。"""
+
         config_path = Path("src/config/localization_config.json")
         config = json.loads(config_path.read_text(encoding="utf-8"))
         whole_range_body_parts = [
@@ -126,6 +136,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     self.assertIsInstance(planner, SingleLabelWholeRangePlanner)
 
     def test_single_label_whole_range_planner_builds_axial_plan_from_bbox(self):
+        """验证 `test_single_label_whole_range_planner_builds_axial_plan_from_bbox` 场景符合预期。"""
+
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
@@ -177,6 +189,152 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             "z": 3.0,
         })
         self.assertEqual(plan.window_presets, ["肺窗"])
+
+    def test_lung_whole_range_uses_anatomical_frame_for_center_and_parallel_slices(self):
+        """验证 `test_lung_whole_range_uses_anatomical_frame_for_center_and_parallel_slices` 场景符合预期。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.肺部,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.横状位,
+                slice_thickness=4.0,
+                slice_spacing=10.0,
+                window_presets=["肺窗"],
+            )],
+        )
+        localization_result = {
+            "body_part": "肺部",
+            "correction_scope_bbox": {
+                "z_min": 0, "z_max": 40,
+                "y_min": 0, "y_max": 60,
+                "x_min": 0, "x_max": 100,
+            },
+            "image": {
+                "size_xyz": [120, 100, 80],
+                "spacing_xyz": [1.0, 1.0, 1.0],
+                "origin_xyz": [0.0, 0.0, 0.0],
+                "direction": [
+                    1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0,
+                ],
+            },
+            "anatomical_geometry": {
+                "global_frame": {
+                    "origin": {"x": 16.0, "y": 40.0, "z": 62.0},
+                    "left_right_axis": {"x": 0.8, "y": 0.0, "z": 0.6},
+                    "anterior_posterior_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+                    "superior_inferior_axis": {"x": -0.6, "y": 0.0, "z": 0.8},
+                    "bounds": {
+                        "left_right": {"minimum": 0.0, "maximum": 100.0},
+                        "anterior_posterior": {"minimum": 10.0, "maximum": 70.0},
+                        "superior_inferior": {"minimum": 20.0, "maximum": 60.0},
+                    },
+                    "method": "lung_superior_envelope",
+                    "confidence": 0.9,
+                    "applied": True,
+                    "warnings": [],
+                },
+                "local_frames": {},
+            },
+        }
+
+        result = SingleLabelWholeRangePlanner().build_plans(request, localization_result)
+
+        plan = result.plans[0]
+        # 未指定局部范围时，斜切也必须覆盖整张原图在切片平面上的投影。
+        self.assertAlmostEqual(plan.extent_mm.width, 142.6, places=6)
+        self.assertAlmostEqual(plan.extent_mm.height, 99.0, places=6)
+        self.assertEqual(plan.slices[0].normal.to_dict(), {"x": -0.6, "y": 0.0, "z": 0.8})
+        self.assertEqual(plan.slices[0].row_dir.to_dict(), {"x": 0.8, "y": 0.0, "z": 0.6})
+        self.assertEqual(plan.slices[0].col_dir.to_dict(), {"x": 0.0, "y": 1.0, "z": 0.0})
+        # 切片平面保持原目标层面，但画面中心移动到整张原图的投影中心。
+        self.assertAlmostEqual(plan.range_start.x, 43.84, places=6)
+        self.assertAlmostEqual(plan.range_start.y, 49.5, places=6)
+        self.assertAlmostEqual(plan.range_start.z, 60.38, places=6)
+        self.assertAlmostEqual(plan.range_end.x, 22.24, places=6)
+        self.assertAlmostEqual(plan.range_end.z, 89.18, places=6)
+        for previous, current in zip(plan.slices, plan.slices[1:]):
+            distance = ((current.center.x - previous.center.x) ** 2
+                        + (current.center.y - previous.center.y) ** 2
+                        + (current.center.z - previous.center.z) ** 2) ** 0.5
+            self.assertAlmostEqual(distance, 10.0, places=6)
+
+        request.plane_configs[0].line_extent_mode = CutLineExtentModeEnum.部位范围
+        target_plan = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+        self.assertEqual(
+            target_plan.extent_mm.to_dict(),
+            {"width": 100.0, "height": 60.0},
+        )
+        self.assertAlmostEqual(target_plan.range_start.x, 26.8, places=6)
+        self.assertAlmostEqual(target_plan.range_start.y, 40.0, places=6)
+        self.assertAlmostEqual(target_plan.range_start.z, 47.6, places=6)
+
+    def test_non_lung_keeps_legacy_axes_even_if_anatomical_geometry_is_present(self):
+        """验证 `test_non_lung_keeps_legacy_axes_even_if_anatomical_geometry_is_present` 场景符合预期。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.头骨,
+            plane_configs=[PlaneConfig(
+                PlaneTypeEnum.横状位, 1.0, 5.0, ["骨窗"]
+            )],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["anatomical_geometry"] = {
+            "global_frame": {
+                "origin": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "left_right_axis": {"x": 0.8, "y": 0.0, "z": 0.6},
+                "anterior_posterior_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "superior_inferior_axis": {"x": -0.6, "y": 0.0, "z": 0.8},
+                "bounds": {
+                    "left_right": {"minimum": 0.0, "maximum": 10.0},
+                    "anterior_posterior": {"minimum": 0.0, "maximum": 10.0},
+                    "superior_inferior": {"minimum": 0.0, "maximum": 10.0},
+                },
+                "method": "test", "confidence": 1.0, "applied": True, "warnings": [],
+            },
+            "local_frames": {},
+        }
+
+        plan = SingleLabelWholeRangePlanner().build_plans(request, localization_result).plans[0]
+
+        self.assertEqual(plan.slices[0].normal.to_dict(), {"x": 0.0, "y": 0.0, "z": 1.0})
+
+    def test_oblique_plan_overview_draws_the_actual_sloped_guide(self):
+        """验证 `test_oblique_plan_overview_draws_the_actual_sloped_guide` 场景符合预期。"""
+
+        from src.stages.stage_mapping import MappingStage, _OVERVIEW_AXES
+
+        image = sitk.Image(64, 64, 64, sitk.sitkUInt8)
+        overlay = np.zeros((64, 64, 64), dtype=np.uint16)
+        plan = {
+            "extent_mm": {"width": 40.0, "height": 20.0},
+            "slices": [{
+                "center": {"x": 32.0, "y": 32.0, "z": 32.0},
+                "normal": {"x": -0.6, "y": 0.0, "z": 0.8},
+                "row_dir": {"x": 0.8, "y": 0.0, "z": 0.6},
+                "col_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+            }],
+        }
+
+        MappingStage()._paint_plan_overview(
+            reference_image=image,
+            overlay_array=overlay,
+            plan=plan,
+            axes=_OVERVIEW_AXES["横状位"],
+            value=14,
+        )
+
+        painted = np.argwhere(overlay == 14)
+        self.assertGreater(len(np.unique(painted[:, 0])), 1)
+        self.assertGreater(len(np.unique(painted[:, 2])), 1)
 
     def test_single_label_planner_builds_sagittal_whole_range_plan(self):
         """单目标整切 planner 应把矢状位交给通用直线构造器。"""
@@ -526,6 +684,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.slices[0].center.z, 9.0)
 
     def test_axial_whole_range_defaults_to_full_plane_extent(self):
+        """验证 `test_axial_whole_range_defaults_to_full_plane_extent` 场景符合预期。"""
+
         request = Request(
             dicom_dir="/tmp/dicom", output_dir="/tmp/output",
             body_part=BodyPartEnum.肺部,
@@ -543,6 +703,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.extent_mm.to_dict(), {"width": 99.0, "height": 238.0})
 
     def test_axial_whole_range_can_limit_extent_to_target_bbox(self):
+        """验证 `test_axial_whole_range_can_limit_extent_to_target_bbox` 场景符合预期。"""
+
         request = Request(
             dicom_dir="/tmp/dicom", output_dir="/tmp/output",
             body_part=BodyPartEnum.肺部,
@@ -561,6 +723,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.extent_mm.to_dict(), {"width": 10.0, "height": 20.0})
 
     def test_axial_whole_range_insets_center_range_by_half_thickness(self):
+        """验证 `test_axial_whole_range_insets_center_range_by_half_thickness` 场景符合预期。"""
+
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
@@ -610,6 +774,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         ])
 
     def test_axial_whole_range_short_target_uses_midpoint(self):
+        """验证 `test_axial_whole_range_short_target_uses_midpoint` 场景符合预期。"""
+
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
@@ -637,6 +803,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual([planned_slice.center.z for planned_slice in plan.slices], [5.0])
 
     def test_lumbar_whole_range_planner_expands_slices_from_l1_to_s1(self):
+        """验证 `test_lumbar_whole_range_planner_expands_slices_from_l1_to_s1` 场景符合预期。"""
+
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
@@ -665,6 +833,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.slices[-1].center.z, 3.0)
 
     def test_lumbar_whole_range_axial_uses_outer_bbox_z_range(self):
+        """验证 `test_lumbar_whole_range_axial_uses_outer_bbox_z_range` 场景符合预期。"""
+
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
@@ -699,6 +869,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         ])
 
     def test_lumbar_whole_range_axial_uses_bbox_even_without_endpoint_centroids(self):
+        """验证 `test_lumbar_whole_range_axial_uses_bbox_even_without_endpoint_centroids` 场景符合预期。"""
+
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
@@ -761,6 +933,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(result.warnings, [])
 
     def test_lumbar_interspace_planner_builds_one_plan_per_available_interval(self):
+        """验证 `test_lumbar_interspace_planner_builds_one_plan_per_available_interval` 场景符合预期。"""
+
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
@@ -869,6 +1043,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.slices[0].center.y, 35.0)
 
     def test_mapping_stage_writes_slice_plans_json(self):
+        """验证 `test_mapping_stage_writes_slice_plans_json` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             request = Request(
                 dicom_dir="/tmp/dicom",
@@ -912,6 +1088,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(data["diagnostics"][0]["last_coverage_end"]["z"], 0.5)
 
     def test_mapping_stage_writes_slice_plan_line_overlay(self):
+        """验证 `test_mapping_stage_writes_slice_plan_line_overlay` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             seg_path = temp_path / "seg.nii.gz"
@@ -1007,6 +1185,20 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             MappingStage().execute(context)
 
             result = context.get_result("mapping")
+            center_cross_path = Path(result["debug_center_cross_overlay_path"])
+            self.assertEqual(
+                center_cross_path.name,
+                "十字中线_横+矢+冠_区+整.nii.gz",
+            )
+            self.assertTrue(center_cross_path.exists())
+            center_cross_image = sitk.ReadImage(str(center_cross_path))
+            center_cross_array = sitk.GetArrayFromImage(center_cross_image)
+            self.assertEqual(center_cross_image.GetSize(), image.GetSize())
+            # 三个状位合并绘制，但全部使用 uint16 最大值显示为纯白色。
+            self.assertEqual(
+                set(np.unique(center_cross_array)) - {0},
+                {65535},
+            )
             overview_paths = result["debug_slice_plan_overview_paths"]
             overview_with_image_paths = result[
                 "debug_slice_plan_overview_with_image_paths"
@@ -1070,6 +1262,10 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 Path(result["metadata_path"]).read_text(encoding="utf-8"),
             )
             self.assertEqual(
+                metadata["debug_center_cross_overlay_path"],
+                str(center_cross_path),
+            )
+            self.assertEqual(
                 metadata["debug_slice_plan_overview_paths"],
                 overview_paths,
             )
@@ -1082,7 +1278,88 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 native_paths,
             )
 
+    def test_center_cross_uses_lung_anatomical_origin_in_long_scan(self):
+        """颈到盆长扫描的十字中线应落在肺中心，而不是整幅图像中心。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            seg_path = Path(temp_dir) / "seg.nii.gz"
+            image = sitk.GetImageFromArray(
+                np.zeros((100, 40, 40), dtype=np.uint8),
+            )
+            sitk.WriteImage(image, str(seg_path))
+            request = Request(
+                dicom_dir="/tmp/dicom",
+                output_dir=temp_dir,
+                body_part=BodyPartEnum.肺部,
+            )
+            context = ProcessingContext(request)
+            localization_result = {
+                "seg_for_reconstruction_path": str(seg_path),
+                "anatomical_geometry": {
+                    "global_frame": {
+                        "origin": {"x": 20.0, "y": 20.0, "z": 80.0},
+                        "left_right_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+                        "anterior_posterior_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+                        "superior_inferior_axis": {"x": 0.0, "y": 0.0, "z": 1.0},
+                        "bounds": {
+                            "left_right": {"minimum": 10.0, "maximum": 30.0},
+                            "anterior_posterior": {"minimum": 10.0, "maximum": 30.0},
+                            "superior_inferior": {"minimum": 70.0, "maximum": 90.0},
+                        },
+                        "method": "test_lung_frame",
+                        "confidence": 1.0,
+                        "applied": True,
+                        "warnings": [],
+                    },
+                    "local_frames": {},
+                },
+            }
+            plans = [
+                {
+                    "plane": "横状位",
+                    "cut_mode": "whole_range",
+                    "extent_mm": {"width": 30.0, "height": 30.0},
+                    "slices": [{
+                        "center": {"x": 20.0, "y": 20.0, "z": 50.0},
+                        "row_dir": {"x": 1.0, "y": 0.0, "z": 0.0},
+                        "col_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                    }],
+                },
+                {
+                    "plane": "矢状位",
+                    "cut_mode": "whole_range",
+                    "extent_mm": {"width": 30.0, "height": 30.0},
+                    "slices": [{
+                        "center": {"x": 20.0, "y": 20.0, "z": 50.0},
+                        "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                        "col_dir": {"x": 0.0, "y": 0.0, "z": -1.0},
+                    }],
+                },
+                {
+                    "plane": "冠状位",
+                    "cut_mode": "whole_range",
+                    "extent_mm": {"width": 30.0, "height": 30.0},
+                    "slices": [{
+                        "center": {"x": 20.0, "y": 20.0, "z": 50.0},
+                        "row_dir": {"x": 1.0, "y": 0.0, "z": 0.0},
+                        "col_dir": {"x": 0.0, "y": 0.0, "z": -1.0},
+                    }],
+                },
+            ]
+
+            output_path = MappingStage()._write_center_cross_overlay(
+                context,
+                localization_result,
+                plans,
+            )
+            overlay = sitk.GetArrayFromImage(sitk.ReadImage(output_path))
+
+            self.assertEqual(int(overlay[80, 20, 30]), 65535)
+            self.assertEqual(int(overlay[50, 20, 30]), 0)
+
     def test_mapping_stage_writes_single_layer_overview_overlay(self):
+        """验证 `test_mapping_stage_writes_single_layer_overview_overlay` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             seg_path = temp_path / "seg.nii.gz"
@@ -1136,6 +1413,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(native_image.GetSize(), image.GetSize())
 
     def test_mapping_stage_overview_uses_minimum_line_width(self):
+        """验证 `test_mapping_stage_overview_uses_minimum_line_width` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             seg_path = temp_path / "seg.nii.gz"
@@ -1178,6 +1457,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(painted_rows.tolist(), [14, 24])
 
     def test_mapping_stage_overview_overlay_respects_image_direction(self):
+        """验证 `test_mapping_stage_overview_overlay_respects_image_direction` 场景符合预期。"""
+
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             seg_path = temp_path / "seg.nii.gz"
@@ -1231,7 +1512,11 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
     @staticmethod
     def _lumbar_localization_result():
+        """为测试准备 `_lumbar_localization_result` 所需的数据或记录行为。"""
+
         def coord(name, z):
+            """为测试准备 `coord` 所需的数据或记录行为。"""
+
             return {
                 "label_name": f"vertebrae_{name}",
                 "label_ids": [1],

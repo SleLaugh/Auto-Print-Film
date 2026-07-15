@@ -18,6 +18,7 @@ import SimpleITK as sitk
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.models import (
+    AnatomicalGeometryResult,
     LabelCoordinate,
     LabelTarget,
     LocalizationResult,
@@ -26,6 +27,7 @@ from src.models import (
     VoxelBBox,
     VoxelPoint,
 )
+from src.anatomy.lung import estimate_lung_frame_with_diagnostics
 from src.utils import DebugLog, is_debug_log_file_enabled
 
 
@@ -33,6 +35,8 @@ class LocalizationStage(BaseStage):
     """定位与回正占位阶段"""
     
     def __init__(self, config: Dict[str, Any] = None):
+        """初始化定位配置、实验性回正阈值和 nnUNet 数据集路径。"""
+
         super().__init__(name="localization", config=config)
         # 这些阈值暂时只给实验开关使用。默认主流程不会自动回正，但保留
         # 阈值字段，方便后续真正设计回正算法时继续沿用 metadata 结构。
@@ -131,6 +135,8 @@ class LocalizationStage(BaseStage):
 
     @staticmethod
     def _resolve_config_path(value: str, project_root: Path) -> str:
+        """展开环境变量和用户目录，并按项目根目录解析相对配置路径。"""
+
         if not value:
             return ""
         expanded = os.path.expanduser(os.path.expandvars(str(value)))
@@ -140,6 +146,13 @@ class LocalizationStage(BaseStage):
         return str(path)
     
     def execute(self, context: ProcessingContext) -> ProcessingContext:
+        """
+        定位请求目标并生成阶段三结果。
+
+        本阶段解析目标标签、提取质心和包围盒，并为已适配部位计算解剖坐标；
+        当前回正仍为安全占位，阶段四和阶段五默认继续使用原始图像空间。
+        """
+
         request = context.request
         prev_result = context.get_result('segmentation')
         preprocessing_result = context.get_result('preprocessing') or {}
@@ -225,6 +238,22 @@ class LocalizationStage(BaseStage):
         else:
             DebugLog("    未执行回正，后续阶段继续使用原始 raw/seg")
 
+        target_mask = self._build_target_mask(seg_array, label_targets)
+        anatomical_geometry, anatomical_diagnostics = self._build_anatomical_geometry(
+            body_part=request.body_part.value,
+            target_mask=target_mask,
+            image=image,
+        )
+        if anatomical_geometry is not None:
+            frame = anatomical_geometry.global_frame
+            DebugLog(
+                "    肺部解剖坐标: "
+                f"method={frame.method}, confidence={frame.confidence:.3f}, "
+                f"applied={frame.applied}"
+            )
+            for warning in frame.warnings:
+                DebugLog(f"    解剖坐标警告: {warning}")
+
         # 研发期调试输出：给 ITK-SNAP 看的 bbox 边框 overlay。
         # 这不是业务结果，不参与后续阶段；后续稳定后删除这一处调用和
         # _write_debug_bbox_overlay 方法即可。
@@ -289,6 +318,9 @@ class LocalizationStage(BaseStage):
             'debug_target_mask_overlay_path': str(debug_target_mask_overlay_path) if is_debug_log_file_enabled() else '',
             'debug_label_mask_overlay_path': str(debug_label_mask_overlay_path) if is_debug_log_file_enabled() else '',
         }
+        if anatomical_geometry is not None:
+            result['anatomical_geometry'] = anatomical_geometry.to_dict()
+            result['anatomical_geometry_diagnostics'] = anatomical_diagnostics
 
         if is_debug_log_file_enabled():
             self._write_localization_result(
@@ -315,6 +347,7 @@ class LocalizationStage(BaseStage):
             debug_label_mask_overlay_path=result['debug_label_mask_overlay_path'],
             is_skewed=result['is_skewed'],
             skew_params=result['skew_params'],
+            anatomical_geometry=anatomical_geometry,
         )
         
         context.set_stage_result(LocalizationStageResult(payload=result))
@@ -323,6 +356,18 @@ class LocalizationStage(BaseStage):
         DebugLog("=" * 60)
 
         return context
+
+    @staticmethod
+    def _build_anatomical_geometry(
+        body_part: str,
+        target_mask: np.ndarray,
+        image: sitk.Image,
+    ) -> tuple[AnatomicalGeometryResult | None, Dict[str, Any]]:
+        """只为已经适配的部位计算统一解剖坐标，其余部位保持旧行为。"""
+
+        if body_part != "肺部":
+            return None, {}
+        return estimate_lung_frame_with_diagnostics(target_mask, image)
 
     def _find_dataset_json(self, model_info: Dict[str, Any], seg_path: str = None) -> Path:
         """
@@ -531,6 +576,8 @@ class LocalizationStage(BaseStage):
 
     @classmethod
     def _vertebra_order_index(cls, label_name: str) -> int | None:
+        """返回椎体标签在头侧到足侧统一序列中的位置，无法识别时返回空。"""
+
         vertebra_key = cls._vertebra_key(label_name)
         if not vertebra_key:
             return None
@@ -562,6 +609,8 @@ class LocalizationStage(BaseStage):
         vertebra_key: str,
         label_map: Dict[str, list[int]] = None,
     ) -> str | None:
+        """把统一椎体短名转换为当前 dataset.json 中实际存在的标签名。"""
+
         candidates = (
             ["vertebrae_S1", "sacrum"]
             if vertebra_key == "S1"
@@ -1156,6 +1205,8 @@ class LocalizationStage(BaseStage):
         output_path = Path(output_path)
 
         def paint_bbox_edges(bbox: VoxelBBox, value: int) -> None:
+            """将指定体素包围盒的六个边界面写入调试 overlay。"""
+
             z_size, y_size, x_size = overlay_array.shape
             z_min = max(0, min(int(bbox.z_min), z_size - 1))
             z_max = max(0, min(int(bbox.z_max), z_size - 1))
@@ -1259,6 +1310,7 @@ class LocalizationStage(BaseStage):
         debug_label_mask_overlay_path: str,
         is_skewed: bool,
         skew_params: Dict[str, Any],
+        anatomical_geometry: AnatomicalGeometryResult | None = None,
     ) -> None:
         """写出定位结果，供后续映射、MPR 和调试使用。"""
         localization_result = LocalizationResult(
@@ -1290,12 +1342,15 @@ class LocalizationStage(BaseStage):
             debug_label_mask_overlay_path=debug_label_mask_overlay_path,
             is_skewed=is_skewed,
             skew_params=skew_params,
+            anatomical_geometry=anatomical_geometry,
         )
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(localization_result.to_dict(), f, ensure_ascii=False, indent=2)
 
     @staticmethod
     def _label_targets_to_dict(label_targets: Dict[str, LabelTarget]) -> Dict[str, Dict[str, Any]]:
+        """把按名称索引的标签目标实体转换为可写 JSON 的字典。"""
+
         return {
             name: target.to_dict()
             for name, target in label_targets.items()
@@ -1303,6 +1358,8 @@ class LocalizationStage(BaseStage):
 
     @staticmethod
     def _coordinates_to_dict(label_coordinates: Dict[str, LabelCoordinate]) -> Dict[str, Dict[str, Any]]:
+        """把按名称索引的标签定位结果转换为可写 JSON 的字典。"""
+
         return {
             name: coord.to_dict()
             for name, coord in label_coordinates.items()
@@ -1310,6 +1367,8 @@ class LocalizationStage(BaseStage):
 
     @staticmethod
     def _resolve_request_cut_mode(request) -> str:
+        """根据请求部位和全部状位推导阶段三需要加载的定位范围模式。"""
+
         from src.planning.cut_policy import localization_cut_mode
 
         return localization_cut_mode(

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Any, Dict, Iterable, List
 
-from src.models import ExtentMM, Point3D, SlicePlan
+from src.models import AnatomicalFrame, ExtentMM, Point3D, SlicePlan
 from src.models.enums import CutLineExtentModeEnum, PlaneTypeEnum
 from src.planning.geometry import (
     build_plane_stack_slices,
@@ -65,6 +65,40 @@ class CutSegment:
 
     source_labels: tuple[str, ...]
     """产生当前区间的定位 label，用于调试、报告和问题追踪。"""
+
+
+def anatomical_straight_frame(
+    plane: PlaneTypeEnum,
+    anatomical_frame: AnatomicalFrame,
+) -> StraightPlaneFrame:
+    """
+    把统一解剖坐标系映射成横、矢、冠状位切片坐标系。
+
+    row_dir、col_dir 决定切片画面的左右和上下，normal 决定切片堆叠方向；
+    矢状位和冠状位翻转头脚轴是为了保持现有 DICOM 输出的显示方向约定。
+    """
+
+    lr = anatomical_frame.left_right_axis
+    ap = anatomical_frame.anterior_posterior_axis
+    si = anatomical_frame.superior_inferior_axis
+    # 横状位画面使用左右/前后轴，沿头脚方向逐层推进。
+    if plane == PlaneTypeEnum.横状位:
+        return StraightPlaneFrame(row_dir=lr, col_dir=ap, normal=si)
+    # 矢状位画面使用前后/脚头轴，并按右到左方向推进。
+    if plane == PlaneTypeEnum.矢状位:
+        return StraightPlaneFrame(
+            row_dir=ap,
+            col_dir=_scale_direction(si, -1.0),
+            normal=_scale_direction(lr, -1.0),
+        )
+    # 冠状位画面使用左右/脚头轴，沿前后方向推进。
+    if plane == PlaneTypeEnum.冠状位:
+        return StraightPlaneFrame(
+            row_dir=lr,
+            col_dir=_scale_direction(si, -1.0),
+            normal=ap,
+        )
+    raise ValueError(f"不支持的切割平面: {plane}")
 
 
 def _scale_direction(direction: Point3D, sign: float) -> Point3D:
@@ -240,7 +274,7 @@ def inset_segment_range(
     )
 
 
-def _recenter_point_in_plane(
+def recenter_point_in_plane(
     point: Point3D,
     projected_extent: ProjectedExtent,
     frame: StraightPlaneFrame,
@@ -294,12 +328,12 @@ def build_straight_slice_plan(
         segment.target_region_bbox,
         frame,
     )
-    centered_target_start = _recenter_point_in_plane(
+    centered_target_start = recenter_point_in_plane(
         segment.target_start,
         projected_extent,
         frame,
     )
-    centered_target_end = _recenter_point_in_plane(
+    centered_target_end = recenter_point_in_plane(
         segment.target_end,
         projected_extent,
         frame,

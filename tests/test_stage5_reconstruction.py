@@ -158,6 +158,33 @@ class Stage5ReconstructionTest(unittest.TestCase):
             )
             self.assertEqual(highlighted_rows.tolist(), [3, 5])
 
+    def test_localizer_uses_target_reference_instead_of_recentered_mpr_center(self):
+        """矢状位定位图应经过目标椎体中心，而不是整幅图像显示中心。"""
+
+        image_array = np.zeros((8, 8, 8), dtype=np.int16)
+        for y_index in range(8):
+            image_array[:, y_index, :] = y_index * 100
+        image = sitk.GetImageFromArray(image_array)
+        plan = {
+            "plane": "矢状位",
+            "extent_mm": {"width": 6.0, "height": 6.0},
+            "localizer_reference": {"x": 3.0, "y": 2.0, "z": 3.0},
+            "slices": [{
+                "index": 1,
+                # 成片为了整图覆盖居中在 y=5，但目标椎体实际位于 y=2。
+                "center": {"x": 3.0, "y": 5.0, "z": 3.0},
+                "normal": {"x": -1.0, "y": 0.0, "z": 0.0},
+                "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "col_dir": {"x": 0.0, "y": 0.0, "z": -1.0},
+            }],
+        }
+
+        localizer = ReconstructionStage._build_plan_localizer(image, plan)
+        localizer_array = sitk.GetArrayFromImage(localizer)
+
+        # 交线只改少量像素，背景中位数能稳定表示所选原始冠状层。
+        self.assertEqual(float(np.median(localizer_array)), 200.0)
+
     def test_oblique_axial_plan_draws_sloped_line_on_localizer(self):
         """斜横状位计划应在定位图上显示与真实切片平面一致的斜线。"""
 

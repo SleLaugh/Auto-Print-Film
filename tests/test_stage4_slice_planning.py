@@ -387,6 +387,15 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertTrue(
             np.allclose(np.cross(sagittal_row, sagittal_col), sagittal_normal)
         )
+        expected_reference = (
+            left_right * 30.0
+            + anterior_posterior * 25.0
+            + spine_axis * 50.0
+        )
+        self.assertTrue(np.allclose(
+            list(sagittal.to_dict()["localizer_reference"].values()),
+            expected_reference,
+        ))
 
     def test_non_lung_keeps_legacy_axes_even_if_anatomical_geometry_is_present(self):
         """验证 `test_non_lung_keeps_legacy_axes_even_if_anatomical_geometry_is_present` 场景符合预期。"""

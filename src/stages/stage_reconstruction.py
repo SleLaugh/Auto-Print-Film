@@ -270,9 +270,19 @@ class ReconstructionStage(BaseStage):
         ]
         if not center_indices:
             return None
-        fixed_index = int(round(float(np.median([
-            index_xyz[fixed_axis] for index_xyz in center_indices
-        ]))))
+        localizer_reference = plan.get("localizer_reference")
+        if localizer_reference:
+            reference_index = image.TransformPhysicalPointToContinuousIndex((
+                float(localizer_reference["x"]),
+                float(localizer_reference["y"]),
+                float(localizer_reference["z"]),
+            ))
+            fixed_index = int(round(float(reference_index[fixed_axis])))
+        else:
+            # 兼容没有目标参考点的旧计划，继续使用切片中心中位数。
+            fixed_index = int(round(float(np.median([
+                index_xyz[fixed_axis] for index_xyz in center_indices
+            ]))))
         fixed_index = min(max(fixed_index, 0), image.GetSize()[fixed_axis] - 1)
         roi_index = [0, 0, 0]
         roi_size = list(image.GetSize())

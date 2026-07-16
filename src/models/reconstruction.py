@@ -83,6 +83,8 @@ class SlicePlan:
     source_labels: List[str]
     target_start: Point3D | None = None
     target_end: Point3D | None = None
+    localizer_reference: Point3D | None = None
+    """定位图选择原始参考层时使用的目标部位物理中心。"""
     confidence: float = 1.0
     warnings: List[str] = field(default_factory=list)
 
@@ -113,4 +115,6 @@ class SlicePlan:
             data["target_start"] = self.target_start.to_dict()
         if self.target_end is not None:
             data["target_end"] = self.target_end.to_dict()
+        if self.localizer_reference is not None:
+            data["localizer_reference"] = self.localizer_reference.to_dict()
         return data

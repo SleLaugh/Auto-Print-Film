@@ -67,6 +67,49 @@ Expected: 全部通过。
 
 ---
 
+### Task 7: 定位图使用目标部位中心参考层
+
+**Files:**
+- Modify: `src/models/reconstruction.py`
+- Modify: `src/planning/whole_range.py`
+- Modify: `src/stages/stage_reconstruction.py`
+- Test: `tests/test_stage4_slice_planning.py`
+- Test: `tests/test_stage5_reconstruction.py`
+
+**Interfaces:**
+- Produces: `SlicePlan.localizer_reference: Point3D | None`。
+- Consumes: 阶段五使用该物理点选择定位面固定轴的原图层。
+
+- [ ] **Step 1: Add failing planning and reconstruction tests**
+
+断言解剖坐标计划序列化目标中心参考点；断言成片中心位于整图中心时，定位图
+仍使用 `localizer_reference` 指定的椎体层。
+
+- [ ] **Step 2: Confirm RED**
+
+Run: `.venv/bin/python -m unittest tests.test_stage4_slice_planning tests.test_stage5_reconstruction -v`
+
+Expected: FAIL，因为计划尚无该字段，第五阶段仍使用切片中心中位数。
+
+- [ ] **Step 3: Implement optional reference point**
+
+为 `SlicePlan` 增加可选字段并序列化；解剖坐标整切使用未做显示居中前的目标
+起止点中点；第五阶段优先转换该点，缺失时保持原回退逻辑。
+
+- [ ] **Step 4: Run full verification**
+
+Run:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m compileall -q src tests
+git diff --check
+```
+
+Expected: 全部通过。
+
+---
+
 ### Task 6: 胸椎横状位恢复默认水平横切
 
 **Files:**

@@ -481,6 +481,79 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             {"x": -1.0, "y": -0.0, "z": -0.0},
         )
 
+    def test_hip_only_tilts_axial_and_sets_three_localizer_planes(self):
+        """髋骨仅横状位使用 AB 角度，矢冠保持默认轴并指定定位背景。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.髋骨,
+            plane_configs=[
+                PlaneConfig(plane, 2.0, 5.0, ["骨窗"])
+                for plane in (
+                    PlaneTypeEnum.横状位,
+                    PlaneTypeEnum.矢状位,
+                    PlaneTypeEnum.冠状位,
+                )
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["body_part"] = "髋骨"
+        localization_result["image"]["size_xyz"] = [100, 100, 100]
+        localization_result["correction_scope_bbox"] = {
+            "z_min": 10, "z_max": 70,
+            "y_min": 20, "y_max": 80,
+            "x_min": 15, "x_max": 85,
+        }
+        localization_result["anatomical_geometry"] = {
+            "global_frame": {
+                "origin": {"x": 51.0, "y": 52.0, "z": 43.0},
+                "left_right_axis": {
+                    "x": 0.9805806756909202, "y": 0.0,
+                    "z": -0.19611613513818404,
+                },
+                "anterior_posterior_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "superior_inferior_axis": {
+                    "x": 0.19611613513818404, "y": 0.0,
+                    "z": 0.9805806756909202,
+                },
+                "bounds": {
+                    "left_right": {"minimum": 10.0, "maximum": 90.0},
+                    "anterior_posterior": {"minimum": 20.0, "maximum": 80.0},
+                    "superior_inferior": {"minimum": 15.0, "maximum": 75.0},
+                },
+                "method": "hip_outer_superior_caps",
+                "confidence": 1.0,
+                "applied": True,
+                "warnings": [],
+            },
+            "local_frames": {},
+        }
+
+        axial, sagittal, coronal = SingleLabelWholeRangePlanner().build_plans(
+            request, localization_result
+        ).plans
+
+        self.assertTrue(np.allclose(
+            list(axial.slices[0].normal.to_dict().values()),
+            [0.19611613513818404, 0.0, 0.9805806756909202],
+        ))
+        self.assertEqual(
+            sagittal.slices[0].normal.to_dict(),
+            {"x": -1.0, "y": -0.0, "z": -0.0},
+        )
+        self.assertEqual(
+            coronal.slices[0].normal.to_dict(),
+            {"x": 0.0, "y": 1.0, "z": 0.0},
+        )
+        expected_reference = {"x": 51.0, "y": 52.0, "z": 43.0}
+        for plan in (axial, sagittal, coronal):
+            self.assertEqual(plan.localizer_reference.to_dict(), expected_reference)
+        self.assertEqual(
+            [plan.localizer_plane for plan in (axial, sagittal, coronal)],
+            ["冠状位", "冠状位", "矢状位"],
+        )
+
     def test_oblique_plan_overview_draws_the_actual_sloped_guide(self):
         """验证 `test_oblique_plan_overview_draws_the_actual_sloped_guide` 场景符合预期。"""
 

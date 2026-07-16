@@ -97,6 +97,33 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertEqual(diagnostics["start_label"], start_label)
             self.assertEqual(diagnostics["end_label"], end_label)
 
+    def test_hip_builds_geometry_from_left_and_right_masks(self):
+        """髋骨应使用配置中的左右独立 Mask 计算外侧顶部横切坐标。"""
+
+        stage = LocalizationStage()
+        shape = (32, 20, 40)
+        image = sitk.GetImageFromArray(np.zeros(shape, dtype=np.uint8))
+        label_masks = {
+            "hip_left": np.zeros(shape, dtype=bool),
+            "hip_right": np.zeros(shape, dtype=bool),
+        }
+        label_masks["hip_left"][8:28, 5:15, 4:14] = True
+        label_masks["hip_right"][6:24, 5:15, 26:36] = True
+
+        geometry, diagnostics = stage._build_anatomical_geometry(
+            body_part="髋骨",
+            target_mask=np.logical_or.reduce(list(label_masks.values())),
+            image=image,
+            label_masks=label_masks,
+            start_label="hip_left",
+            end_label="hip_right",
+        )
+
+        self.assertIsNotNone(geometry)
+        self.assertEqual(geometry.global_frame.method, "hip_outer_superior_caps")
+        self.assertEqual(diagnostics["left_label"], "hip_left")
+        self.assertEqual(diagnostics["right_label"], "hip_right")
+
     def test_target_mask_and_bbox_only_include_requested_labels(self):
         # 阶段三不能拿整套 volume 判断歪斜，必须先合成“本次任务真正关心的目标 mask”。
         """验证 `test_target_mask_and_bbox_only_include_requested_labels` 场景符合预期。"""

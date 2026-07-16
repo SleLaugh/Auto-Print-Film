@@ -28,6 +28,7 @@ from src.models import (
     VoxelPoint,
 )
 from src.anatomy.lung import estimate_lung_frame_with_diagnostics
+from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 from src.utils import DebugLog, is_debug_log_file_enabled
 
@@ -389,6 +390,22 @@ class LocalizationStage(BaseStage):
                 end_label=end_label,
                 image=image,
             )
+        if body_part == "髋骨":
+            if not label_masks or not start_label or not end_label:
+                raise ValueError("髋骨解剖坐标缺少左右髋骨标签信息")
+            if start_label not in label_masks:
+                raise ValueError(f"髋骨解剖坐标缺少左侧标签: {start_label}")
+            if end_label not in label_masks:
+                raise ValueError(f"髋骨解剖坐标缺少右侧标签: {end_label}")
+            geometry, diagnostics = estimate_hip_frame_with_diagnostics(
+                left_mask=label_masks[start_label],
+                right_mask=label_masks[end_label],
+                image=image,
+            )
+            # 配置决定左右标签来源，诊断中保留原名，便于现场核对模型映射。
+            diagnostics["left_label"] = start_label
+            diagnostics["right_label"] = end_label
+            return geometry, diagnostics
         return None, {}
 
     def _find_dataset_json(self, model_info: Dict[str, Any], seg_path: str = None) -> Path:

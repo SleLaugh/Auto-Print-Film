@@ -85,6 +85,8 @@ class SlicePlan:
     target_end: Point3D | None = None
     localizer_reference: Point3D | None = None
     """定位图选择原始参考层时使用的目标部位物理中心。"""
+    localizer_plane: str | None = None
+    """定位图使用的原始正交状位；为空时由第五步按切片几何自动选择。"""
     confidence: float = 1.0
     warnings: List[str] = field(default_factory=list)
 
@@ -117,4 +119,6 @@ class SlicePlan:
             data["target_end"] = self.target_end.to_dict()
         if self.localizer_reference is not None:
             data["localizer_reference"] = self.localizer_reference.to_dict()
+        if self.localizer_plane is not None:
+            data["localizer_plane"] = self.localizer_plane
         return data

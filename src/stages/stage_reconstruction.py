@@ -39,6 +39,11 @@ class ReconstructionStage(BaseStage):
         "矢状位": (0, 2, 1),
         "冠状位": (1, 2, 0),
     }
+    _LOCALIZER_FIXED_AXES = {
+        "矢状位": 0,
+        "冠状位": 1,
+        "横状位": 2,
+    }
     
     def __init__(self, config: Dict[str, Any] = None):
         """
@@ -395,9 +400,31 @@ class ReconstructionStage(BaseStage):
         plan: Dict[str, Any],
         default_axes: tuple[int, int, int],
     ) -> tuple[int, int, int]:
-        """为斜切计划选择最能显示倾斜角度的原图正交定位面。"""
+        """按计划显式状位或切片斜率选择原图正交定位面。
+
+        第四步可用 ``localizer_plane`` 明确指定背景状位；缺少该字段的旧计划
+        继续沿用自动选择逻辑，从而保持既有输出兼容性。
+        """
 
         stack_axis, _, default_fixed_axis = default_axes
+        localizer_plane = plan.get("localizer_plane")
+        if localizer_plane is not None:
+            try:
+                fixed_axis = cls._LOCALIZER_FIXED_AXES[str(localizer_plane)]
+            except KeyError as error:
+                raise ValueError(
+                    f"不支持的定位图参考状位: {localizer_plane}"
+                ) from error
+            if fixed_axis == stack_axis:
+                raise ValueError(
+                    f"定位图参考状位不能与切片堆叠轴相同: {localizer_plane}"
+                )
+            line_axis = next(
+                axis for axis in range(3)
+                if axis not in {stack_axis, fixed_axis}
+            )
+            return stack_axis, line_axis, fixed_axis
+
         slices = plan.get("slices", [])
         if not slices:
             return default_axes

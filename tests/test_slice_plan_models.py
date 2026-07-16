@@ -33,6 +33,7 @@ class SlicePlanModelsTest(unittest.TestCase):
             slice_spacing=5.0,
             window_presets=["骨窗"],
             source_labels=["vertebrae_L1", "vertebrae_S1"],
+            localizer_plane="冠状位",
             confidence=1.0,
             warnings=[],
         )
@@ -46,6 +47,7 @@ class SlicePlanModelsTest(unittest.TestCase):
         })
         self.assertEqual(data["slice_spacing"], 5.0)
         self.assertEqual(data["window_presets"], ["骨窗"])
+        self.assertEqual(data["localizer_plane"], "冠状位")
 
 
 if __name__ == "__main__":

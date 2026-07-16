@@ -185,6 +185,33 @@ class Stage5ReconstructionTest(unittest.TestCase):
         # 交线只改少量像素，背景中位数能稳定表示所选原始冠状层。
         self.assertEqual(float(np.median(localizer_array)), 200.0)
 
+    def test_localizer_plane_explicitly_selects_coronal_background(self):
+        """计划指定冠状定位图时，应固定原图 y 层且不再由斜率自动改面。"""
+
+        image_array = np.zeros((8, 8, 8), dtype=np.int16)
+        for y_index in range(8):
+            image_array[:, y_index, :] = y_index * 100
+        image = sitk.GetImageFromArray(image_array)
+        plan = {
+            "plane": "横状位",
+            "localizer_plane": "冠状位",
+            "localizer_reference": {"x": 3.0, "y": 2.0, "z": 3.0},
+            "extent_mm": {"width": 6.0, "height": 6.0},
+            "slices": [{
+                "index": 1,
+                "center": {"x": 3.0, "y": 3.0, "z": 3.0},
+                # 该角度的旧自动逻辑会选择矢状定位图；显式字段必须覆盖它。
+                "normal": {"x": 0.0, "y": 0.2, "z": 0.9797958971},
+                "row_dir": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "col_dir": {"x": 0.0, "y": 0.9797958971, "z": -0.2},
+            }],
+        }
+
+        localizer = ReconstructionStage._build_plan_localizer(image, plan)
+
+        self.assertEqual(localizer.GetSize(), (8, 8))
+        self.assertEqual(float(np.median(sitk.GetArrayFromImage(localizer))), 200.0)
+
     def test_oblique_axial_plan_draws_sloped_line_on_localizer(self):
         """斜横状位计划应在定位图上显示与真实切片平面一致的斜线。"""
 

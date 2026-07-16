@@ -201,11 +201,11 @@ def build_whole_range_plan_from_bbox(
     """
     根据整体 bbox 构建指定状位的默认直线整切计划。
 
-    肺部、颈椎和胸椎在第三步提供解剖坐标时，使用该坐标生成同角度的三状位
-    平行切片；其他部位仍按输入图像的默认三轴生成 plane_stack 协议。
+    肺部、颈椎和胸椎按既有规则使用解剖坐标。髋骨只有横状位使用外侧顶部
+    AB 角度，矢状位和冠状位继续沿输入图像默认轴生成。
     """
 
-    anatomical_frame_parts = {"肺部", "颈椎", "胸椎"}
+    anatomical_frame_parts = {"肺部", "颈椎", "胸椎", "髋骨"}
     # 胸椎横状位按临床要求保持原图默认水平横切；只有胸椎矢状位和冠状位
     # 继续使用 C7-L1 确定的整体脊柱轴。颈椎三状位仍全部使用解剖坐标。
     uses_anatomical_frame = (
@@ -214,20 +214,31 @@ def build_whole_range_plan_from_bbox(
             request.body_part.value == "胸椎"
             and plane_config.plane == PlaneTypeEnum.横状位
         )
+        and not (
+            request.body_part.value == "髋骨"
+            and plane_config.plane != PlaneTypeEnum.横状位
+        )
     )
+    geometry = None
+    if localization_result.get("anatomical_geometry"):
+        geometry = AnatomicalGeometryResult.from_dict(
+            localization_result["anatomical_geometry"]
+        )
     if (
         uses_anatomical_frame
         and localization_result.get("anatomical_geometry")
     ):
-        geometry = AnatomicalGeometryResult.from_dict(
-            localization_result["anatomical_geometry"]
-        )
-        return _build_whole_range_plan_from_anatomical_frame(
+        plan = _build_whole_range_plan_from_anatomical_frame(
             request=request,
             plane_config=plane_config,
             localization_result=localization_result,
             anatomical_frame=geometry.global_frame,
             source_labels=source_labels,
+        )
+        return _apply_localizer_preferences(
+            plan,
+            request.body_part.value,
+            geometry,
         )
 
     bbox = localization_result.get("correction_scope_bbox")
@@ -249,7 +260,7 @@ def build_whole_range_plan_from_bbox(
         plane_config.plane,
         localization_result["image"],
     )
-    return build_straight_slice_plan(
+    plan = build_straight_slice_plan(
         request=request,
         cut_mode="whole_range",
         plane_config=plane_config,
@@ -257,6 +268,34 @@ def build_whole_range_plan_from_bbox(
         segment=segment,
         frame=frame,
     )
+    return _apply_localizer_preferences(
+        plan,
+        request.body_part.value,
+        geometry,
+    )
+
+
+def _apply_localizer_preferences(
+    plan: SlicePlan,
+    body_part: str,
+    geometry: AnatomicalGeometryResult | None,
+) -> SlicePlan:
+    """把部位中心和明确的原始参考状位写入通用切片计划。
+
+    这些字段只描述第四步已经决定好的展示几何；第五步按字段执行，不需要
+    识别髋骨或其他具体部位。
+    """
+
+    if body_part != "髋骨" or geometry is None:
+        return plan
+    plan.localizer_reference = geometry.global_frame.origin
+    localizer_planes = {
+        PlaneTypeEnum.横状位.value: PlaneTypeEnum.冠状位.value,
+        PlaneTypeEnum.矢状位.value: PlaneTypeEnum.冠状位.value,
+        PlaneTypeEnum.冠状位.value: PlaneTypeEnum.矢状位.value,
+    }
+    plan.localizer_plane = localizer_planes[plan.plane]
+    return plan
 
 
 def _axis_midpoint(bounds) -> float:

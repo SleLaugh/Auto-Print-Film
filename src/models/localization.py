@@ -123,12 +123,10 @@ class LocalizationResult:
     dataset_json_path: str  # 当前模型对应的 dataset.json 路径
     image: NiftiImageInfo  # 分割图像空间信息
     cut_config: Dict[str, Any]  # 原始切割配置，来自 localization_config.json
+    cut_configs: Dict[str, Dict[str, Any]]  # 当前部位按 whole_range/interspace 保存的全部原始配置
     resolved_cut_config: Dict[str, Any]  # 已解析 alias 后的切割配置
     label_targets: Dict[str, LabelTarget]  # 本次需要定位的 label 目标
     coords: Dict[str, LabelCoordinate]  # 每个目标 label 的 bbox/centroid 定位结果
-    # 当前部位按 whole_range/interspace 保存的全部原始配置；默认空字典
-    # 兼容尚未传入该字段的旧构造调用。
-    cut_configs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     raw_for_reconstruction_path: str = ""  # 阶段五实际应该读取的 raw 图像；未回正时指向原始 raw_0000
     seg_for_reconstruction_path: str = ""  # 与 raw 同步的分割图；未回正时指向原始 seg.nii.gz
     correction_applied: bool = False  # 是否真的执行了图像回正；当前默认固定为 False

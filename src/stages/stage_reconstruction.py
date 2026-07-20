@@ -7,7 +7,8 @@ MPR多平面重建与DICOM生成
 按阶段四 SlicePlan 执行直线 plane_stack 重建
 
 每个 plan 分成两个明确步骤：先串行完成全部 MPR HU 图像采样，再按窗位并行完成
-灰度映射和 DICOM 写出。这样不同窗位共享同一份 MPR 结果，不会重复重采样。
+灰度映射和输出任务。不同窗位共享同一份 MPR 结果，不会重复重采样；GDCM 原生
+写盘由 DICOM 模块统一串行保护，避免多线程写入触发原生内存竞态。
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -193,7 +194,8 @@ class ReconstructionStage(BaseStage):
         DebugLog("    [1] MPR采样完成")
 
         # 第二步：一个窗位任务负责处理整套已采样切片。每个任务写独立目录并使用
-        # 独立 Series UID，因此线程之间没有文件名或 DICOM 序列状态冲突。
+        # 独立 Series UID，因此没有文件名或序列状态冲突；底层 GDCM 写盘仍通过
+        # DICOM 模块的进程内锁串行执行，线程池只并行安全的窗位计算和输出准备。
         if self.parallel and len(windows) > 1:
             worker_count = min(len(windows), self.max_window_workers)
             DebugLog(
@@ -542,7 +544,8 @@ class ReconstructionStage(BaseStage):
         把一套已完成 MPR 的 HU 图像处理成一个窗位 DICOM 序列。
 
         本方法不会修改共享的 sampled_image，只会为当前窗位创建新的 uint16 图像；
-        output_dir 和 series_uid 也只属于当前窗位，因此可以在线程池中安全执行。
+        output_dir 和 series_uid 也只属于当前窗位，因此可以在线程池中执行。实际
+        GDCM 写盘由 ``src.reconstruction.dicom`` 内的统一锁保护。
 
         Args:
             sampled_slices: `(切片计划, HU 图像)` 列表，顺序与阶段四一致。

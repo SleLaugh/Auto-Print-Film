@@ -3,6 +3,7 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +18,7 @@ from src.models import (
     PlaneConfig,
     PlaneTypeEnum,
     Request,
+    WindowPreset,
 )
 from src.planning.whole_range import build_whole_range_plan_from_bbox
 from src.reconstruction import dicom as dicom_writer
@@ -112,6 +114,90 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertEqual(first_window_sample_count, [2])
             self.assertGreaterEqual(max_active_workers, 2)
             self.assertGreaterEqual(len(worker_names), 2)
+
+    def test_gdcm_writer_lifecycle_is_serialized_across_window_threads(self):
+        """四个窗位可并发准备图像，但 GDCM 写入器生命周期不能重叠。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._make_context_with_one_plan(temp_dir, slice_count=1)
+            plan = context.get_result("mapping")["plans"][0]
+            planned_slice = plan["slices"][0]
+            output_root = Path(temp_dir) / "gdcm-writers"
+            start_barrier = threading.Barrier(4)
+            state_lock = threading.Lock()
+            active_writers = 0
+            max_active_writers = 0
+
+            class RecordingImageFileWriter:
+                """记录测试期间同时进入 Execute 的原生写入器数量。"""
+
+                def __init__(self):
+                    self.output_path: Path | None = None
+
+                def SetFileName(self, value):
+                    self.output_path = Path(value)
+
+                def KeepOriginalImageUIDOn(self):
+                    return None
+
+                def Execute(self, image):
+                    nonlocal active_writers, max_active_writers
+                    self.assert_ready()
+                    with state_lock:
+                        active_writers += 1
+                        max_active_writers = max(
+                            max_active_writers,
+                            active_writers,
+                        )
+                    try:
+                        self.output_path.touch()
+                        # 释放 GIL 并扩大重叠窗口，使没有串行保护的实现稳定失败。
+                        time.sleep(0.05)
+                    finally:
+                        with state_lock:
+                            active_writers -= 1
+
+                def assert_ready(self):
+                    if self.output_path is None:
+                        raise AssertionError("测试写入器尚未设置输出路径")
+
+            def write_window(window_index: int) -> Path:
+                """让四个窗位同时进入真实 write_ct_dicom 调用链。"""
+
+                start_barrier.wait(timeout=2.0)
+                output_path = output_root / str(window_index) / "1.dcm"
+                dicom_writer.write_ct_dicom(
+                    image=sitk.GetImageFromArray(
+                        np.zeros((1, 4, 4), dtype=np.uint16),
+                    ),
+                    output_path=output_path,
+                    plan=plan,
+                    planned_slice=planned_slice,
+                    window=WindowPreset(
+                        name=f"测试窗{window_index}",
+                        window_width=100.0,
+                        window_center=50.0,
+                    ),
+                    series_uid=f"1.2.826.0.1.3680043.2.1125.{window_index}",
+                    study_uid="1.2.826.0.1.3680043.2.1125.100",
+                    total_slices=1,
+                    source_metadata={},
+                )
+                return output_path
+
+            with mock.patch.object(
+                dicom_writer.sitk,
+                "ImageFileWriter",
+                RecordingImageFileWriter,
+            ), mock.patch.object(
+                dicom_writer,
+                "_restore_planned_slice_geometry_tags",
+            ):
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    output_paths = list(executor.map(write_window, range(1, 5)))
+
+            self.assertTrue(all(path.exists() for path in output_paths))
+            self.assertEqual(max_active_writers, 1)
 
     def test_windowing_bakes_hu_into_fixed_uint16_grayscale(self):
         """验证 `test_windowing_bakes_hu_into_fixed_uint16_grayscale` 场景符合预期。"""

@@ -9,8 +9,8 @@ from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 class HipAnatomicalFrameTest(unittest.TestCase):
     """验证髋骨外侧顶部连线生成的横状位解剖坐标。"""
 
-    def test_outer_superior_caps_define_tilt_and_ignore_isolated_spike(self):
-        """左右外侧顶部不等高时应倾斜，远端单点不能带偏起始面。"""
+    def test_outer_caps_define_tilt_and_bounds_cover_all_retained_points(self):
+        """AB 负责倾角，最终法向范围必须包含左右髋骨全部主体点。"""
 
         shape = (40, 24, 48)
         left_mask = np.zeros(shape, dtype=bool)
@@ -40,13 +40,70 @@ class HipAnatomicalFrameTest(unittest.TestCase):
         self.assertAlmostEqual(float(np.linalg.norm(si)), 1.0, places=6)
         self.assertLess(diagnostics["right_landmark"]["z"], 31.0)
         self.assertGreater(diagnostics["left_landmark"]["z"], diagnostics["right_landmark"]["z"])
-        landmark_plane = np.mean([
-            np.dot(list(diagnostics["left_landmark"].values()), si),
-            np.dot(list(diagnostics["right_landmark"].values()), si),
+
+        # 重新由诊断中的 A、B 计算方向，保证完整覆盖修正不会改变 AB 倾角。
+        left_landmark = np.asarray([
+            diagnostics["left_landmark"][axis] for axis in ("x", "y", "z")
         ])
+        right_landmark = np.asarray([
+            diagnostics["right_landmark"][axis] for axis in ("x", "y", "z")
+        ])
+        expected_lr = right_landmark - left_landmark
+        expected_lr[1] = 0.0
+        expected_lr /= np.linalg.norm(expected_lr)
+        if expected_lr[0] < 0.0:
+            expected_lr = -expected_lr
+        np.testing.assert_allclose(lr, expected_lr, atol=1e-6)
+
+        # 当前测试图为空间单位阵，z/y/x 索引换成 x/y/z 后就是物理坐标。
+        # 已知远端孤立点不属于最大连通主体，不能进入最终覆盖范围。
+        retained_mask = np.logical_or(left_mask, right_mask)
+        retained_mask[38, 3, 44] = False
+        retained_points = np.argwhere(retained_mask)[:, [2, 1, 0]].astype(float)
+        retained_projections = retained_points @ si
+        self.assertAlmostEqual(
+            frame.bounds.superior_inferior.minimum,
+            float(np.min(retained_projections)),
+            places=6,
+        )
         self.assertAlmostEqual(
             frame.bounds.superior_inferior.maximum,
-            landmark_plane,
+            float(np.max(retained_projections)),
+            places=6,
+        )
+        self.assertTrue(np.all(
+            retained_projections >= frame.bounds.superior_inferior.minimum - 1e-6
+        ))
+        self.assertTrue(np.all(
+            retained_projections <= frame.bounds.superior_inferior.maximum + 1e-6
+        ))
+
+        ab_plane_projection = float(np.mean([
+            np.dot(left_landmark, si),
+            np.dot(right_landmark, si),
+        ]))
+        self.assertGreater(
+            frame.bounds.superior_inferior.maximum,
+            ab_plane_projection,
+        )
+        self.assertAlmostEqual(
+            diagnostics["ab_plane_projection_mm"],
+            ab_plane_projection,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            diagnostics["coverage_superior_projection_mm"],
+            frame.bounds.superior_inferior.maximum,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            diagnostics["coverage_inferior_projection_mm"],
+            frame.bounds.superior_inferior.minimum,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            diagnostics["superior_shift_from_ab_mm"],
+            frame.bounds.superior_inferior.maximum - ab_plane_projection,
             places=6,
         )
         self.assertEqual(diagnostics["right_discarded_point_count"], 1)

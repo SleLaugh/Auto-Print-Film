@@ -143,8 +143,9 @@ def estimate_hip_frame_with_diagnostics(
     """用左右髋骨外侧顶部 AB 线建立倾斜横切坐标及调试信息。
 
     AB 只保留冠状面中的左右和头脚分量，前后轴沿用 DICOM 方向。这样仅改变
-    横状位角度，不会引入额外的前后旋转；首张切片平面经过 AB，后续切片均
-    与其平行并覆盖到两个髋骨主体的最下方。
+    横状位角度，不会引入额外的前后旋转。AB 只负责确定角度；最终上下界由
+    两个髋骨主体全部物理点沿最终法向的投影极值决定，保证整组平行切片完整
+    覆盖目标。
     """
 
     left_component, left_stats = _retain_largest_component(left_mask, "左侧")
@@ -183,13 +184,18 @@ def estimate_hip_frame_with_diagnostics(
         lr_axis = -lr_axis
         si_axis = -si_axis
 
-    superior_start = float(np.mean([
+    ab_plane_projection = float(np.mean([
         np.dot(left_landmark, si_axis),
         np.dot(right_landmark, si_axis),
     ]))
-    inferior_end = float(np.min(all_points @ si_axis))
-    if superior_start <= inferior_end:
-        raise ValueError("髋骨顶部起始面未覆盖在主体下界之上")
+    # AB 区域中心只用于稳健估计角度，不能直接作为头侧覆盖边界。角度确定后
+    # 必须重新投影完整主体，使用与 AB 平行的最外侧支撑平面包住全部髋骨点。
+    superior_inferior_bounds = _axis_bounds(all_points, si_axis)
+    if (
+        superior_inferior_bounds.maximum
+        <= superior_inferior_bounds.minimum
+    ):
+        raise ValueError("髋骨头脚投影范围无效")
 
     frame = AnatomicalFrame(
         origin=_point(np.mean(all_points, axis=0)),
@@ -199,7 +205,7 @@ def estimate_hip_frame_with_diagnostics(
         bounds=AnatomicalBounds(
             left_right=_axis_bounds(all_points, lr_axis),
             anterior_posterior=_axis_bounds(all_points, ap_axis),
-            superior_inferior=AxisBounds(inferior_end, superior_start),
+            superior_inferior=superior_inferior_bounds,
         ),
         method="hip_outer_superior_caps",
         confidence=1.0,
@@ -219,6 +225,12 @@ def estimate_hip_frame_with_diagnostics(
         "right_discarded_point_count": right_stats["discarded_point_count"],
         "left_cap": left_cap_stats,
         "right_cap": right_cap_stats,
+        "ab_plane_projection_mm": ab_plane_projection,
+        "coverage_superior_projection_mm": superior_inferior_bounds.maximum,
+        "coverage_inferior_projection_mm": superior_inferior_bounds.minimum,
+        "superior_shift_from_ab_mm": (
+            superior_inferior_bounds.maximum - ab_plane_projection
+        ),
         "left_right_axis": _point_dict(lr_axis),
         "anterior_posterior_axis": _point_dict(ap_axis),
         "superior_inferior_axis": _point_dict(si_axis),

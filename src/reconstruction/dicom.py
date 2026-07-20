@@ -1,7 +1,8 @@
 """使用 SimpleITK/GDCM 写出重建后的 CT DICOM。"""
 
-from pathlib import Path
+import threading
 import uuid
+from pathlib import Path
 from typing import Any, Dict
 
 import pydicom
@@ -12,6 +13,11 @@ from src.models import WindowPreset
 
 _UID_ROOT = "1.2.826.0.1.3680043.2.1125"
 _DERIVED_CHARACTER_SET = "ISO_IR 192"
+
+# SimpleITK 的 DICOM 写出由 GDCM 原生库完成。不同窗位可以并行计算灰度，
+# 但同一进程内并发创建和执行 GDCM 写入器可能触发原生内存重复释放，因此
+# CT 成片与 Localizer 必须共用这一把进程内锁。
+_GDCM_WRITE_LOCK = threading.Lock()
 
 # 可从原始序列继承的患者/检查级标签。序列 UID、实例 UID、实例编号以及
 # 像素/几何标签不在这里，它们必须由派生序列重新生成或按新切片写入。
@@ -103,6 +109,21 @@ def new_uid() -> str:
     return f"{_UID_ROOT}.{suffix}"
 
 
+def _execute_gdcm_write(image: sitk.Image, output_path: Path) -> None:
+    """串行执行一次 GDCM 写盘，并在释放锁前销毁原生写入器。"""
+
+    with _GDCM_WRITE_LOCK:
+        writer = sitk.ImageFileWriter()
+        try:
+            writer.SetFileName(str(output_path))
+            writer.KeepOriginalImageUIDOn()
+            writer.Execute(image)
+        finally:
+            # SWIG 包装对象的析构也属于 GDCM 生命周期；显式在锁内释放，避免
+            # 下一个窗位开始写入时上一个原生写入器仍在销毁。
+            del writer
+
+
 def write_ct_dicom(
     image: sitk.Image,
     output_path: Path,
@@ -185,14 +206,11 @@ def write_ct_dicom(
     image_2d.SetMetaData("0020|1041", _format_number(_dot(center, normal)))
     image_2d.SetMetaData("0020|4000", plan_id)
 
-    writer = sitk.ImageFileWriter()
-    writer.KeepOriginalImageUIDOn()
     gdcm_temporary_path = _temporary_dicom_path(output_path, "gdcm")
     try:
         # GDCM、pydicom 标签校正全部在同目录临时文件完成，只有所有步骤成功
         # 后才原子替换正式文件，异常时不会遗留层厚/层间距错误的半成品。
-        writer.SetFileName(str(gdcm_temporary_path))
-        writer.Execute(image_2d)
+        _execute_gdcm_write(image_2d, gdcm_temporary_path)
         _restore_planned_slice_geometry_tags(
             gdcm_temporary_path,
             slice_thickness=plan["slice_thickness"],
@@ -284,10 +302,7 @@ def write_localizer_dicom(
     for tag, value in geometry_metadata.items():
         image_2d.SetMetaData(tag, value)
 
-    writer = sitk.ImageFileWriter()
-    writer.SetFileName(str(output_path))
-    writer.KeepOriginalImageUIDOn()
-    writer.Execute(image_2d)
+    _execute_gdcm_write(image_2d, output_path)
 
 
 def _extract_2d_image(image: sitk.Image) -> sitk.Image:

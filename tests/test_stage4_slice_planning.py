@@ -135,35 +135,17 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 else:
                     self.assertIsInstance(planner, SingleLabelWholeRangePlanner)
 
-    def test_checked_in_range_extension_only_configures_lung_axial_three_mm(self):
-        """仓库默认只为肺部横状位在首尾各增加 3mm，其余组合不扩展。"""
+    def test_checked_in_range_extension_keeps_configured_defaults(self):
+        """验证当前默认值，不限制后续按需增加其他部位或状位。"""
 
         config_path = Path("src/config/localization_config.json")
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        lung_whole_range = config["targets"]["肺部"]["whole_range"]
-
-        self.assertIn("slice_range_extension", lung_whole_range)
-        self.assertEqual(lung_whole_range["slice_range_extension"], {
-            "横状位": {"start": 3.0, "end": 3.0},
-        })
-        configured_extensions = []
-        for body_part, cut_configs in config["targets"].items():
-            for cut_mode, cut_config in cut_configs.items():
-                if not isinstance(cut_config, dict):
-                    continue
-                for plane, extension in cut_config.get(
-                    "slice_range_extension", {}
-                ).items():
-                    if extension.get("start", 0) or extension.get("end", 0):
-                        configured_extensions.append(
-                            (body_part, cut_mode, plane, extension)
-                        )
-        self.assertEqual(configured_extensions, [(
-            "肺部",
-            "whole_range",
-            "横状位",
-            {"start": 3.0, "end": 3.0},
-        )])
+        for body_part in ("肺部", "髋骨"):
+            with self.subTest(body_part=body_part):
+                whole_range = config["targets"][body_part]["whole_range"]
+                self.assertEqual(whole_range["slice_range_extension"], {
+                    "横状位": {"start": 3.0, "end": 3.0},
+                })
 
     def test_single_label_whole_range_planner_builds_axial_plan_from_bbox(self):
         """验证 `test_single_label_whole_range_planner_builds_axial_plan_from_bbox` 场景符合预期。"""
@@ -220,7 +202,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.window_presets, ["肺窗"])
 
     def test_lung_axial_slice_centers_cover_real_mask_bounds(self):
-        """真实肺部 spacing/origin 下，首末成片中心必须越过 Mask 上下边界。"""
+        """真实肺部层间距和原点下，首末成片中心必须越过掩膜上下边界。"""
 
         spacing_z = 0.6499999761581421
         origin_z = -1511.0999755859375

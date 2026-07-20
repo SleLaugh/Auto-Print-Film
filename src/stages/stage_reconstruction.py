@@ -194,7 +194,7 @@ class ReconstructionStage(BaseStage):
         DebugLog("    [1] MPR采样完成")
 
         # 第二步：一个窗位任务负责处理整套已采样切片。每个任务写独立目录并使用
-        # 独立 Series UID，因此没有文件名或序列状态冲突；底层 GDCM 写盘仍通过
+        # 独立序列 UID，因此没有文件名或序列状态冲突；底层 GDCM 写盘仍通过
         # DICOM 模块的进程内锁串行执行，线程池只并行安全的窗位计算和输出准备。
         if self.parallel and len(windows) > 1:
             worker_count = min(len(windows), self.max_window_workers)

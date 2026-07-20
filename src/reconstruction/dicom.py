@@ -16,7 +16,7 @@ _DERIVED_CHARACTER_SET = "ISO_IR 192"
 
 # SimpleITK 的 DICOM 写出由 GDCM 原生库完成。不同窗位可以并行计算灰度，
 # 但同一进程内并发创建和执行 GDCM 写入器可能触发原生内存重复释放，因此
-# CT 成片与 Localizer 必须共用这一把进程内锁。
+# CT 成片与定位图必须共用这一把进程内锁。
 _GDCM_WRITE_LOCK = threading.Lock()
 
 # 可从原始序列继承的患者/检查级标签。序列 UID、实例 UID、实例编号以及

@@ -23,6 +23,7 @@ from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.models import MappingStageResult, Point3D
 from src.planning.geometry import normalize_vector, subtract_points, vector_length
+from src.planning.straight import CENTER_COVERAGE_TOLERANCE_MM
 from src.planning import select_planner
 from src.planning.cut_policy import cut_mode_for_plane
 from src.utils import DebugLog, is_debug_log_file_enabled
@@ -312,13 +313,19 @@ class MappingStage(BaseStage):
             )
             spacing_minus_thickness = slice_spacing - slice_thickness
             regular_center_count = (
-                int(math.floor(range_length / slice_spacing)) + 1
+                int(math.floor((range_length + 1e-6) / slice_spacing)) + 1
                 if slice_spacing > 0
                 else 0
             )
             has_extra_endpoint_slice = False
             leading_uncovered = 0.0
             trailing_uncovered = 0.0
+            leading_overflow = 0.0
+            trailing_overflow = 0.0
+            leading_center_uncovered = 0.0
+            trailing_center_uncovered = 0.0
+            leading_center_overflow = 0.0
+            trailing_center_overflow = 0.0
             target_start_data = plan.get("target_start")
             target_end_data = plan.get("target_end")
             target_length = 0.0
@@ -360,26 +367,61 @@ class MappingStage(BaseStage):
                     end=target_end,
                     start=last_coverage_end,
                 )
-                leading_uncovered = max(
+                leading_gap = (
                     leading_delta.x * coverage_direction.x
                     + leading_delta.y * coverage_direction.y
-                    + leading_delta.z * coverage_direction.z,
-                    0.0,
+                    + leading_delta.z * coverage_direction.z
                 )
-                trailing_uncovered = max(
+                trailing_gap = (
                     trailing_delta.x * coverage_direction.x
                     + trailing_delta.y * coverage_direction.y
-                    + trailing_delta.z * coverage_direction.z,
-                    0.0,
+                    + trailing_delta.z * coverage_direction.z
                 )
+                leading_center_delta = subtract_points(
+                    end=slice_centers[0],
+                    start=target_start,
+                )
+                trailing_center_delta = subtract_points(
+                    end=target_end,
+                    start=slice_centers[-1],
+                )
+                leading_center_gap = (
+                    leading_center_delta.x * coverage_direction.x
+                    + leading_center_delta.y * coverage_direction.y
+                    + leading_center_delta.z * coverage_direction.z
+                )
+                trailing_center_gap = (
+                    trailing_center_delta.x * coverage_direction.x
+                    + trailing_center_delta.y * coverage_direction.y
+                    + trailing_center_delta.z * coverage_direction.z
+                )
+                if abs(leading_gap) < 1e-6:
+                    leading_gap = 0.0
+                if abs(trailing_gap) < 1e-6:
+                    trailing_gap = 0.0
+                # 中心覆盖诊断与直线计划共用同一物理坐标容差，
+                # 避免已被计划吸收的数微米误差又被报成首尾缺失。
+                if abs(leading_center_gap) <= CENTER_COVERAGE_TOLERANCE_MM:
+                    leading_center_gap = 0.0
+                if abs(trailing_center_gap) <= CENTER_COVERAGE_TOLERANCE_MM:
+                    trailing_center_gap = 0.0
+                leading_uncovered = max(leading_gap, 0.0)
+                trailing_uncovered = max(trailing_gap, 0.0)
+                leading_overflow = max(-leading_gap, 0.0)
+                trailing_overflow = max(-trailing_gap, 0.0)
+                leading_center_uncovered = max(leading_center_gap, 0.0)
+                trailing_center_uncovered = max(trailing_center_gap, 0.0)
+                leading_center_overflow = max(-leading_center_gap, 0.0)
+                trailing_center_overflow = max(-trailing_center_gap, 0.0)
             calculation_note = (
-                "阶段四按层间距从 range_start 到 range_end 展开每张输出图中心；"
-                "区间末端不足一个完整层间距时不追加非等距中心。"
+                "阶段四选择让首末切片中心跨过目标边界的最少切片数，将中心跨度"
+                "的总超出量首尾对称分配，再按固定层间距从 range_start 到 "
+                "range_end 展开每张输出图中心；不追加非等距终点中心。"
             )
             if spacing_minus_thickness > 0:
                 calculation_note += (
                     f" 当前层间距比层厚大 {spacing_minus_thickness:.3f}mm，"
-                    "厚层图之间会有未覆盖间隔，看起来会少线；"
+                    "首尾仍完整覆盖，但厚层图之间会保留配置产生的空档；"
                     "需要更多输出图时应减小 slice_spacing。"
                 )
 
@@ -405,6 +447,24 @@ class MappingStage(BaseStage):
                 ),
                 "leading_uncovered_mm": round(leading_uncovered, 3),
                 "trailing_uncovered_mm": round(trailing_uncovered, 3),
+                "leading_overflow_mm": round(leading_overflow, 3),
+                "trailing_overflow_mm": round(trailing_overflow, 3),
+                "leading_center_uncovered_mm": round(
+                    leading_center_uncovered,
+                    3,
+                ),
+                "trailing_center_uncovered_mm": round(
+                    trailing_center_uncovered,
+                    3,
+                ),
+                "leading_center_overflow_mm": round(
+                    leading_center_overflow,
+                    3,
+                ),
+                "trailing_center_overflow_mm": round(
+                    trailing_center_overflow,
+                    3,
+                ),
                 "slice_thickness": slice_thickness,
                 "slice_spacing": slice_spacing,
                 "spacing_minus_thickness": round(spacing_minus_thickness, 3),

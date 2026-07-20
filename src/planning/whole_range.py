@@ -16,9 +16,10 @@ from src.planning.straight import (
     anatomical_straight_frame,
     CutSegment,
     build_straight_slice_plan,
+    cover_segment_range,
     default_straight_frame,
-    inset_segment_range,
     recenter_point_in_plane,
+    resolve_slice_range_extension,
     resolve_projected_extent,
 )
 
@@ -115,37 +116,40 @@ def bbox_range_points(
     localization_result: Dict[str, Any],
     slice_thickness: float,
     plane: PlaneTypeEnum,
+    slice_spacing: Optional[float] = None,
 ) -> tuple[Point3D, Point3D]:
     """
-    在指定堆叠轴上生成整切的有效切片中心范围。
+    在指定堆叠轴上生成首末中心跨过 bbox 边界的切片范围。
 
-    第一张和最后一张中心从目标外边界向内缩半个层厚。目标短于层厚时，
-    两端都使用目标中点，从而只生成一张居中的厚层图像。
+    为兼容旧调用，未传层间距时默认令层间距等于层厚；新规划入口会传入
+    实际配置值。只有坐标容差内的零长度目标使用单个中心。
     """
 
     target_start, target_end = bbox_target_points(localization_result, plane)
-    return inset_segment_range(
+    return cover_segment_range(
         target_start,
         target_end,
         slice_thickness,
+        slice_thickness if slice_spacing is None else slice_spacing,
     )
 
 
 def bbox_axial_range_points(
     localization_result: Dict[str, Any],
     slice_thickness: float,
+    slice_spacing: Optional[float] = None,
 ) -> tuple[Point3D, Point3D]:
     """
-    用整体目标 bbox 的最外侧 z 范围生成横状位整切有效中心范围。
+    用整体目标 bbox 的最外侧 z 范围生成跨过边界的横状位中心范围。
 
-    第一张和最后一张中心分别从真实目标边界向内缩半个层厚，使厚层覆盖
-    边界与目标边界对齐。目标短于层厚时，两端都取目标中点。
+    未传层间距时按层厚作为默认间距，以兼容原有公开调用方式。
     """
 
     return bbox_range_points(
         localization_result,
         slice_thickness,
         PlaneTypeEnum.横状位,
+        slice_spacing,
     )
 
 
@@ -419,11 +423,21 @@ def _build_whole_range_plan_from_anatomical_frame(
             f"不支持的切割线范围模式: {plane_config.line_extent_mode}"
         )
 
-    # 切片中心向两端各内收半个层厚，保证首尾切片的实际厚度不越出目标范围。
-    range_start, range_end = inset_segment_range(
+    # 使用最少且严格等距的切片中心跨过解剖目标边界；不能整除的剩余
+    # 长度通过首尾对称外扩消化。显式配置的首尾扩展先加入有效目标范围，
+    # 避免肺尖、肺底在厚层平均后看起来缺失。
+    range_extension = resolve_slice_range_extension(
+        localization_result,
+        "whole_range",
+        plane,
+    )
+    range_start, range_end = cover_segment_range(
         centered_target_start,
         centered_target_end,
         plane_config.slice_thickness,
+        plane_config.slice_spacing,
+        start_extension_mm=range_extension.start_mm,
+        end_extension_mm=range_extension.end_mm,
     )
     path_points = [range_start, range_end]
     slices = build_plane_stack_slices(

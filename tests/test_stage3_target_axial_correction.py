@@ -26,6 +26,38 @@ from src.stages.stage_reconstruction import ReconstructionStage
 class Stage3TargetAxialCorrectionTest(unittest.TestCase):
     """汇总 `Stage3TargetAxialCorrectionTest` 相关测试场景。"""
 
+    def test_slice_range_extension_config_accepts_optional_endpoints(self):
+        """切片范围扩展允许只配置单端，未配置端由第四步按零处理。"""
+
+        LocalizationStage._validate_cut_config("whole_range", {
+            "start": "lung",
+            "end": "lung",
+            "slice_range_extension": {
+                "横状位": {"start": 3.0},
+                "矢状位": {"end": 2.0},
+            },
+        })
+
+    def test_slice_range_extension_config_rejects_invalid_values(self):
+        """范围扩展仅接受现有状位、start/end 字段和非负有限毫米数。"""
+
+        invalid_extensions = (
+            ({"斜状位": {"start": 1.0}}, "不支持的状位"),
+            ({"横状位": []}, "必须是对象"),
+            ({"横状位": {"before": 1.0}}, "仅支持 start/end"),
+            ({"横状位": {"start": -1.0}}, "不能小于 0"),
+            ({"横状位": {"start": True}}, "必须是有限数字"),
+            ({"横状位": {"end": math.inf}}, "必须是有限数字"),
+        )
+        for extension, message in invalid_extensions:
+            with self.subTest(extension=extension):
+                with self.assertRaisesRegex(ValueError, message):
+                    LocalizationStage._validate_cut_config("whole_range", {
+                        "start": "lung",
+                        "end": "lung",
+                        "slice_range_extension": extension,
+                    })
+
     def test_lung_builds_typed_anatomical_geometry_for_stage4(self):
         """验证 `test_lung_builds_typed_anatomical_geometry_for_stage4` 场景符合预期。"""
 
@@ -683,9 +715,15 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                         "whole_range": {
                             "start": "L1",
                             "end": "S1",
+                            "slice_range_extension": {
+                                "矢状位": {"start": 2.0},
+                            },
                         },
                         "interspace": {
                             "intervals": [{"start": "L1", "end": "S1"}],
+                            "slice_range_extension": {
+                                "横状位": {"end": 1.0},
+                            },
                         },
                     }
                 },
@@ -709,6 +747,17 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertEqual(result["corrected_raw_path"], str(raw_path))
             self.assertEqual(result["image"]["spacing_xyz"], [1.0, 1.0, 1.0])
             self.assertEqual(result["image"], metadata["image"])
+            self.assertIn("cut_configs", result)
+            self.assertEqual(
+                result["cut_configs"]["whole_range"]
+                ["slice_range_extension"]["矢状位"]["start"],
+                2.0,
+            )
+            self.assertEqual(
+                metadata["cut_configs"]["interspace"]
+                ["slice_range_extension"]["横状位"]["end"],
+                1.0,
+            )
             self.assertEqual(metadata["raw_for_reconstruction_path"], str(raw_path))
             self.assertEqual(metadata["seg_for_reconstruction_path"], str(seg_path))
             self.assertIn("correction_scope_bbox", metadata)

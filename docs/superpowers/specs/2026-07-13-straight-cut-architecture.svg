@@ -56,7 +56,7 @@
   <text x="450" y="478" class="body">切片区间：range_start / range_end</text>
   <text x="450" y="512" class="body">切片方向：row_dir / col_dir / normal</text>
   <text x="450" y="546" class="body">图像范围：width_mm / height_mm / 中心</text>
-  <text x="450" y="575" class="small">先按最终方向对中再内缩；角度变化不更换构造器</text>
+  <text x="450" y="575" class="small">先按最终方向对中再对称外扩完整覆盖；角度变化不更换构造器</text>
 
   <path d="M700 585 L700 625" class="arrow"/>
 

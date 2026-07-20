@@ -4,12 +4,14 @@ from pathlib import Path
 import uuid
 from typing import Any, Dict
 
+import pydicom
 import SimpleITK as sitk
 
 from src.models import WindowPreset
 
 
 _UID_ROOT = "1.2.826.0.1.3680043.2.1125"
+_DERIVED_CHARACTER_SET = "ISO_IR 192"
 
 # 可从原始序列继承的患者/检查级标签。序列 UID、实例 UID、实例编号以及
 # 像素/几何标签不在这里，它们必须由派生序列重新生成或按新切片写入。
@@ -126,11 +128,14 @@ def write_ct_dicom(
     inherited_metadata = source_metadata or {}
     specific_character_set = str(inherited_metadata.get("0008|0005", ""))
     for tag, value in inherited_metadata.items():
-        if tag in _INHERITED_TAGS:
+        if tag in _INHERITED_TAGS and tag != "0008|0005":
             image_2d.SetMetaData(
                 tag,
                 _normalize_metadata_value(value, specific_character_set),
             )
+    # GDCM 接收的是 Python Unicode 文本，派生文件统一声明 UTF-8，避免继承
+    # GB18030 声明后实际仍写出 UTF-8 字节，导致标准 DICOM 读取器解码乱码。
+    image_2d.SetMetaData("0008|0005", _DERIVED_CHARACTER_SET)
 
     plan_id = str(plan.get("plan_id", "plan"))
     plane = str(plan.get("plane", ""))
@@ -181,9 +186,56 @@ def write_ct_dicom(
     image_2d.SetMetaData("0020|4000", plan_id)
 
     writer = sitk.ImageFileWriter()
-    writer.SetFileName(str(output_path))
     writer.KeepOriginalImageUIDOn()
-    writer.Execute(image_2d)
+    gdcm_temporary_path = _temporary_dicom_path(output_path, "gdcm")
+    try:
+        # GDCM、pydicom 标签校正全部在同目录临时文件完成，只有所有步骤成功
+        # 后才原子替换正式文件，异常时不会遗留层厚/层间距错误的半成品。
+        writer.SetFileName(str(gdcm_temporary_path))
+        writer.Execute(image_2d)
+        _restore_planned_slice_geometry_tags(
+            gdcm_temporary_path,
+            slice_thickness=plan["slice_thickness"],
+            slice_spacing=plan["slice_spacing"],
+        )
+        gdcm_temporary_path.replace(output_path)
+    finally:
+        if gdcm_temporary_path.exists():
+            gdcm_temporary_path.unlink()
+
+
+def _restore_planned_slice_geometry_tags(
+    output_path: Path,
+    *,
+    slice_thickness: Any,
+    slice_spacing: Any,
+) -> None:
+    """
+    在 GDCM 写出后恢复计划指定的层厚和层间距标签。
+
+    SimpleITK/GDCM 写二维 DICOM 时可能根据二维图像默认几何覆盖已经设置的
+    ``SliceThickness`` 和 ``SpacingBetweenSlices``。这里仅校正两个数值标签，
+    再通过同目录临时文件原子替换待发布结果；患者、检查及 UTF-8 文本保持原样。
+    """
+
+    dataset = pydicom.dcmread(str(output_path))
+    dataset.SliceThickness = _format_number(slice_thickness)
+    dataset.SpacingBetweenSlices = _format_number(slice_spacing)
+    temporary_path = _temporary_dicom_path(output_path, "pydicom")
+    try:
+        dataset.save_as(str(temporary_path), enforce_file_format=True)
+        temporary_path.replace(output_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _temporary_dicom_path(output_path: Path, stage: str) -> Path:
+    """为一次 DICOM 写出步骤生成同目录、不可见且不重名的临时路径。"""
+
+    return output_path.with_name(
+        f".{output_path.stem}.{stage}.{uuid.uuid4().hex}.tmp.dcm"
+    )
 
 
 def write_localizer_dicom(
@@ -206,11 +258,12 @@ def write_localizer_dicom(
     inherited_metadata = source_metadata or {}
     specific_character_set = str(inherited_metadata.get("0008|0005", ""))
     for tag, value in inherited_metadata.items():
-        if tag in _INHERITED_TAGS:
+        if tag in _INHERITED_TAGS and tag != "0008|0005":
             image_2d.SetMetaData(
                 tag,
                 _normalize_metadata_value(value, specific_character_set),
             )
+    image_2d.SetMetaData("0008|0005", _DERIVED_CHARACTER_SET)
 
     image_2d.SetMetaData("0008|0016", "1.2.840.10008.5.1.4.1.1.2")
     image_2d.SetMetaData("0008|0018", new_uid())

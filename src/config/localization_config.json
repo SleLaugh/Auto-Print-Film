@@ -154,7 +154,13 @@
         "肺部": {
             "whole_range": {
                 "start": "lung",
-                "end": "lung"
+                "end": "lung",
+                "slice_range_extension": {
+                    "横状位": {
+                        "start": 3.0,
+                        "end": 3.0
+                    }
+                }
             }
         },
         "头骨": {

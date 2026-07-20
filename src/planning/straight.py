@@ -5,6 +5,7 @@
 
 from dataclasses import dataclass
 from itertools import product
+import math
 from typing import Any, Dict, Iterable, List
 
 from src.models import AnatomicalFrame, ExtentMM, Point3D, SlicePlan
@@ -17,6 +18,12 @@ from src.planning.geometry import (
     vector_length,
     voxel_index_to_physical,
 )
+
+
+# DICOM 方向余弦和物理坐标通常经过有限小数位存储。斜向区间在还原后可能
+# 出现数微米的边界误差；1e-3mm 以内按同一物理边界处理。该常量同时
+# 供计划计算与诊断输出使用，保证两者对“已覆盖”的判定一致。
+CENTER_COVERAGE_TOLERANCE_MM = 1e-3
 
 
 @dataclass(frozen=True)
@@ -65,6 +72,74 @@ class CutSegment:
 
     source_labels: tuple[str, ...]
     """产生当前区间的定位 label，用于调试、报告和问题追踪。"""
+
+
+@dataclass(frozen=True)
+class SliceRangeExtension:
+    """一个切片计划在原始目标首尾之外额外覆盖的毫米距离。"""
+
+    start_mm: float = 0.0
+    """从原始 target_start 沿切片序列反方向向外扩展的距离。"""
+
+    end_mm: float = 0.0
+    """从原始 target_end 沿切片序列正方向向外扩展的距离。"""
+
+
+def resolve_slice_range_extension(
+    localization_result: Dict[str, Any],
+    cut_mode: str,
+    plane: PlaneTypeEnum,
+) -> SliceRangeExtension:
+    """按当前切法和状位读取可选范围扩展，未配置时返回 0mm。
+
+    新结果优先读取按切法保存的 `cut_configs`。为兼容旧的阶段三结果，
+    当其 `cut_mode` 与当前计划一致时，也允许从单个 `cut_config` 读取。
+    配置已由第三步校验，这里仍做最小数值检查，保证直接调用 planner 的
+    测试或旧上下文不会把非法距离带入几何计算。
+    """
+
+    cut_config: Dict[str, Any] = {}
+    cut_configs = localization_result.get("cut_configs")
+    if isinstance(cut_configs, dict):
+        candidate = cut_configs.get(cut_mode)
+        if isinstance(candidate, dict):
+            cut_config = candidate
+    elif localization_result.get("cut_mode") in (None, cut_mode):
+        candidate = localization_result.get("cut_config")
+        if isinstance(candidate, dict):
+            cut_config = candidate
+
+    plane_extensions = cut_config.get("slice_range_extension", {})
+    if not isinstance(plane_extensions, dict):
+        return SliceRangeExtension()
+    endpoint_config = plane_extensions.get(plane.value, {})
+    if not isinstance(endpoint_config, dict):
+        return SliceRangeExtension()
+
+    start_mm = _non_negative_extension_value(
+        endpoint_config.get("start", 0.0),
+        endpoint="start",
+    )
+    end_mm = _non_negative_extension_value(
+        endpoint_config.get("end", 0.0),
+        endpoint="end",
+    )
+    return SliceRangeExtension(start_mm=start_mm, end_mm=end_mm)
+
+
+def _non_negative_extension_value(value: Any, endpoint: str) -> float:
+    """把单端扩展值规范成非负有限浮点毫米数。"""
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
+        raise ValueError(f"切片范围 {endpoint} 扩展必须是有限数字")
+    value_mm = float(value)
+    if value_mm < 0:
+        raise ValueError(f"切片范围 {endpoint} 扩展不能小于 0")
+    return value_mm
 
 
 def anatomical_straight_frame(
@@ -264,39 +339,91 @@ def resolve_projected_extent(
     return project_region_extent(points, frame)
 
 
-def inset_segment_range(
+def cover_segment_range(
     target_start: Point3D,
     target_end: Point3D,
     slice_thickness: float,
+    slice_spacing: float,
+    start_extension_mm: float = 0.0,
+    end_extension_mm: float = 0.0,
 ) -> tuple[Point3D, Point3D]:
-    """把区间两端向内缩半层厚，得到首末切片的有效中心范围。"""
+    """
+    计算首末切片中心都跨过目标边界的等距范围。
+
+    层厚只做参数合法性校验，不参与中心范围计算。可选的 start/end
+    扩展先沿目标自身方向增加有效覆盖区间，单位为毫米；随后相邻中心
+    始终保持请求的层间距，不能整除时使用最少的额外中心并将剩余超出量
+    对称分到首尾。只有未配置扩展且长度在坐标容差内的区间使用唯一中心。
+    """
 
     if slice_thickness <= 0:
         raise ValueError("层厚必须大于 0")
+    if slice_spacing <= 0:
+        raise ValueError("层间距必须大于 0")
+    start_extension_mm = _non_negative_extension_value(
+        start_extension_mm,
+        endpoint="start",
+    )
+    end_extension_mm = _non_negative_extension_value(
+        end_extension_mm,
+        endpoint="end",
+    )
+
     target_vector = subtract_points(target_end, target_start)
     target_length = vector_length(target_vector)
-    if target_length <= slice_thickness:
+    if (
+        target_length <= CENTER_COVERAGE_TOLERANCE_MM
+        and start_extension_mm == 0.0
+        and end_extension_mm == 0.0
+    ):
         midpoint = Point3D(
             (target_start.x + target_end.x) / 2.0,
             (target_start.y + target_end.y) / 2.0,
             (target_start.z + target_end.z) / 2.0,
         )
         return midpoint, midpoint
+    if target_length == 0.0:
+        raise ValueError("零长度目标无法确定切片范围扩展方向")
 
     direction = normalize_vector(target_vector)
-    half_thickness = slice_thickness / 2.0
-    return (
-        Point3D(
-            target_start.x + direction.x * half_thickness,
-            target_start.y + direction.y * half_thickness,
-            target_start.z + direction.z * half_thickness,
-        ),
-        Point3D(
-            target_end.x - direction.x * half_thickness,
-            target_end.y - direction.y * half_thickness,
-            target_end.z - direction.z * half_thickness,
-        ),
+    effective_start = Point3D(
+        target_start.x - direction.x * start_extension_mm,
+        target_start.y - direction.y * start_extension_mm,
+        target_start.z - direction.z * start_extension_mm,
     )
+    effective_end = Point3D(
+        target_end.x + direction.x * end_extension_mm,
+        target_end.y + direction.y * end_extension_mm,
+        target_end.z + direction.z * end_extension_mm,
+    )
+    effective_length = target_length + start_extension_mm + end_extension_mm
+
+    # 优先按绝对毫米残差判断是否接近整数中心跨度。斜向坐标的
+    # 有限小数位会让理论 10mm 还原成 10.000003mm，需要吸收该误差。
+    raw_step_count = effective_length / slice_spacing
+    nearest_step_count = max(0, int(round(raw_step_count)))
+    nearest_center_span = nearest_step_count * slice_spacing
+    if abs(nearest_center_span - effective_length) <= (
+        CENTER_COVERAGE_TOLERANCE_MM
+    ):
+        step_count = nearest_step_count
+    else:
+        step_count = max(0, math.ceil(raw_step_count))
+    center_span = step_count * slice_spacing
+    center_delta = center_span - effective_length
+
+    # 容差吸收的微小负差也按中点对称分配，不把坐标误差压到单侧。
+    range_start = Point3D(
+        effective_start.x - direction.x * center_delta / 2.0,
+        effective_start.y - direction.y * center_delta / 2.0,
+        effective_start.z - direction.z * center_delta / 2.0,
+    )
+    range_end = Point3D(
+        range_start.x + direction.x * center_span,
+        range_start.y + direction.y * center_span,
+        range_start.z + direction.z * center_span,
+    )
+    return range_start, range_end
 
 
 def recenter_point_in_plane(
@@ -363,13 +490,21 @@ def build_straight_slice_plan(
         projected_extent,
         frame,
     )
+    range_extension = resolve_slice_range_extension(
+        localization_result,
+        cut_mode,
+        plane_config.plane,
+    )
     # 必须先让两个目标边界落到最终切片坐标系的同一平面内中心，再沿二者
-    # 形成的最终法向内缩。否则以后加入倾角时，半层厚只会在旧轴上内缩，
-    # 投影到新法向后的实际内缩量会不足。
-    centered_range_start, centered_range_end = inset_segment_range(
+    # 形成的最终法向计算中心范围。这样带角度切片也能保持固定层间距，
+    # 并让首末切片中心跨过目标边界。
+    centered_range_start, centered_range_end = cover_segment_range(
         centered_target_start,
         centered_target_end,
         plane_config.slice_thickness,
+        plane_config.slice_spacing,
+        start_extension_mm=range_extension.start_mm,
+        end_extension_mm=range_extension.end_mm,
     )
     path_points = [centered_range_start, centered_range_end]
     slices = build_plane_stack_slices(

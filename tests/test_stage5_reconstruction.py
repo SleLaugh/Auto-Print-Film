@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
+import pydicom
 import SimpleITK as sitk
 
 from src.core.context import ProcessingContext
@@ -18,6 +19,7 @@ from src.models import (
     Request,
 )
 from src.planning.whole_range import build_whole_range_plan_from_bbox
+from src.reconstruction import dicom as dicom_writer
 from src.reconstruction.plane_stack import PlaneStackResampler
 from src.reconstruction.windowing import apply_window_to_image
 from src.stages.stage_reconstruction import ReconstructionStage
@@ -574,6 +576,12 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 slice_count=2,
                 window_presets=["骨窗", "脑窗"],
             )
+            plan = context.get_result("mapping")["plans"][0]
+            plan["slice_thickness"] = 5.0
+            plan["slice_spacing"] = 5.0
+            plan["range_end"]["z"] = 7.0
+            plan["path_points"][-1]["z"] = 7.0
+            plan["slices"][-1]["center"]["z"] = 7.0
 
             # 多窗位使用并行路径，验证并发写出的两个 DICOM 序列都完整。
             ReconstructionStage(config={"parallel": True}).execute(context)
@@ -597,6 +605,16 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 root / "横状位" / "骨窗" / "2.dcm",
             ]
             self.assertTrue(all(path.exists() for path in bone_paths))
+            for path in bone_paths:
+                dataset = pydicom.dcmread(str(path))
+                self.assertEqual(float(dataset.SliceThickness), 5.0)
+                self.assertEqual(float(dataset.SpacingBetweenSlices), 5.0)
+            first_position = pydicom.dcmread(str(bone_paths[0])).ImagePositionPatient
+            second_position = pydicom.dcmread(str(bone_paths[1])).ImagePositionPatient
+            self.assertAlmostEqual(
+                abs(float(second_position[2]) - float(first_position[2])),
+                5.0,
+            )
             bone_images = [sitk.ReadImage(str(path)) for path in bone_paths]
             self.assertEqual(
                 len({image.GetMetaData("0020|000e") for image in bone_images}),
@@ -630,6 +648,49 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertEqual(image.GetMetaData("0028|1051").strip(), "65535")
             self.assertIn("骨窗", image.GetMetaData("0008|103e"))
             self.assertIn("\\", image.GetMetaData("0020|0037"))
+
+    def test_geometry_tag_restoration_overrides_gdcm_default_values(self):
+        """GDCM 写成默认值后，应能按计划原子恢复层厚和层间距。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "slice.dcm"
+            image = sitk.GetImageFromArray(np.zeros((2, 2), dtype=np.uint16))
+            image.SetMetaData("0008|0016", "1.2.840.10008.5.1.4.1.1.2")
+            image.SetMetaData("0008|0018", "1.2.826.0.1.3680043.2.1125.901")
+            image.SetMetaData("0018|0050", "1")
+            image.SetMetaData("0018|0088", "1")
+            writer = sitk.ImageFileWriter()
+            writer.KeepOriginalImageUIDOn()
+            writer.SetFileName(str(output_path))
+            writer.Execute(image)
+
+            dicom_writer._restore_planned_slice_geometry_tags(
+                output_path,
+                slice_thickness=5.0,
+                slice_spacing=5.0,
+            )
+
+            dataset = pydicom.dcmread(str(output_path))
+            self.assertEqual(float(dataset.SliceThickness), 5.0)
+            self.assertEqual(float(dataset.SpacingBetweenSlices), 5.0)
+
+    def test_ct_dicom_write_failure_does_not_leave_partial_formal_file(self):
+        """标签校正失败时，不应在正式文件名下留下未校正的 DICOM。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._make_context_with_one_plan(temp_dir, slice_count=1)
+
+            with mock.patch.object(
+                pydicom.dataset.Dataset,
+                "save_as",
+                side_effect=RuntimeError("模拟标签校正失败"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "模拟标签校正失败"):
+                    ReconstructionStage(config={"parallel": False}).execute(context)
+
+            output_dir = Path(context.request.output_dir) / "横状位" / "骨窗"
+            self.assertFalse((output_dir / "1.dcm").exists())
+            self.assertEqual(list(output_dir.glob(".*.tmp.dcm")), [])
 
     def test_stage_writes_localizer_without_counting_it_as_slice(self):
         """验证 `test_stage_writes_localizer_without_counting_it_as_slice` 场景符合预期。"""
@@ -678,6 +739,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             source.SetMetaData("0010|0020", "PID-001")
             source.SetMetaData("0010|0030", "19800101")
             source.SetMetaData("0010|0040", "F")
+            source.SetMetaData("0018|0050", "1")
+            source.SetMetaData("0018|0088", "1")
             source.SetMetaData("0020|000d", "1.2.826.0.1.3680043.2.1125.200")
             source.SetMetaData("0020|000e", "1.2.826.0.1.3680043.2.1125.300")
             source.SetMetaData("0020|0010", "STUDY-001")
@@ -692,6 +755,12 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 slice_count=2,
                 dicom_dir=str(source_dir),
             )
+            plan = context.get_result("mapping")["plans"][0]
+            plan["slice_thickness"] = 5.0
+            plan["slice_spacing"] = 5.0
+            plan["range_end"]["z"] = 7.0
+            plan["path_points"][-1]["z"] = 7.0
+            plan["slices"][-1]["center"]["z"] = 7.0
             ReconstructionStage(config={"parallel": False}).execute(context)
 
             output_paths = [
@@ -725,6 +794,9 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 first.GetMetaData("0008|0018"),
                 second.GetMetaData("0008|0018"),
             )
+            dataset = pydicom.dcmread(str(output_paths[0]))
+            self.assertEqual(float(dataset.SliceThickness), 5.0)
+            self.assertEqual(float(dataset.SpacingBetweenSlices), 5.0)
 
     def test_derived_dicom_decodes_gb18030_surrogate_metadata(self):
         """验证 `test_derived_dicom_decodes_gb18030_surrogate_metadata` 场景符合预期。"""
@@ -738,6 +810,10 @@ class Stage5ReconstructionTest(unittest.TestCase):
                         "11_\udcd0\udcd8ȫ\udcb8\udcb9ƽɨ"
                         "\udca3\udca8\udcb3\udcc9\udcc8ˣ\udca9"
                     ),
+                    "0010|0010": "张三".encode("gb18030").decode(
+                        "utf-8",
+                        errors="surrogateescape",
+                    ),
                     "0020|000d": "1.2.826.0.1.3680043.2.1125.500",
                 },
             })
@@ -749,6 +825,10 @@ class Stage5ReconstructionTest(unittest.TestCase):
             description = image.GetMetaData("0008|1030")
             self.assertNotRegex(description, r"[\ud800-\udfff]")
             self.assertEqual(description.strip(), "11_胸全腹平扫（成人）")
+            dataset = pydicom.dcmread(str(dcm_path))
+            self.assertEqual(dataset.SpecificCharacterSet, "ISO_IR 192")
+            self.assertEqual(str(dataset.PatientName), "张三")
+            self.assertEqual(dataset.StudyDescription, "11_胸全腹平扫（成人）")
 
     @staticmethod
     def _make_context_with_one_plan(

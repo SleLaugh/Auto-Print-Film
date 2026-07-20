@@ -27,6 +27,7 @@ from src.models import (
     VoxelBBox,
     VoxelPoint,
 )
+from src.models.enums import PlaneTypeEnum
 from src.anatomy.lung import estimate_lung_frame_with_diagnostics
 from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 from src.anatomy.spine import estimate_spine_frame_with_diagnostics
@@ -178,7 +179,16 @@ class LocalizationStage(BaseStage):
         DebugLog(f"  输入分割: {seg_path}")
         DebugLog(f"  部位: {request.body_part.value}")
         cut_mode = self._resolve_request_cut_mode(request)
-        cut_config = self._resolve_cut_config(request, cut_mode)
+        # 同一次请求可能同时包含腰椎横状位区间切和矢/冠整切，因此这里
+        # 保留当前部位的全部切法配置。第三步仍只用 cut_config 定位本轮
+        # 所需标签，第四步则按每个计划自己的 cut_mode 读取 cut_configs。
+        cut_configs = self._resolve_cut_configs(request)
+        cut_config = cut_configs.get(cut_mode)
+        if not cut_config:
+            raise ValueError(
+                f"未找到切割方式配置: body_part={request.body_part.value}, "
+                f"cut_mode={cut_mode}"
+            )
         resolved_cut_config = self._resolve_label_aliases(cut_config)
         DebugLog(f"  定位范围模式: {cut_mode}")
         DebugLog(f"  切割配置: {cut_config}")
@@ -307,7 +317,9 @@ class LocalizationStage(BaseStage):
         ).to_dict()
         result = {
             'coords': self._coordinates_to_dict(label_coordinates),
+            'cut_mode': cut_mode,
             'cut_config': cut_config,
+            'cut_configs': cut_configs,
             'resolved_cut_config': resolved_cut_config,
             'label_targets': self._label_targets_to_dict(label_targets),
             'dataset_json_path': str(dataset_json_path),
@@ -339,6 +351,7 @@ class LocalizationStage(BaseStage):
             request=request,
             model_info=model_info,
             cut_config=cut_config,
+            cut_configs=cut_configs,
             resolved_cut_config=resolved_cut_config,
             label_targets=label_targets,
             label_coordinates=label_coordinates,
@@ -1330,6 +1343,7 @@ class LocalizationStage(BaseStage):
         request,
         model_info: Dict[str, Any],
         cut_config: Dict[str, Any],
+        cut_configs: Dict[str, Dict[str, Any]],
         resolved_cut_config: Dict[str, Any],
         label_targets: Dict[str, LabelTarget],
         label_coordinates: Dict[str, LabelCoordinate],
@@ -1365,6 +1379,7 @@ class LocalizationStage(BaseStage):
                 direction=list(image.GetDirection()),
             ),
             cut_config=cut_config,
+            cut_configs=cut_configs,
             resolved_cut_config=resolved_cut_config,
             label_targets=label_targets,
             coords=label_coordinates,
@@ -1423,19 +1438,37 @@ class LocalizationStage(BaseStage):
         whole_range 使用 start/end；interspace 的每个 interval 也使用
         start/end，避免同一配置里混用 labels、数组等多种形态。
         """
-        body_part = getattr(request.body_part, 'value', request.body_part)
         cut_mode = cut_mode or self._resolve_request_cut_mode(request)
+        body_part = getattr(request.body_part, 'value', request.body_part)
+        cut_configs = self._resolve_cut_configs(request)
+        cut_config = cut_configs.get(cut_mode)
+        if not cut_config:
+            raise ValueError(
+                f"未找到切割方式配置: body_part={body_part}, cut_mode={cut_mode}"
+            )
+        return cut_config
+
+    def _resolve_cut_configs(self, request) -> Dict[str, Dict[str, Any]]:
+        """返回当前部位的全部切法配置，并统一校验其中的范围扩展设置。
+
+        阶段三选择标签时仍只使用当前定位模式；完整映射专门提供给第四步，
+        让一次混合状位请求中的整切和区间切都能读取各自配置。
+        """
+
+        body_part = getattr(request.body_part, 'value', request.body_part)
         target_configs = self._localization_config.get('targets', {})
         target_config = target_configs.get(body_part)
         if not target_config:
             raise ValueError(f"未找到部位定位配置: {body_part}")
 
-        cut_config = target_config.get(cut_mode)
-        if not cut_config:
-            raise ValueError(f"未找到切割方式配置: body_part={body_part}, cut_mode={cut_mode}")
-
-        self._validate_cut_config(cut_mode, cut_config)
-        return cut_config
+        cut_configs: Dict[str, Dict[str, Any]] = {}
+        for configured_mode in ('whole_range', 'interspace'):
+            cut_config = target_config.get(configured_mode)
+            if not cut_config:
+                continue
+            self._validate_cut_config(configured_mode, cut_config)
+            cut_configs[configured_mode] = cut_config
+        return cut_configs
 
     def _resolve_label_aliases(self, cut_config: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1487,6 +1520,8 @@ class LocalizationStage(BaseStage):
             whole_range: {"start": "L1", "end": "S1"}
             interspace: {"intervals": [{"start": "L1", "end": "L2"}]}
         """
+        LocalizationStage._validate_slice_range_extension(cut_config)
+
         if cut_mode == 'whole_range':
             if not cut_config.get('start') or not cut_config.get('end'):
                 raise ValueError(f"whole_range 配置必须包含 start/end: {cut_config}")
@@ -1502,3 +1537,49 @@ class LocalizationStage(BaseStage):
             return
 
         raise ValueError(f"未知切割方式: {cut_mode}")
+
+    @staticmethod
+    def _validate_slice_range_extension(cut_config: Dict[str, Any]) -> None:
+        """校验按状位配置的切片范围扩展距离。
+
+        JSON 中 `start`、`end` 的单位固定为毫米。字段可以省略，省略端
+        在第四步按 0mm 处理；显式值必须是非负有限数字，布尔值不视为
+        数字，避免 JSON 的 true/false 被 Python 当成 1/0。
+        """
+
+        extensions = cut_config.get('slice_range_extension')
+        if extensions is None:
+            return
+        if not isinstance(extensions, dict):
+            raise ValueError("slice_range_extension 必须是对象")
+
+        supported_planes = {plane.value for plane in PlaneTypeEnum}
+        for plane_name, endpoint_config in extensions.items():
+            if plane_name not in supported_planes:
+                raise ValueError(
+                    f"slice_range_extension 不支持的状位: {plane_name}"
+                )
+            if not isinstance(endpoint_config, dict):
+                raise ValueError(
+                    f"slice_range_extension.{plane_name} 必须是对象"
+                )
+            unknown_fields = set(endpoint_config) - {'start', 'end'}
+            if unknown_fields:
+                raise ValueError(
+                    f"slice_range_extension.{plane_name} 仅支持 start/end"
+                )
+            for endpoint_name, value in endpoint_config.items():
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                ):
+                    raise ValueError(
+                        f"slice_range_extension.{plane_name}.{endpoint_name} "
+                        "必须是有限数字"
+                    )
+                if float(value) < 0:
+                    raise ValueError(
+                        f"slice_range_extension.{plane_name}.{endpoint_name} "
+                        "不能小于 0"
+                    )

@@ -1,0 +1,67 @@
+# AutoPrintFilm 文档入口
+
+这个目录用于让 Codex 和开发者快速定位当前有效设计。默认先读本文件，再读对应目录的 `README.md`，最后只打开 1 到 3 个相关设计文件。
+
+## 快速阅读路线
+
+| 需求类型 | 优先读取 | 备注 |
+| --- | --- | --- |
+| 框架、六阶段流水线、任务状态、预检、产物管理 | `architecture/README.md` | 只在改跨阶段契约时继续读框架基础设计 |
+| 请求参数、状位配置、外部接口契约 | `architecture/README.md` | 重点读状位配置请求设计 |
+| GDCM、SimpleITK、DICOM 写盘并发安全 | `architecture/README.md` + `modules/dicom/README.md` | 写盘锁属于跨模块约束 |
+| DICOM 文件名、定位图、InstanceNumber | `modules/dicom/README.md` | 不涉及 MPR 几何时不读 reconstruction |
+| 阶段三定位、目标 label、bbox、回正占位 | `modules/localization/README.md` | 只处理目标范围时从这里开始 |
+| 阶段四/五 MPR、重建计划、部位专属坐标系 | `modules/reconstruction/README.md` | 颈椎、胸椎、髋骨相关优先读这里 |
+| 切片中心覆盖、层间距、首尾扩展 | `modules/slicing/README.md` | 当前规则以后 2026-07-20 覆盖设计为准 |
+| 整切、区间切、直线切割流程、切法推导 | `modules/cutting/README.md` | 只改区间生成或切法选择时读这里 |
+| 窗宽窗位、调试总览、CT 背景展示 | `modules/viewer/README.md` | 展示和调试图需求从这里开始 |
+| 追溯历史实施过程 | `archive/plans/` | 默认不要读取 |
+
+## Token 使用规则
+
+- 不要全量读取 `archive/`。
+- 不要为了找当前规则同时读取同主题 plan 和 design；优先读模块 README 指定的当前设计。
+- 如果需求只涉及一个模块，先不要读取其他模块。
+- 如果 README 已经说明某文件是补充或历史，只在定位冲突、查旧证据、写迁移说明时读取。
+
+## 新文档落位规则
+
+后续新增设计或计划时，优先按本节选择路径，不再默认写入顶层 `specs/`。
+
+| 新文档类型 | 写入路径 | 完成后处理 |
+| --- | --- | --- |
+| 系统级或跨阶段设计 | `architecture/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
+| 阶段三定位、label、bbox、回正占位 | `modules/localization/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
+| 阶段四/五 MPR、部位重建、坐标系 | `modules/reconstruction/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
+| 切片中心、层间距、范围扩展 | `modules/slicing/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
+| 直线切割、整切、区间切、切法推导 | `modules/cutting/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
+| DICOM 命名、定位图、输出标签 | `modules/dicom/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
+| 窗宽窗位、调试总览、展示图 | `modules/viewer/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
+| 当前实施计划 | `plans/YYYY-MM-DD-主题.md` | 完成后移入 `archive/plans/` |
+| 被新规则替代的旧设计 | `archive/specs_old/` | 在旧文件顶部注明当前替代文件 |
+
+新增当前有效设计后，同步更新对应目录的 `README.md`，只写阅读优先级和当前规则摘要，不复制正文。
+
+## 写作和注释规则
+
+- 后续新增或修改的项目文档统一使用中文正文。
+- 文档文件名沿用当前中文命名风格：`YYYY-MM-DD-中文主题.md` 或 `YYYY-MM-DD-中文主题设计.md`。
+- 代码里的关键业务注释不要过少；涉及医学语义、坐标系、切片规则、DICOM 标签、异常保护和阶段输入输出时，应补充中文注释。
+- 新增或调整重要方法时，应在文档、注释或 docstring 中说明方法职责、输入、输出和边界条件。
+- 新增或调整关键变量时，应优先让变量名表达含义；业务含义不直观的变量需要用中文注释说明，尤其是方向向量、物理坐标、层厚、层间距、窗宽窗位和 label 映射。
+- 技术名词、代码标识、路径、命令和 DICOM tag 保持原样，不强行翻译。
+
+## 目录说明
+
+- `architecture/`：系统级设计和跨模块约束。
+- `modules/`：按功能模块拆分的当前有效知识。
+- `plans/`：当前开发计划入口；没有当前任务时只保留说明文件。
+- `specs/`：旧路径提示；当前规范不再直接放这里。
+- `archive/`：历史计划和已被替代的旧设计，默认不要读取。
+
+## 维护原则
+
+- 当前有效设计放在 `architecture/` 或 `modules/`，并在对应 `README.md` 标明阅读优先级。
+- 实施计划完成后移入 `archive/plans/`。
+- 被新设计取代的规范移入 `archive/specs_old/`，并在旧文件内保留替代关系说明。
+- 图片跟随对应设计目录，不单独散落在顶层。

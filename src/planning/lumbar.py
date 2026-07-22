@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Tuple
 
 from src.models.enums import PlaneTypeEnum
 from src.planning.base import PlanningResult
+from src.planning.spine_cpr import build_spine_sagittal_cpr_plan
 from src.planning.spine_common import resolve_spine_interspace_segments
 from src.planning.straight import (
     CutSegment,
@@ -59,7 +60,18 @@ class LumbarWholeRangePlanner:
         """按腰椎整体 bbox 为请求中的每个状位展开整切切片。"""
 
         plans = []
+        warnings = []
         for plane_config in request.plane_configs:
+            cpr_plan, cpr_warnings = build_spine_sagittal_cpr_plan(
+                request=request,
+                plane_config=plane_config,
+                localization_result=localization_result,
+                label_names=LUMBAR_LABELS,
+            )
+            warnings.extend(cpr_warnings)
+            if cpr_plan is not None:
+                plans.append(cpr_plan)
+                continue
             plans.append(
                 build_whole_range_plan_from_bbox(
                     request=request,
@@ -70,7 +82,7 @@ class LumbarWholeRangePlanner:
 
         return PlanningResult(
             plans=plans,
-            warnings=[],
+            warnings=warnings,
             planner_name=self.planner_name,
         )
 

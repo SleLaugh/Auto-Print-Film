@@ -5,6 +5,12 @@
 
 from typing import Any, Dict
 
+from src.models.enums import PlaneTypeEnum
+from src.planning.spine_cpr import (
+    SPINE_CPR_LABELS,
+    build_spine_sagittal_cpr_plan,
+    spine_target_bbox,
+)
 from src.planning.base import PlanningResult
 from src.planning.whole_range import build_whole_range_plan_from_bbox
 
@@ -23,17 +29,47 @@ class SingleLabelWholeRangePlanner:
         """根据第三步整体 bbox 为请求中的每个状位生成直线整切计划。"""
 
         plans = []
+        warnings = []
+        spine_labels = SPINE_CPR_LABELS.get(request.body_part.value)
         for plane_config in request.plane_configs:
-            plans.append(
-                build_whole_range_plan_from_bbox(
+            target_region_bbox = None
+            source_labels = None
+            if spine_labels is not None:
+                cpr_plan, cpr_warnings = build_spine_sagittal_cpr_plan(
                     request=request,
                     plane_config=plane_config,
                     localization_result=localization_result,
+                    label_names=spine_labels,
                 )
+                warnings.extend(cpr_warnings)
+                if cpr_plan is not None:
+                    plans.append(cpr_plan)
+                    continue
+                if (
+                    request.body_part.value == "胸椎"
+                    and plane_config.plane == PlaneTypeEnum.冠状位
+                ):
+                    target_region_bbox, source_labels = spine_target_bbox(
+                        localization_result,
+                        spine_labels,
+                    )
+            plan = build_whole_range_plan_from_bbox(
+                request=request,
+                plane_config=plane_config,
+                localization_result=localization_result,
+                source_labels=source_labels,
+                target_region_bbox=target_region_bbox,
             )
+            if (
+                request.body_part.value == "胸椎"
+                and plane_config.plane == PlaneTypeEnum.冠状位
+                and target_region_bbox is not None
+            ):
+                plan.localizer_plane = PlaneTypeEnum.矢状位.value
+            plans.append(plan)
 
         return PlanningResult(
             plans=plans,
-            warnings=[],
+            warnings=warnings,
             planner_name=self.planner_name,
         )

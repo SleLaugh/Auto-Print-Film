@@ -6,7 +6,15 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from src.models import AnatomicalFrame, AnatomicalGeometryResult, ExtentMM, Point3D, SlicePlan
+from src.models import (
+    AnatomicalBounds,
+    AnatomicalFrame,
+    AnatomicalGeometryResult,
+    AxisBounds,
+    ExtentMM,
+    Point3D,
+    SlicePlan,
+)
 from src.models.enums import PlaneTypeEnum, CutLineExtentModeEnum
 from src.planning.geometry import (
     build_plane_stack_slices,
@@ -14,6 +22,7 @@ from src.planning.geometry import (
 )
 from src.planning.straight import (
     anatomical_straight_frame,
+    bbox_physical_corners,
     CutSegment,
     build_straight_slice_plan,
     cover_segment_range,
@@ -201,6 +210,7 @@ def build_whole_range_plan_from_bbox(
     plane_config: Any,
     localization_result: Dict[str, Any],
     source_labels: Optional[List[str]] = None,
+    target_region_bbox: Optional[Dict[str, float]] = None,
 ) -> SlicePlan:
     """
     根据整体 bbox 构建指定状位的默认直线整切计划。
@@ -238,6 +248,7 @@ def build_whole_range_plan_from_bbox(
             localization_result=localization_result,
             anatomical_frame=geometry.global_frame,
             source_labels=source_labels,
+            target_region_bbox=target_region_bbox,
         )
         return _apply_localizer_preferences(
             plan,
@@ -245,7 +256,7 @@ def build_whole_range_plan_from_bbox(
             geometry,
         )
 
-    bbox = localization_result.get("correction_scope_bbox")
+    bbox = target_region_bbox or localization_result.get("correction_scope_bbox")
     if not bbox:
         raise ValueError("定位结果缺少 correction_scope_bbox")
 
@@ -332,10 +343,19 @@ def _build_whole_range_plan_from_anatomical_frame(
     localization_result: Dict[str, Any],
     anatomical_frame: AnatomicalFrame,
     source_labels: Optional[List[str]],
+    target_region_bbox: Optional[Dict[str, float]] = None,
 ) -> SlicePlan:
     """用第三步给出的中心、方向和投影边界构造居中的平行整切计划。"""
 
-    bounds = anatomical_frame.bounds
+    bounds = (
+        _anatomical_bounds_from_bbox(
+            target_region_bbox,
+            localization_result["image"],
+            anatomical_frame,
+        )
+        if target_region_bbox is not None
+        else anatomical_frame.bounds
+    )
     lr_center = _axis_midpoint(bounds.left_right)
     ap_center = _axis_midpoint(bounds.anterior_posterior)
     si_center = _axis_midpoint(bounds.superior_inferior)
@@ -392,7 +412,11 @@ def _build_whole_range_plan_from_anatomical_frame(
         anatomical_frame,
         localization_result["image"],
     )
-    if plane_config.line_extent_mode == CutLineExtentModeEnum.整平面:
+    if target_region_bbox is not None:
+        centered_target_start = target_start
+        centered_target_end = target_end
+        extent = target_extent
+    elif plane_config.line_extent_mode == CutLineExtentModeEnum.整平面:
         target_bbox = localization_result.get("correction_scope_bbox")
         if not target_bbox:
             raise ValueError("定位结果缺少 correction_scope_bbox")
@@ -472,6 +496,29 @@ def _build_whole_range_plan_from_anatomical_frame(
         localizer_reference=localizer_reference,
         warnings=list(anatomical_frame.warnings),
         confidence=anatomical_frame.confidence,
+    )
+
+
+def _anatomical_bounds_from_bbox(
+    bbox: Dict[str, float],
+    image_info: Dict[str, Any],
+    anatomical_frame: AnatomicalFrame,
+) -> AnatomicalBounds:
+    """把目标 bbox 投影到既有解剖坐标轴上，得到局部输出范围。"""
+
+    corners = bbox_physical_corners(bbox, image_info)
+
+    def bounds_for_axis(axis: Point3D) -> AxisBounds:
+        values = [
+            corner.x * axis.x + corner.y * axis.y + corner.z * axis.z
+            for corner in corners
+        ]
+        return AxisBounds(min(values), max(values))
+
+    return AnatomicalBounds(
+        left_right=bounds_for_axis(anatomical_frame.left_right_axis),
+        anterior_posterior=bounds_for_axis(anatomical_frame.anterior_posterior_axis),
+        superior_inferior=bounds_for_axis(anatomical_frame.superior_inferior_axis),
     )
 
 

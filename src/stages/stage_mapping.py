@@ -50,6 +50,13 @@ _OVERVIEW_AXES = {
 }
 """横、矢、冠零角度直线计划对应的总览输入轴配置。"""
 
+_LOCALIZER_OVERVIEW_AXES = {
+    "横状位": _OverviewAxes(stack_axis=0, fixed_axis=2, line_axis=1),
+    "矢状位": _OverviewAxes(stack_axis=1, fixed_axis=0, line_axis=2),
+    "冠状位": _OverviewAxes(stack_axis=0, fixed_axis=1, line_axis=2),
+}
+"""按原始正交定位背景选择总览固定轴。"""
+
 
 class MappingStage(BaseStage):
     """切片规划阶段"""
@@ -253,6 +260,8 @@ class MappingStage(BaseStage):
             "interspace": "区",
             "椎间切": "区",
             "区间切": "区",
+            "cpr": "CPR",
+            "CPR": "CPR",
         }
 
         planes = []
@@ -708,7 +717,7 @@ class MappingStage(BaseStage):
         overview_paths: Dict[str, str] = {}
         native_overview_paths: Dict[str, str] = {}
         for plane, plane_plans in plans_by_plane.items():
-            axes = _OVERVIEW_AXES[plane]
+            axes = self._overview_axes_for_plans(plane, plane_plans)
             native_overlay_array = np.zeros(
                 tuple(reversed(reference_image.GetSize())),
                 dtype=np.uint16,
@@ -758,6 +767,23 @@ class MappingStage(BaseStage):
             native_overview_paths[plane] = str(native_output_path)
 
         return overview_paths, native_overview_paths
+
+    @staticmethod
+    def _overview_axes_for_plans(
+        plane: str,
+        plans: list[Dict[str, Any]],
+    ) -> _OverviewAxes:
+        """CPR 总览按定位背景选轴；普通切片继续按输出状位选轴。"""
+
+        for plan in plans:
+            if plan.get("geometry_type") != "curved_stack":
+                continue
+            localizer_plane = str(plan.get("localizer_plane") or plane)
+            return _LOCALIZER_OVERVIEW_AXES.get(
+                localizer_plane,
+                _OVERVIEW_AXES[plane],
+            )
+        return _OVERVIEW_AXES[plane]
 
     @staticmethod
     def _legacy_overview_path(
@@ -847,6 +873,16 @@ class MappingStage(BaseStage):
         图像 x/y/z 索引轴，只适用于本阶段已经支持的零角度横、矢、冠计划。
         """
 
+        if plan.get("geometry_type") == "curved_stack":
+            self._paint_curved_plan_overview(
+                reference_image=reference_image,
+                overlay_array=overlay_array,
+                plan=plan,
+                axes=axes,
+                value=value,
+            )
+            return
+
         slices = plan.get("slices", [])
         if not slices:
             return
@@ -902,6 +938,146 @@ class MappingStage(BaseStage):
                 half_height_voxels=half_height_voxels,
                 value=value,
             )
+
+    def _paint_curved_plan_overview(
+        self,
+        reference_image: sitk.Image,
+        overlay_array: np.ndarray,
+        plan: Dict[str, Any],
+        axes: _OverviewAxes,
+        value: int,
+    ) -> None:
+        """把 CPR 中心曲线投影到指定原始定位背景上。"""
+
+        curve_points = plan.get("curve_points") or []
+        if len(curve_points) < 2:
+            return
+        fixed_index = self._curved_overview_fixed_index(
+            reference_image,
+            plan,
+            axes.fixed_axis,
+        )
+        offsets = plan.get("offsets_mm") or [0.0]
+        for offset_mm in offsets:
+            projected_points = [
+                self._offset_curve_point(
+                    point,
+                    plan.get("offset_axis"),
+                    float(offset_mm),
+                )
+                for point in curve_points
+            ]
+            for start_point, end_point in zip(projected_points, projected_points[1:]):
+                self._paint_projected_physical_line(
+                    reference_image=reference_image,
+                    overlay_array=overlay_array,
+                    start_point=start_point,
+                    end_point=end_point,
+                    axes=axes,
+                    fixed_index=fixed_index,
+                    value=value,
+                )
+
+    @staticmethod
+    def _curved_overview_fixed_index(
+        reference_image: sitk.Image,
+        plan: Dict[str, Any],
+        fixed_axis: int,
+    ) -> int:
+        """选择 CPR 调试总览经过目标曲线的原始正交层。"""
+
+        localizer_reference = plan.get("localizer_reference")
+        if localizer_reference:
+            reference_index = reference_image.TransformPhysicalPointToContinuousIndex((
+                float(localizer_reference["x"]),
+                float(localizer_reference["y"]),
+                float(localizer_reference["z"]),
+            ))
+            fixed_index = int(round(float(reference_index[fixed_axis])))
+        else:
+            curve_indices = [
+                reference_image.TransformPhysicalPointToContinuousIndex((
+                    float(point["x"]),
+                    float(point["y"]),
+                    float(point["z"]),
+                ))
+                for point in plan.get("curve_points", [])
+            ]
+            fixed_index = int(round(float(np.median([
+                index_xyz[fixed_axis] for index_xyz in curve_indices
+            ]))))
+        return min(max(fixed_index, 0), reference_image.GetSize()[fixed_axis] - 1)
+
+    @staticmethod
+    def _offset_curve_point(
+        point: Dict[str, Any],
+        offset_axis: Dict[str, Any] | None,
+        offset_mm: float,
+    ) -> Dict[str, float]:
+        """把中心曲线点按 CPR 左右偏移转换为物理点。"""
+
+        if not offset_axis:
+            return {
+                "x": float(point["x"]),
+                "y": float(point["y"]),
+                "z": float(point["z"]),
+            }
+        return {
+            "x": float(point["x"]) + float(offset_axis["x"]) * offset_mm,
+            "y": float(point["y"]) + float(offset_axis["y"]) * offset_mm,
+            "z": float(point["z"]) + float(offset_axis["z"]) * offset_mm,
+        }
+
+    def _paint_projected_physical_line(
+        self,
+        reference_image: sitk.Image,
+        overlay_array: np.ndarray,
+        start_point: Dict[str, float],
+        end_point: Dict[str, float],
+        axes: _OverviewAxes,
+        fixed_index: int,
+        value: int,
+    ) -> None:
+        """把物理线段投影到一个固定正交定位层。"""
+
+        start_xyz = np.asarray(
+            reference_image.TransformPhysicalPointToContinuousIndex((
+                start_point["x"],
+                start_point["y"],
+                start_point["z"],
+            )),
+            dtype=float,
+        )
+        end_xyz = np.asarray(
+            reference_image.TransformPhysicalPointToContinuousIndex((
+                end_point["x"],
+                end_point["y"],
+                end_point["z"],
+            )),
+            dtype=float,
+        )
+        difference = end_xyz - start_xyz
+        steps = max(
+            int(np.ceil(abs(difference[axes.stack_axis]))),
+            int(np.ceil(abs(difference[axes.line_axis]))),
+            1,
+        )
+        size_xyz = tuple(reversed(overlay_array.shape))
+        if not 0 <= fixed_index < size_xyz[axes.fixed_axis]:
+            return
+        for step in range(steps + 1):
+            index = start_xyz + difference * step / steps
+            index_xyz = [0, 0, 0]
+            index_xyz[axes.stack_axis] = int(round(float(index[axes.stack_axis])))
+            index_xyz[axes.line_axis] = int(round(float(index[axes.line_axis])))
+            index_xyz[axes.fixed_axis] = fixed_index
+            if not all(0 <= index_xyz[axis] < size_xyz[axis] for axis in range(3)):
+                continue
+            overlay_array[
+                index_xyz[2],
+                index_xyz[1],
+                index_xyz[0],
+            ] = value
 
     def _paint_overview_index_line(
         self,

@@ -21,7 +21,7 @@ import SimpleITK as sitk
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.models import ReconstructionStageResult
-from src.reconstruction import PlaneStackResampler
+from src.reconstruction import CurvedStackResampler, PlaneStackResampler
 from src.reconstruction.dicom import (
     new_uid,
     read_source_dicom_metadata,
@@ -29,7 +29,7 @@ from src.reconstruction.dicom import (
     write_localizer_dicom,
 )
 from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
-from src.utils import DebugLog
+from src.utils import DebugLog, is_debug_log_file_enabled
 
 
 class ReconstructionStage(BaseStage):
@@ -164,7 +164,7 @@ class ReconstructionStage(BaseStage):
         if localizer_image is None and isinstance(image, sitk.Image):
             localizer_image = self._build_plan_localizer(image, plan)
 
-        resampler = PlaneStackResampler()
+        resampler = self._resampler_for_plan(plan)
         windows = unique_window_presets(plan["window_presets"])
         series_uids = {window.name: new_uid() for window in windows}
         localizer_series_uids = {window.name: new_uid() for window in windows}
@@ -258,6 +258,9 @@ class ReconstructionStage(BaseStage):
         plan: Dict[str, Any],
     ) -> sitk.Image | None:
         """从代表性原 CT 正交层烧录每张计划切片与定位面的真实交线。"""
+
+        if plan.get("geometry_type") == "curved_stack":
+            return cls._build_curved_plan_localizer(image, plan)
 
         axes = cls._LOCALIZER_DRAW_AXES.get(str(plan.get("plane", "")))
         if axes is None:
@@ -394,6 +397,169 @@ class ReconstructionStage(BaseStage):
             "\\".join(f"{float(value):.12g}" for value in first_pixel),
         )
         return localizer
+
+    @classmethod
+    def _build_curved_plan_localizer(
+        cls,
+        image: sitk.Image,
+        plan: Dict[str, Any],
+    ) -> sitk.Image | None:
+        """CPR 定位图直接投影中心曲线，避免把曲面误画成平面交线。"""
+
+        curve_points = plan.get("curve_points") or []
+        if len(curve_points) < 2:
+            return None
+        localizer_plane = str(plan.get("localizer_plane") or plan.get("plane"))
+        try:
+            fixed_axis = cls._LOCALIZER_FIXED_AXES[localizer_plane]
+        except KeyError as error:
+            raise ValueError(f"不支持的定位图参考状位: {localizer_plane}") from error
+        display_axes = [axis for axis in range(3) if axis != fixed_axis]
+
+        fixed_index = cls._curved_localizer_fixed_index(image, plan, fixed_axis)
+        roi_index = [0, 0, 0]
+        roi_size = list(image.GetSize())
+        roi_index[fixed_axis] = fixed_index
+        roi_size[fixed_axis] = 1
+        representative_slice = sitk.RegionOfInterest(image, roi_size, roi_index)
+        representative_slice = sitk.Cast(representative_slice, sitk.sitkFloat32)
+        localizer_array = sitk.GetArrayFromImage(representative_slice)
+        source_array = sitk.GetArrayViewFromImage(image)
+        source_min = float(np.min(source_array))
+        source_max = float(np.max(source_array))
+        center_value = source_max + max(source_max - source_min, 1.0)
+        size_xyz = representative_slice.GetSize()
+
+        def paint(start_xyz: np.ndarray, end_xyz: np.ndarray) -> None:
+            difference = end_xyz - start_xyz
+            steps = max(
+                int(np.ceil(abs(difference[display_axes[0]]))),
+                int(np.ceil(abs(difference[display_axes[1]]))),
+                1,
+            )
+            for step in range(steps + 1):
+                index = start_xyz + difference * step / steps
+                index_xyz = [0, 0, 0]
+                index_xyz[display_axes[0]] = int(round(float(index[display_axes[0]])))
+                index_xyz[display_axes[1]] = int(round(float(index[display_axes[1]])))
+                index_xyz[fixed_axis] = 0
+                if not all(
+                    0 <= index_xyz[axis] < size_xyz[axis]
+                    for axis in range(3)
+                ):
+                    continue
+                localizer_array[
+                    index_xyz[2],
+                    index_xyz[1],
+                    index_xyz[0],
+                ] = center_value
+
+        for offset_mm in cls._curved_localizer_offsets(plan):
+            projected_points = [
+                cls._offset_curve_point(point, plan.get("offset_axis"), offset_mm)
+                for point in curve_points
+            ]
+            for start_point, end_point in zip(projected_points, projected_points[1:]):
+                start_xyz = np.asarray(
+                    image.TransformPhysicalPointToContinuousIndex(start_point),
+                    dtype=float,
+                )
+                end_xyz = np.asarray(
+                    image.TransformPhysicalPointToContinuousIndex(end_point),
+                    dtype=float,
+                )
+                paint(start_xyz, end_xyz)
+
+        painted_slice = sitk.GetImageFromArray(localizer_array)
+        painted_slice.CopyInformation(representative_slice)
+        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+        if float(direction[2, 2]) > 0.0:
+            painted_slice = sitk.Flip(
+                painted_slice,
+                [False, False, True],
+                flipAboutOrigin=False,
+            )
+        localizer = cls._extract_projection_axis(painted_slice, fixed_axis)
+        remaining_axes = [axis for axis in range(3) if axis != fixed_axis]
+        localizer_direction = np.asarray(
+            painted_slice.GetDirection(),
+            dtype=float,
+        ).reshape(3, 3)
+        row_direction = localizer_direction[:, remaining_axes[0]]
+        column_direction = localizer_direction[:, remaining_axes[1]]
+        first_pixel = painted_slice.TransformIndexToPhysicalPoint((0, 0, 0))
+        localizer.SetMetaData(
+            "0020|0037",
+            "\\".join(
+                f"{float(value):.12g}"
+                for value in (*row_direction, *column_direction)
+            ),
+        )
+        localizer.SetMetaData(
+            "0020|0032",
+            "\\".join(f"{float(value):.12g}" for value in first_pixel),
+        )
+        return localizer
+
+    @classmethod
+    def _curved_localizer_fixed_index(
+        cls,
+        image: sitk.Image,
+        plan: Dict[str, Any],
+        fixed_axis: int,
+    ) -> int:
+        """选择经过目标曲线的原始正交定位层。"""
+
+        localizer_reference = plan.get("localizer_reference")
+        if localizer_reference:
+            reference_index = image.TransformPhysicalPointToContinuousIndex((
+                float(localizer_reference["x"]),
+                float(localizer_reference["y"]),
+                float(localizer_reference["z"]),
+            ))
+            fixed_index = int(round(float(reference_index[fixed_axis])))
+        else:
+            curve_indices = [
+                image.TransformPhysicalPointToContinuousIndex((
+                    float(point["x"]),
+                    float(point["y"]),
+                    float(point["z"]),
+                ))
+                for point in plan.get("curve_points", [])
+            ]
+            fixed_index = int(round(float(np.median([
+                index_xyz[fixed_axis] for index_xyz in curve_indices
+            ]))))
+        return min(max(fixed_index, 0), image.GetSize()[fixed_axis] - 1)
+
+    @staticmethod
+    def _curved_localizer_offsets(plan: Dict[str, Any]) -> List[float]:
+        """返回 CPR 定位图需要投影的曲面偏移。"""
+
+        offsets = plan.get("offsets_mm")
+        if not offsets:
+            return [0.0]
+        return [float(offset) for offset in offsets]
+
+    @staticmethod
+    def _offset_curve_point(
+        point: Dict[str, Any],
+        offset_axis: Dict[str, Any] | None,
+        offset_mm: float,
+    ) -> tuple[float, float, float]:
+        """把 CPR 中心曲线点按左右偏移投影到定位图。"""
+
+        if not offset_axis:
+            return (
+                float(point["x"]),
+                float(point["y"]),
+                float(point["z"]),
+            )
+        return (
+            float(point["x"]) + float(offset_axis["x"]) * offset_mm,
+            float(point["y"]) + float(offset_axis["y"]) * offset_mm,
+            float(point["z"]) + float(offset_axis["z"]) * offset_mm,
+        )
 
     @classmethod
     def _resolve_localizer_axes(
@@ -592,6 +758,63 @@ class ReconstructionStage(BaseStage):
                 study_uid=study_uid,
                 source_metadata=source_metadata,
             )
+            if is_debug_log_file_enabled():
+                ReconstructionStage._write_debug_localizer_png(
+                    localizer_image=localizer_image,
+                    windowed_localizer=windowed_localizer,
+                    output_path=output_dir / "Localizer.png",
+                )
+
+    @staticmethod
+    def _write_debug_localizer_png(
+        *,
+        localizer_image: sitk.Image,
+        windowed_localizer: sitk.Image,
+        output_path: Path,
+    ) -> None:
+        """把定位图额外写成 PNG；红色标出阶段五烧录的定位线。"""
+
+        background = ReconstructionStage._localizer_array_2d(windowed_localizer)
+        source = ReconstructionStage._localizer_array_2d(localizer_image)
+        background_u8 = np.clip(
+            background.astype(np.float32) / 65535.0 * 180.0,
+            0.0,
+            180.0,
+        ).astype(np.uint8)
+        line_mask = np.isclose(
+            source.astype(np.float32),
+            float(np.max(source)),
+            rtol=0.0,
+            atol=1e-4,
+        )
+        red = background_u8.copy()
+        green = background_u8.copy()
+        blue = background_u8.copy()
+        red[line_mask] = 255
+        green[line_mask] = 0
+        blue[line_mask] = 0
+        rgb = np.stack([red, green, blue], axis=-1)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        sitk.WriteImage(
+            sitk.GetImageFromArray(rgb, isVector=True),
+            str(output_path),
+        )
+
+    @staticmethod
+    def _localizer_array_2d(image: sitk.Image) -> np.ndarray:
+        """读取定位图为二维数组，兼容单层三维图像。"""
+
+        array = sitk.GetArrayFromImage(image)
+        if array.ndim == 2:
+            return array
+        singleton_axes = [
+            axis
+            for axis, size in enumerate(array.shape)
+            if size == 1
+        ]
+        if array.ndim == 3 and singleton_axes:
+            return np.squeeze(array, axis=singleton_axes[0])
+        raise ValueError("定位图 PNG 只支持二维或单层三维图像")
 
     @staticmethod
     def _group_plans_by_plane(
@@ -619,6 +842,8 @@ class ReconstructionStage(BaseStage):
     def _plan_group_name(plan: Dict[str, Any]) -> str:
         """返回用于输出目录的安全切割组名称；整切直接位于窗位目录。"""
 
+        if plan.get("geometry_type") == "curved_stack":
+            return ""
         if plan.get("cut_mode") in {"whole_range", "整切"}:
             return ""
         group_name = str(plan.get("group_name", ""))
@@ -637,10 +862,11 @@ class ReconstructionStage(BaseStage):
             raise ValueError(f"plan_id={plan_id} 必须是对象")
         if not plan.get("plan_id"):
             raise ValueError("plan_id 不能为空")
-        if plan.get("geometry_type") != "plane_stack":
+        geometry_type = plan.get("geometry_type")
+        if geometry_type not in {"plane_stack", "curved_stack"}:
             raise ValueError(
-                f"plan_id={plan_id} geometry_type={plan.get('geometry_type')} "
-                "当前阶段五仅支持 plane_stack"
+                f"plan_id={plan_id} geometry_type={geometry_type} "
+                "当前阶段五仅支持 plane_stack/curved_stack"
             )
         for field_name in (
             "plane",
@@ -681,6 +907,31 @@ class ReconstructionStage(BaseStage):
                     raise ValueError(
                         f"plan_id={plan_id} slice 缺少字段: {field_name}"
                     )
+            if geometry_type == "curved_stack" and "offset_mm" not in planned_slice:
+                raise ValueError(f"plan_id={plan_id} CPR slice 缺少字段: offset_mm")
+        if geometry_type == "curved_stack":
+            for field_name in (
+                "curve_points",
+                "curve_spacing_mm",
+                "offset_axis",
+                "offsets_mm",
+            ):
+                if field_name not in plan:
+                    raise ValueError(f"plan_id={plan_id} 缺少字段: {field_name}")
+            if not isinstance(plan["curve_points"], list) or len(plan["curve_points"]) < 2:
+                raise ValueError(f"plan_id={plan_id} curve_points 至少需要 2 个点")
+            if float(plan["curve_spacing_mm"]) <= 0:
+                raise ValueError(f"plan_id={plan_id} curve_spacing_mm 必须大于 0")
+            if not isinstance(plan["offsets_mm"], list) or not plan["offsets_mm"]:
+                raise ValueError(f"plan_id={plan_id} offsets_mm 不能为空")
+
+    @staticmethod
+    def _resampler_for_plan(plan: Dict[str, Any]) -> Any:
+        """按阶段四几何类型选择专用重采样器。"""
+
+        if plan.get("geometry_type") == "curved_stack":
+            return CurvedStackResampler()
+        return PlaneStackResampler()
 
     @staticmethod
     def _build_plan_summary(

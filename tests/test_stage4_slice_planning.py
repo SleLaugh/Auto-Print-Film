@@ -26,8 +26,19 @@ from src.stages.stage_mapping import MappingStage
 class Stage4SlicePlanningTest(unittest.TestCase):
     """汇总 `Stage4SlicePlanningTest` 相关测试场景。"""
 
-    def test_mapping_derives_lumbar_axial_interspace_and_sagittal_whole_range(self):
-        """验证 `test_mapping_derives_lumbar_axial_interspace_and_sagittal_whole_range` 场景符合预期。"""
+    @staticmethod
+    def _max_line_fit_residual(points_zyx: np.ndarray) -> float:
+        """返回二维高亮点到最佳直线的最大像素残差。"""
+
+        rows = points_zyx[:, 0].astype(float)
+        columns = points_zyx[:, 1].astype(float)
+        matrix = np.column_stack([rows, np.ones_like(rows)])
+        slope, intercept = np.linalg.lstsq(matrix, columns, rcond=None)[0]
+        fitted = slope * rows + intercept
+        return float(np.max(np.abs(columns - fitted)))
+
+    def test_mapping_derives_lumbar_axial_interspace_and_sagittal_cpr(self):
+        """腰椎横状位保持区间切基线，矢状位生成 CPR。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = Request(
@@ -52,16 +63,80 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
             plans = context.get_result("mapping")["plans"]
             self.assertEqual(
-                [(plan["plane"], plan["cut_mode"]) for plan in plans],
                 [
-                    ("横状位", "interspace"),
-                    ("横状位", "interspace"),
-                    ("横状位", "interspace"),
-                    ("横状位", "interspace"),
-                    ("横状位", "interspace"),
-                    ("矢状位", "whole_range"),
+                    (
+                        plan["plane"],
+                        plan["cut_mode"],
+                        plan["geometry_type"],
+                    )
+                    for plan in plans
+                ],
+                [
+                    ("横状位", "interspace", "plane_stack"),
+                    ("横状位", "interspace", "plane_stack"),
+                    ("横状位", "interspace", "plane_stack"),
+                    ("横状位", "interspace", "plane_stack"),
+                    ("横状位", "interspace", "plane_stack"),
+                    ("矢状位", "cpr", "curved_stack"),
                 ],
             )
+            cpr_plan = plans[-1]
+            self.assertEqual(cpr_plan["group_name"], "CPR")
+            self.assertEqual(cpr_plan["localizer_plane"], "矢状位")
+            self.assertIn("curve_points", cpr_plan)
+            self.assertIn(0.0, cpr_plan["offsets_mm"])
+
+    def test_spine_sagittal_cpr_falls_back_when_fewer_than_three_labels(self):
+        """有效椎体少于 3 个时，矢状位 CPR 应降级为现有直线 MPR。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.矢状位, 1.0, 3.0,
+                    ["骨窗"],
+                ),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        for label_name in ("vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1"):
+            localization_result["coords"][label_name]["found"] = False
+
+        result = LumbarWholeRangePlanner().build_plans(request, localization_result)
+
+        self.assertEqual(result.plans[0].geometry_type, "plane_stack")
+        self.assertIn("CPR 降级", result.warnings[0])
+
+    def test_cervical_sagittal_uses_cpr_and_axial_stays_plane_stack(self):
+        """颈椎只把矢状位切到 CPR，横状位仍为直线 MPR。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.颈椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.横状位, 1.0, 3.0,
+                    ["骨窗"],
+                ),
+                PlaneConfig(
+                    PlaneTypeEnum.矢状位, 1.0, 3.0,
+                    ["骨窗"],
+                ),
+            ],
+        )
+
+        result = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            self._spine_localization_result(("C1", "C2", "C3"), "颈椎"),
+        )
+
+        self.assertEqual(
+            [(plan.plane, plan.geometry_type) for plan in result.plans],
+            [("横状位", "plane_stack"), ("矢状位", "curved_stack")],
+        )
 
     def test_overview_with_image_preserves_ct_and_highlights_overlay_labels(self):
         """验证 `test_overview_with_image_preserves_ct_and_highlights_overlay_labels` 场景符合预期。"""
@@ -617,6 +692,134 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(
             sagittal.slices[0].normal.to_dict(),
             {"x": -1.0, "y": -0.0, "z": -0.0},
+        )
+
+    def test_thoracic_coronal_uses_cpr_curve_on_sagittal_localizer(self):
+        """胸椎冠状位应按 CPR 曲线规划，并在矢状位定位图显示 T 段。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.胸椎,
+            plane_configs=[
+                PlaneConfig(PlaneTypeEnum.冠状位, 2.0, 5.0, ["骨窗"]),
+            ],
+        )
+        localization_result = self._spine_localization_result(
+            ("C7", "T1", "T2", "T3", "T12", "L1"),
+            "胸椎",
+        )
+        localization_result["correction_scope_bbox"] = {
+            "z_min": 0, "z_max": 100,
+            "y_min": 10, "y_max": 90,
+            "x_min": 0, "x_max": 100,
+        }
+        localization_result["coords"]["vertebrae_T1"]["bbox"].update({
+            "z_min": 70, "z_max": 75,
+            "y_min": 40, "y_max": 60,
+            "x_min": 45, "x_max": 55,
+        })
+        localization_result["coords"]["vertebrae_T1"]["centroid"].update({
+            "z": 75.0, "y": 50.0, "x": 50.0,
+        })
+        localization_result["coords"]["vertebrae_T2"]["bbox"].update({
+            "z_min": 60, "z_max": 65,
+            "y_min": 40, "y_max": 60,
+            "x_min": 45, "x_max": 55,
+        })
+        localization_result["coords"]["vertebrae_T2"]["centroid"].update({
+            "z": 65.0, "y": 50.0, "x": 50.0,
+        })
+        localization_result["coords"]["vertebrae_T3"]["bbox"].update({
+            "z_min": 50, "z_max": 55,
+            "y_min": 40, "y_max": 60,
+            "x_min": 45, "x_max": 55,
+        })
+        localization_result["coords"]["vertebrae_T3"]["centroid"].update({
+            "z": 55.0, "y": 50.0, "x": 50.0,
+        })
+        localization_result["coords"]["vertebrae_T12"]["bbox"].update({
+            "z_min": 10, "z_max": 15,
+            "y_min": 40, "y_max": 60,
+            "x_min": 45, "x_max": 55,
+        })
+        localization_result["coords"]["vertebrae_T12"]["centroid"].update({
+            "z": 10.0, "y": 50.0, "x": 50.0,
+        })
+        localization_result["anatomical_geometry"] = {
+            "global_frame": {
+                "origin": {"x": 50.0, "y": 50.0, "z": 50.0},
+                "left_right_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "anterior_posterior_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "superior_inferior_axis": {"x": 0.0, "y": 0.0, "z": 1.0},
+                "bounds": {
+                    "left_right": {"minimum": 0.0, "maximum": 100.0},
+                    "anterior_posterior": {"minimum": 10.0, "maximum": 90.0},
+                    "superior_inferior": {"minimum": 0.0, "maximum": 100.0},
+                },
+                "method": "spine_endpoint_centroids",
+                "confidence": 1.0,
+                "applied": True,
+                "warnings": [],
+            },
+            "local_frames": {},
+        }
+
+        plan = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.geometry_type, "curved_stack")
+        self.assertEqual(plan.cut_mode, "cpr")
+        self.assertEqual(plan.group_name, "CPR")
+        self.assertEqual(plan.plane, "冠状位")
+        self.assertEqual(plan.localizer_plane, "矢状位")
+        self.assertEqual(plan.source_labels, [
+            "vertebrae_T1",
+            "vertebrae_T2",
+            "vertebrae_T3",
+            "vertebrae_T12",
+        ])
+        self.assertEqual(plan.offset_axis.to_dict(), {"x": 0.0, "y": 1.0, "z": 0.0})
+        self.assertIn(0.0, plan.offsets_mm)
+        self.assertGreater(len(plan.offsets_mm), 1)
+        self.assertAlmostEqual(plan.extent_mm.width, 10.0)
+        self.assertAlmostEqual(plan.extent_mm.height, 65.0)
+        self.assertAlmostEqual(plan.localizer_reference.x, 50.0)
+        self.assertAlmostEqual(plan.localizer_reference.z, 51.25)
+
+    def test_thoracic_sagittal_cpr_ignores_c7_l1_endpoint_helpers(self):
+        """胸椎 CPR 曲线只使用 T 段椎体，不把 C7/L1 画进去。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.胸椎,
+            plane_configs=[
+                PlaneConfig(PlaneTypeEnum.矢状位, 2.0, 5.0, ["骨窗"]),
+            ],
+        )
+        localization_result = self._spine_localization_result(
+            ("C7", "T1", "T2", "T3", "L1"),
+            "胸椎",
+        )
+        localization_result["coords"]["vertebrae_C7"]["centroid"]["z"] = 100.0
+        localization_result["coords"]["vertebrae_L1"]["centroid"]["z"] = -100.0
+        localization_result["coords"]["vertebrae_T1"]["centroid"]["z"] = 30.0
+        localization_result["coords"]["vertebrae_T2"]["centroid"]["z"] = 20.0
+        localization_result["coords"]["vertebrae_T3"]["centroid"]["z"] = 10.0
+
+        plan = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.geometry_type, "curved_stack")
+        self.assertEqual(plan.localizer_plane, "矢状位")
+        self.assertEqual(
+            [point.z for point in plan.curve_points],
+            [30.0, 20.0, 10.0],
         )
 
     def test_hip_only_tilts_axial_and_sets_three_localizer_planes(self):
@@ -1646,7 +1849,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             center_cross_path = Path(result["debug_center_cross_overlay_path"])
             self.assertEqual(
                 center_cross_path.name,
-                "十字中线_横+矢+冠_区+整.nii.gz",
+                "十字中线_横+矢+冠_区+CPR.nii.gz",
             )
             self.assertTrue(center_cross_path.exists())
             center_cross_image = sitk.ReadImage(str(center_cross_path))
@@ -1668,16 +1871,16 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(set(native_paths), expected_planes)
             self.assertEqual(
                 Path(native_paths["矢状位"]).name,
-                "切片原始网格总览_矢_整.nii.gz",
+                "切片原始网格总览_矢_CPR.nii.gz",
             )
             self.assertEqual(
                 Path(native_paths["冠状位"]).name,
-                "切片原始网格总览_冠_整.nii.gz",
+                "切片原始网格总览_冠_CPR.nii.gz",
             )
 
             expected_spacing = {
                 "横状位": (1.0, 2.0, 0.5),
-                "矢状位": (0.5, 2.0, 3.0),
+                "矢状位": (1.0, 0.5, 3.0),
                 "冠状位": (1.0, 0.5, 3.0),
             }
             for plane, path in overview_paths.items():
@@ -1735,6 +1938,119 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 metadata["debug_slice_plan_native_overview_paths"],
                 native_paths,
             )
+
+    def test_mapping_cpr_overview_draws_curve_on_sagittal_background(self):
+        """CPR 调试总览应按曲线点画在矢状位背景上。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_path = temp_path / "seg.nii.gz"
+            image = sitk.GetImageFromArray(np.zeros((36, 36, 36), dtype=np.uint8))
+            image.SetSpacing((1.0, 1.0, 1.0))
+            image.SetOrigin((0.0, 0.0, 0.0))
+            sitk.WriteImage(image, str(seg_path))
+            context = ProcessingContext(
+                Request(
+                    dicom_dir="/tmp/dicom",
+                    output_dir=temp_dir,
+                    body_part=BodyPartEnum.腰椎,
+                    plane_configs=[],
+                )
+            )
+            localization_result = {
+                "seg_for_reconstruction_path": str(seg_path),
+            }
+            plan = {
+                "plane": "矢状位",
+                "geometry_type": "curved_stack",
+                "cut_mode": "cpr",
+                "localizer_plane": "矢状位",
+                "localizer_reference": {"x": 18.0, "y": 18.0, "z": 18.0},
+                "extent_mm": {"width": 20.0, "height": 28.0},
+                "curve_points": [
+                    {"x": 18.0, "y": 10.0, "z": 5.0},
+                    {"x": 18.0, "y": 16.0, "z": 14.0},
+                    {"x": 18.0, "y": 8.0, "z": 23.0},
+                    {"x": 18.0, "y": 14.0, "z": 32.0},
+                ],
+                "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "offsets_mm": [0.0],
+                "slices": [{
+                    "index": 1,
+                    "center": {"x": 18.0, "y": 12.0, "z": 18.0},
+                    "normal": {"x": 1.0, "y": 0.0, "z": 0.0},
+                    "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                    "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+                    "offset_mm": 0.0,
+                }],
+            }
+
+            _, native_paths = MappingStage()._write_slice_plan_overview_overlays(
+                context,
+                localization_result,
+                [plan],
+            )
+            overview = sitk.ReadImage(native_paths["矢状位"])
+            highlighted = np.argwhere(sitk.GetArrayFromImage(overview) > 0)
+
+            self.assertGreater(len(highlighted), 20)
+            self.assertGreater(self._max_line_fit_residual(highlighted), 2.0)
+
+    def test_mapping_cpr_overview_draws_visible_offset_curves(self):
+        """冠状位 CPR 调试总览应把可见前后 offset 画成多条曲线。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_path = temp_path / "seg.nii.gz"
+            image = sitk.GetImageFromArray(np.zeros((36, 36, 36), dtype=np.uint8))
+            image.SetSpacing((1.0, 1.0, 1.0))
+            image.SetOrigin((0.0, 0.0, 0.0))
+            sitk.WriteImage(image, str(seg_path))
+            context = ProcessingContext(
+                Request(
+                    dicom_dir="/tmp/dicom",
+                    output_dir=temp_dir,
+                    body_part=BodyPartEnum.腰椎,
+                    plane_configs=[],
+                )
+            )
+            localization_result = {
+                "seg_for_reconstruction_path": str(seg_path),
+            }
+            plan = {
+                "plane": "矢状位",
+                "geometry_type": "curved_stack",
+                "cut_mode": "cpr",
+                "localizer_plane": "矢状位",
+                "localizer_reference": {"x": 18.0, "y": 18.0, "z": 18.0},
+                "extent_mm": {"width": 20.0, "height": 28.0},
+                "curve_points": [
+                    {"x": 18.0, "y": 18.0, "z": 5.0},
+                    {"x": 18.0, "y": 18.0, "z": 14.0},
+                    {"x": 18.0, "y": 18.0, "z": 23.0},
+                    {"x": 18.0, "y": 18.0, "z": 32.0},
+                ],
+                "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "offsets_mm": [-8.0, 0.0, 8.0],
+                "slices": [{
+                    "index": 1,
+                    "center": {"x": 18.0, "y": 18.0, "z": 18.0},
+                    "normal": {"x": 1.0, "y": 0.0, "z": 0.0},
+                    "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                    "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+                    "offset_mm": 0.0,
+                }],
+            }
+
+            _, native_paths = MappingStage()._write_slice_plan_overview_overlays(
+                context,
+                localization_result,
+                [plan],
+            )
+            overview = sitk.ReadImage(native_paths["矢状位"])
+            highlighted = np.argwhere(sitk.GetArrayFromImage(overview) > 0)
+
+            self.assertEqual(np.unique(highlighted[:, 1]).tolist(), [10, 18, 26])
 
     def test_center_cross_uses_lung_anatomical_origin_in_long_scan(self):
         """颈到盆长扫描的十字中线应落在肺中心，而不是整幅图像中心。"""
@@ -1967,6 +2283,53 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             overview_array = sitk.GetArrayFromImage(overview_image)
             center_rows = np.unique(np.argwhere(overview_array > 0)[:, 0])
             self.assertEqual(center_rows.tolist(), [1, 11, 21, 31])
+
+    @staticmethod
+    def _spine_localization_result(labels, body_part):
+        """生成最小脊柱定位结果，供 CPR planner 测试使用。"""
+
+        coords = {}
+        for index, name in enumerate(labels):
+            z = 10.0 - index * 3.0
+            coords[f"vertebrae_{name}"] = {
+                "label_name": f"vertebrae_{name}",
+                "label_ids": [index + 1],
+                "voxel_count": 10,
+                "found": True,
+                "centroid": {"z": z, "y": 50.0, "x": 60.0},
+                "bbox": {
+                    "z_min": int(z) - 1,
+                    "z_max": int(z) + 1,
+                    "y_min": 45,
+                    "y_max": 55,
+                    "x_min": 55,
+                    "x_max": 65,
+                },
+            }
+
+        return {
+            "body_part": body_part,
+            "cut_mode": "whole_range",
+            "correction_scope_bbox": {
+                "z_min": 0,
+                "z_max": 12,
+                "y_min": 45,
+                "y_max": 55,
+                "x_min": 55,
+                "x_max": 65,
+            },
+            "image": {
+                "spacing_xyz": [1.0, 1.0, 1.0],
+                "origin_xyz": [0.0, 0.0, 0.0],
+                "direction": [
+                    1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0,
+                ],
+                "size_xyz": [120, 120, 40],
+            },
+            "coords": coords,
+        }
 
     @staticmethod
     def _lumbar_localization_result():

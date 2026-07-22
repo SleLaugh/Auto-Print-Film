@@ -22,13 +22,26 @@ from src.models import (
 )
 from src.planning.whole_range import build_whole_range_plan_from_bbox
 from src.reconstruction import dicom as dicom_writer
+from src.reconstruction.curved_stack import CurvedStackResampler
 from src.reconstruction.plane_stack import PlaneStackResampler
 from src.reconstruction.windowing import apply_window_to_image
 from src.stages.stage_reconstruction import ReconstructionStage
+from src.utils.Logger_utils import _logger_manager
 
 
 class Stage5ReconstructionTest(unittest.TestCase):
     """汇总 `Stage5ReconstructionTest` 相关测试场景。"""
+
+    @staticmethod
+    def _max_line_fit_residual(points_zyx: np.ndarray) -> float:
+        """返回二维高亮点到最佳直线的最大像素残差。"""
+
+        rows = points_zyx[:, 0].astype(float)
+        columns = points_zyx[:, 1].astype(float)
+        matrix = np.column_stack([rows, np.ones_like(rows)])
+        slope, intercept = np.linalg.lstsq(matrix, columns, rcond=None)[0]
+        fitted = slope * rows + intercept
+        return float(np.max(np.abs(columns - fitted)))
 
     def test_plans_are_grouped_by_plane_without_changing_first_seen_order(self):
         """验证 `test_plans_are_grouped_by_plane_without_changing_first_seen_order` 场景符合预期。"""
@@ -221,6 +234,17 @@ class Stage5ReconstructionTest(unittest.TestCase):
 
         self.assertEqual(ReconstructionStage._plan_group_name(plan), "L1-L2")
 
+    def test_cpr_plan_writes_directly_under_window_directory(self):
+        """CPR 输出不应在窗位目录下额外创建 CPR 子目录。"""
+
+        plan = {
+            "geometry_type": "curved_stack",
+            "cut_mode": "cpr",
+            "group_name": "CPR",
+        }
+
+        self.assertEqual(ReconstructionStage._plan_group_name(plan), "")
+
     def test_localizer_uses_representative_original_slice_instead_of_projection(self):
         """验证 `test_localizer_uses_representative_original_slice_instead_of_projection` 场景符合预期。"""
 
@@ -322,6 +346,73 @@ class Stage5ReconstructionTest(unittest.TestCase):
         self.assertGreater(len(highlighted), 5)
         self.assertGreater(int(np.ptp(highlighted[:, 0])), 2)
         self.assertGreater(int(np.ptp(highlighted[:, 1])), 2)
+
+    def test_curved_stack_localizer_draws_curve_on_sagittal_background(self):
+        """CPR 定位图应按曲线点绘制，不应退化成首尾斜直线。"""
+
+        image = sitk.GetImageFromArray(np.zeros((36, 36, 36), dtype=np.int16))
+        plan = {
+            "plane": "矢状位",
+            "geometry_type": "curved_stack",
+            "localizer_plane": "矢状位",
+            "localizer_reference": {"x": 18.0, "y": 18.0, "z": 18.0},
+            "extent_mm": {"width": 20.0, "height": 28.0},
+            "curve_points": [
+                {"x": 18.0, "y": 10.0, "z": 5.0},
+                {"x": 18.0, "y": 16.0, "z": 14.0},
+                {"x": 18.0, "y": 8.0, "z": 23.0},
+                {"x": 18.0, "y": 14.0, "z": 32.0},
+            ],
+            "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+            "offsets_mm": [0.0],
+            "slices": [{
+                "index": 1,
+                "center": {"x": 18.0, "y": 12.0, "z": 18.0},
+                "normal": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+                "offset_mm": 0.0,
+            }],
+        }
+
+        localizer = ReconstructionStage._build_plan_localizer(image, plan)
+        highlighted = np.argwhere(sitk.GetArrayFromImage(localizer) > 0.0)
+
+        self.assertGreater(len(highlighted), 20)
+        self.assertGreater(self._max_line_fit_residual(highlighted), 2.0)
+
+    def test_curved_stack_localizer_draws_visible_offset_curves(self):
+        """冠状位 CPR 定位图应把可见前后 offset 画成多条曲线。"""
+
+        image = sitk.GetImageFromArray(np.zeros((36, 36, 36), dtype=np.int16))
+        plan = {
+            "plane": "矢状位",
+            "geometry_type": "curved_stack",
+            "localizer_plane": "矢状位",
+            "localizer_reference": {"x": 18.0, "y": 18.0, "z": 18.0},
+            "extent_mm": {"width": 20.0, "height": 28.0},
+            "curve_points": [
+                {"x": 18.0, "y": 18.0, "z": 5.0},
+                {"x": 18.0, "y": 18.0, "z": 14.0},
+                {"x": 18.0, "y": 18.0, "z": 23.0},
+                {"x": 18.0, "y": 18.0, "z": 32.0},
+            ],
+            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+            "offsets_mm": [-8.0, 0.0, 8.0],
+            "slices": [{
+                "index": 1,
+                "center": {"x": 18.0, "y": 18.0, "z": 18.0},
+                "normal": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+                "offset_mm": 0.0,
+            }],
+        }
+
+        localizer = ReconstructionStage._build_plan_localizer(image, plan)
+        highlighted = np.argwhere(sitk.GetArrayFromImage(localizer) > 0.0)
+
+        self.assertEqual(np.unique(highlighted[:, 1]).tolist(), [10, 18, 26])
 
     def test_full_xyz_oblique_plan_is_resampled_with_planned_direction(self):
         """第五步应原样执行含 XYZ 三方向倾斜的通用平面计划。"""
@@ -486,6 +577,46 @@ class Stage5ReconstructionTest(unittest.TestCase):
             200.0,
         )
 
+    def test_curved_stack_resampler_samples_straight_sagittal_curve(self):
+        """直线 CPR 曲线应沿曲线弧长和前后方向连续采样。"""
+
+        image = self._make_ramp_image(size=(8, 8, 8))
+        plan = {
+            "plan_id": "腰椎_CPR_矢状位",
+            "geometry_type": "curved_stack",
+            "curve_points": [
+                {"x": 2.0, "y": 3.0, "z": 1.0},
+                {"x": 2.0, "y": 3.0, "z": 5.0},
+            ],
+            "curve_spacing_mm": 1.0,
+            "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+            "offsets_mm": [0.0],
+            "extent_mm": {"width": 4.0, "height": 4.0},
+            "output_spacing_mm": {"x": 1.0, "y": 1.0, "z": 0.0},
+            "slice_thickness": 1.0,
+            "slice_spacing": 1.0,
+            "slices": [{
+                "index": 1,
+                "offset_mm": 0.0,
+                "center": {"x": 2.0, "y": 3.0, "z": 3.0},
+                "normal": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+            }],
+        }
+
+        output = CurvedStackResampler().sample_slice(
+            image,
+            plan,
+            plan["slices"][0],
+        )
+
+        output_array = sitk.GetArrayFromImage(output)
+        self.assertEqual(output.GetSize(), (5, 5, 1))
+        self.assertAlmostEqual(float(output_array[0, 0, 0]), 112.0)
+        self.assertAlmostEqual(float(output_array[0, 2, 2]), 332.0)
+        self.assertAlmostEqual(float(output_array[0, 4, 4]), 552.0)
+
     def test_plane_stack_resampler_consumes_three_straight_whole_range_plans(self):
         """第五阶段应直接执行通用构造器生成的横、矢、冠直线计划。"""
 
@@ -605,13 +736,101 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertEqual(result["image_count"], 2)
             self.assertEqual(result["planes"]["横状位"]["slice_count"], 2)
 
-    def test_reconstruction_rejects_unsupported_geometry_type_with_plan_id(self):
-        """验证 `test_reconstruction_rejects_unsupported_geometry_type_with_plan_id` 场景符合预期。"""
+    def test_reconstruction_dispatches_curved_stack_resampler(self):
+        """阶段五应按 geometry_type 把 CPR plan 交给 curved_stack resampler。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
                 temp_dir,
                 geometry_type="curved_stack",
+            )
+            plan = context.get_result("mapping")["plans"][0]
+            plan.update({
+                "plan_id": "腰椎_CPR_矢状位",
+                "cut_mode": "cpr",
+                "plane": "矢状位",
+                "group_name": "CPR",
+                "curve_points": [
+                    {"x": 2.0, "y": 2.0, "z": 2.0},
+                    {"x": 2.0, "y": 2.0, "z": 4.0},
+                ],
+                "curve_spacing_mm": 1.0,
+                "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "offsets_mm": [0.0],
+            })
+            plan["slices"] = [dict(plan["slices"][0], offset_mm=0.0)]
+
+            sampled_geometry_types = []
+
+            class RecordingCurvedResampler:
+                """记录阶段五是否选择 CPR 重采样器。"""
+
+                def sample_slice(self, image, current_plan, planned_slice):
+                    """返回一张最小 HU 图像，并记录 geometry_type。"""
+
+                    sampled_geometry_types.append(current_plan["geometry_type"])
+                    return sitk.Image(1, 1, 1, sitk.sitkFloat32)
+
+            with mock.patch(
+                "src.stages.stage_reconstruction.CurvedStackResampler",
+                return_value=RecordingCurvedResampler(),
+            ), mock.patch(
+                "src.stages.stage_reconstruction.write_ct_dicom",
+            ):
+                ReconstructionStage(config={"parallel": False}).execute(context)
+
+            self.assertEqual(sampled_geometry_types, ["curved_stack"])
+
+    def test_debug_mode_writes_cpr_localizer_png_in_window_directory(self):
+        """CPR 定位图 PNG 应直接写在对应状位和窗位目录下。"""
+
+        original_debug = _logger_manager.debug_log_file_enabled
+        _logger_manager.debug_log_file_enabled = True
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                context = self._make_context_with_one_plan(
+                    temp_dir,
+                    geometry_type="curved_stack",
+                )
+                plan = context.get_result("mapping")["plans"][0]
+                plan.update({
+                    "plan_id": "腰椎_CPR_矢状位",
+                    "cut_mode": "cpr",
+                    "plane": "矢状位",
+                    "group_name": "CPR",
+                    "curve_points": [
+                        {"x": 2.0, "y": 2.0, "z": 2.0},
+                        {"x": 2.0, "y": 3.0, "z": 4.0},
+                        {"x": 2.0, "y": 2.0, "z": 6.0},
+                    ],
+                    "curve_spacing_mm": 1.0,
+                    "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+                    "offsets_mm": [0.0],
+                    "localizer_plane": "矢状位",
+                    "localizer_reference": {"x": 2.0, "y": 2.0, "z": 4.0},
+                })
+                plan["slices"] = [dict(plan["slices"][0], offset_mm=0.0)]
+
+                ReconstructionStage(config={"parallel": False}).execute(context)
+
+                output_dir = (
+                    Path(context.request.output_dir)
+                    / "矢状位"
+                    / "骨窗"
+                )
+                self.assertTrue((output_dir / "Localizer.dcm").exists())
+                self.assertTrue((output_dir / "Localizer.png").exists())
+                self.assertFalse((output_dir / "CPR").exists())
+        finally:
+            _logger_manager.debug_log_file_enabled = original_debug
+
+    def test_reconstruction_rejects_unsupported_geometry_type_with_plan_id(self):
+        """未知 geometry_type 应明确报出 plan_id。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._make_context_with_one_plan(
+                temp_dir,
+                geometry_type="surface_stack",
             )
 
             with self.assertRaisesRegex(ValueError, r"plan_id=.*geometry_type"):
@@ -806,6 +1025,50 @@ class Stage5ReconstructionTest(unittest.TestCase):
             result = context.get_result("reconstruction")
             self.assertEqual(result["slice_count"], 2)
             self.assertEqual(result["image_count"], 2)
+
+    def test_debug_mode_writes_localizer_png_next_to_localizer_dicom(self):
+        """debug 模式下每个窗位目录应同时写出定位图 PNG。"""
+
+        original_debug = _logger_manager.debug_log_file_enabled
+        _logger_manager.debug_log_file_enabled = True
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                context = self._make_context_with_one_plan(
+                    temp_dir,
+                    slice_count=2,
+                    window_presets=["骨窗"],
+                )
+
+                ReconstructionStage(config={"parallel": False}).execute(context)
+
+                output_dir = Path(context.request.output_dir) / "横状位" / "骨窗"
+                png_path = output_dir / "Localizer.png"
+                self.assertTrue(png_path.exists())
+                png_image = sitk.ReadImage(str(png_path))
+                self.assertEqual(png_image.GetSize(), (8, 8))
+        finally:
+            _logger_manager.debug_log_file_enabled = original_debug
+
+    def test_non_debug_mode_does_not_write_localizer_png(self):
+        """非 debug 模式不应把定位图 PNG 放进正式窗位目录。"""
+
+        original_debug = _logger_manager.debug_log_file_enabled
+        _logger_manager.debug_log_file_enabled = False
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                context = self._make_context_with_one_plan(
+                    temp_dir,
+                    slice_count=2,
+                    window_presets=["骨窗"],
+                )
+
+                ReconstructionStage(config={"parallel": False}).execute(context)
+
+                output_dir = Path(context.request.output_dir) / "横状位" / "骨窗"
+                self.assertTrue((output_dir / "Localizer.dcm").exists())
+                self.assertFalse((output_dir / "Localizer.png").exists())
+        finally:
+            _logger_manager.debug_log_file_enabled = original_debug
 
     def test_derived_dicom_inherits_source_study_and_patient_metadata(self):
         """验证 `test_derived_dicom_inherits_source_study_and_patient_metadata` 场景符合预期。"""

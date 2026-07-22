@@ -35,17 +35,22 @@ class PlannedSlice:
     normal: Point3D
     row_dir: Point3D
     col_dir: Point3D
+    offset_mm: float | None = None
+    """CPR 曲面相对中心曲线的左右偏移；普通平面切片为空。"""
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化单张计划切片的中心、法向和画面方向。"""
 
-        return {
+        data = {
             "index": self.index,
             "center": self.center.to_dict(),
             "normal": self.normal.to_dict(),
             "row_dir": self.row_dir.to_dict(),
             "col_dir": self.col_dir.to_dict(),
         }
+        if self.offset_mm is not None:
+            data["offset_mm"] = self.offset_mm
+        return data
 
 
 @dataclass
@@ -81,6 +86,14 @@ class SlicePlan:
     slice_spacing: float
     window_presets: List[str]
     source_labels: List[str]
+    curve_points: List[Point3D] | None = None
+    """CPR 中心曲线物理点；仅 curved_stack 使用。"""
+    curve_spacing_mm: float | None = None
+    """CPR 沿曲线弧长方向的输出采样间距。"""
+    offset_axis: Point3D | None = None
+    """CPR 左右偏移方向单位向量。"""
+    offsets_mm: List[float] | None = None
+    """CPR 每张图相对中心曲线的左右偏移。"""
     target_start: Point3D | None = None
     target_end: Point3D | None = None
     localizer_reference: Point3D | None = None
@@ -121,4 +134,12 @@ class SlicePlan:
             data["localizer_reference"] = self.localizer_reference.to_dict()
         if self.localizer_plane is not None:
             data["localizer_plane"] = self.localizer_plane
+        if self.curve_points is not None:
+            data["curve_points"] = [point.to_dict() for point in self.curve_points]
+        if self.curve_spacing_mm is not None:
+            data["curve_spacing_mm"] = self.curve_spacing_mm
+        if self.offset_axis is not None:
+            data["offset_axis"] = self.offset_axis.to_dict()
+        if self.offsets_mm is not None:
+            data["offsets_mm"] = list(self.offsets_mm)
         return data

@@ -54,7 +54,14 @@ def build_spine_sagittal_cpr_plan(
         ]
 
     image_info = localization_result["image"]
-    curve_points = _smooth_curve([center for _, center in centers])
+    source_labels = [label_name for label_name, _ in centers]
+    centroid_curve_points = _smooth_curve([center for _, center in centers])
+    center = _midpoint(centroid_curve_points)
+    curve_points = _extend_curve_to_endpoint_bboxes(
+        localization_result,
+        source_labels,
+        centroid_curve_points,
+    )
     curve_length = _polyline_length(curve_points)
     if curve_length <= 0.0:
         return None, ["CPR 降级: 中心曲线长度无效"]
@@ -62,7 +69,6 @@ def build_spine_sagittal_cpr_plan(
     offset_axis = _offset_axis_for_plane(image_info, plane_config.plane)
     tangent_dir = normalize_vector(subtract_points(curve_points[-1], curve_points[0]))
     row_dir = normalize_vector(_cross(tangent_dir, offset_axis))
-    source_labels = [label_name for label_name, _ in centers]
     offsets = _resolve_offsets_mm(
         localization_result,
         source_labels,
@@ -70,7 +76,6 @@ def build_spine_sagittal_cpr_plan(
         offset_axis,
         float(plane_config.slice_spacing),
     )
-    center = _midpoint(curve_points)
     slices = [
         PlannedSlice(
             index=index + 1,
@@ -175,6 +180,72 @@ def _smooth_curve(points: List[Point3D]) -> List[Point3D]:
         smoothed.append(points[index] if drift > 5.0 else candidate)
     smoothed.append(points[-1])
     return smoothed
+
+
+def _extend_curve_to_endpoint_bboxes(
+    localization_result: Dict[str, Any],
+    label_names: List[str],
+    curve_points: List[Point3D],
+) -> List[Point3D]:
+    """把 CPR 曲线首尾延到首末椎体 bbox 端面，避免停在质心。"""
+
+    if len(curve_points) < 2 or len(label_names) < 2:
+        return list(curve_points)
+
+    start_tangent = normalize_vector(subtract_points(
+        curve_points[1],
+        curve_points[0],
+    ))
+    end_tangent = normalize_vector(subtract_points(
+        curve_points[-1],
+        curve_points[-2],
+    ))
+    start_point = _endpoint_boundary_point(
+        localization_result,
+        label_names[0],
+        curve_points[0],
+        start_tangent,
+        choose_minimum=True,
+    )
+    end_point = _endpoint_boundary_point(
+        localization_result,
+        label_names[-1],
+        curve_points[-1],
+        end_tangent,
+        choose_minimum=False,
+    )
+    return [start_point, *curve_points, end_point]
+
+
+def _endpoint_boundary_point(
+    localization_result: Dict[str, Any],
+    label_name: str,
+    center_point: Point3D,
+    tangent_dir: Point3D,
+    choose_minimum: bool,
+) -> Point3D:
+    """沿曲线前进方向取首末椎体 bbox 的外侧端面点。"""
+
+    bbox = (
+        localization_result
+        .get("coords", {})
+        .get(label_name, {})
+        .get("bbox")
+    )
+    if not bbox:
+        return center_point
+
+    center_projection = _dot(center_point, tangent_dir)
+    projections = [
+        _dot(point, tangent_dir) - center_projection
+        for point in _bbox_corners(bbox, localization_result["image"])
+    ]
+    boundary_delta = (
+        min(projections)
+        if choose_minimum
+        else max(projections)
+    )
+    return _add(center_point, _scale(tangent_dir, boundary_delta))
 
 
 def _resolve_offsets_mm(

@@ -109,6 +109,43 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(result.plans[0].geometry_type, "plane_stack")
         self.assertIn("CPR 降级", result.warnings[0])
 
+    def test_spine_cpr_extends_to_first_and_last_vertebra_end_faces(self):
+        """脊柱 CPR 曲线首尾应延到首末椎体端面，不能停在质心。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.矢状位, 1.0, 3.0,
+                    ["骨窗"],
+                ),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["coords"]["vertebrae_L1"]["centroid"]["z"] = 10.0
+        localization_result["coords"]["vertebrae_L1"]["bbox"].update({
+            "z_min": 8,
+            "z_max": 13,
+        })
+        localization_result["coords"]["vertebrae_S1"]["centroid"]["z"] = 0.0
+        localization_result["coords"]["vertebrae_S1"]["bbox"].update({
+            "z_min": -3,
+            "z_max": 2,
+        })
+
+        plan = LumbarWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.geometry_type, "curved_stack")
+        self.assertAlmostEqual(plan.curve_points[0].z, 13.0)
+        self.assertAlmostEqual(plan.curve_points[-1].z, -3.0)
+        self.assertAlmostEqual(plan.range_start.z, 13.0)
+        self.assertAlmostEqual(plan.range_end.z, -3.0)
+
     def test_cervical_sagittal_uses_cpr_and_axial_stays_plane_stack(self):
         """颈椎只把矢状位切到 CPR，横状位仍为直线 MPR。"""
 
@@ -809,6 +846,18 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         localization_result["coords"]["vertebrae_T1"]["centroid"]["z"] = 30.0
         localization_result["coords"]["vertebrae_T2"]["centroid"]["z"] = 20.0
         localization_result["coords"]["vertebrae_T3"]["centroid"]["z"] = 10.0
+        localization_result["coords"]["vertebrae_T1"]["bbox"].update({
+            "z_min": 29,
+            "z_max": 31,
+        })
+        localization_result["coords"]["vertebrae_T2"]["bbox"].update({
+            "z_min": 19,
+            "z_max": 21,
+        })
+        localization_result["coords"]["vertebrae_T3"]["bbox"].update({
+            "z_min": 9,
+            "z_max": 11,
+        })
 
         plan = SingleLabelWholeRangePlanner().build_plans(
             request,
@@ -819,7 +868,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.localizer_plane, "矢状位")
         self.assertEqual(
             [point.z for point in plan.curve_points],
-            [30.0, 20.0, 10.0],
+            [31.0, 30.0, 20.0, 10.0, 9.0],
         )
 
     def test_hip_only_tilts_axial_and_sets_three_localizer_planes(self):

@@ -72,13 +72,15 @@ class LumbarWholeRangePlanner:
             if cpr_plan is not None:
                 plans.append(cpr_plan)
                 continue
-            plans.append(
-                build_whole_range_plan_from_bbox(
-                    request=request,
-                    plane_config=plane_config,
-                    localization_result=localization_result,
-                )
+            plan = build_whole_range_plan_from_bbox(
+                request=request,
+                plane_config=plane_config,
+                localization_result=localization_result,
             )
+            if plane_config.plane == PlaneTypeEnum.矢状位:
+                # 矢状位切片保持旧的直线 MPR，定位线画回冠状位背景。
+                plan.localizer_plane = PlaneTypeEnum.冠状位.value
+            plans.append(plan)
 
         return PlanningResult(
             plans=plans,

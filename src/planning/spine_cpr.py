@@ -1,4 +1,4 @@
-"""脊柱矢状位 CPR 规划。"""
+"""脊柱冠状位 CPR 规划。"""
 
 import math
 from typing import Any, Dict, Iterable, List, Tuple
@@ -37,9 +37,9 @@ def build_spine_sagittal_cpr_plan(
     localization_result: Dict[str, Any],
     label_names: Iterable[str],
 ) -> Tuple[SlicePlan | None, List[str]]:
-    """为脊柱矢状位/冠状位生成 CPR plan；条件不足时返回 None 和降级 warning。"""
+    """为脊柱冠状位生成 CPR plan；矢状位继续交给旧直线 MPR 逻辑。"""
 
-    if plane_config.plane not in {PlaneTypeEnum.矢状位, PlaneTypeEnum.冠状位}:
+    if plane_config.plane != PlaneTypeEnum.冠状位:
         return None, []
 
     centers: list[tuple[str, Point3D]] = []

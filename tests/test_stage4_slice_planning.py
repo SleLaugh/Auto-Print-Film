@@ -37,8 +37,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         fitted = slope * rows + intercept
         return float(np.max(np.abs(columns - fitted)))
 
-    def test_mapping_derives_lumbar_axial_interspace_and_sagittal_cpr(self):
-        """腰椎横状位保持区间切基线，矢状位生成 CPR。"""
+    def test_mapping_derives_lumbar_axial_interspace_and_sagittal_straight_mpr(self):
+        """腰椎横状位保持区间切基线，矢状位回到普通直线 MPR。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = Request(
@@ -77,17 +77,17 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     ("横状位", "interspace", "plane_stack"),
                     ("横状位", "interspace", "plane_stack"),
                     ("横状位", "interspace", "plane_stack"),
-                    ("矢状位", "cpr", "curved_stack"),
+                    ("矢状位", "whole_range", "plane_stack"),
                 ],
             )
-            cpr_plan = plans[-1]
-            self.assertEqual(cpr_plan["group_name"], "CPR")
-            self.assertEqual(cpr_plan["localizer_plane"], "矢状位")
-            self.assertIn("curve_points", cpr_plan)
-            self.assertIn(0.0, cpr_plan["offsets_mm"])
+            sagittal_plan = plans[-1]
+            self.assertEqual(sagittal_plan["group_name"], "whole_range")
+            self.assertEqual(sagittal_plan["localizer_plane"], "冠状位")
+            self.assertNotIn("curve_points", sagittal_plan)
+            self.assertNotIn("offsets_mm", sagittal_plan)
 
-    def test_spine_sagittal_cpr_falls_back_when_fewer_than_three_labels(self):
-        """有效椎体少于 3 个时，矢状位 CPR 应降级为现有直线 MPR。"""
+    def test_spine_coronal_cpr_falls_back_when_fewer_than_three_labels(self):
+        """有效椎体少于 3 个时，冠状位 CPR 应降级为现有直线 MPR。"""
 
         request = Request(
             dicom_dir="/tmp/dicom",
@@ -95,7 +95,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             body_part=BodyPartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
-                    PlaneTypeEnum.矢状位, 1.0, 3.0,
+                    PlaneTypeEnum.冠状位, 1.0, 3.0,
                     ["骨窗"],
                 ),
             ],
@@ -118,7 +118,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             body_part=BodyPartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
-                    PlaneTypeEnum.矢状位, 1.0, 3.0,
+                    PlaneTypeEnum.冠状位, 1.0, 3.0,
                     ["骨窗"],
                 ),
             ],
@@ -146,8 +146,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertAlmostEqual(plan.range_start.z, 13.0)
         self.assertAlmostEqual(plan.range_end.z, -3.0)
 
-    def test_cervical_sagittal_uses_cpr_and_axial_stays_plane_stack(self):
-        """颈椎只把矢状位切到 CPR，横状位仍为直线 MPR。"""
+    def test_cervical_sagittal_stays_straight_and_coronal_uses_cpr(self):
+        """颈椎矢状位保持直线 MPR，冠状位走 CPR。"""
 
         request = Request(
             dicom_dir="/tmp/dicom",
@@ -162,6 +162,10 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                     PlaneTypeEnum.矢状位, 1.0, 3.0,
                     ["骨窗"],
                 ),
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 3.0,
+                    ["骨窗"],
+                ),
             ],
         )
 
@@ -172,7 +176,11 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(
             [(plan.plane, plan.geometry_type) for plan in result.plans],
-            [("横状位", "plane_stack"), ("矢状位", "curved_stack")],
+            [
+                ("横状位", "plane_stack"),
+                ("矢状位", "plane_stack"),
+                ("冠状位", "curved_stack"),
+            ],
         )
 
     def test_overview_with_image_preserves_ct_and_highlights_overlay_labels(self):
@@ -826,15 +834,15 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertAlmostEqual(plan.localizer_reference.x, 50.0)
         self.assertAlmostEqual(plan.localizer_reference.z, 51.25)
 
-    def test_thoracic_sagittal_cpr_ignores_c7_l1_endpoint_helpers(self):
-        """胸椎 CPR 曲线只使用 T 段椎体，不把 C7/L1 画进去。"""
+    def test_thoracic_coronal_cpr_ignores_c7_l1_endpoint_helpers(self):
+        """胸椎冠状位 CPR 曲线只使用 T 段椎体，不把 C7/L1 画进去。"""
 
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
             body_part=BodyPartEnum.胸椎,
             plane_configs=[
-                PlaneConfig(PlaneTypeEnum.矢状位, 2.0, 5.0, ["骨窗"]),
+                PlaneConfig(PlaneTypeEnum.冠状位, 2.0, 5.0, ["骨窗"]),
             ],
         )
         localization_result = self._spine_localization_result(
@@ -1898,7 +1906,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             center_cross_path = Path(result["debug_center_cross_overlay_path"])
             self.assertEqual(
                 center_cross_path.name,
-                "十字中线_横+矢+冠_区+CPR.nii.gz",
+                "十字中线_横+矢+冠_区+整+CPR.nii.gz",
             )
             self.assertTrue(center_cross_path.exists())
             center_cross_image = sitk.ReadImage(str(center_cross_path))
@@ -1920,7 +1928,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(set(native_paths), expected_planes)
             self.assertEqual(
                 Path(native_paths["矢状位"]).name,
-                "切片原始网格总览_矢_CPR.nii.gz",
+                "切片原始网格总览_矢_整.nii.gz",
             )
             self.assertEqual(
                 Path(native_paths["冠状位"]).name,
@@ -1929,7 +1937,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
             expected_spacing = {
                 "横状位": (1.0, 2.0, 0.5),
-                "矢状位": (1.0, 0.5, 3.0),
+                "矢状位": (0.5, 2.0, 3.0),
                 "冠状位": (1.0, 0.5, 3.0),
             }
             for plane, path in overview_paths.items():

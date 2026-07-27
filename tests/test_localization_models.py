@@ -33,7 +33,7 @@ class LocalizationModelsTest(unittest.TestCase):
             )
 
     def test_localization_result_serializes_spine_geometry_separately(self):
-        """主体质心应作为独立阶段三字段序列化，不覆盖全量 coords。"""
+        """标注质心应作为独立阶段三字段序列化，不覆盖全量 coords。"""
 
         result = LocalizationResult(
             body_part="腰椎",
@@ -57,8 +57,12 @@ class LocalizationModelsTest(unittest.TestCase):
             label_targets={},
             coords={},
             spine_geometry={
-                "method": "vertebral_body_candidate_v1",
-                "body_centroids": {"vertebrae_L1": {"found": True}},
+                "filtered_annotation": {
+                    "method": "vertebral_body_candidate_v1",
+                },
+                "filtered_annotation_centroids": {
+                    "vertebrae_L1": {"found": True},
+                },
             },
         )
 
@@ -66,7 +70,8 @@ class LocalizationModelsTest(unittest.TestCase):
 
         self.assertIn("spine_geometry", data)
         self.assertEqual(
-            data["spine_geometry"]["body_centroids"]["vertebrae_L1"]["found"],
+            data["spine_geometry"]["filtered_annotation_centroids"]
+            ["vertebrae_L1"]["found"],
             True,
         )
         self.assertEqual(data["coords"], {})

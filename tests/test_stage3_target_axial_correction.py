@@ -821,8 +821,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertEqual(int((overlay_array == 20).sum()), 0)
             self.assertGreater(int((overlay_array == 21).sum()), 0)
 
-    def test_stage3_spine_geometry_uses_body_centroid_and_excludes_c1(self):
-        """阶段三应输出独立主体质心，不能改写全量定位质心，且 C1 不进入 CPR 几何。"""
+    def test_stage3_spine_geometry_uses_filtered_annotation_centroid_and_excludes_c1(self):
+        """阶段三应输出标注质心，不能改写全量定位质心，且 C1 不进入 CPR 几何。"""
 
         stage = LocalizationStage()
         seg_array = np.zeros((8, 14, 18), dtype=np.uint16)
@@ -844,9 +844,12 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             label_targets=label_targets,
         )
 
-        self.assertEqual(geometry["method"], "vertebral_body_candidate_v1")
-        self.assertNotIn("vertebrae_C1", geometry["body_centroids"])
-        c2 = geometry["body_centroids"]["vertebrae_C2"]
+        self.assertEqual(
+            geometry["filtered_annotation"]["method"],
+            "vertebral_body_candidate_v1",
+        )
+        self.assertNotIn("vertebrae_C1", geometry["filtered_annotation_centroids"])
+        c2 = geometry["filtered_annotation_centroids"]["vertebrae_C2"]
         self.assertTrue(c2["found"])
         self.assertGreater(c2["voxel_count"], 0)
         self.assertEqual(set(c2["centroid_voxel"]), {"z", "y", "x"})
@@ -1136,12 +1139,12 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertTrue(target_overlay_path.exists())
             self.assertTrue(label_overlay_path.exists())
             self.assertEqual(
-                result["spine_geometry"]["method"],
+                result["spine_geometry"]["filtered_annotation"]["method"],
                 "vertebral_body_candidate_v1",
             )
             self.assertIn(
                 "vertebrae_L1",
-                result["spine_geometry"]["body_centroids"],
+                result["spine_geometry"]["filtered_annotation_centroids"],
             )
             self.assertIn("spine_geometry", metadata)
 

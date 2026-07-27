@@ -7,7 +7,7 @@
 - 阶段五只消费阶段四输出的 `SlicePlan`，不再按部位或切割方式重新规划。
 - `plane_stack` 是当前已实现的直线 MPR 主协议。
 - 脊柱冠状位 CPR 已进入当前设计：颈椎、胸椎、腰椎沿椎体中心曲线生成前后偏移的冠状 CPR 序列。
-- 阶段三额外输出的 `spine_geometry.body_centroids` 只负责 CPR 中心线和弧度；完整 `coords.*.bbox` 负责 CPR/区间切的覆盖范围。
+- 阶段三额外输出的过滤标注和 `spine_geometry.filtered_annotation_centroids`（标注质心）只负责 CPR 中心线和弧度；完整 `coords.*.bbox` 负责 CPR/区间切的覆盖范围。
 - 脊柱矢状位保持既有直线 MPR 切图逻辑，切片定位线画在冠状位背景上，不走 `curved_stack`。
 - 颈椎、胸椎使用脊柱首尾椎体质心建立三维直线坐标系。
 - 髋骨横状位有 AB 倾斜角度，覆盖范围以后续完整投影覆盖计划为准。

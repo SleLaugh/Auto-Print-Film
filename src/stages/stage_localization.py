@@ -275,8 +275,8 @@ class LocalizationStage(BaseStage):
             for warning in frame.warnings:
                 DebugLog(f"    解剖坐标警告: {warning}")
 
-        # 脊柱专用几何派生：保留完整 label 的 coords/bbox，同时输出只用于
-        # CPR 中心路径的椎体主体质心。非脊柱部位不生成这份结果。
+        # 脊柱专用几何派生：保留完整 label 的 coords/bbox，同时输出过滤标注
+        # 计算出的标注质心。非脊柱部位不生成这份结果。
         spine_geometry = self._build_spine_body_geometry(
             body_part=request.body_part.value,
             image=image,
@@ -285,8 +285,8 @@ class LocalizationStage(BaseStage):
         )
         if spine_geometry is not None:
             DebugLog(
-                "    脊柱主体几何: "
-                f"{len(spine_geometry['body_centroids'])} 个主体质心，"
+                "    脊柱过滤标注与标注质心: "
+                f"{len(spine_geometry['filtered_annotation_centroids'])} 个标注质心，"
                 "全量 coords/bbox 保持不变"
             )
 
@@ -1414,17 +1414,17 @@ class LocalizationStage(BaseStage):
         label_targets: Dict[str, LabelTarget],
     ) -> Dict[str, Any] | None:
         """
-        在阶段三生成脊柱专用主体几何，供阶段四 CPR 使用。
+        在阶段三生成脊柱专用过滤标注和标注质心，供阶段四 CPR 使用。
 
         这里不修改原始 label 的质心和 bbox。完整 label 负责定位及覆盖范围，
-        本方法只额外输出主体质心；颈椎 C1 保留在完整定位中，但不进入 CPR
-        主体几何。物理坐标直接由当前最终定位图像转换，保证与阶段四一致。
+        过滤标注负责计算标注质心；颈椎 C1 保留在完整定位中，但不进入 CPR
+        标注质心。物理坐标直接由当前最终定位图像转换，保证与阶段四一致。
         """
 
         if body_part not in {"颈椎", "胸椎", "腰椎"}:
             return None
 
-        body_centroids: Dict[str, Dict[str, Any]] = {}
+        filtered_annotation_centroids: Dict[str, Dict[str, Any]] = {}
         for label_name, target in label_targets.items():
             vertebra_key = cls._vertebra_key(label_name)
             if vertebra_key is None or vertebra_key == "C1":
@@ -1433,7 +1433,7 @@ class LocalizationStage(BaseStage):
             body_mask = cls._vertebral_body_candidate_mask(seg_array, target)
             indices = np.argwhere(body_mask)
             if indices.size == 0:
-                body_centroids[label_name] = {
+                filtered_annotation_centroids[label_name] = {
                     "found": False,
                     "voxel_count": 0,
                     "centroid_voxel": None,
@@ -1445,7 +1445,7 @@ class LocalizationStage(BaseStage):
             physical_x, physical_y, physical_z = image.TransformContinuousIndexToPhysicalPoint(
                 (float(centroid_x), float(centroid_y), float(centroid_z))
             )
-            body_centroids[label_name] = {
+            filtered_annotation_centroids[label_name] = {
                 "found": True,
                 "voxel_count": int(indices.shape[0]),
                 "centroid_voxel": {
@@ -1461,10 +1461,14 @@ class LocalizationStage(BaseStage):
             }
 
         return {
-            "method": "vertebral_body_candidate_v1",
+            "filtered_annotation": {
+                "method": "vertebral_body_candidate_v1",
+                "source": "full_nnunet_label",
+                "target": "vertebral_body",
+            },
             "stage": "stage3_localization",
-            "body_centroids": body_centroids,
-            "excluded_from_body_geometry": ["vertebrae_C1"],
+            "filtered_annotation_centroids": filtered_annotation_centroids,
+            "excluded_from_annotation_centroids": ["vertebrae_C1"],
             "full_label_geometry": "coords",
             "full_label_bbox": "coords.*.bbox",
         }

@@ -142,7 +142,7 @@ class LocalizationResult:
     is_skewed: bool = False  # 兼容旧字段；当前语义等同于 correction_applied，不再表示已可靠检测到歪斜
     skew_params: Dict[str, Any] = field(default_factory=dict)  # 兼容旧字段；语义等同于 correction_params
     anatomical_geometry: Optional[AnatomicalGeometryResult] = None  # 第三步输出给第四步的统一解剖坐标；未适配部位为空
-    spine_geometry: Optional[Dict[str, Any]] = None  # 仅脊柱生成；主体质心供 CPR，原始 coords/bbox 仍代表全量标注
+    spine_geometry: Optional[Dict[str, Any]] = None  # 仅脊柱生成；标注质心供 CPR，原始 coords/bbox 仍代表全量标注
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化阶段三完整结果，供阶段四规划及调试文件使用。"""

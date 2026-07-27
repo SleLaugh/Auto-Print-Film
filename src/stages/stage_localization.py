@@ -305,6 +305,15 @@ class LocalizationStage(BaseStage):
             output_path=debug_label_mask_overlay_path,
         )
             DebugLog(f"    调试分label mask overlay: {debug_label_mask_overlay_path}")
+        debug_vertebral_body_mask_overlay_path = output_path / '椎体主体掩膜.nii.gz'
+        if is_debug_log_file_enabled():
+            self._write_debug_vertebral_body_mask_overlay(
+            reference_image=image,
+            seg_array=seg_array,
+            label_targets=label_targets,
+            output_path=debug_vertebral_body_mask_overlay_path,
+        )
+            DebugLog(f"    调试椎体主体 mask overlay: {debug_vertebral_body_mask_overlay_path}")
 
         localization_result_path = output_path / 'localization_result.json'
         if not is_debug_log_file_enabled():
@@ -340,6 +349,7 @@ class LocalizationStage(BaseStage):
             'debug_bbox_overlay_path': str(debug_bbox_overlay_path) if is_debug_log_file_enabled() else '',
             'debug_target_mask_overlay_path': str(debug_target_mask_overlay_path) if is_debug_log_file_enabled() else '',
             'debug_label_mask_overlay_path': str(debug_label_mask_overlay_path) if is_debug_log_file_enabled() else '',
+            'debug_vertebral_body_mask_overlay_path': str(debug_vertebral_body_mask_overlay_path) if is_debug_log_file_enabled() else '',
         }
         if anatomical_geometry is not None:
             result['anatomical_geometry'] = anatomical_geometry.to_dict()
@@ -369,6 +379,7 @@ class LocalizationStage(BaseStage):
             debug_bbox_overlay_path=result['debug_bbox_overlay_path'],
             debug_target_mask_overlay_path=result['debug_target_mask_overlay_path'],
             debug_label_mask_overlay_path=result['debug_label_mask_overlay_path'],
+            debug_vertebral_body_mask_overlay_path=result['debug_vertebral_body_mask_overlay_path'],
             is_skewed=result['is_skewed'],
             skew_params=result['skew_params'],
             anatomical_geometry=anatomical_geometry,
@@ -909,6 +920,9 @@ class LocalizationStage(BaseStage):
         total_point_count = 0
 
         for label_name, target in label_targets.items():
+            if self._vertebra_key(label_name) == "C1":
+                skipped_label_names.append(label_name)
+                continue
             mask = np.isin(seg_array, target.label_ids)
             indices = np.argwhere(mask)
             point_count = int(indices.shape[0])
@@ -1338,6 +1352,216 @@ class LocalizationStage(BaseStage):
         return str(output_path)
 
     @staticmethod
+    def _write_debug_vertebral_body_mask_overlay(
+        reference_image: sitk.Image,
+        seg_array: np.ndarray,
+        label_targets: Dict[str, LabelTarget],
+        output_path: Path,
+    ) -> str:
+        """
+        写出椎体主体候选 overlay，用于人工校验是否能排除后方附件。
+
+        该产物只服务 CPR/区间切前的几何可行性验证，不参与主流程。规则保持
+        保守可解释：对每个横状位层面从前往后扫描，取第一段达到宽度阈值
+        的连续 AP 区间；每个 AP 行只保留靠近椎体左右中心的连续 x 段，
+        再按原 label id 填色。
+        """
+
+        reference_array = sitk.GetArrayFromImage(reference_image)
+        overlay_array = np.zeros(reference_array.shape, dtype=np.uint16)
+        output_path = Path(output_path)
+
+        for target in label_targets.values():
+            if LocalizationStage._vertebra_key(target.label_name) == "C1":
+                continue
+            body_mask = LocalizationStage._vertebral_body_candidate_mask(
+                seg_array,
+                target,
+            )
+            if body_mask is None or not target.label_ids:
+                continue
+            overlay_array[body_mask] = int(target.label_ids[0])
+
+        overlay_image = sitk.GetImageFromArray(overlay_array)
+        overlay_image.CopyInformation(reference_image)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        sitk.WriteImage(overlay_image, str(output_path))
+        return str(output_path)
+
+    @staticmethod
+    def _vertebral_body_candidate_mask(
+        seg_array: np.ndarray,
+        target: LabelTarget,
+    ) -> np.ndarray | None:
+        """从完整椎体 label 中估计前方宽主体的体素 mask。"""
+
+        mask = np.isin(seg_array, target.label_ids)
+        indices = np.argwhere(mask)
+        if indices.size == 0:
+            return None
+
+        center_x = float(np.median(indices[:, 2]))
+        anterior_y_limit = LocalizationStage._estimate_anterior_y_limit(mask)
+        body_mask = np.zeros_like(mask, dtype=bool)
+        for z_index in np.unique(indices[:, 0]):
+            slice_mask = mask[int(z_index), :, :]
+            y_indices = np.flatnonzero(slice_mask.any(axis=1))
+            if (
+                anterior_y_limit is not None
+                and y_indices.size > 0
+                and float(y_indices.min()) > anterior_y_limit
+            ):
+                continue
+            row_widths = LocalizationStage._slice_row_widths(slice_mask)
+            row_run_counts = LocalizationStage._slice_row_run_counts(slice_mask)
+            if not row_widths:
+                continue
+            row_run = LocalizationStage._first_anterior_body_row_run(
+                row_widths,
+                row_run_counts,
+            )
+            if not row_run:
+                continue
+            y_min = min(row_run)
+            y_max = max(row_run)
+            for y_index in range(y_min, y_max + 1):
+                x_run = LocalizationStage._central_x_run(
+                    slice_mask[int(y_index), :],
+                    center_x,
+                )
+                if not x_run:
+                    continue
+                x_min = min(x_run)
+                x_max = max(x_run)
+                body_mask[int(z_index), y_index, x_min:x_max + 1] = slice_mask[
+                    int(y_index),
+                    x_min:x_max + 1,
+                ]
+
+        if not np.any(body_mask):
+            return body_mask
+        return LocalizationStage._retain_largest_3d_component(body_mask)
+
+    @staticmethod
+    def _retain_largest_3d_component(mask: np.ndarray) -> np.ndarray:
+        """保留主体候选中最大的三维连通块，去除外侧孤立残渣。"""
+
+        component_image = sitk.ConnectedComponent(
+            sitk.GetImageFromArray(mask.astype(np.uint8)),
+            True,
+        )
+        component_array = sitk.GetArrayFromImage(component_image)
+        component_sizes = np.bincount(component_array.ravel())
+        if component_sizes.size <= 1:
+            return mask
+        largest_component = int(np.argmax(component_sizes[1:]) + 1)
+        return component_array == largest_component
+
+    @staticmethod
+    def _estimate_anterior_y_limit(mask: np.ndarray) -> float | None:
+        """从各轴向层最前端位置的明显分簇估计主体层的 AP 上限。"""
+
+        slice_y_minima: list[int] = []
+        for z_index in np.unique(np.argwhere(mask)[:, 0]):
+            y_indices = np.flatnonzero(mask[int(z_index), :, :].any(axis=1))
+            if y_indices.size > 0:
+                slice_y_minima.append(int(y_indices.min()))
+        if len(slice_y_minima) < 4:
+            return None
+
+        sorted_minima = np.sort(np.asarray(slice_y_minima, dtype=int))
+        gaps = np.diff(sorted_minima)
+        if gaps.size == 0:
+            return None
+        split_index = int(np.argmax(gaps))
+        if int(gaps[split_index]) < 4:
+            return None
+        return float(
+            (sorted_minima[split_index] + sorted_minima[split_index + 1]) / 2.0
+        )
+
+    @staticmethod
+    def _slice_row_widths(slice_mask: np.ndarray) -> dict[int, int]:
+        """统计单个横状位层面每个 AP 行的左右跨度宽度。"""
+
+        row_widths: dict[int, int] = {}
+        for y_index in np.unique(np.argwhere(slice_mask)[:, 0]):
+            x_indices = np.flatnonzero(slice_mask[int(y_index), :])
+            if x_indices.size == 0:
+                continue
+            row_widths[int(y_index)] = int(x_indices.max() - x_indices.min() + 1)
+        return row_widths
+
+    @staticmethod
+    def _slice_row_run_counts(slice_mask: np.ndarray) -> dict[int, int]:
+        """统计单个横状位层面每个 AP 行的左右连续段数量。"""
+
+        row_run_counts: dict[int, int] = {}
+        for y_index in np.unique(np.argwhere(slice_mask)[:, 0]):
+            x_indices = np.flatnonzero(slice_mask[int(y_index), :])
+            if x_indices.size == 0:
+                continue
+            row_run_counts[int(y_index)] = int(
+                1 + np.count_nonzero(np.diff(x_indices) > 1)
+            )
+        return row_run_counts
+
+    @staticmethod
+    def _first_anterior_body_row_run(
+        row_widths: dict[int, int],
+        row_run_counts: dict[int, int] | None = None,
+    ) -> list[int]:
+        """从前向后选择第一段足够宽的连续 AP 行，并裁掉末端分裂附件。"""
+
+        if not row_widths:
+            return []
+        max_width = max(row_widths.values())
+        width_threshold = max(2, int(math.ceil(max_width * 0.35)))
+        wide_rows = [
+            y_index
+            for y_index, width in sorted(row_widths.items())
+            if width >= width_threshold
+        ]
+        if not wide_rows:
+            return []
+
+        current_run = [wide_rows[0]]
+        for y_index in wide_rows[1:]:
+            if y_index != current_run[-1] + 1:
+                return current_run
+            current_run.append(y_index)
+
+        if row_run_counts:
+            while len(current_run) > 1 and row_run_counts.get(current_run[-1], 1) > 1:
+                current_run.pop()
+        return current_run
+
+    @staticmethod
+    def _central_x_run(row_mask: np.ndarray, center_x: float) -> list[int]:
+        """选择单个 AP 行上最靠近左右中心的连续 x 段。"""
+
+        x_indices = np.flatnonzero(row_mask)
+        if x_indices.size == 0:
+            return []
+
+        runs: list[list[int]] = []
+        current_run = [int(x_indices[0])]
+        for x_index in x_indices[1:]:
+            if int(x_index) != current_run[-1] + 1:
+                runs.append(current_run)
+                current_run = []
+            current_run.append(int(x_index))
+        runs.append(current_run)
+
+        return min(
+            runs,
+            key=lambda run: (
+                abs(((min(run) + max(run)) / 2.0) - center_x),
+                -len(run),
+            ),
+        )
+
+    @staticmethod
     def _write_localization_result(
         output_path: Path,
         request,
@@ -1361,6 +1585,7 @@ class LocalizationStage(BaseStage):
         debug_bbox_overlay_path: str,
         debug_target_mask_overlay_path: str,
         debug_label_mask_overlay_path: str,
+        debug_vertebral_body_mask_overlay_path: str,
         is_skewed: bool,
         skew_params: Dict[str, Any],
         anatomical_geometry: AnatomicalGeometryResult | None = None,
@@ -1394,6 +1619,7 @@ class LocalizationStage(BaseStage):
             debug_bbox_overlay_path=debug_bbox_overlay_path,
             debug_target_mask_overlay_path=debug_target_mask_overlay_path,
             debug_label_mask_overlay_path=debug_label_mask_overlay_path,
+            debug_vertebral_body_mask_overlay_path=debug_vertebral_body_mask_overlay_path,
             is_skewed=is_skewed,
             skew_params=skew_params,
             anatomical_geometry=anatomical_geometry,

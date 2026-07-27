@@ -277,6 +277,18 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             "vertebrae_C7",
         ])
 
+    def test_cervical_whole_range_keeps_c1_for_cut_coverage(self):
+        """颈椎切图覆盖仍需保留环形 C1，避免其他状位缺少上端范围。"""
+
+        config = json.loads(
+            Path("src/config/localization_config.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(config["targets"]["颈椎"]["whole_range"], {
+            "start": "C1",
+            "end": "C7",
+        })
+
     def test_s1_range_prefers_vertebrae_s1_over_sacrum_when_available(self):
         # S1 这个业务名表示第一骶椎。模型同时提供 vertebrae_S1 和 sacrum 时，
         # 整切范围应该纳入 vertebrae_S1，不能直接跳到整块骶骨。
@@ -363,6 +375,26 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertTrue(skew_info["should_correct"])
         self.assertEqual(skew_info["used_label_names"], ["vertebrae_C7", "vertebrae_C6"])
         self.assertEqual(skew_info["skipped_label_names"], ["vertebrae_C5"])
+
+    def test_vertebrae_axial_skew_excludes_c1_ring_from_positioning(self):
+        """回正角度定位不使用环形 C1，但仍允许其他流程保留 C1 坐标。"""
+
+        stage = LocalizationStage({"correction_angle_threshold_degrees": 3.0})
+        seg_array = np.zeros((3, 100, 100), dtype=np.uint8)
+        self._draw_oriented_label(seg_array, label_id=20, z=1, center_y=35, center_x=40, angle_degrees=20.0)
+        self._draw_oriented_label(seg_array, label_id=21, z=1, center_y=60, center_x=55, angle_degrees=22.0)
+        self._draw_oriented_label(seg_array, label_id=22, z=1, center_y=78, center_x=75, angle_degrees=-60.0)
+        label_targets = {
+            "vertebrae_C2": LabelTarget("vertebrae_C2", [20]),
+            "vertebrae_C3": LabelTarget("vertebrae_C3", [21]),
+            "vertebrae_C1": LabelTarget("vertebrae_C1", [22]),
+        }
+
+        skew_info = stage._detect_target_axial_skew(seg_array, label_targets)
+
+        self.assertEqual(skew_info["used_label_names"], ["vertebrae_C2", "vertebrae_C3"])
+        self.assertEqual(skew_info["skipped_label_names"], ["vertebrae_C1"])
+        self.assertAlmostEqual(skew_info["angle_degrees"], 21.0, delta=3.0)
 
     def test_debug_bbox_overlay_writes_edges_on_reference_grid(self):
         # 研发期用这个 overlay 在 ITK-SNAP 里直接看定位框；它只画边框，不填满盒子。
@@ -503,6 +535,291 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertEqual(overlay_array[1, 2, 3], 21)
             self.assertEqual(overlay_array[2, 3, 4], 0)
             self.assertEqual(set(np.unique(overlay_array).tolist()), {0, 20, 21})
+
+    def test_debug_vertebral_body_mask_overlay_colors_body_voxels_and_excludes_posterior_elements(self):
+        """椎体主体校验 overlay 应填充主体颜色，不只画框，也不包含后方窄附件。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_array = np.zeros((8, 12, 14), dtype=np.uint16)
+            # 模拟椎体主体：横状位上前方较宽的矩形区域。
+            seg_array[2:6, 2:6, 3:10] = 20
+            # 模拟后方椎弓/棘突：同一 label，但 AP 方向更靠后且更窄。
+            seg_array[2:6, 6:10, 6:8] = 20
+            reference_image = sitk.GetImageFromArray(seg_array)
+            reference_image.SetSpacing((0.5, 0.6, 1.5))
+            reference_image.SetOrigin((10.0, 20.0, 30.0))
+            label_targets = {
+                "vertebrae_L3": LabelTarget("vertebrae_L3", [20]),
+            }
+            overlay_path = temp_path / "椎体主体掩膜.nii.gz"
+
+            written_path = stage._write_debug_vertebral_body_mask_overlay(
+                reference_image=reference_image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                output_path=overlay_path,
+            )
+
+            overlay_image = sitk.ReadImage(str(overlay_path))
+            overlay_array = sitk.GetArrayFromImage(overlay_image)
+            self.assertEqual(written_path, str(overlay_path))
+            self.assertEqual(overlay_image.GetSize(), reference_image.GetSize())
+            self.assertEqual(overlay_image.GetOrigin(), reference_image.GetOrigin())
+            for actual, expected in zip(overlay_image.GetSpacing(), reference_image.GetSpacing()):
+                self.assertAlmostEqual(actual, expected, places=6)
+            self.assertEqual(overlay_array[2, 2, 3], 20)
+            self.assertEqual(overlay_array[3, 3, 4], 20)
+            self.assertEqual(overlay_array[4, 4, 8], 20)
+            self.assertEqual(overlay_array[5, 5, 9], 20)
+            self.assertEqual(overlay_array[2, 9, 7], 0)
+            self.assertEqual(overlay_array[5, 6, 7], 0)
+
+    def test_debug_vertebral_body_mask_overlay_keeps_body_per_axial_slice(self):
+        """逐层提取主体，避免胸椎这类整体窄小椎体在全局阈值下大片丢失。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_array = np.zeros((8, 14, 14), dtype=np.uint16)
+            # 上下端层主体较窄，中间层主体较宽；后方附件在 AP 方向更靠后。
+            seg_array[2, 3:7, 5:9] = 20
+            seg_array[3:5, 3:8, 4:10] = 20
+            seg_array[5, 3:7, 5:9] = 20
+            seg_array[2:6, 9:12, 6:8] = 20
+            reference_image = sitk.GetImageFromArray(seg_array)
+            label_targets = {
+                "vertebrae_T8": LabelTarget("vertebrae_T8", [20]),
+            }
+            overlay_path = temp_path / "椎体主体掩膜.nii.gz"
+
+            stage._write_debug_vertebral_body_mask_overlay(
+                reference_image=reference_image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                output_path=overlay_path,
+            )
+
+            overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
+            self.assertEqual(overlay_array[2, 4, 6], 20)
+            self.assertEqual(overlay_array[5, 4, 7], 20)
+            self.assertEqual(overlay_array[3, 10, 7], 0)
+
+    def test_debug_vertebral_body_mask_overlay_prefers_anterior_body_over_wider_posterior_process(self):
+        """后方附件比主体更宽时，主体候选仍应取前方第一段宽区域。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_array = np.zeros((5, 14, 16), dtype=np.uint16)
+            seg_array[2, 2:6, 5:11] = 20
+            seg_array[2, 7, 7:9] = 20
+            seg_array[2, 9:12, 2:15] = 20
+            reference_image = sitk.GetImageFromArray(seg_array)
+            label_targets = {
+                "vertebrae_L5": LabelTarget("vertebrae_L5", [20]),
+            }
+            overlay_path = temp_path / "椎体主体掩膜.nii.gz"
+
+            stage._write_debug_vertebral_body_mask_overlay(
+                reference_image=reference_image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                output_path=overlay_path,
+            )
+
+            overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
+            self.assertEqual(overlay_array[2, 3, 6], 20)
+            self.assertEqual(overlay_array[2, 10, 6], 0)
+
+    def test_debug_vertebral_body_mask_overlay_keeps_central_lr_segment_only(self):
+        """同一主体 AP 行存在左右侧块时，只保留靠近椎体左右中心的连续段。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_array = np.zeros((5, 10, 18), dtype=np.uint16)
+            seg_array[2, 2:6, 6:12] = 20
+            seg_array[2, 3:5, 1:4] = 20
+            seg_array[2, 3:5, 14:17] = 20
+            reference_image = sitk.GetImageFromArray(seg_array)
+            label_targets = {
+                "vertebrae_C5": LabelTarget("vertebrae_C5", [20]),
+            }
+            overlay_path = temp_path / "椎体主体掩膜.nii.gz"
+
+            stage._write_debug_vertebral_body_mask_overlay(
+                reference_image=reference_image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                output_path=overlay_path,
+            )
+
+            overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
+            self.assertEqual(overlay_array[2, 3, 8], 20)
+            self.assertEqual(overlay_array[2, 3, 2], 0)
+            self.assertEqual(overlay_array[2, 3, 15], 0)
+
+    def test_debug_vertebral_body_mask_overlay_excludes_posterior_midline_fragments(self):
+        """后方正中小段即使靠近左右中心，也不应跟随前方主体一起上色。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_array = np.zeros((5, 14, 16), dtype=np.uint16)
+            seg_array[2, 2:6, 5:11] = 20
+            seg_array[2, 8:11, 7:10] = 20
+            reference_image = sitk.GetImageFromArray(seg_array)
+            label_targets = {
+                "vertebrae_T9": LabelTarget("vertebrae_T9", [20]),
+            }
+            overlay_path = temp_path / "椎体主体掩膜.nii.gz"
+
+            stage._write_debug_vertebral_body_mask_overlay(
+                reference_image=reference_image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                output_path=overlay_path,
+            )
+
+            overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
+            self.assertEqual(overlay_array[2, 3, 8], 20)
+            self.assertEqual(overlay_array[2, 9, 8], 0)
+
+    def test_debug_vertebral_body_mask_overlay_stops_when_posterior_row_splits(self):
+        """主体后缘分裂成左右附件时，不应因整体跨度仍很宽而继续上色。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_array = np.zeros((5, 14, 18), dtype=np.uint16)
+            seg_array[2, 2:7, 5:13] = 20
+            # 后方附件左右分裂，但左右极值仍让整行外接跨度看起来很宽。
+            seg_array[2, 7:10, 5:9] = 20
+            seg_array[2, 7:10, 11:15] = 20
+            reference_image = sitk.GetImageFromArray(seg_array)
+            label_targets = {
+                "vertebrae_T10": LabelTarget("vertebrae_T10", [20]),
+            }
+            overlay_path = temp_path / "椎体主体掩膜.nii.gz"
+
+            stage._write_debug_vertebral_body_mask_overlay(
+                reference_image=reference_image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                output_path=overlay_path,
+            )
+
+            overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
+            self.assertEqual(overlay_array[2, 5, 7], 20)
+            self.assertEqual(overlay_array[2, 8, 7], 0)
+            self.assertEqual(overlay_array[2, 8, 13], 0)
+
+    def test_debug_vertebral_body_mask_overlay_skips_axial_slices_with_only_posterior_attachment(self):
+        """同一 label 的端层只有后方附件时，不应单独生成一段伪椎体主体。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_array = np.zeros((8, 14, 14), dtype=np.uint16)
+            seg_array[2, 8:11, 6:8] = 20
+            seg_array[3:6, 3:7, 5:9] = 20
+            seg_array[3:6, 8:11, 6:8] = 20
+            reference_image = sitk.GetImageFromArray(seg_array)
+            label_targets = {
+                "vertebrae_T11": LabelTarget("vertebrae_T11", [20]),
+            }
+            overlay_path = temp_path / "椎体主体掩膜.nii.gz"
+
+            stage._write_debug_vertebral_body_mask_overlay(
+                reference_image=reference_image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                output_path=overlay_path,
+            )
+
+            overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
+            self.assertEqual(overlay_array[3, 4, 6], 20)
+            self.assertEqual(overlay_array[2, 9, 7], 0)
+
+    def test_debug_vertebral_body_mask_overlay_does_not_fallback_to_full_label(self):
+        """找不到可信主体候选时，应保持为空而不是回退标记整个 label。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_array = np.zeros((4, 8, 8), dtype=np.uint16)
+            seg_array[2, 4, 4] = 20
+            reference_image = sitk.GetImageFromArray(seg_array)
+            label_targets = {
+                "vertebrae_T12": LabelTarget("vertebrae_T12", [20]),
+            }
+            overlay_path = temp_path / "椎体主体掩膜.nii.gz"
+
+            stage._write_debug_vertebral_body_mask_overlay(
+                reference_image=reference_image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                output_path=overlay_path,
+            )
+
+            overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
+            self.assertEqual(int(overlay_array.sum()), 0)
+
+    def test_debug_vertebral_body_mask_overlay_removes_isolated_3d_fragments(self):
+        """主体候选中的孤立三维小块不应出现在最终 overlay。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_array = np.zeros((9, 14, 18), dtype=np.uint16)
+            seg_array[2:6, 2:7, 5:12] = 20
+            # 与主体没有三维连接，但在自身轴向层上足够宽，模拟外侧残渣。
+            seg_array[6, 2:6, 13:17] = 20
+            reference_image = sitk.GetImageFromArray(seg_array)
+            label_targets = {
+                "vertebrae_L4": LabelTarget("vertebrae_L4", [20]),
+            }
+            overlay_path = temp_path / "椎体主体掩膜.nii.gz"
+
+            stage._write_debug_vertebral_body_mask_overlay(
+                reference_image=reference_image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                output_path=overlay_path,
+            )
+
+            overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
+            self.assertEqual(overlay_array[4, 4, 7], 20)
+            self.assertEqual(overlay_array[6, 3, 14], 0)
+
+    def test_debug_vertebral_body_mask_overlay_excludes_c1_but_keeps_c2(self):
+        """主体定位 overlay 排除 C1 环形结构，但保留 C2 及以下椎体。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            seg_array = np.zeros((6, 12, 18), dtype=np.uint16)
+            seg_array[2:5, 2:6, 2:8] = 20
+            seg_array[2:5, 2:6, 10:16] = 21
+            reference_image = sitk.GetImageFromArray(seg_array)
+            label_targets = {
+                "vertebrae_C1": LabelTarget("vertebrae_C1", [20]),
+                "vertebrae_C2": LabelTarget("vertebrae_C2", [21]),
+            }
+            overlay_path = temp_path / "椎体主体掩膜.nii.gz"
+
+            stage._write_debug_vertebral_body_mask_overlay(
+                reference_image=reference_image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                output_path=overlay_path,
+            )
+
+            overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
+            self.assertEqual(int((overlay_array == 20).sum()), 0)
+            self.assertGreater(int((overlay_array == 21).sum()), 0)
 
     def test_no_correction_uses_original_raw_and_seg_paths(self):
         # 未超过阈值时不要生成假的 corrected 文件，后续阶段应直接吃原始 raw/seg。

@@ -138,6 +138,7 @@ class LocalizationResult:
     debug_bbox_overlay_path: str = ""  # 研发期 ITK-SNAP bbox 边框 overlay；后续稳定后可删除
     debug_target_mask_overlay_path: str = ""  # 研发期 ITK-SNAP 真实目标 mask overlay；用于避免把外接盒投影视为定位偏移
     debug_label_mask_overlay_path: str = ""  # 研发期 ITK-SNAP 分 label mask overlay；保留各椎体原始 label id
+    debug_vertebral_body_mask_overlay_path: str = ""  # 研发期椎体主体候选 mask overlay；用于校验是否能从完整椎体 label 中排除后方附件
     is_skewed: bool = False  # 兼容旧字段；当前语义等同于 correction_applied，不再表示已可靠检测到歪斜
     skew_params: Dict[str, Any] = field(default_factory=dict)  # 兼容旧字段；语义等同于 correction_params
     anatomical_geometry: Optional[AnatomicalGeometryResult] = None  # 第三步输出给第四步的统一解剖坐标；未适配部位为空
@@ -177,6 +178,7 @@ class LocalizationResult:
             'debug_bbox_overlay_path': self.debug_bbox_overlay_path,
             'debug_target_mask_overlay_path': self.debug_target_mask_overlay_path,
             'debug_label_mask_overlay_path': self.debug_label_mask_overlay_path,
+            'debug_vertebral_body_mask_overlay_path': self.debug_vertebral_body_mask_overlay_path,
             'is_skewed': self.is_skewed,
             'skew_params': self.skew_params,
         }

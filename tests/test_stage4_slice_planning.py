@@ -16,6 +16,7 @@ from src.models.enums import BodyPartEnum, CutModeEnum, PlaneTypeEnum
 from src.planning.base import select_planner
 from src.planning.lumbar import LumbarInterspacePlanner, LumbarWholeRangePlanner
 from src.planning.single_label import SingleLabelWholeRangePlanner
+from src.planning.spine_cpr import SPINE_CPR_LABELS
 from src.planning.whole_range import (
     build_whole_range_plan_from_bbox,
     plane_extent_mm,
@@ -146,6 +147,61 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertAlmostEqual(plan.range_start.z, 13.0)
         self.assertAlmostEqual(plan.range_end.z, -3.0)
 
+    def test_spine_cpr_endpoint_faces_extend_vertically_from_endpoint_centroids(self):
+        """CPR 首尾端面应从各自质心沿头脚轴延伸，避免尾端被相邻点切向拉平。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 3.0,
+                    ["骨窗"],
+                ),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["coords"]["vertebrae_L1"]["centroid"].update({
+            "z": 40.0, "y": 10.0, "x": 60.0,
+        })
+        localization_result["coords"]["vertebrae_L1"]["bbox"].update({
+            "z_min": 36, "z_max": 44,
+            "y_min": 8, "y_max": 12,
+            "x_min": 55, "x_max": 65,
+        })
+        localization_result["coords"]["vertebrae_L2"]["centroid"].update({
+            "z": 30.0, "y": 20.0, "x": 60.0,
+        })
+        localization_result["coords"]["vertebrae_L3"]["centroid"].update({
+            "z": 20.0, "y": 30.0, "x": 60.0,
+        })
+        localization_result["coords"]["vertebrae_L4"]["centroid"].update({
+            "z": 10.0, "y": 40.0, "x": 60.0,
+        })
+        localization_result["coords"]["vertebrae_L5"]["centroid"].update({
+            "z": 0.0, "y": 50.0, "x": 60.0,
+        })
+        localization_result["coords"]["vertebrae_S1"]["centroid"].update({
+            "z": -10.0, "y": 80.0, "x": 60.0,
+        })
+        localization_result["coords"]["vertebrae_S1"]["bbox"].update({
+            "z_min": -18, "z_max": -6,
+            "y_min": 78, "y_max": 82,
+            "x_min": 55, "x_max": 65,
+        })
+
+        plan = LumbarWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.geometry_type, "curved_stack")
+        self.assertAlmostEqual(plan.curve_points[0].z, 44.0)
+        self.assertAlmostEqual(plan.curve_points[0].y, 10.0)
+        self.assertAlmostEqual(plan.curve_points[-1].z, -18.0)
+        self.assertAlmostEqual(plan.curve_points[-1].y, 80.0)
+
     def test_cervical_sagittal_stays_straight_and_coronal_uses_cpr(self):
         """颈椎矢状位保持直线 MPR，冠状位走 CPR。"""
 
@@ -171,7 +227,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
         result = SingleLabelWholeRangePlanner().build_plans(
             request,
-            self._spine_localization_result(("C1", "C2", "C3"), "颈椎"),
+            self._spine_localization_result(("C1", "C2", "C3", "C4"), "颈椎"),
         )
 
         self.assertEqual(
@@ -181,6 +237,18 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 ("矢状位", "plane_stack"),
                 ("冠状位", "curved_stack"),
             ],
+        )
+        self.assertEqual(
+            result.plans[-1].source_labels,
+            ["vertebrae_C2", "vertebrae_C3", "vertebrae_C4"],
+        )
+
+    def test_cervical_cpr_label_sequence_excludes_c1_ring(self):
+        """颈椎 CPR 源序列从 C2 开始，避免 C1 环形结构干扰曲线。"""
+
+        self.assertEqual(
+            SPINE_CPR_LABELS["颈椎"],
+            [f"vertebrae_C{index}" for index in range(2, 8)],
         )
 
     def test_overview_with_image_preserves_ct_and_highlights_overlay_labels(self):

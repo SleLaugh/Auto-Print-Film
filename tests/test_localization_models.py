@@ -32,6 +32,45 @@ class LocalizationModelsTest(unittest.TestCase):
                 coords={},
             )
 
+    def test_localization_result_serializes_spine_geometry_separately(self):
+        """主体质心应作为独立阶段三字段序列化，不覆盖全量 coords。"""
+
+        result = LocalizationResult(
+            body_part="腰椎",
+            cut_mode="whole_range",
+            seg_path="/tmp/seg.nii.gz",
+            model={"model_id": 1},
+            dataset_json_path="/tmp/dataset.json",
+            image=NiftiImageInfo(
+                size_xyz=[2, 2, 2],
+                spacing_xyz=[1.0, 1.0, 1.0],
+                origin_xyz=[0.0, 0.0, 0.0],
+                direction=[
+                    1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0,
+                ],
+            ),
+            cut_config={"start": "L1", "end": "S1"},
+            cut_configs={"whole_range": {"start": "L1", "end": "S1"}},
+            resolved_cut_config={"start": "L1", "end": "S1"},
+            label_targets={},
+            coords={},
+            spine_geometry={
+                "method": "vertebral_body_candidate_v1",
+                "body_centroids": {"vertebrae_L1": {"found": True}},
+            },
+        )
+
+        data = result.to_dict()
+
+        self.assertIn("spine_geometry", data)
+        self.assertEqual(
+            data["spine_geometry"]["body_centroids"]["vertebrae_L1"]["found"],
+            True,
+        )
+        self.assertEqual(data["coords"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

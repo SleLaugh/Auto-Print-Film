@@ -821,6 +821,51 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertEqual(int((overlay_array == 20).sum()), 0)
             self.assertGreater(int((overlay_array == 21).sum()), 0)
 
+    def test_stage3_spine_geometry_uses_body_centroid_and_excludes_c1(self):
+        """阶段三应输出独立主体质心，不能改写全量定位质心，且 C1 不进入 CPR 几何。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((8, 14, 18), dtype=np.uint16)
+        seg_array[2:6, 2:6, 5:13] = 20  # C1：应保留在全量定位，但不输出主体 CPR 点
+        seg_array[2:6, 2:6, 5:13] = 21  # C2 主体
+        seg_array[2:6, 6:10, 7:9] = 21  # C2 后方附件
+        image = sitk.GetImageFromArray(seg_array)
+        image.SetSpacing((0.5, 0.6, 1.5))
+        image.SetOrigin((10.0, 20.0, 30.0))
+        label_targets = {
+            "vertebrae_C1": LabelTarget("vertebrae_C1", [20]),
+            "vertebrae_C2": LabelTarget("vertebrae_C2", [21]),
+        }
+
+        geometry = stage._build_spine_body_geometry(
+            body_part="颈椎",
+            image=image,
+            seg_array=seg_array,
+            label_targets=label_targets,
+        )
+
+        self.assertEqual(geometry["method"], "vertebral_body_candidate_v1")
+        self.assertNotIn("vertebrae_C1", geometry["body_centroids"])
+        c2 = geometry["body_centroids"]["vertebrae_C2"]
+        self.assertTrue(c2["found"])
+        self.assertGreater(c2["voxel_count"], 0)
+        self.assertEqual(set(c2["centroid_voxel"]), {"z", "y", "x"})
+        self.assertEqual(set(c2["centroid_physical"]), {"x", "y", "z"})
+        self.assertAlmostEqual(c2["centroid_physical"]["x"], 14.25, places=3)
+
+    def test_stage3_spine_geometry_is_not_generated_for_non_spine(self):
+        """肺部等非脊柱部位不应生成椎体主体几何。"""
+
+        image = sitk.Image(4, 4, 4, sitk.sitkUInt8)
+        geometry = LocalizationStage._build_spine_body_geometry(
+            body_part="肺部",
+            image=image,
+            seg_array=np.zeros((4, 4, 4), dtype=np.uint8),
+            label_targets={},
+        )
+
+        self.assertIsNone(geometry)
+
     def test_no_correction_uses_original_raw_and_seg_paths(self):
         # 未超过阈值时不要生成假的 corrected 文件，后续阶段应直接吃原始 raw/seg。
         """验证 `test_no_correction_uses_original_raw_and_seg_paths` 场景符合预期。"""
@@ -1090,6 +1135,15 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertTrue(overlay_path.exists())
             self.assertTrue(target_overlay_path.exists())
             self.assertTrue(label_overlay_path.exists())
+            self.assertEqual(
+                result["spine_geometry"]["method"],
+                "vertebral_body_candidate_v1",
+            )
+            self.assertIn(
+                "vertebrae_L1",
+                result["spine_geometry"]["body_centroids"],
+            )
+            self.assertIn("spine_geometry", metadata)
 
     @staticmethod
     def _write_image(path: Path, array: np.ndarray) -> None:

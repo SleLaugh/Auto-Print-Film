@@ -1438,12 +1438,30 @@ class LocalizationStage(BaseStage):
                     "voxel_count": 0,
                     "centroid_voxel": None,
                     "centroid_physical": None,
+                    "local_superior_inferior_axis": None,
+                    "local_superior_inferior_extent_mm": None,
+                    "local_superior_inferior_face_centroids": None,
+                    "local_superior_inferior_face_candidates": None,
+                    "sagittal_body_faces": None,
                 }
                 continue
 
             centroid_z, centroid_y, centroid_x = indices.mean(axis=0)
             physical_x, physical_y, physical_z = image.TransformContinuousIndexToPhysicalPoint(
                 (float(centroid_x), float(centroid_y), float(centroid_z))
+            )
+            (
+                local_axis,
+                local_axis_extent,
+                local_face_centroids,
+                local_face_candidates,
+            ) = cls._estimate_local_superior_inferior_geometry(
+                indices,
+                image,
+            )
+            sagittal_body_faces = cls._estimate_sagittal_body_faces(
+                indices,
+                image,
             )
             filtered_annotation_centroids[label_name] = {
                 "found": True,
@@ -1458,6 +1476,41 @@ class LocalizationStage(BaseStage):
                     "y": float(physical_y),
                     "z": float(physical_z),
                 },
+                "local_superior_inferior_axis": (
+                    {
+                        "x": float(local_axis[0]),
+                        "y": float(local_axis[1]),
+                        "z": float(local_axis[2]),
+                    }
+                    if local_axis is not None
+                    else None
+                ),
+                "local_superior_inferior_extent_mm": (
+                    {
+                        "min": float(local_axis_extent[0]),
+                        "max": float(local_axis_extent[1]),
+                    }
+                    if local_axis_extent is not None
+                    else None
+                ),
+                "local_superior_inferior_face_centroids": (
+                    {
+                        "min": {
+                            "x": float(local_face_centroids[0][0]),
+                            "y": float(local_face_centroids[0][1]),
+                            "z": float(local_face_centroids[0][2]),
+                        },
+                        "max": {
+                            "x": float(local_face_centroids[1][0]),
+                            "y": float(local_face_centroids[1][1]),
+                            "z": float(local_face_centroids[1][2]),
+                        },
+                    }
+                    if local_face_centroids is not None
+                    else None
+                ),
+                "local_superior_inferior_face_candidates": local_face_candidates,
+                "sagittal_body_faces": sagittal_body_faces,
             }
 
         return {
@@ -1472,6 +1525,302 @@ class LocalizationStage(BaseStage):
             "full_label_geometry": "coords",
             "full_label_bbox": "coords.*.bbox",
         }
+
+    @staticmethod
+    def _estimate_local_superior_inferior_geometry(
+        indices_zyx: np.ndarray,
+        image: sitk.Image,
+    ) -> tuple[
+        np.ndarray | None,
+        tuple[float, float] | None,
+        tuple[np.ndarray, np.ndarray] | None,
+        list[dict[str, Any]] | None,
+    ]:
+        """估计主体头脚轴、范围，以及两端表面中心。"""
+
+        if len(indices_zyx) < 3:
+            return None, None, None, None
+        indices_xyz = indices_zyx[:, [2, 1, 0]].astype(float)
+        spacing = np.asarray(image.GetSpacing(), dtype=float)
+        origin = np.asarray(image.GetOrigin(), dtype=float)
+        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+        physical_points = origin + (indices_xyz * spacing) @ direction.T
+        centered = physical_points - np.mean(physical_points, axis=0)
+        covariance = (centered.T @ centered) / float(len(centered))
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        if not np.all(np.isfinite(eigenvalues)):
+            return None, None, None, None
+        axis = eigenvectors[:, int(np.argmin(eigenvalues))]
+        axis_index = int(np.argmin(eigenvalues))
+        transverse_axes = eigenvectors[:, [index for index in range(3) if index != axis_index]]
+        length = float(np.linalg.norm(axis))
+        if not math.isfinite(length) or length <= 0.0:
+            return None, None, None, None
+        axis /= length
+        projections = centered @ axis
+        min_projection = float(np.min(projections))
+        max_projection = float(np.max(projections))
+        face_tolerance = max(float(np.min(spacing)) * 1.25, 1e-3)
+        def select_face_points(target_projection: float) -> np.ndarray:
+            selected = physical_points[
+                np.abs(projections - target_projection) <= face_tolerance
+            ]
+            if selected.size > 0:
+                return selected
+
+            # 体素层间距大于容差时，仍取距离目标平面最近的一层。
+            nearest_distance = float(
+                np.min(np.abs(projections - target_projection))
+            )
+            return physical_points[
+                np.abs(projections - target_projection)
+                <= nearest_distance + 1e-6
+            ]
+
+        min_face_points = select_face_points(min_projection)
+        max_face_points = select_face_points(max_projection)
+        if min_face_points.size == 0 or max_face_points.size == 0:
+            return axis, (min_projection, max_projection), None, None
+
+        def face_center(
+            face_points: np.ndarray,
+            boundary_projection: float,
+        ) -> np.ndarray:
+            """取端面平面内两个主方向范围的中点。"""
+
+            transverse_points = (face_points - physical_points.mean(axis=0)) @ transverse_axes
+            transverse_min = np.min(transverse_points, axis=0)
+            transverse_max = np.max(transverse_points, axis=0)
+            transverse_midpoint = (transverse_min + transverse_max) / 2.0
+            return (
+                physical_points.mean(axis=0)
+                + axis * boundary_projection
+                + transverse_axes @ transverse_midpoint
+            )
+
+        def face_transverse_spans(face_points: np.ndarray) -> np.ndarray:
+            transverse_points = (
+                face_points - physical_points.mean(axis=0)
+            ) @ transverse_axes
+            return np.max(transverse_points, axis=0) - np.min(
+                transverse_points,
+                axis=0,
+            )
+
+        candidates: list[dict[str, Any]] = []
+        axis_span = max_projection - min_projection
+        terminal_span = axis_span * 0.45
+        if terminal_span > 0.0:
+            candidate_projections = (
+                ("min", np.linspace(
+                    min_projection,
+                    min_projection + terminal_span,
+                    12,
+                )),
+                ("max", np.linspace(
+                    max_projection - terminal_span,
+                    max_projection,
+                    12,
+                )),
+            )
+            for side, projections_for_side in candidate_projections:
+                for candidate_projection in projections_for_side:
+                    candidate_points = select_face_points(
+                        float(candidate_projection)
+                    )
+                    if candidate_points.size == 0:
+                        continue
+                    center = face_center(
+                        candidate_points,
+                        float(candidate_projection),
+                    )
+                    transverse_spans = face_transverse_spans(candidate_points)
+                    candidates.append({
+                        "side": side,
+                        "projection": float(candidate_projection),
+                        "point_count": int(len(candidate_points)),
+                        "transverse_span_mm": {
+                            "first": float(transverse_spans[0]),
+                            "second": float(transverse_spans[1]),
+                        },
+                        "face_valid": bool(
+                            len(candidate_points) >= 3
+                            and float(np.max(transverse_spans))
+                            >= float(np.min(spacing)) * 0.75
+                        ),
+                        "physical": {
+                            "x": float(center[0]),
+                            "y": float(center[1]),
+                            "z": float(center[2]),
+                        },
+                    })
+
+        return (
+            axis,
+            (min_projection, max_projection),
+            (
+                face_center(min_face_points, min_projection),
+                face_center(max_face_points, max_projection),
+            ),
+            candidates,
+        )
+
+    @staticmethod
+    def _estimate_sagittal_body_faces(
+        indices_zyx: np.ndarray,
+        image: sitk.Image,
+    ) -> list[dict[str, Any]] | None:
+        """把过滤椎体主体抽象为矢状投影轮廓上的四个大面。"""
+
+        if len(indices_zyx) < 4:
+            return None
+
+        indices_xyz = indices_zyx[:, [2, 1, 0]].astype(float)
+        spacing = np.asarray(image.GetSpacing(), dtype=float)
+        origin = np.asarray(image.GetOrigin(), dtype=float)
+        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+        physical_points = origin + (indices_xyz * spacing) @ direction.T
+        center = physical_points.mean(axis=0)
+
+        sagittal_axes = direction[:, [1, 2]]
+        sagittal_points = (physical_points - center) @ sagittal_axes
+        if sagittal_points.shape[0] < 4:
+            return None
+
+        unique_points = np.unique(np.round(sagittal_points, 3), axis=0)
+        hull = LocalizationStage._convex_hull_2d(unique_points)
+        quad = LocalizationStage._simplify_hull_to_quadrilateral(hull)
+        if quad is None:
+            return None
+
+        tolerance = max(
+            float(min(spacing[1], spacing[2])) * 1.5,
+            1e-3,
+        )
+
+        faces: list[dict[str, Any]] = []
+        signed_area = LocalizationStage._signed_area_2d(quad)
+        if abs(signed_area) <= 1e-6:
+            return None
+
+        for edge_index in range(4):
+            start = quad[edge_index]
+            end = quad[(edge_index + 1) % 4]
+            edge = end - start
+            edge_length = float(np.linalg.norm(edge))
+            if not math.isfinite(edge_length) or edge_length <= 1e-6:
+                continue
+            if signed_area > 0:
+                normal_2d = np.asarray([edge[1], -edge[0]], dtype=float)
+            else:
+                normal_2d = np.asarray([-edge[1], edge[0]], dtype=float)
+            normal_2d = normal_2d / float(np.linalg.norm(normal_2d))
+            distances = np.abs((sagittal_points - start) @ normal_2d)
+            selected = distances <= tolerance
+            if not np.any(selected):
+                nearest = float(np.min(distances))
+                selected = distances <= nearest + 1e-6
+
+            face_center_2d = (start + end) / 2.0
+            normal_3d = sagittal_axes @ normal_2d
+            normal_length = float(np.linalg.norm(normal_3d))
+            if not math.isfinite(normal_length) or normal_length <= 0.0:
+                continue
+            normal_3d = normal_3d / normal_length
+            face_center = center + sagittal_axes @ face_center_2d
+            faces.append({
+                "axis_index": int(edge_index % 2),
+                "side": "min" if edge_index < 2 else "max",
+                "point_count": int(np.count_nonzero(selected)),
+                "center": {
+                    "x": float(face_center[0]),
+                    "y": float(face_center[1]),
+                    "z": float(face_center[2]),
+                },
+                "normal": {
+                    "x": float(normal_3d[0]),
+                    "y": float(normal_3d[1]),
+                    "z": float(normal_3d[2]),
+                },
+            })
+
+        return faces if len(faces) == 4 else None
+
+    @staticmethod
+    def _convex_hull_2d(points: np.ndarray) -> np.ndarray:
+        """返回二维点集的凸包顶点，按轮廓顺序排列。"""
+
+        if len(points) < 4:
+            return points
+        ordered = sorted((float(point[0]), float(point[1])) for point in points)
+        if len(ordered) < 4:
+            return np.asarray(ordered, dtype=float)
+
+        def cross(
+            origin: tuple[float, float],
+            first: tuple[float, float],
+            second: tuple[float, float],
+        ) -> float:
+            return (
+                (first[0] - origin[0]) * (second[1] - origin[1])
+                - (first[1] - origin[1]) * (second[0] - origin[0])
+            )
+
+        lower: list[tuple[float, float]] = []
+        for point in ordered:
+            while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0:
+                lower.pop()
+            lower.append(point)
+
+        upper: list[tuple[float, float]] = []
+        for point in reversed(ordered):
+            while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0:
+                upper.pop()
+            upper.append(point)
+
+        hull = lower[:-1] + upper[:-1]
+        return np.asarray(hull, dtype=float)
+
+    @staticmethod
+    def _simplify_hull_to_quadrilateral(hull: np.ndarray) -> np.ndarray | None:
+        """把轮廓凸包压缩成四个主角点。"""
+
+        if len(hull) < 4:
+            return None
+        vertices = [np.asarray(point, dtype=float) for point in hull]
+        while len(vertices) > 4:
+            areas = []
+            for index, point in enumerate(vertices):
+                previous = vertices[index - 1]
+                next_point = vertices[(index + 1) % len(vertices)]
+                previous_delta = previous - point
+                next_delta = next_point - point
+                area = abs(
+                    previous_delta[0] * next_delta[1]
+                    - previous_delta[1] * next_delta[0]
+                ) / 2.0
+                areas.append(float(area))
+            remove_index = int(np.argmin(areas))
+            vertices.pop(remove_index)
+        quad = np.asarray(vertices, dtype=float)
+        if abs(LocalizationStage._signed_area_2d(quad)) <= 1e-6:
+            return None
+        return quad
+
+    @staticmethod
+    def _signed_area_2d(points: np.ndarray) -> float:
+        """计算二维多边形有向面积。"""
+
+        if len(points) < 3:
+            return 0.0
+        x_values = points[:, 0]
+        y_values = points[:, 1]
+        return float(
+            0.5 * np.sum(
+                x_values * np.roll(y_values, -1)
+                - y_values * np.roll(x_values, -1)
+            )
+        )
 
     @staticmethod
     def _vertebral_body_candidate_mask(

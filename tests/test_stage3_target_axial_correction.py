@@ -855,6 +855,140 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertEqual(set(c2["centroid_voxel"]), {"z", "y", "x"})
         self.assertEqual(set(c2["centroid_physical"]), {"x", "y", "z"})
         self.assertAlmostEqual(c2["centroid_physical"]["x"], 14.25, places=3)
+        local_axis = c2["local_superior_inferior_axis"]
+        self.assertIsNotNone(local_axis)
+        self.assertAlmostEqual(
+            np.linalg.norm([
+                local_axis["x"],
+                local_axis["y"],
+                local_axis["z"],
+            ]),
+            1.0,
+            places=5,
+        )
+        local_extent = c2["local_superior_inferior_extent_mm"]
+        self.assertLess(local_extent["min"], 0.0)
+        self.assertGreater(local_extent["max"], 0.0)
+        face_centers = c2["local_superior_inferior_face_centroids"]
+        self.assertEqual(set(face_centers), {"min", "max"})
+        for face_center in face_centers.values():
+            self.assertEqual(set(face_center), {"x", "y", "z"})
+        sagittal_faces = c2["sagittal_body_faces"]
+        self.assertEqual(len(sagittal_faces), 4)
+        for face in sagittal_faces:
+            self.assertEqual(set(face["center"]), {"x", "y", "z"})
+            self.assertEqual(set(face["normal"]), {"x", "y", "z"})
+
+    def test_stage3_face_center_uses_in_plane_midpoint(self):
+        """端面中心应取端面平面内范围的中点，不能被体素密度拉向角落。"""
+
+        stage = LocalizationStage()
+        points = []
+        for z_index in range(4):
+            x_range = range(1, 3) if z_index == 3 else range(1, 8)
+            for y_index in range(1, 8):
+                for x_index in x_range:
+                    points.append((z_index, y_index, x_index))
+        image = sitk.Image(10, 10, 10, sitk.sitkUInt8)
+        axis, extent, face_centers, face_candidates = stage._estimate_local_superior_inferior_geometry(
+            np.asarray(points, dtype=int),
+            image,
+        )
+
+        self.assertIsNotNone(axis)
+        self.assertIsNotNone(extent)
+        self.assertIsNotNone(face_centers)
+        for face_center in face_centers:
+            self.assertGreater(face_center[0], 3.7)
+            self.assertLess(face_center[0], 4.3)
+            self.assertAlmostEqual(face_center[1], 4.0, places=5)
+        self.assertTrue(face_candidates)
+
+    def test_stage3_face_candidates_cover_both_terminal_regions(self):
+        """阶段三应输出首尾两侧的端面中点候选，供阶段四按角度选择。"""
+
+        stage = LocalizationStage()
+        points = [
+            (z_index, y_index, x_index)
+            for z_index in range(11)
+            for y_index in range(1, 8)
+            for x_index in range(1, 8)
+        ]
+        image = sitk.Image(10, 10, 12, sitk.sitkUInt8)
+        _, _, face_centers, face_candidates = stage._estimate_local_superior_inferior_geometry(
+            np.asarray(points, dtype=int),
+            image,
+        )
+
+        self.assertIsNotNone(face_centers)
+        self.assertTrue(face_candidates)
+        self.assertEqual(
+            {candidate["side"] for candidate in face_candidates},
+            {"min", "max"},
+        )
+
+    def test_stage3_estimates_four_sagittal_body_faces(self):
+        """过滤椎体主体应能抽象为矢状投影上的四个大面。"""
+
+        stage = LocalizationStage()
+        mask = np.zeros((32, 32, 32), dtype=bool)
+        for z_index in range(8, 24):
+            y_center = 14 + int(round((z_index - 8) * 0.25))
+            mask[z_index, y_center - 4:y_center + 5, 12:20] = True
+        image = sitk.GetImageFromArray(mask.astype(np.uint8))
+        faces = stage._estimate_sagittal_body_faces(np.argwhere(mask), image)
+
+        self.assertIsNotNone(faces)
+        self.assertEqual(len(faces), 4)
+        for face in faces:
+            self.assertIn(face["side"], {"min", "max"})
+            self.assertIn(face["axis_index"], {0, 1})
+            self.assertGreater(face["point_count"], 0)
+            self.assertEqual(set(face["center"]), {"x", "y", "z"})
+            self.assertEqual(set(face["normal"]), {"x", "y", "z"})
+            normal = face["normal"]
+            normal_length = math.sqrt(
+                normal["x"] ** 2 + normal["y"] ** 2 + normal["z"] ** 2
+            )
+            self.assertAlmostEqual(normal_length, 1.0, places=5)
+
+    def test_stage3_sagittal_body_faces_follow_wedge_endplate(self):
+        """楔形椎体的端面中心应来自轮廓边，而不是 PCA 外接框角点。"""
+
+        stage = LocalizationStage()
+        mask = np.zeros((40, 40, 8), dtype=bool)
+        polygon_yz = np.asarray([
+            [16.0, 24.0],
+            [28.0, 22.0],
+            [32.0, 12.0],
+            [18.0, 8.0],
+        ])
+
+        def inside_polygon(y_index: int, z_index: int) -> bool:
+            inside = False
+            for index in range(len(polygon_yz)):
+                y1, z1 = polygon_yz[index]
+                y2, z2 = polygon_yz[(index + 1) % len(polygon_yz)]
+                if (z1 > z_index) == (z2 > z_index):
+                    continue
+                crossing_y = (y2 - y1) * (z_index - z1) / (z2 - z1) + y1
+                if y_index < crossing_y:
+                    inside = not inside
+            return inside
+
+        for z_index in range(mask.shape[0]):
+            for y_index in range(mask.shape[1]):
+                if inside_polygon(y_index, z_index):
+                    mask[z_index, y_index, 3:5] = True
+
+        image = sitk.GetImageFromArray(mask.astype(np.uint8))
+        faces = stage._estimate_sagittal_body_faces(np.argwhere(mask), image)
+
+        self.assertIsNotNone(faces)
+        self.assertEqual(len(faces), 4)
+        inferior_face = min(faces, key=lambda face: face["center"]["z"])
+        self.assertAlmostEqual(inferior_face["center"]["y"], 24.5, delta=1.5)
+        self.assertAlmostEqual(inferior_face["center"]["z"], 10.5, delta=1.5)
 
     def test_stage3_spine_geometry_is_not_generated_for_non_spine(self):
         """肺部等非脊柱部位不应生成椎体主体几何。"""

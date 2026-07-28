@@ -8,7 +8,7 @@ import SimpleITK as sitk
 
 
 class CurvedStackResampler:
-    """沿中心曲线和左右偏移生成单张 CPR 图像。"""
+    """沿中心锚点折线和计划堆叠偏移生成单张 CPR 图像。"""
 
     def sample_slice(
         self,
@@ -36,32 +36,38 @@ class CurvedStackResampler:
         tangents = self._curve_tangents(curve_samples)
 
         offset_axis = self._normalize(self._point(plan["offset_axis"]))
+        in_plane_directions = self._in_plane_directions(
+            tangents,
+            offset_axis,
+        )
         offset_mm = float(planned_slice.get("offset_mm", 0.0))
-        ap_offsets = (
+        in_plane_offsets = (
             np.arange(columns, dtype=float) - (columns - 1) / 2.0
         ) * spacing_x
 
         source = sitk.GetArrayViewFromImage(image)
         sampled = np.empty((rows, columns), dtype=np.float32)
         for row in range(rows):
-            tangent = tangents[row]
-            ap_dir = self._normalize(np.cross(tangent, offset_axis))
+            in_plane_dir = in_plane_directions[row]
             row_center = curve_samples[row] + offset_axis * offset_mm
-            for column, ap_offset in enumerate(ap_offsets):
-                point = row_center + ap_dir * ap_offset
+            for column, in_plane_offset in enumerate(in_plane_offsets):
+                point = row_center + in_plane_dir * in_plane_offset
                 sampled[row, column] = self._sample_linear(image, source, point)
 
         output = sitk.GetImageFromArray(sampled[np.newaxis, ...])
         output.SetSpacing((spacing_x, spacing_y, 1.0))
         origin = curve_samples[0] + offset_axis * offset_mm
+        first_in_plane = in_plane_directions[0]
         if columns > 1:
-            first_ap = self._normalize(np.cross(tangents[0], offset_axis))
-            origin = origin + first_ap * ap_offsets[0]
+            origin = origin + first_in_plane * in_plane_offsets[0]
         output.SetOrigin(tuple(float(value) for value in origin))
+        output_tangent = self._normalize(
+            np.cross(offset_axis, first_in_plane)
+        )
         output.SetDirection(
             self._direction(
-                self._normalize(np.cross(tangents[0], offset_axis)),
-                tangents[0],
+                first_in_plane,
+                output_tangent,
                 offset_axis,
             )
         )
@@ -121,6 +127,28 @@ class CurvedStackResampler:
                 tangent = samples[index + 1] - samples[index - 1]
             tangents[index] = CurvedStackResampler._normalize(tangent)
         return tangents
+
+    @staticmethod
+    def _in_plane_directions(
+        tangents: np.ndarray,
+        offset_axis: np.ndarray,
+    ) -> np.ndarray:
+        """计算每行平面内方向，局部退化时借用最近的有效方向。"""
+
+        candidates = np.cross(tangents, offset_axis)
+        lengths = np.linalg.norm(candidates, axis=1)
+        valid_indices = np.flatnonzero(np.isfinite(lengths) & (lengths > 1e-8))
+        if len(valid_indices) == 0:
+            raise ValueError("CPR 方向向量长度无效")
+
+        directions = np.empty_like(candidates)
+        for index in range(len(candidates)):
+            if lengths[index] > 1e-8 and math.isfinite(float(lengths[index])):
+                directions[index] = candidates[index] / lengths[index]
+                continue
+            nearest = int(valid_indices[np.argmin(np.abs(valid_indices - index))])
+            directions[index] = candidates[nearest] / lengths[nearest]
+        return directions
 
     @staticmethod
     def _sample_linear(

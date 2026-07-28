@@ -957,26 +957,26 @@ class MappingStage(BaseStage):
             plan,
             axes.fixed_axis,
         )
-        offsets = plan.get("offsets_mm") or [0.0]
-        for offset_mm in offsets:
-            projected_points = [
-                self._offset_curve_point(
-                    point,
-                    plan.get("offset_axis"),
-                    float(offset_mm),
-                )
-                for point in curve_points
-            ]
-            for start_point, end_point in zip(projected_points, projected_points[1:]):
-                self._paint_projected_physical_line(
-                    reference_image=reference_image,
-                    overlay_array=overlay_array,
-                    start_point=start_point,
-                    end_point=end_point,
-                    axes=axes,
-                    fixed_index=fixed_index,
-                    value=value,
-                )
+        # 阶段四/五的 CPR 偏移切片不影响基准定位线；总览只画中心曲线，
+        # 便于先验证标注质心和局部定位线本身。
+        projected_points = [
+            self._offset_curve_point(
+                point,
+                plan.get("offset_axis"),
+                0.0,
+            )
+            for point in curve_points
+        ]
+        for start_point, end_point in zip(projected_points, projected_points[1:]):
+            self._paint_projected_physical_line(
+                reference_image=reference_image,
+                overlay_array=overlay_array,
+                start_point=start_point,
+                end_point=end_point,
+                axes=axes,
+                fixed_index=fixed_index,
+                value=value,
+            )
 
     @staticmethod
     def _curved_overview_fixed_index(

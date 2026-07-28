@@ -248,6 +248,32 @@ def _restore_planned_slice_geometry_tags(
             temporary_path.unlink()
 
 
+def _restore_localizer_geometry_tags(
+    output_path: Path,
+    geometry_metadata: Dict[str, str],
+) -> None:
+    """恢复定位图的三维位置和行列方向，避免 GDCM 按二维默认轴重写。"""
+
+    dataset = pydicom.dcmread(str(output_path))
+    position = geometry_metadata.get("0020|0032")
+    orientation = geometry_metadata.get("0020|0037")
+    if position:
+        dataset.ImagePositionPatient = [
+            float(value) for value in position.split("\\")
+        ]
+    if orientation:
+        dataset.ImageOrientationPatient = [
+            float(value) for value in orientation.split("\\")
+        ]
+    temporary_path = _temporary_dicom_path(output_path, "pydicom")
+    try:
+        dataset.save_as(str(temporary_path), enforce_file_format=True)
+        temporary_path.replace(output_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
 def _temporary_dicom_path(output_path: Path, stage: str) -> Path:
     """为一次 DICOM 写出步骤生成同目录、不可见且不重名的临时路径。"""
 
@@ -302,7 +328,19 @@ def write_localizer_dicom(
     for tag, value in geometry_metadata.items():
         image_2d.SetMetaData(tag, value)
 
-    _execute_gdcm_write(image_2d, output_path)
+    gdcm_temporary_path = _temporary_dicom_path(output_path, "gdcm")
+    try:
+        # GDCM 会按二维图像内部轴重写方向；定位图必须保留曲面投影时
+        # 计算出的三维 ImagePositionPatient/ImageOrientationPatient。
+        _execute_gdcm_write(image_2d, gdcm_temporary_path)
+        _restore_localizer_geometry_tags(
+            gdcm_temporary_path,
+            geometry_metadata,
+        )
+        gdcm_temporary_path.replace(output_path)
+    finally:
+        if gdcm_temporary_path.exists():
+            gdcm_temporary_path.unlink()
 
 
 def _extract_2d_image(image: sitk.Image) -> sitk.Image:

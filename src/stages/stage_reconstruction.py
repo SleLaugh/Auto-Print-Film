@@ -534,12 +534,11 @@ class ReconstructionStage(BaseStage):
 
     @staticmethod
     def _curved_localizer_offsets(plan: Dict[str, Any]) -> List[float]:
-        """返回 CPR 定位图需要投影的曲面偏移。"""
+        """返回 CPR 定位图需要投影的基准偏移。"""
 
-        offsets = plan.get("offsets_mm")
-        if not offsets:
-            return [0.0]
-        return [float(offset) for offset in offsets]
+        # CPR 的实际重建仍可有多张前后偏移切片；当前校验阶段只画中心
+        # 定位线，避免把整组偏移曲线混在基准线里影响判断。
+        return [0.0]
 
     @staticmethod
     def _offset_curve_point(

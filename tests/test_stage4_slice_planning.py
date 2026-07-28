@@ -10,13 +10,16 @@ from src.utils.Logger_utils import _logger_manager
 _logger_manager.debug_log_file_enabled = True
 
 from src.core.context import ProcessingContext
-from src.models import PlaneConfig, Request
+from src.models import PlaneConfig, Point3D, Request
 from src.models.enums import CutLineExtentModeEnum
 from src.models.enums import BodyPartEnum, CutModeEnum, PlaneTypeEnum
 from src.planning.base import select_planner
 from src.planning.lumbar import LumbarInterspacePlanner, LumbarWholeRangePlanner
 from src.planning.single_label import SingleLabelWholeRangePlanner
-from src.planning.spine_cpr import SPINE_CPR_LABELS
+from src.planning.spine_cpr import (
+    SPINE_CPR_LABELS,
+    _resolve_endpoint_face_center,
+)
 from src.planning.whole_range import (
     build_whole_range_plan_from_bbox,
     plane_extent_mm,
@@ -111,7 +114,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertIn("CPR 降级", result.warnings[0])
 
     def test_spine_cpr_extends_to_first_and_last_vertebra_end_faces(self):
-        """脊柱 CPR 曲线首尾应延到首末椎体端面，不能停在质心。"""
+        """缺少主体端面几何时，CPR 首尾应回退到首末标注质心。"""
 
         request = Request(
             dicom_dir="/tmp/dicom",
@@ -142,13 +145,13 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         ).plans[0]
 
         self.assertEqual(plan.geometry_type, "curved_stack")
-        self.assertAlmostEqual(plan.curve_points[0].z, 13.0)
-        self.assertAlmostEqual(plan.curve_points[-1].z, -3.0)
-        self.assertAlmostEqual(plan.range_start.z, 13.0)
-        self.assertAlmostEqual(plan.range_end.z, -3.0)
+        self.assertAlmostEqual(plan.curve_points[0].z, 10.0)
+        self.assertAlmostEqual(plan.curve_points[-1].z, 0.0)
+        self.assertAlmostEqual(plan.range_start.z, 10.0)
+        self.assertAlmostEqual(plan.range_end.z, 0.0)
 
     def test_spine_cpr_endpoint_faces_extend_vertically_from_endpoint_centroids(self):
-        """CPR 首尾端面应从各自质心沿头脚轴延伸，避免尾端被相邻点切向拉平。"""
+        """回退路径的首尾不应被全量 bbox 端面拉出标注质心。"""
 
         request = Request(
             dicom_dir="/tmp/dicom",
@@ -197,10 +200,562 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         ).plans[0]
 
         self.assertEqual(plan.geometry_type, "curved_stack")
-        self.assertAlmostEqual(plan.curve_points[0].z, 44.0)
+        self.assertAlmostEqual(plan.curve_points[0].z, 40.0)
         self.assertAlmostEqual(plan.curve_points[0].y, 10.0)
-        self.assertAlmostEqual(plan.curve_points[-1].z, -18.0)
+        self.assertAlmostEqual(plan.curve_points[-1].z, -10.0)
         self.assertAlmostEqual(plan.curve_points[-1].y, 80.0)
+
+    def test_spine_cpr_endpoint_prefers_face_aligned_with_adjacent_centroid_line(self):
+        """端点应优先选择与相邻质心连线同向的端面候选。"""
+
+        annotation = {
+            "found": True,
+            "local_superior_inferior_face_centroids": {
+                "min": {"x": -2.0, "y": 5.0, "z": 0.0},
+                "max": {"x": 2.0, "y": 15.0, "z": 0.0},
+            },
+            "local_superior_inferior_face_candidates": [
+                {
+                    "side": "max",
+                    "projection": 2.0,
+                    "physical": {"x": 0.0, "y": 13.0, "z": 0.0},
+                },
+                {
+                    "side": "min",
+                    "projection": -2.0,
+                    "physical": {"x": 0.0, "y": 7.0, "z": 0.0},
+                },
+                {
+                    "side": "max",
+                    "projection": 3.0,
+                    "physical": {"x": 2.0, "y": 15.0, "z": 0.0},
+                },
+                {
+                    "side": "min",
+                    "projection": -3.0,
+                    "physical": {"x": -2.0, "y": 5.0, "z": 0.0},
+                },
+            ],
+        }
+
+        endpoint = _resolve_endpoint_face_center(
+            annotation,
+            Point3D(0.0, 10.0, 0.0),
+            Point3D(0.0, 1.0, 0.0),
+            toward_start=False,
+        )
+
+        self.assertEqual(endpoint, Point3D(2.0, 15.0, 0.0))
+        start_endpoint = _resolve_endpoint_face_center(
+            annotation,
+            Point3D(0.0, 10.0, 0.0),
+            Point3D(0.0, 1.0, 0.0),
+            toward_start=True,
+        )
+
+        self.assertEqual(start_endpoint, Point3D(-2.0, 5.0, 0.0))
+
+        annotation["local_superior_inferior_face_candidates"][2][
+            "face_valid"
+        ] = False
+        annotation["local_superior_inferior_face_candidates"][3][
+            "face_valid"
+        ] = False
+        endpoint_on_real_face = _resolve_endpoint_face_center(
+            annotation,
+            Point3D(0.0, 10.0, 0.0),
+            Point3D(0.0, 1.0, 0.0),
+            toward_start=False,
+        )
+
+        self.assertEqual(endpoint_on_real_face, Point3D(0.0, 13.0, 0.0))
+
+    def test_spine_cpr_endpoint_rejects_sparse_terminal_corner_candidate(self):
+        """终末端稀薄小片不应覆盖真实端面中心。"""
+
+        annotation = {
+            "found": True,
+            "local_superior_inferior_face_candidates": [
+                {
+                    "side": "min",
+                    "projection": -16.5,
+                    "point_count": 238,
+                    "face_valid": True,
+                    "transverse_span_mm": {
+                        "first": 4.6,
+                        "second": 10.0,
+                    },
+                    "physical": {"x": 0.0, "y": 0.0, "z": -16.5},
+                },
+                {
+                    "side": "min",
+                    "projection": -13.8,
+                    "point_count": 637,
+                    "face_valid": True,
+                    "transverse_span_mm": {
+                        "first": 10.2,
+                        "second": 23.1,
+                    },
+                    "physical": {"x": 0.0, "y": 0.0, "z": -13.8},
+                },
+                {
+                    "side": "min",
+                    "projection": -12.5,
+                    "point_count": 1044,
+                    "face_valid": True,
+                    "transverse_span_mm": {
+                        "first": 13.4,
+                        "second": 28.4,
+                    },
+                    "physical": {"x": 0.0, "y": 0.0, "z": -12.5},
+                },
+            ],
+        }
+
+        endpoint = _resolve_endpoint_face_center(
+            annotation,
+            Point3D(0.0, 0.0, 0.0),
+            Point3D(0.0, 0.0, -1.0),
+            toward_start=False,
+        )
+
+        self.assertEqual(endpoint, Point3D(0.0, 0.0, -13.8))
+
+    def test_spine_cpr_endpoint_uses_body_face_opposite_to_incoming_centroid_line(self):
+        """有主体四面几何时，端点应取质心入射面的对侧大面中心。"""
+
+        annotation = {
+            "found": True,
+            "sagittal_body_faces": [
+                {
+                    "axis_index": 0,
+                    "side": "min",
+                    "point_count": 2000,
+                    "normal": {"x": 0.0, "y": 0.0, "z": 1.0},
+                    "center": {"x": 0.0, "y": 0.0, "z": 4.0},
+                },
+                {
+                    "axis_index": 0,
+                    "side": "max",
+                    "point_count": 1800,
+                    "normal": {"x": 0.0, "y": 0.2, "z": -0.98},
+                    "center": {"x": 0.0, "y": 4.0, "z": -14.0},
+                },
+                {
+                    "axis_index": 1,
+                    "side": "max",
+                    "point_count": 80,
+                    "normal": {"x": 0.0, "y": 0.01, "z": -0.99995},
+                    "center": {"x": 0.0, "y": 20.0, "z": -16.0},
+                },
+            ],
+            "local_superior_inferior_face_candidates": [
+                {
+                    "side": "min",
+                    "projection": -16.0,
+                    "point_count": 80,
+                    "face_valid": True,
+                    "physical": {"x": 0.0, "y": 20.0, "z": -16.0},
+                },
+            ],
+        }
+
+        endpoint = _resolve_endpoint_face_center(
+            annotation,
+            Point3D(0.0, 0.0, 0.0),
+            Point3D(0.0, 0.0, -1.0),
+            toward_start=False,
+        )
+
+        self.assertEqual(endpoint, Point3D(0.0, 4.0, -14.0))
+
+    def test_spine_cpr_connects_annotation_centroids(self):
+        """基准 CPR 只按解剖顺序连接过滤标注质心。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 3.0,
+                    ["骨窗"],
+                ),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        for label_name, centroid_y in {
+            "vertebrae_L1": 52.0,
+            "vertebrae_L2": 56.0,
+            "vertebrae_L3": 60.0,
+        }.items():
+            coord = localization_result["coords"][label_name]
+            center_z = coord["centroid"]["z"]
+            coord["bbox"].update({
+                "z_min": int(center_z) - 1,
+                "z_max": int(center_z) + 1,
+            })
+            localization_result.setdefault("spine_geometry", {}).setdefault(
+                "filtered_annotation_centroids", {}
+            )[label_name] = {
+                "found": True,
+                "voxel_count": 20,
+                "centroid_voxel": {
+                    "z": center_z,
+                    "y": centroid_y,
+                    "x": 60.0,
+                },
+                "centroid_physical": {
+                    "x": 60.0,
+                    "y": centroid_y,
+                    "z": center_z,
+                },
+                "local_superior_inferior_axis": {
+                    "x": 0.0,
+                    "y": 0.0,
+                    "z": 1.0,
+                },
+                "local_superior_inferior_extent_mm": {
+                    "min": -1.0,
+                    "max": 1.0,
+                },
+            }
+
+        plan = LumbarWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.geometry_type, "curved_stack")
+        self.assertEqual(len(plan.curve_points), 3)
+        self.assertEqual(
+            [point.y for point in plan.curve_points],
+            [52.0, 56.0, 60.0],
+        )
+        for point, label_name in zip(
+            plan.curve_points,
+            ("vertebrae_L1", "vertebrae_L2", "vertebrae_L3"),
+        ):
+            annotation = localization_result[
+                "spine_geometry"
+            ]["filtered_annotation_centroids"][label_name]
+            expected = annotation["centroid_physical"]
+            self.assertAlmostEqual(point.x, expected["x"])
+            self.assertAlmostEqual(point.y, expected["y"])
+            self.assertAlmostEqual(point.z, expected["z"])
+
+    def test_spine_cpr_baseline_ignores_local_segments(self):
+        """基准 CPR 不使用椎体局部线段，避免端点造成折返。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 3.0,
+                    ["骨窗"],
+                ),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        coord = localization_result["coords"]["vertebrae_L3"]
+        coord["centroid"].update({"z": 6.0, "y": 50.0, "x": 60.0})
+        coord["bbox"].update({
+            "z_min": 4,
+            "z_max": 8,
+            "y_min": 48,
+            "y_max": 52,
+        })
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": {
+                label_name: {
+                    "found": True,
+                    "centroid_physical": {
+                        "x": 60.0,
+                        "y": 50.0,
+                        "z": float(localization_result["coords"][label_name]["centroid"]["z"]),
+                    },
+                    "local_superior_inferior_axis": (
+                        {"x": 0.0, "y": 0.70710678, "z": 0.70710678}
+                        if label_name == "vertebrae_L3"
+                        else {"x": 0.0, "y": 0.0, "z": 1.0}
+                    ),
+                    "local_superior_inferior_extent_mm": (
+                        {"min": -1.0, "max": 1.0}
+                        if label_name == "vertebrae_L3"
+                        else {"min": -1.0, "max": 1.0}
+                    ),
+                }
+                for label_name in (
+                    "vertebrae_L1",
+                    "vertebrae_L2",
+                    "vertebrae_L3",
+                    "vertebrae_L4",
+                    "vertebrae_L5",
+                    "vertebrae_S1",
+                )
+            },
+        }
+
+        plan = LumbarWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(len(plan.curve_points), 6)
+        self.assertTrue(any(
+            abs(point.x - 60.0) < 1e-6
+            and abs(point.y - 50.0) < 1e-6
+            and abs(point.z - 6.0) < 1e-6
+            for point in plan.curve_points
+        ))
+
+    def test_spine_cpr_uses_body_face_centers_and_all_annotation_centroids(self):
+        """CPR 锚点应包含首尾端面中点和全部过滤标注质心。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 3.0,
+                    ["骨窗"],
+                ),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        filtered = {}
+        for label_name, coord in localization_result["coords"].items():
+            centroid = coord["centroid"]
+            z = float(centroid["z"])
+            filtered[label_name] = {
+                "found": True,
+                "centroid_physical": {
+                    "x": 60.0,
+                    "y": 50.0,
+                    "z": z,
+                },
+                "local_superior_inferior_face_centroids": {
+                    "min": {"x": 60.0, "y": 50.0, "z": z - 1.5},
+                    "max": {"x": 60.0, "y": 50.0, "z": z + 1.5},
+                },
+            }
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": filtered,
+        }
+
+        plan = LumbarWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(len(plan.curve_points), 8)
+        # 解剖顺序从头侧到足侧时，物理 z 是递减的，所以 min/max 需要按路径方向解释。
+        self.assertEqual(
+            [point.z for point in plan.curve_points],
+            [11.5, 10.0, 8.0, 6.0, 4.0, 2.0, 0.0, -1.5],
+        )
+
+    def test_spine_cpr_uses_sacrum_as_s1_alias(self):
+        """数据集只有 sacrum 时，腰椎 CPR 仍应保留第六个标注质心。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 3.0,
+                    ["骨窗"],
+                ),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["coords"]["sacrum"] = (
+            localization_result["coords"].pop("vertebrae_S1")
+        )
+        filtered = {
+            label_name: {
+                "found": True,
+                "centroid_physical": {
+                    "x": 60.0,
+                    "y": 50.0,
+                    "z": float(coord["centroid"]["z"]),
+                },
+            }
+            for label_name, coord in localization_result["coords"].items()
+        }
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": filtered,
+        }
+
+        plan = LumbarWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(len(plan.curve_points), 6)
+        self.assertEqual(plan.source_labels[-1], "sacrum")
+        self.assertAlmostEqual(plan.curve_points[-1].z, 0.0)
+
+    def test_spine_cpr_keeps_face_centers_and_all_centroids_as_direct_anchors(self):
+        """首尾端面偏移时仍应保留端面中心和全部质心锚点。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 3.0,
+                    ["骨窗"],
+                ),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        y_by_label = {
+            "vertebrae_L1": 50.0,
+            "vertebrae_L2": 49.0,
+            "vertebrae_L3": 48.0,
+            "vertebrae_L4": 48.0,
+            "vertebrae_L5": 50.0,
+            "vertebrae_S1": 53.0,
+        }
+        filtered = {}
+        for label_name, coord in localization_result["coords"].items():
+            z = float(coord["centroid"]["z"])
+            y = y_by_label[label_name]
+            filtered[label_name] = {
+                "found": True,
+                "centroid_physical": {"x": 60.0, "y": y, "z": z},
+            }
+        filtered["vertebrae_L1"]["sagittal_body_faces"] = [
+            {
+                "axis_index": 0,
+                "side": "min",
+                "point_count": 100,
+                "center": {"x": 60.0, "y": 55.0, "z": 8.0},
+                "normal": {"x": 0.0, "y": -0.4472, "z": -0.8944},
+            },
+            {
+                "axis_index": 0,
+                "side": "max",
+                "point_count": 100,
+                "center": {"x": 60.0, "y": 40.0, "z": 12.0},
+                "normal": {"x": 0.0, "y": 0.4472, "z": 0.8944},
+            },
+        ]
+        filtered["vertebrae_S1"]["sagittal_body_faces"] = [
+            {
+                "axis_index": 0,
+                "side": "min",
+                "point_count": 100,
+                "center": {"x": 60.0, "y": 48.0, "z": 2.0},
+                "normal": {"x": 0.0, "y": -0.8321, "z": 0.5547},
+            },
+            {
+                "axis_index": 0,
+                "side": "max",
+                "point_count": 100,
+                "center": {"x": 60.0, "y": 62.0, "z": -2.0},
+                "normal": {"x": 0.0, "y": 0.8321, "z": -0.5547},
+            },
+        ]
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": filtered,
+        }
+
+        plan = LumbarWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(
+            plan.curve_points[0],
+            Point3D(60.0, 40.0, 12.0),
+        )
+        self.assertEqual(
+            plan.curve_points[-1],
+            Point3D(60.0, 62.0, -2.0),
+        )
+
+        self.assertEqual(len(plan.curve_points), 8)
+        self.assertEqual(
+            plan.curve_points[1:-1],
+            [
+                Point3D(60.0, y_by_label[label_name], z)
+                for label_name, z in (
+                    ("vertebrae_L1", 10.0),
+                    ("vertebrae_L2", 8.0),
+                    ("vertebrae_L3", 6.0),
+                    ("vertebrae_L4", 4.0),
+                    ("vertebrae_L5", 2.0),
+                    ("vertebrae_S1", 0.0),
+                )
+            ],
+        )
+
+    def test_spine_cpr_terminal_face_follows_last_annotation_centroid(self):
+        """末端路径应由最后一个标注质心直接连接到对立端面中心。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 1.0,
+                    ["骨窗"],
+                ),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        y_by_label = {
+            "vertebrae_L1": -98.0,
+            "vertebrae_L2": -106.0,
+            "vertebrae_L3": -115.0,
+            "vertebrae_L4": -121.0,
+            "vertebrae_L5": -123.0,
+            "vertebrae_S1": -118.0,
+        }
+        filtered = {}
+        for label_name, coord in localization_result["coords"].items():
+            z = float(coord["centroid"]["z"])
+            filtered[label_name] = {
+                "found": True,
+                "centroid_physical": {
+                    "x": 60.0,
+                    "y": y_by_label[label_name],
+                    "z": z,
+                },
+            }
+        filtered["vertebrae_L1"]["local_superior_inferior_face_centroids"] = {
+            "min": {"x": 60.0, "y": -98.0, "z": 11.5},
+            "max": {"x": 60.0, "y": -98.0, "z": 8.5},
+        }
+        filtered["vertebrae_S1"]["local_superior_inferior_face_centroids"] = {
+            "min": {"x": 60.0, "y": -110.0, "z": -1.5},
+            "max": {"x": 60.0, "y": -110.0, "z": 1.5},
+        }
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": filtered,
+        }
+
+        plan = LumbarWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(
+            plan.curve_points[-1],
+            Point3D(60.0, -110.0, -1.5),
+        )
+        self.assertEqual(
+            plan.curve_points[-2],
+            Point3D(60.0, y_by_label["vertebrae_S1"], 0.0),
+        )
 
     def test_cervical_sagittal_stays_straight_and_coronal_uses_cpr(self):
         """颈椎矢状位保持直线 MPR，冠状位走 CPR。"""
@@ -944,7 +1499,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.localizer_plane, "矢状位")
         self.assertEqual(
             [point.z for point in plan.curve_points],
-            [31.0, 30.0, 20.0, 10.0, 9.0],
+            [30.0, 20.0, 10.0],
         )
 
     def test_hip_only_tilts_axial_and_sets_three_localizer_planes(self):
@@ -2121,8 +2676,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertGreater(len(highlighted), 20)
             self.assertGreater(self._max_line_fit_residual(highlighted), 2.0)
 
-    def test_mapping_cpr_overview_draws_visible_offset_curves(self):
-        """冠状位 CPR 调试总览应把可见前后 offset 画成多条曲线。"""
+    def test_mapping_cpr_overview_draws_only_baseline_curve(self):
+        """CPR 调试总览只画基准中心曲线。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -2175,7 +2730,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             overview = sitk.ReadImage(native_paths["矢状位"])
             highlighted = np.argwhere(sitk.GetArrayFromImage(overview) > 0)
 
-            self.assertEqual(np.unique(highlighted[:, 1]).tolist(), [10, 18, 26])
+            self.assertEqual(np.unique(highlighted[:, 1]).tolist(), [18])
 
     def test_center_cross_uses_lung_anatomical_origin_in_long_scan(self):
         """颈到盆长扫描的十字中线应落在肺中心，而不是整幅图像中心。"""

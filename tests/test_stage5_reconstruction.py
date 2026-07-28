@@ -381,8 +381,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
         self.assertGreater(len(highlighted), 20)
         self.assertGreater(self._max_line_fit_residual(highlighted), 2.0)
 
-    def test_curved_stack_localizer_draws_visible_offset_curves(self):
-        """冠状位 CPR 定位图应把可见前后 offset 画成多条曲线。"""
+    def test_curved_stack_localizer_draws_only_baseline_curve(self):
+        """CPR 校验阶段的定位图只画基准中心曲线。"""
 
         image = sitk.GetImageFromArray(np.zeros((36, 36, 36), dtype=np.int16))
         plan = {
@@ -412,7 +412,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
         localizer = ReconstructionStage._build_plan_localizer(image, plan)
         highlighted = np.argwhere(sitk.GetArrayFromImage(localizer) > 0.0)
 
-        self.assertEqual(np.unique(highlighted[:, 1]).tolist(), [10, 18, 26])
+        self.assertEqual(np.unique(highlighted[:, 1]).tolist(), [18])
 
     def test_full_xyz_oblique_plan_is_resampled_with_planned_direction(self):
         """第五步应原样执行含 XYZ 三方向倾斜的通用平面计划。"""
@@ -616,6 +616,32 @@ class Stage5ReconstructionTest(unittest.TestCase):
         self.assertAlmostEqual(float(output_array[0, 0, 0]), 112.0)
         self.assertAlmostEqual(float(output_array[0, 2, 2]), 332.0)
         self.assertAlmostEqual(float(output_array[0, 4, 4]), 552.0)
+
+    def test_curved_stack_resampler_reuses_nearest_valid_in_plane_direction(self):
+        """局部切线平行堆叠轴时，不应因单行方向退化而中断 CPR。"""
+
+        image = self._make_ramp_image(size=(8, 8, 8))
+        plan = {
+            "curve_points": [
+                {"x": 1.0, "y": 3.0, "z": 1.0},
+                {"x": 3.0, "y": 3.0, "z": 1.0},
+                {"x": 3.0, "y": 3.0, "z": 5.0},
+            ],
+            "curve_spacing_mm": 1.0,
+            "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+            "extent_mm": {"width": 2.0, "height": 6.0},
+            "output_spacing_mm": {"x": 1.0, "y": 1.0, "z": 0.0},
+        }
+        planned_slice = {"offset_mm": 0.0}
+
+        output = CurvedStackResampler().sample_slice(
+            image,
+            plan,
+            planned_slice,
+        )
+
+        self.assertEqual(output.GetSize(), (3, 7, 1))
+        self.assertTrue(np.isfinite(sitk.GetArrayFromImage(output)).all())
 
     def test_plane_stack_resampler_consumes_three_straight_whole_range_plans(self):
         """第五阶段应直接执行通用构造器生成的横、矢、冠直线计划。"""
@@ -978,6 +1004,39 @@ class Stage5ReconstructionTest(unittest.TestCase):
             dataset = pydicom.dcmread(str(output_path))
             self.assertEqual(float(dataset.SliceThickness), 5.0)
             self.assertEqual(float(dataset.SpacingBetweenSlices), 5.0)
+
+    def test_localizer_restores_sagittal_geometry_after_gdcm_write(self):
+        """定位图写盘后仍应保留矢状位的物理行列方向。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "Localizer.dcm"
+            image = sitk.GetImageFromArray(
+                np.zeros((1, 4, 5), dtype=np.uint16),
+            )
+            image.SetMetaData("0020|0032", "10\\20\\30")
+            image.SetMetaData("0020|0037", "0\\1\\0\\0\\0\\-1")
+
+            dicom_writer.write_localizer_dicom(
+                image=image,
+                output_path=output_path,
+                window=WindowPreset(
+                    name="骨窗",
+                    window_width=1000.0,
+                    window_center=400.0,
+                ),
+                series_uid="1.2.826.0.1.3680043.2.1125.701",
+                study_uid="1.2.826.0.1.3680043.2.1125.702",
+            )
+
+            dataset = pydicom.dcmread(str(output_path))
+            self.assertEqual(
+                [float(value) for value in dataset.ImagePositionPatient],
+                [10.0, 20.0, 30.0],
+            )
+            self.assertEqual(
+                [float(value) for value in dataset.ImageOrientationPatient],
+                [0.0, 1.0, 0.0, 0.0, 0.0, -1.0],
+            )
 
     def test_ct_dicom_write_failure_does_not_leave_partial_formal_file(self):
         """标签校正失败时，不应在正式文件名下留下未校正的 DICOM。"""

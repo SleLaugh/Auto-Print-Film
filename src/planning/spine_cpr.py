@@ -42,26 +42,27 @@ def build_spine_sagittal_cpr_plan(
     if plane_config.plane != PlaneTypeEnum.冠状位:
         return None, []
 
-    centers: list[tuple[str, Point3D]] = []
-    for label_name in label_names:
-        center = get_label_center(localization_result, label_name)
-        if center is not None:
-            centers.append((label_name, center))
+    centers, center_warnings = _get_spine_annotation_centers(
+        localization_result,
+        label_names,
+    )
 
     if len(centers) < 3:
-        return None, [
+        return None, center_warnings + [
             f"CPR 降级: 有效椎体少于 3 个，当前 {len(centers)} 个"
         ]
 
     image_info = localization_result["image"]
     source_labels = [label_name for label_name, _ in centers]
-    centroid_curve_points = _smooth_curve([center for _, center in centers])
-    center = _midpoint(centroid_curve_points)
-    curve_points = _extend_curve_to_endpoint_bboxes(
+    annotation_centers = [center for _, center in centers]
+    center = _midpoint(annotation_centers)
+    anchor_points = _build_annotation_centroid_path(
         localization_result,
-        source_labels,
-        centroid_curve_points,
+        centers,
     )
+    # 阶段四只保存“首端面 + 全部标注质心 + 末端面”的稀疏锚点折线。
+    # 最终图像行由阶段五按弧长加密；这里不再做额外平滑，避免端部切线退化。
+    curve_points = anchor_points
     curve_length = _polyline_length(curve_points)
     if curve_length <= 0.0:
         return None, ["CPR 降级: 中心曲线长度无效"]
@@ -125,8 +126,329 @@ def build_spine_sagittal_cpr_plan(
         localizer_reference=center,
         localizer_plane="矢状位",
         confidence=1.0,
-        warnings=[],
-    ), []
+        warnings=center_warnings,
+    ), center_warnings
+
+
+def _get_spine_annotation_centers(
+    localization_result: Dict[str, Any],
+    label_names: Iterable[str],
+) -> Tuple[List[Tuple[str, Point3D]], List[str]]:
+    """读取过滤标注质心；旧结果缺少过滤结果时回退到全量质心。"""
+
+    filtered_centroids = (
+        localization_result.get("spine_geometry", {})
+        .get("filtered_annotation_centroids", {})
+    )
+    centers: list[tuple[str, Point3D]] = []
+    warnings: list[str] = []
+    has_filtered_geometry = bool(filtered_centroids)
+    coords = localization_result.get("coords", {})
+    for requested_label_name in label_names:
+        label_name = _resolve_available_spine_label(
+            requested_label_name,
+            filtered_centroids,
+            coords,
+        )
+        annotation = filtered_centroids.get(label_name)
+        physical = annotation.get("centroid_physical") if annotation else None
+        if annotation and annotation.get("found") and physical:
+            centers.append((
+                label_name,
+                Point3D(
+                    float(physical["x"]),
+                    float(physical["y"]),
+                    float(physical["z"]),
+                ),
+            ))
+            continue
+
+        full_center = get_label_center(localization_result, label_name)
+        if full_center is None:
+            continue
+        if has_filtered_geometry:
+            warnings.append(
+                f"{label_name} 缺少过滤标注质心，CPR 不使用该椎体"
+            )
+            continue
+        centers.append((label_name, full_center))
+
+    return centers, warnings
+
+
+def _resolve_available_spine_label(
+    requested_label_name: str,
+    filtered_centroids: Dict[str, Any],
+    coords: Dict[str, Any],
+) -> str:
+    """在当前定位结果中解析模型标签别名。"""
+
+    available_labels = set(filtered_centroids) | set(coords)
+    if requested_label_name in available_labels:
+        return requested_label_name
+    if requested_label_name == "vertebrae_S1" and "sacrum" in available_labels:
+        return "sacrum"
+    return requested_label_name
+
+
+def _build_annotation_centroid_path(
+    localization_result: Dict[str, Any],
+    centers: List[Tuple[str, Point3D]],
+) -> List[Point3D]:
+    """在全部过滤标注质心首尾补入主体端面中点。"""
+
+    centroid_path = [center for _, center in centers]
+    if len(centroid_path) < 2:
+        return centroid_path
+
+    filtered_centroids = (
+        localization_result.get("spine_geometry", {})
+        .get("filtered_annotation_centroids", {})
+    )
+    if not filtered_centroids:
+        return centroid_path
+
+    first_direction = normalize_vector(
+        subtract_points(centroid_path[1], centroid_path[0])
+    )
+    last_direction = normalize_vector(
+        subtract_points(centroid_path[-1], centroid_path[-2])
+    )
+    first_face = _resolve_endpoint_face_center(
+        filtered_centroids.get(centers[0][0]),
+        centroid_path[0],
+        first_direction,
+        toward_start=True,
+    )
+    last_face = _resolve_endpoint_face_center(
+        filtered_centroids.get(centers[-1][0]),
+        centroid_path[-1],
+        last_direction,
+        toward_start=False,
+    )
+
+    path = list(centroid_path)
+    if first_face is not None:
+        path.insert(0, first_face)
+    if last_face is not None:
+        path.append(last_face)
+    return path
+
+
+def _resolve_endpoint_face_center(
+    annotation: Dict[str, Any] | None,
+    centroid: Point3D,
+    reference_direction: Point3D,
+    toward_start: bool,
+) -> Point3D | None:
+    """按相邻质心连线方向选取首/末椎体的主体端面中心。"""
+
+    if not annotation or not annotation.get("found"):
+        return None
+
+    body_face = _resolve_sagittal_body_face_center(
+        annotation,
+        reference_direction,
+        toward_start,
+    )
+    if body_face is not None:
+        return body_face
+
+    candidates = annotation.get(
+        "local_superior_inferior_face_candidates"
+    )
+    if isinstance(candidates, list):
+        extension_direction = (
+            _scale(reference_direction, -1.0)
+            if toward_start
+            else reference_direction
+        )
+        angle_tolerance_cosine = math.cos(math.radians(25.0))
+        aligned_candidates = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            physical = candidate.get("physical")
+            if not isinstance(physical, dict):
+                continue
+            if candidate.get("face_valid", True) is False:
+                continue
+            if not all(axis in physical for axis in ("x", "y", "z")):
+                continue
+            point = Point3D(
+                float(physical["x"]),
+                float(physical["y"]),
+                float(physical["z"]),
+            )
+            delta = subtract_points(point, centroid)
+            distance = vector_length(delta)
+            if distance <= 1e-6:
+                continue
+            alignment = _dot(
+                normalize_vector(delta),
+                extension_direction,
+            )
+            if alignment <= 0.0:
+                continue
+            extension_distance = _dot(delta, extension_direction)
+            aligned_candidates.append((
+                alignment,
+                extension_distance,
+                distance,
+                _candidate_point_count(candidate),
+                point,
+            ))
+        if aligned_candidates:
+            angle_compatible_candidates = [
+                candidate
+                for candidate in aligned_candidates
+                if candidate[0] >= angle_tolerance_cosine
+            ]
+            if angle_compatible_candidates:
+                stable_candidates = _filter_sparse_endpoint_candidates(
+                    angle_compatible_candidates
+                )
+                # 角度在容差内时，优先取沿质心连线方向最远的真实端面。
+                return max(
+                    stable_candidates,
+                    key=lambda item: (item[1], item[0], item[2]),
+                )[4]
+            return max(
+                aligned_candidates,
+                key=lambda item: (item[0], item[1], item[2]),
+            )[4]
+
+    face_centroids = annotation.get("local_superior_inferior_face_centroids")
+    if not isinstance(face_centroids, dict):
+        return None
+    candidates = []
+    for key in ("min", "max"):
+        physical = face_centroids.get(key)
+        if not isinstance(physical, dict):
+            continue
+        if not all(axis in physical for axis in ("x", "y", "z")):
+            continue
+        point = Point3D(
+            float(physical["x"]),
+            float(physical["y"]),
+            float(physical["z"]),
+        )
+        candidates.append((
+            _dot(subtract_points(point, centroid), reference_direction),
+            point,
+        ))
+    if len(candidates) != 2:
+        return None
+    return min(candidates, key=lambda item: item[0])[1] if toward_start else max(
+        candidates,
+        key=lambda item: item[0],
+    )[1]
+
+
+def _resolve_sagittal_body_face_center(
+    annotation: Dict[str, Any],
+    reference_direction: Point3D,
+    toward_start: bool,
+) -> Point3D | None:
+    """在主体四面中选择质心入射面的对侧端面。"""
+
+    faces = annotation.get("sagittal_body_faces")
+    if not isinstance(faces, list):
+        return None
+
+    extension_direction = (
+        _scale(reference_direction, -1.0)
+        if toward_start
+        else reference_direction
+    )
+    parsed_faces = []
+    for face in faces:
+        if not isinstance(face, dict):
+            continue
+        center = face.get("center")
+        normal = face.get("normal")
+        if not isinstance(center, dict) or not isinstance(normal, dict):
+            continue
+        if not all(axis in center for axis in ("x", "y", "z")):
+            continue
+        if not all(axis in normal for axis in ("x", "y", "z")):
+            continue
+        axis_index = face.get("axis_index")
+        side = face.get("side")
+        if side not in {"min", "max"}:
+            continue
+        try:
+            axis_index = int(axis_index)
+        except (TypeError, ValueError):
+            continue
+        normal_vector = normalize_vector(Point3D(
+            float(normal["x"]),
+            float(normal["y"]),
+            float(normal["z"]),
+        ))
+        incoming_alignment = _dot(normal_vector, extension_direction)
+        point_count = face.get("point_count")
+        try:
+            support = int(point_count) if point_count is not None else 0
+        except (TypeError, ValueError):
+            support = 0
+        parsed_faces.append((
+            incoming_alignment,
+            support,
+            axis_index,
+            str(side),
+            Point3D(
+                float(center["x"]),
+                float(center["y"]),
+                float(center["z"]),
+            ),
+        ))
+
+    if not parsed_faces:
+        return None
+    # 面法线和延伸方向最相反的面，是相邻质心线进入椎体的那一面；
+    # CPR 端点要落在这条入射方向对应的对侧大面中心，而不是角点或斜边。
+    entrance = min(parsed_faces, key=lambda item: (item[0], -item[1]))
+    opposite_side = "max" if entrance[3] == "min" else "min"
+    opposite_faces = [
+        face
+        for face in parsed_faces
+        if face[2] == entrance[2] and face[3] == opposite_side
+    ]
+    if opposite_faces:
+        return max(opposite_faces, key=lambda item: (item[0], item[1]))[4]
+    return max(parsed_faces, key=lambda item: (item[0], item[1]))[4]
+
+
+def _candidate_point_count(candidate: Dict[str, Any]) -> int | None:
+    point_count = candidate.get("point_count")
+    if point_count is None:
+        return None
+    try:
+        return int(point_count)
+    except (TypeError, ValueError):
+        return None
+
+
+def _filter_sparse_endpoint_candidates(candidates: List[Tuple]) -> List[Tuple]:
+    """剔除终末端只有少量体素支撑的角点候选。"""
+
+    point_counts = [
+        candidate[3]
+        for candidate in candidates
+        if isinstance(candidate[3], int) and candidate[3] > 0
+    ]
+    if not point_counts:
+        return candidates
+
+    min_supported_points = max(point_counts) * 0.25
+    stable_candidates = [
+        candidate
+        for candidate in candidates
+        if not isinstance(candidate[3], int)
+        or candidate[3] >= min_supported_points
+    ]
+    return stable_candidates or candidates
 
 
 def found_spine_label_names(
@@ -164,101 +486,6 @@ def spine_target_bbox(
     return union_bboxes(*bboxes), used_labels
 
 
-def _smooth_curve(points: List[Point3D]) -> List[Point3D]:
-    """第一版采用保守三点平滑，偏离原质心超过 5mm 时保留原点。"""
-
-    if len(points) < 3:
-        return list(points)
-    smoothed = [points[0]]
-    for index in range(1, len(points) - 1):
-        candidate = Point3D(
-            (points[index - 1].x + points[index].x + points[index + 1].x) / 3.0,
-            (points[index - 1].y + points[index].y + points[index + 1].y) / 3.0,
-            (points[index - 1].z + points[index].z + points[index + 1].z) / 3.0,
-        )
-        drift = vector_length(subtract_points(candidate, points[index]))
-        smoothed.append(points[index] if drift > 5.0 else candidate)
-    smoothed.append(points[-1])
-    return smoothed
-
-
-def _extend_curve_to_endpoint_bboxes(
-    localization_result: Dict[str, Any],
-    label_names: List[str],
-    curve_points: List[Point3D],
-) -> List[Point3D]:
-    """把 CPR 曲线首尾从各自质心沿头脚轴延到椎体端面。"""
-
-    if len(curve_points) < 2 or len(label_names) < 2:
-        return list(curve_points)
-
-    superior_inferior_axis = _superior_inferior_axis(localization_result)
-    start_point = _endpoint_boundary_point(
-        localization_result,
-        label_names[0],
-        curve_points[0],
-        superior_inferior_axis,
-        choose_minimum=True,
-    )
-    end_point = _endpoint_boundary_point(
-        localization_result,
-        label_names[-1],
-        curve_points[-1],
-        superior_inferior_axis,
-        choose_minimum=False,
-    )
-    return [start_point, *curve_points, end_point]
-
-
-def _superior_inferior_axis(localization_result: Dict[str, Any]) -> Point3D:
-    """优先使用阶段三解剖头脚轴，缺失时回退到图像 z 轴。"""
-
-    axis = (
-        localization_result
-        .get("anatomical_geometry", {})
-        .get("global_frame", {})
-        .get("superior_inferior_axis")
-    )
-    if axis:
-        return normalize_vector(Point3D(
-            float(axis["x"]),
-            float(axis["y"]),
-            float(axis["z"]),
-        ))
-    return normalize_vector(image_axis_direction(localization_result["image"], 2))
-
-
-def _endpoint_boundary_point(
-    localization_result: Dict[str, Any],
-    label_name: str,
-    center_point: Point3D,
-    axis_dir: Point3D,
-    choose_minimum: bool,
-) -> Point3D:
-    """沿给定头脚轴取首末椎体 bbox 的外侧端面点。"""
-
-    bbox = (
-        localization_result
-        .get("coords", {})
-        .get(label_name, {})
-        .get("bbox")
-    )
-    if not bbox:
-        return center_point
-
-    center_projection = _dot(center_point, axis_dir)
-    projections = [
-        _dot(point, axis_dir) - center_projection
-        for point in _bbox_corners(bbox, localization_result["image"])
-    ]
-    boundary_delta = (
-        max(projections)
-        if choose_minimum
-        else min(projections)
-    )
-    return _add(center_point, _scale(axis_dir, boundary_delta))
-
-
 def _resolve_offsets_mm(
     localization_result: Dict[str, Any],
     label_names: List[str],
@@ -266,7 +493,7 @@ def _resolve_offsets_mm(
     offset_axis: Point3D,
     slice_spacing: float,
 ) -> List[float]:
-    """根据椎体 bbox 在左右方向的覆盖生成从左到右的 offset。"""
+    """根据全量椎体 bbox 沿 CPR 堆叠轴的覆盖生成 offset。"""
 
     spacing = max(float(slice_spacing), 1e-6)
     center_projection = float(np.median([
@@ -322,7 +549,7 @@ def _resolve_ap_extent_mm(
     localization_result: Dict[str, Any],
     row_dir: Point3D,
 ) -> float:
-    """用整体 bbox 在前后显示方向上的投影宽度作为 CPR 图像宽度。"""
+    """用整体 bbox 在 CPR 横向显示方向上的投影宽度作为图像宽度。"""
 
     bbox = localization_result.get("correction_scope_bbox")
     if not bbox:

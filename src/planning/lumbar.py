@@ -7,7 +7,10 @@ from typing import Any, Dict, List, Tuple
 
 from src.models.enums import PlaneTypeEnum
 from src.planning.base import PlanningResult
-from src.planning.spine_cpr import build_spine_sagittal_cpr_plan
+from src.planning.spine_cpr import (
+    build_spine_sagittal_cpr_plan,
+    configured_spine_cpr_labels,
+)
 from src.planning.spine_common import resolve_spine_interspace_segments
 from src.planning.straight import (
     CutSegment,
@@ -61,12 +64,17 @@ class LumbarWholeRangePlanner:
 
         plans = []
         warnings = []
+        cpr_labels = configured_spine_cpr_labels(
+            request.body_part.value,
+            localization_result,
+            LUMBAR_LABELS,
+        )
         for plane_config in request.plane_configs:
             cpr_plan, cpr_warnings = build_spine_sagittal_cpr_plan(
                 request=request,
                 plane_config=plane_config,
                 localization_result=localization_result,
-                label_names=LUMBAR_LABELS,
+                label_names=cpr_labels,
             )
             warnings.extend(cpr_warnings)
             if cpr_plan is not None:

@@ -329,6 +329,20 @@ class LocalizationStage(BaseStage):
             output_path=debug_vertebral_body_mask_overlay_path,
         )
             DebugLog(f"    调试椎体主体 mask overlay: {debug_vertebral_body_mask_overlay_path}")
+        debug_vertebral_body_prism_mask_overlay_path = (
+            output_path / '椎体四棱柱掩膜.nii.gz'
+        )
+        if is_debug_log_file_enabled():
+            self._write_debug_vertebral_body_prism_mask_overlay(
+                reference_image=image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                output_path=debug_vertebral_body_prism_mask_overlay_path,
+            )
+            DebugLog(
+                "    调试椎体四棱柱 mask overlay: "
+                f"{debug_vertebral_body_prism_mask_overlay_path}"
+            )
 
         localization_result_path = output_path / 'localization_result.json'
         if not is_debug_log_file_enabled():
@@ -366,6 +380,7 @@ class LocalizationStage(BaseStage):
             'debug_target_mask_overlay_path': str(debug_target_mask_overlay_path) if is_debug_log_file_enabled() else '',
             'debug_label_mask_overlay_path': str(debug_label_mask_overlay_path) if is_debug_log_file_enabled() else '',
             'debug_vertebral_body_mask_overlay_path': str(debug_vertebral_body_mask_overlay_path) if is_debug_log_file_enabled() else '',
+            'debug_vertebral_body_prism_mask_overlay_path': str(debug_vertebral_body_prism_mask_overlay_path) if is_debug_log_file_enabled() else '',
         }
         if anatomical_geometry is not None:
             result['anatomical_geometry'] = anatomical_geometry.to_dict()
@@ -397,6 +412,9 @@ class LocalizationStage(BaseStage):
             debug_target_mask_overlay_path=result['debug_target_mask_overlay_path'],
             debug_label_mask_overlay_path=result['debug_label_mask_overlay_path'],
             debug_vertebral_body_mask_overlay_path=result['debug_vertebral_body_mask_overlay_path'],
+            debug_vertebral_body_prism_mask_overlay_path=result[
+                'debug_vertebral_body_prism_mask_overlay_path'
+            ],
             is_skewed=result['is_skewed'],
             skew_params=result['skew_params'],
             anatomical_geometry=anatomical_geometry,
@@ -1405,6 +1423,133 @@ class LocalizationStage(BaseStage):
         sitk.WriteImage(overlay_image, str(output_path))
         return str(output_path)
 
+    @staticmethod
+    def _write_debug_vertebral_body_prism_mask_overlay(
+        reference_image: sitk.Image,
+        seg_array: np.ndarray,
+        label_targets: Dict[str, LabelTarget],
+        output_path: Path,
+    ) -> str:
+        """写出按主体四边形和左右边界填满的三维四棱柱 Mask。"""
+
+        overlay_array = np.zeros(seg_array.shape, dtype=np.uint16)
+        _, prism_regions = (
+            LocalizationStage._build_spine_body_prism_regions(
+                seg_array,
+                label_targets,
+                reference_image,
+            )
+        )
+        for label_name, target in label_targets.items():
+            prism_region = prism_regions.get(label_name)
+            if prism_region is None or not target.label_ids:
+                continue
+            minimum, local_mask = prism_region
+            region_slices = tuple(
+                slice(int(start), int(start) + int(size))
+                for start, size in zip(minimum, local_mask.shape)
+            )
+            overlay_region = overlay_array[region_slices]
+            overlay_region[local_mask] = int(target.label_ids[0])
+
+        overlay_image = sitk.GetImageFromArray(overlay_array)
+        overlay_image.CopyInformation(reference_image)
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        sitk.WriteImage(overlay_image, str(output_path))
+        return str(output_path)
+
+    @classmethod
+    def _build_spine_body_prism_regions(
+        cls,
+        seg_array: np.ndarray,
+        label_targets: Dict[str, LabelTarget],
+        image: sitk.Image,
+    ) -> tuple[
+        dict[str, np.ndarray],
+        dict[str, tuple[np.ndarray, np.ndarray] | None],
+    ]:
+        """逐椎体提取稀疏主体点和局部棱柱，避免复制整幅三维 mask。"""
+
+        body_indices: dict[str, np.ndarray] = {}
+        prism_regions: dict[
+            str,
+            tuple[np.ndarray, np.ndarray] | None,
+        ] = {}
+        for label_name, target in label_targets.items():
+            vertebra_key = cls._vertebra_key(label_name)
+            if vertebra_key is None or vertebra_key == "C1":
+                continue
+            body_mask = cls._vertebral_body_candidate_mask(
+                seg_array,
+                target,
+            )
+            indices = (
+                np.argwhere(body_mask)
+                if body_mask is not None
+                else np.empty((0, 3), dtype=int)
+            )
+            body_indices[label_name] = indices
+            prism_regions[label_name] = (
+                cls._vertebral_body_prism_region(indices, image)
+                if indices.size
+                else None
+            )
+
+        return (
+            body_indices,
+            cls._resolve_non_overlapping_prism_regions(prism_regions),
+        )
+
+    @classmethod
+    def _resolve_non_overlapping_prism_regions(
+        cls,
+        prism_regions: dict[
+            str,
+            tuple[np.ndarray, np.ndarray] | None,
+        ],
+    ) -> dict[str, tuple[np.ndarray, np.ndarray] | None]:
+        """只比较相交局部包围盒；碰撞涉及的棱柱全部失效。"""
+
+        resolved_regions = dict(prism_regions)
+        valid_labels = [
+            label_name
+            for label_name, prism_region in prism_regions.items()
+            if prism_region is not None
+        ]
+        collided_labels: set[str] = set()
+        for left_index, left_label in enumerate(valid_labels):
+            left_minimum, left_mask = prism_regions[left_label]
+            left_maximum = left_minimum + np.asarray(left_mask.shape)
+            for right_label in valid_labels[left_index + 1:]:
+                right_minimum, right_mask = prism_regions[right_label]
+                right_maximum = right_minimum + np.asarray(right_mask.shape)
+                overlap_minimum = np.maximum(left_minimum, right_minimum)
+                overlap_maximum = np.minimum(left_maximum, right_maximum)
+                if np.any(overlap_minimum >= overlap_maximum):
+                    continue
+                left_slices = tuple(
+                    slice(
+                        int(overlap_minimum[axis] - left_minimum[axis]),
+                        int(overlap_maximum[axis] - left_minimum[axis]),
+                    )
+                    for axis in range(3)
+                )
+                right_slices = tuple(
+                    slice(
+                        int(overlap_minimum[axis] - right_minimum[axis]),
+                        int(overlap_maximum[axis] - right_minimum[axis]),
+                    )
+                    for axis in range(3)
+                )
+                if np.any(
+                    left_mask[left_slices] & right_mask[right_slices]
+                ):
+                    collided_labels.update((left_label, right_label))
+        for label_name in collided_labels:
+            resolved_regions[label_name] = None
+        return resolved_regions
+
     @classmethod
     def _build_spine_body_geometry(
         cls,
@@ -1424,14 +1569,22 @@ class LocalizationStage(BaseStage):
         if body_part not in {"颈椎", "胸椎", "腰椎"}:
             return None
 
+        body_indices, prism_regions = cls._build_spine_body_prism_regions(
+            seg_array,
+            label_targets,
+            image,
+        )
+
         filtered_annotation_centroids: Dict[str, Dict[str, Any]] = {}
         for label_name, target in label_targets.items():
             vertebra_key = cls._vertebra_key(label_name)
             if vertebra_key is None or vertebra_key == "C1":
                 continue
 
-            body_mask = cls._vertebral_body_candidate_mask(seg_array, target)
-            indices = np.argwhere(body_mask)
+            indices = body_indices.get(
+                label_name,
+                np.empty((0, 3), dtype=int),
+            )
             if indices.size == 0:
                 filtered_annotation_centroids[label_name] = {
                     "found": False,
@@ -1443,6 +1596,10 @@ class LocalizationStage(BaseStage):
                     "local_superior_inferior_face_centroids": None,
                     "local_superior_inferior_face_candidates": None,
                     "sagittal_body_faces": None,
+                    "prism_found": False,
+                    "prism_voxel_count": 0,
+                    "prism_centroid_voxel": None,
+                    "prism_centroid_physical": None,
                 }
                 continue
 
@@ -1463,6 +1620,31 @@ class LocalizationStage(BaseStage):
                 indices,
                 image,
             )
+            prism_region = prism_regions.get(label_name)
+            if prism_region is not None:
+                prism_minimum, local_prism_mask = prism_region
+                local_coordinates = np.nonzero(local_prism_mask)
+                prism_voxel_count = int(len(local_coordinates[0]))
+            else:
+                prism_minimum = None
+                local_coordinates = None
+                prism_voxel_count = 0
+            if prism_voxel_count:
+                prism_z, prism_y, prism_x = (
+                    float(prism_minimum[axis])
+                    + float(np.mean(local_coordinates[axis]))
+                    for axis in range(3)
+                )
+                prism_physical = image.TransformContinuousIndexToPhysicalPoint(
+                    (
+                        float(prism_x),
+                        float(prism_y),
+                        float(prism_z),
+                    )
+                )
+            else:
+                prism_z = prism_y = prism_x = None
+                prism_physical = None
             filtered_annotation_centroids[label_name] = {
                 "found": True,
                 "voxel_count": int(indices.shape[0]),
@@ -1511,6 +1693,26 @@ class LocalizationStage(BaseStage):
                 ),
                 "local_superior_inferior_face_candidates": local_face_candidates,
                 "sagittal_body_faces": sagittal_body_faces,
+                "prism_found": bool(prism_voxel_count),
+                "prism_voxel_count": prism_voxel_count,
+                "prism_centroid_voxel": (
+                    {
+                        "z": float(prism_z),
+                        "y": float(prism_y),
+                        "x": float(prism_x),
+                    }
+                    if prism_voxel_count
+                    else None
+                ),
+                "prism_centroid_physical": (
+                    {
+                        "x": float(prism_physical[0]),
+                        "y": float(prism_physical[1]),
+                        "z": float(prism_physical[2]),
+                    }
+                    if prism_physical is not None
+                    else None
+                ),
             }
 
         return {
@@ -1666,11 +1868,11 @@ class LocalizationStage(BaseStage):
         )
 
     @staticmethod
-    def _estimate_sagittal_body_faces(
+    def _sagittal_body_quadrilateral(
         indices_zyx: np.ndarray,
         image: sitk.Image,
-    ) -> list[dict[str, Any]] | None:
-        """把过滤椎体主体抽象为矢状投影轮廓上的四个大面。"""
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """返回主体物理中心、矢状二维轴和有序四边形角点。"""
 
         if len(indices_zyx) < 4:
             return None
@@ -1680,18 +1882,73 @@ class LocalizationStage(BaseStage):
         origin = np.asarray(image.GetOrigin(), dtype=float)
         direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
         physical_points = origin + (indices_xyz * spacing) @ direction.T
+        retained_projection_mask = (
+            LocalizationStage._retained_sagittal_projection_mask_by_lr_support(
+                indices_zyx,
+            )
+        )
+        if np.count_nonzero(retained_projection_mask) >= 4:
+            physical_points = physical_points[retained_projection_mask]
         center = physical_points.mean(axis=0)
-
         sagittal_axes = direction[:, [1, 2]]
         sagittal_points = (physical_points - center) @ sagittal_axes
-        if sagittal_points.shape[0] < 4:
-            return None
-
         unique_points = np.unique(np.round(sagittal_points, 3), axis=0)
         hull = LocalizationStage._convex_hull_2d(unique_points)
         quad = LocalizationStage._simplify_hull_to_quadrilateral(hull)
         if quad is None:
             return None
+        return center, sagittal_axes, quad
+
+    @staticmethod
+    def _retained_sagittal_projection_mask_by_lr_support(
+        indices_zyx: np.ndarray,
+    ) -> np.ndarray:
+        """只让 LR 支撑足够的 Y/Z 投影点参与矢状四边形拟合。"""
+
+        if len(indices_zyx) == 0:
+            return np.zeros(0, dtype=bool)
+
+        _, inverse, support_counts = np.unique(
+            indices_zyx[:, [0, 1]],
+            axis=0,
+            return_inverse=True,
+            return_counts=True,
+        )
+        if support_counts.size == 0:
+            return np.ones(len(indices_zyx), dtype=bool)
+
+        max_support = int(np.max(support_counts))
+        if max_support <= 2:
+            return np.ones(len(indices_zyx), dtype=bool)
+
+        minimum_support = max(2, int(math.ceil(max_support * 0.35)))
+        retained_projection_points = support_counts >= minimum_support
+        retained_mask = retained_projection_points[inverse]
+        if np.count_nonzero(retained_mask) < 4:
+            return np.ones(len(indices_zyx), dtype=bool)
+        return retained_mask
+
+    @staticmethod
+    def _estimate_sagittal_body_faces(
+        indices_zyx: np.ndarray,
+        image: sitk.Image,
+    ) -> list[dict[str, Any]] | None:
+        """把过滤椎体主体抽象为矢状投影轮廓上的四个大面。"""
+
+        geometry = LocalizationStage._sagittal_body_quadrilateral(
+            indices_zyx,
+            image,
+        )
+        if geometry is None:
+            return None
+        center, sagittal_axes, quad = geometry
+
+        indices_xyz = indices_zyx[:, [2, 1, 0]].astype(float)
+        spacing = np.asarray(image.GetSpacing(), dtype=float)
+        origin = np.asarray(image.GetOrigin(), dtype=float)
+        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+        physical_points = origin + (indices_xyz * spacing) @ direction.T
+        sagittal_points = (physical_points - center) @ sagittal_axes
 
         tolerance = max(
             float(min(spacing[1], spacing[2])) * 1.5,
@@ -1745,6 +2002,116 @@ class LocalizationStage(BaseStage):
             })
 
         return faces if len(faces) == 4 else None
+
+    @staticmethod
+    def _points_inside_convex_polygon(
+        points: np.ndarray,
+        polygon: np.ndarray,
+        tolerance: float,
+    ) -> np.ndarray:
+        """判断二维点是否位于有序凸多边形内部，并包含边界。"""
+
+        edges = np.roll(polygon, -1, axis=0) - polygon
+        deltas = points[:, None, :] - polygon[None, :, :]
+        crosses = (
+            edges[None, :, 0] * deltas[:, :, 1]
+            - edges[None, :, 1] * deltas[:, :, 0]
+        )
+        edge_lengths = np.linalg.norm(edges, axis=1)
+        if np.any(edge_lengths <= 1e-12):
+            return np.zeros(len(points), dtype=bool)
+        signed_distances = crosses / edge_lengths[None, :]
+        if LocalizationStage._signed_area_2d(polygon) > 0.0:
+            return np.all(signed_distances >= -tolerance, axis=1)
+        return np.all(signed_distances <= tolerance, axis=1)
+
+    @staticmethod
+    def _vertebral_body_prism_mask(
+        body_mask: np.ndarray,
+        image: sitk.Image,
+    ) -> np.ndarray | None:
+        """兼容接口：把局部棱柱还原为与输入同尺寸的布尔 mask。"""
+
+        body_indices = np.argwhere(body_mask)
+        prism_region = LocalizationStage._vertebral_body_prism_region(
+            body_indices,
+            image,
+        )
+        if prism_region is None:
+            return None
+        minimum, local_mask = prism_region
+        prism_mask = np.zeros_like(body_mask, dtype=bool)
+        region_slices = tuple(
+            slice(int(start), int(start) + int(size))
+            for start, size in zip(minimum, local_mask.shape)
+        )
+        prism_mask[region_slices] = local_mask
+        return prism_mask
+
+    @staticmethod
+    def _vertebral_body_prism_region(
+        body_indices: np.ndarray,
+        image: sitk.Image,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """在主体包围盒内栅格化棱柱，返回最小 zyx 索引和局部 mask。"""
+
+        geometry = LocalizationStage._sagittal_body_quadrilateral(
+            body_indices,
+            image,
+        )
+        if geometry is None:
+            return None
+        center, sagittal_axes, quad = geometry
+        spacing = np.asarray(image.GetSpacing(), dtype=float)
+        origin = np.asarray(image.GetOrigin(), dtype=float)
+        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+
+        minimum = body_indices.min(axis=0)
+        maximum = body_indices.max(axis=0)
+        grids = np.meshgrid(
+            np.arange(minimum[0], maximum[0] + 1),
+            np.arange(minimum[1], maximum[1] + 1),
+            np.arange(minimum[2], maximum[2] + 1),
+            indexing="ij",
+        )
+        candidates_zyx = np.stack(grids, axis=-1).reshape(-1, 3)
+        candidates_xyz = candidates_zyx[:, [2, 1, 0]].astype(float)
+        candidate_points = origin + (candidates_xyz * spacing) @ direction.T
+
+        body_xyz = body_indices[:, [2, 1, 0]].astype(float)
+        body_points = origin + (body_xyz * spacing) @ direction.T
+        left_right_axis = direction[:, 0]
+        body_lr = (body_points - center) @ left_right_axis
+        candidate_relative = candidate_points - center
+        candidate_lr = candidate_relative @ left_right_axis
+        candidate_sagittal = candidate_relative @ sagittal_axes
+        tolerance = max(
+            float(min(spacing[1], spacing[2])) * 1e-3,
+            1e-3,
+        )
+        selected = (
+            (candidate_lr >= float(np.min(body_lr)) - tolerance)
+            & (candidate_lr <= float(np.max(body_lr)) + tolerance)
+            & LocalizationStage._points_inside_convex_polygon(
+                candidate_sagittal,
+                quad,
+                tolerance,
+            )
+        )
+        if not np.any(selected):
+            return None
+
+        local_mask = np.zeros(
+            tuple((maximum - minimum + 1).astype(int)),
+            dtype=bool,
+        )
+        selected_local_zyx = candidates_zyx[selected] - minimum
+        local_mask[
+            selected_local_zyx[:, 0],
+            selected_local_zyx[:, 1],
+            selected_local_zyx[:, 2],
+        ] = True
+        return minimum, local_mask
 
     @staticmethod
     def _convex_hull_2d(points: np.ndarray) -> np.ndarray:
@@ -1830,6 +2197,9 @@ class LocalizationStage(BaseStage):
         """从完整椎体 label 中估计前方宽主体的体素 mask。"""
 
         mask = np.isin(seg_array, target.label_ids)
+        if not np.any(mask):
+            return None
+        mask = LocalizationStage._discard_small_3d_components(mask)
         indices = np.argwhere(mask)
         if indices.size == 0:
             return None
@@ -1858,6 +2228,11 @@ class LocalizationStage(BaseStage):
                 continue
             y_min = min(row_run)
             y_max = max(row_run)
+            stable_width = LocalizationStage._stable_central_run_width(
+                slice_mask,
+                row_run,
+                center_x,
+            )
             for y_index in range(y_min, y_max + 1):
                 x_run = LocalizationStage._central_x_run(
                     slice_mask[int(y_index), :],
@@ -1865,6 +2240,11 @@ class LocalizationStage(BaseStage):
                 )
                 if not x_run:
                     continue
+                x_run = LocalizationStage._clip_run_to_width(
+                    x_run,
+                    center_x,
+                    stable_width,
+                )
                 x_min = min(x_run)
                 x_max = max(x_run)
                 body_mask[int(z_index), y_index, x_min:x_max + 1] = slice_mask[
@@ -1874,7 +2254,8 @@ class LocalizationStage(BaseStage):
 
         if not np.any(body_mask):
             return body_mask
-        return LocalizationStage._retain_largest_3d_component(body_mask)
+        body_mask = LocalizationStage._retain_largest_3d_component(body_mask)
+        return LocalizationStage._trim_lr_edge_columns_by_si_height(body_mask)
 
     @staticmethod
     def _retain_largest_3d_component(mask: np.ndarray) -> np.ndarray:
@@ -1890,6 +2271,115 @@ class LocalizationStage(BaseStage):
             return mask
         largest_component = int(np.argmax(component_sizes[1:]) + 1)
         return component_array == largest_component
+
+    @staticmethod
+    def _discard_small_3d_components(
+        mask: np.ndarray,
+        minimum_largest_fraction: float = 0.2,
+    ) -> np.ndarray:
+        """在主体规则运行前丢弃小离群块，保留较大附件供规则判别。"""
+
+        component_image = sitk.ConnectedComponent(
+            sitk.GetImageFromArray(mask.astype(np.uint8)),
+            True,
+        )
+        component_array = sitk.GetArrayFromImage(component_image)
+        component_sizes = np.bincount(component_array.ravel())
+        if component_sizes.size <= 2:
+            return mask
+
+        foreground_sizes = component_sizes[1:]
+        largest_size = int(np.max(foreground_sizes))
+        minimum_size = max(
+            1,
+            int(math.ceil(largest_size * minimum_largest_fraction)),
+        )
+        retained_components = np.flatnonzero(foreground_sizes >= minimum_size) + 1
+        return np.isin(component_array, retained_components)
+
+    @staticmethod
+    def _trim_lr_edge_columns_by_si_height(mask: np.ndarray) -> np.ndarray:
+        """按横向位置的 SI 高度裁掉 AP/LR 边缘断崖式低高度残留。"""
+
+        trimmed = LocalizationStage._trim_transverse_edge_by_si_height(
+            mask,
+            horizontal_axis=1,
+        )
+        return LocalizationStage._trim_transverse_edge_by_si_height(
+            trimmed,
+            horizontal_axis=2,
+        )
+
+    @staticmethod
+    def _trim_transverse_edge_by_si_height(
+        mask: np.ndarray,
+        horizontal_axis: int,
+    ) -> np.ndarray:
+        """沿 AP 或 LR 方向裁掉边缘 SI 高度明显不足的横向位置。"""
+
+        if horizontal_axis not in (1, 2):
+            return mask
+
+        reduce_axis = 2 if horizontal_axis == 1 else 1
+        positions = np.flatnonzero(mask.any(axis=(0, reduce_axis)))
+        if positions.size < 4:
+            return mask
+
+        heights = np.zeros(mask.shape[horizontal_axis], dtype=float)
+        other_axis_size = mask.shape[reduce_axis]
+        for position in positions:
+            pillar_heights = []
+            for other_index in range(other_axis_size):
+                if horizontal_axis == 1:
+                    column = mask[:, int(position), int(other_index)]
+                else:
+                    column = mask[:, int(other_index), int(position)]
+                z_indices = np.flatnonzero(column)
+                if z_indices.size == 0:
+                    continue
+                pillar_heights.append(
+                    int(z_indices.max() - z_indices.min() + 1)
+                )
+            if not pillar_heights:
+                continue
+            heights[int(position)] = float(np.percentile(pillar_heights, 75))
+
+        supported_heights = heights[positions]
+        stable_height = float(np.percentile(supported_heights, 75))
+        if stable_height < 3.0:
+            return mask
+        minimum_edge_height = max(2, int(math.ceil(stable_height * 0.6)))
+
+        left = 0
+        while (
+            left < positions.size - 1
+            and heights[int(positions[left])] < minimum_edge_height
+        ):
+            left += 1
+
+        right = positions.size - 1
+        while (
+            right > left
+            and heights[int(positions[right])] < minimum_edge_height
+        ):
+            right -= 1
+
+        trimmed_minimum = int(positions[left])
+        trimmed_maximum = int(positions[right])
+        if (
+            trimmed_minimum == int(positions[0])
+            and trimmed_maximum == int(positions[-1])
+        ):
+            return mask
+
+        trimmed = mask.copy()
+        if horizontal_axis == 1:
+            trimmed[:, :trimmed_minimum, :] = False
+            trimmed[:, trimmed_maximum + 1:, :] = False
+        else:
+            trimmed[:, :, :trimmed_minimum] = False
+            trimmed[:, :, trimmed_maximum + 1:] = False
+        return trimmed
 
     @staticmethod
     def _estimate_anterior_y_limit(mask: np.ndarray) -> float | None:
@@ -1971,6 +2461,57 @@ class LocalizationStage(BaseStage):
         return current_run
 
     @staticmethod
+    def _stable_central_run_width(
+        slice_mask: np.ndarray,
+        row_run: list[int],
+        center_x: float,
+    ) -> int | None:
+        """估计同一轴向层主体 AP 行的稳定 LR 宽度，避开少数侧向凸出。"""
+
+        run_lengths = []
+        for y_index in row_run:
+            x_run = LocalizationStage._central_x_run(
+                slice_mask[int(y_index), :],
+                center_x,
+            )
+            if x_run:
+                run_lengths.append(len(x_run))
+        if not run_lengths:
+            return None
+        median_width = float(np.median(run_lengths))
+        core_widths = [
+            width
+            for width in run_lengths
+            if float(width) <= median_width * 1.25
+        ]
+        if not core_widths:
+            return int(round(median_width))
+        return max(1, int(max(core_widths)))
+
+    @staticmethod
+    def _clip_run_to_width(
+        x_run: list[int],
+        center_x: float,
+        target_width: int | None,
+    ) -> list[int]:
+        """把异常变宽的连续行裁成最靠近左右中心的稳定宽度。"""
+
+        if target_width is None or len(x_run) <= target_width:
+            return x_run
+        target_width = max(1, int(target_width))
+        best_start_index = min(
+            range(0, len(x_run) - target_width + 1),
+            key=lambda start_index: abs(
+                (
+                    x_run[start_index]
+                    + x_run[start_index + target_width - 1]
+                ) / 2.0
+                - center_x
+            ),
+        )
+        return x_run[best_start_index:best_start_index + target_width]
+
+    @staticmethod
     def _central_x_run(row_mask: np.ndarray, center_x: float) -> list[int]:
         """选择单个 AP 行上最靠近左右中心的连续 x 段。"""
 
@@ -2020,6 +2561,7 @@ class LocalizationStage(BaseStage):
         debug_target_mask_overlay_path: str,
         debug_label_mask_overlay_path: str,
         debug_vertebral_body_mask_overlay_path: str,
+        debug_vertebral_body_prism_mask_overlay_path: str,
         spine_geometry: Dict[str, Any] | None,
         is_skewed: bool,
         skew_params: Dict[str, Any],
@@ -2055,6 +2597,9 @@ class LocalizationStage(BaseStage):
             debug_target_mask_overlay_path=debug_target_mask_overlay_path,
             debug_label_mask_overlay_path=debug_label_mask_overlay_path,
             debug_vertebral_body_mask_overlay_path=debug_vertebral_body_mask_overlay_path,
+            debug_vertebral_body_prism_mask_overlay_path=(
+                debug_vertebral_body_prism_mask_overlay_path
+            ),
             spine_geometry=spine_geometry,
             is_skewed=is_skewed,
             skew_params=skew_params,

@@ -30,6 +30,13 @@ SPINE_CPR_LABELS = {
     ],
 }
 
+SPINE_CONFIG_LABEL_ORDER = (
+    [f"vertebrae_C{index}" for index in range(1, 8)]
+    + [f"vertebrae_T{index}" for index in range(1, 13)]
+    + [f"vertebrae_L{index}" for index in range(1, 6)]
+    + ["vertebrae_S1"]
+)
+
 
 def build_spine_sagittal_cpr_plan(
     request: Any,
@@ -60,9 +67,12 @@ def build_spine_sagittal_cpr_plan(
         localization_result,
         centers,
     )
-    # 阶段四只保存“首端面 + 全部标注质心 + 末端面”的稀疏锚点折线。
-    # 最终图像行由阶段五按弧长加密；这里不再做额外平滑，避免端部切线退化。
-    curve_points = anchor_points
+    curve_points = _smooth_cpr_centroid_path_with_straight_endpoints(
+        anchor_points,
+        annotation_centers,
+        _minimum_image_spacing(image_info),
+        normalize_vector(image_axis_direction(image_info, 2)),
+    )
     curve_length = _polyline_length(curve_points)
     if curve_length <= 0.0:
         return None, ["CPR 降级: 中心曲线长度无效"]
@@ -130,6 +140,63 @@ def build_spine_sagittal_cpr_plan(
     ), center_warnings
 
 
+def configured_spine_cpr_labels(
+    body_part: str,
+    localization_result: Dict[str, Any],
+    fallback_labels: Iterable[str],
+) -> List[str]:
+    """按阶段三解析后的整切 start/end 配置生成 CPR 椎体列表。"""
+
+    configured_labels = _configured_whole_range_spine_labels(
+        localization_result,
+    )
+    if configured_labels is None:
+        return list(fallback_labels)
+    if body_part == "颈椎":
+        configured_labels = [
+            label_name
+            for label_name in configured_labels
+            if label_name != "vertebrae_C1"
+        ]
+    return configured_labels or list(fallback_labels)
+
+
+def _configured_whole_range_spine_labels(
+    localization_result: Dict[str, Any],
+) -> List[str] | None:
+    resolved_cut_config = localization_result.get("resolved_cut_config")
+    if not isinstance(resolved_cut_config, dict):
+        return None
+
+    start_label = _first_configured_label(
+        resolved_cut_config.get("start_labels")
+    )
+    end_label = _first_configured_label(
+        resolved_cut_config.get("end_labels")
+    )
+    if start_label is None or end_label is None:
+        return None
+
+    try:
+        start_index = SPINE_CONFIG_LABEL_ORDER.index(start_label)
+        end_index = SPINE_CONFIG_LABEL_ORDER.index(end_label)
+    except ValueError:
+        return None
+
+    if start_index <= end_index:
+        return list(SPINE_CONFIG_LABEL_ORDER[start_index:end_index + 1])
+    return list(reversed(SPINE_CONFIG_LABEL_ORDER[end_index:start_index + 1]))
+
+
+def _first_configured_label(value: Any) -> str | None:
+    if isinstance(value, list) and value:
+        first_value = value[0]
+        return str(first_value) if first_value else None
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 def _get_spine_annotation_centers(
     localization_result: Dict[str, Any],
     label_names: Iterable[str],
@@ -151,16 +218,29 @@ def _get_spine_annotation_centers(
             coords,
         )
         annotation = filtered_centroids.get(label_name)
-        physical = annotation.get("centroid_physical") if annotation else None
-        if annotation and annotation.get("found") and physical:
-            centers.append((
-                label_name,
-                Point3D(
-                    float(physical["x"]),
-                    float(physical["y"]),
-                    float(physical["z"]),
-                ),
-            ))
+        if annotation:
+            has_prism_contract = "prism_found" in annotation
+            prism_point = _parse_physical_point(
+                annotation.get("prism_centroid_physical")
+            )
+            if annotation.get("prism_found") and prism_point is not None:
+                centers.append((label_name, prism_point))
+                continue
+
+            body_point = _parse_physical_point(
+                annotation.get("centroid_physical")
+            )
+            if annotation.get("found") and body_point is not None:
+                if has_prism_contract:
+                    warnings.append(
+                        f"{label_name} 四棱柱生成失败，"
+                        "CPR 回退到过滤主体质心"
+                    )
+                centers.append((label_name, body_point))
+                continue
+            warnings.append(
+                f"{label_name} 缺少有效过滤标注质心，CPR 不使用该椎体"
+            )
             continue
 
         full_center = get_label_center(localization_result, label_name)
@@ -174,6 +254,20 @@ def _get_spine_annotation_centers(
         centers.append((label_name, full_center))
 
     return centers, warnings
+
+
+def _parse_physical_point(value: Any) -> Point3D | None:
+    """把外部几何字段解析为三轴有限物理点。"""
+
+    if not isinstance(value, dict):
+        return None
+    try:
+        coordinates = tuple(float(value[axis]) for axis in ("x", "y", "z"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(coordinate) for coordinate in coordinates):
+        return None
+    return Point3D(*coordinates)
 
 
 def _resolve_available_spine_label(
@@ -226,13 +320,165 @@ def _build_annotation_centroid_path(
         last_direction,
         toward_start=False,
     )
+    left_right_axis = image_axis_direction(
+        localization_result["image"],
+        0,
+    )
+    first_face = _correct_endpoint_face_to_local_arc(
+        first_face,
+        centroid_path[0],
+        centroid_path[1],
+        centroid_path[2] if len(centroid_path) >= 3 else None,
+        left_right_axis,
+    )
+    last_face = _correct_endpoint_face_to_local_arc(
+        last_face,
+        centroid_path[-1],
+        centroid_path[-2],
+        centroid_path[-3] if len(centroid_path) >= 3 else None,
+        left_right_axis,
+    )
 
     path = list(centroid_path)
-    if first_face is not None:
+    if (
+        first_face is not None
+        and vector_length(
+            subtract_points(first_face, centroid_path[0])
+        ) > 1e-6
+    ):
         path.insert(0, first_face)
-    if last_face is not None:
+    if (
+        last_face is not None
+        and vector_length(
+            subtract_points(last_face, centroid_path[-1])
+        ) > 1e-6
+    ):
         path.append(last_face)
     return path
+
+
+def _correct_endpoint_face_to_local_arc(
+    face: Point3D | None,
+    centroid: Point3D,
+    adjacent_centroid: Point3D,
+    interior_centroid: Point3D | None,
+    left_right_axis: Point3D,
+) -> Point3D | None:
+    """把越出局部质心弧线方向区间的端面最短投影到合法边界。"""
+
+    if face is None:
+        return None
+
+    outward_segment = _project_away_from_axis(
+        subtract_points(centroid, adjacent_centroid),
+        left_right_axis,
+    )
+    if vector_length(outward_segment) <= 1e-6:
+        return face
+
+    outward = normalize_vector(outward_segment)
+    face_delta = subtract_points(face, centroid)
+    sagittal_face_delta = _project_away_from_axis(
+        face_delta,
+        left_right_axis,
+    )
+    outward_component = _dot(sagittal_face_delta, outward)
+    target_angle = None
+    if (
+        interior_centroid is not None
+        and vector_length(sagittal_face_delta) > 1e-6
+    ):
+        inner_segment = _project_away_from_axis(
+            subtract_points(adjacent_centroid, interior_centroid),
+            left_right_axis,
+        )
+        if vector_length(inner_segment) > 1e-6:
+            left_right = normalize_vector(left_right_axis)
+            inner_angle = _signed_angle_around_axis(
+                normalize_vector(inner_segment),
+                outward,
+                left_right,
+            )
+            face_angle = _signed_angle_around_axis(
+                outward,
+                normalize_vector(sagittal_face_delta),
+                left_right,
+            )
+            minimum_angle = min(0.0, inner_angle)
+            maximum_angle = max(0.0, inner_angle)
+            if face_angle < minimum_angle - 1e-6:
+                target_angle = minimum_angle
+            elif face_angle > maximum_angle + 1e-6:
+                target_angle = maximum_angle
+
+    if outward_component < -1e-6:
+        target_angle = 0.0
+    if target_angle is None:
+        return face
+
+    left_right_delta = subtract_points(face_delta, sagittal_face_delta)
+    boundary_ray = normalize_vector(
+        _rotate_around_axis(
+            outward,
+            normalize_vector(left_right_axis),
+            target_angle,
+        )
+    )
+    projected_sagittal_delta = _scale(
+        boundary_ray,
+        max(_dot(sagittal_face_delta, boundary_ray), 0.0),
+    )
+    return _add(
+        centroid,
+        _add(left_right_delta, projected_sagittal_delta),
+    )
+
+
+def _project_away_from_axis(
+    vector: Point3D,
+    axis: Point3D,
+) -> Point3D:
+    """移除向量在指定轴上的分量。"""
+
+    unit_axis = normalize_vector(axis)
+    return subtract_points(
+        vector,
+        _scale(unit_axis, _dot(vector, unit_axis)),
+    )
+
+
+def _signed_angle_around_axis(
+    first: Point3D,
+    second: Point3D,
+    axis: Point3D,
+) -> float:
+    """返回从 first 到 second 绕 axis 的带符号角。"""
+
+    return math.atan2(
+        _dot(_cross(first, second), axis),
+        _dot(first, second),
+    )
+
+
+def _rotate_around_axis(
+    vector: Point3D,
+    axis: Point3D,
+    angle_radians: float,
+) -> Point3D:
+    """使用 Rodrigues 公式把向量绕单位轴旋转指定角度。"""
+
+    cosine = math.cos(angle_radians)
+    sine = math.sin(angle_radians)
+    return _add(
+        _add(
+            _scale(vector, cosine),
+            _scale(_cross(axis, vector), sine),
+        ),
+        _scale(
+            axis,
+            _dot(axis, vector) * (1.0 - cosine),
+        ),
+    )
 
 
 def _resolve_endpoint_face_center(
@@ -604,6 +850,178 @@ def _polyline_length(points: List[Point3D]) -> float:
         vector_length(subtract_points(current, previous))
         for previous, current in zip(points, points[1:])
     )
+
+
+def _smooth_cpr_anchor_path(
+    anchor_points: List[Point3D],
+    spacing_mm: float,
+    longitudinal_axis: Point3D | None = None,
+) -> List[Point3D]:
+    """在所有端面/质心锚点之间生成受控圆滑曲线。
+
+    锚点是解剖定位结果，必须原样保留；圆滑只改变锚点之间的连接方式。
+    longitudinal_axis 仅用于保证路径按头脚方向单调前进，避免 CPR 发生折返。
+    """
+
+    if len(anchor_points) < 3:
+        return list(anchor_points)
+
+    target_spacing = max(float(spacing_mm), 1e-6)
+    arrays = np.array([
+        [point.x, point.y, point.z]
+        for point in anchor_points
+    ], dtype=float)
+    segment_lengths = np.linalg.norm(np.diff(arrays, axis=0), axis=1)
+    if not np.any(segment_lengths > 1e-6):
+        return list(anchor_points)
+
+    if longitudinal_axis is not None:
+        longitudinal = np.array([
+            longitudinal_axis.x,
+            longitudinal_axis.y,
+            longitudinal_axis.z,
+        ], dtype=float)
+        longitudinal_norm = float(np.linalg.norm(longitudinal))
+        if longitudinal_norm > 1e-6:
+            longitudinal /= longitudinal_norm
+            if float((arrays[-1] - arrays[0]) @ longitudinal) < 0.0:
+                longitudinal = -longitudinal
+            # A malformed endpoint/centroid order should not be hidden by a
+            # spline; retaining anchors lets the caller surface the raw path.
+            if np.any(np.diff(arrays @ longitudinal) <= 1e-6):
+                return list(anchor_points)
+
+    # Chord-length parameterization keeps the tangent scale stable when adjacent
+    # vertebrae have different physical spacing.
+    parameters = np.concatenate(([0.0], np.cumsum(segment_lengths)))
+    tangents = np.zeros_like(arrays)
+    tangents[0] = (arrays[1] - arrays[0]) / max(parameters[1], 1e-6)
+    tangents[-1] = (arrays[-1] - arrays[-2]) / max(
+        parameters[-1] - parameters[-2],
+        1e-6,
+    )
+    for index in range(1, len(arrays) - 1):
+        delta = parameters[index + 1] - parameters[index - 1]
+        tangents[index] = (arrays[index + 1] - arrays[index - 1]) / max(delta, 1e-6)
+
+    # Keep cubic control points inside the neighboring chord scale. This rounds
+    # each corner without pulling a nearby centroid toward a global arc.
+    for index in range(len(arrays)):
+        tangent_length = float(np.linalg.norm(tangents[index]))
+        if tangent_length <= 1e-6:
+            continue
+        if index == 0:
+            limit = 3.0 * segment_lengths[0] / max(parameters[1], 1e-6)
+        elif index == len(arrays) - 1:
+            limit = 3.0 * segment_lengths[-1] / max(
+                parameters[-1] - parameters[-2],
+                1e-6,
+            )
+        else:
+            limit = 3.0 * min(
+                segment_lengths[index - 1],
+                segment_lengths[index],
+            ) / max(
+                parameters[index + 1] - parameters[index - 1],
+                1e-6,
+            )
+        if tangent_length > limit:
+            tangents[index] *= limit / tangent_length
+
+    curve_points: List[Point3D] = [anchor_points[0]]
+    for index, segment_length in enumerate(segment_lengths):
+        if segment_length <= 1e-6:
+            continue
+        steps = max(1, int(math.ceil(segment_length / (target_spacing * 0.5))))
+        delta_t = parameters[index + 1] - parameters[index]
+        for step in range(1, steps + 1):
+            if step == steps:
+                curve_points.append(anchor_points[index + 1])
+                continue
+            u = step / steps
+            h00 = 2.0 * u ** 3 - 3.0 * u ** 2 + 1.0
+            h10 = u ** 3 - 2.0 * u ** 2 + u
+            h01 = -2.0 * u ** 3 + 3.0 * u ** 2
+            h11 = u ** 3 - u ** 2
+            point = (
+                h00 * arrays[index]
+                + h10 * delta_t * tangents[index]
+                + h01 * arrays[index + 1]
+                + h11 * delta_t * tangents[index + 1]
+            )
+            curve_points.append(Point3D(
+                float(point[0]),
+                float(point[1]),
+                float(point[2]),
+            ))
+    return curve_points
+
+
+def _smooth_cpr_centroid_path_with_straight_endpoints(
+    anchor_points: List[Point3D],
+    centroid_points: List[Point3D],
+    spacing_mm: float,
+    longitudinal_axis: Point3D,
+) -> List[Point3D]:
+    """平滑质心链，并把首末端面作为不会过冲的直线端段拼接。"""
+
+    curve_points = _smooth_cpr_anchor_path(
+        centroid_points,
+        spacing_mm,
+        longitudinal_axis,
+    )
+    if not centroid_points:
+        return curve_points
+
+    terminal_spacing = max(float(spacing_mm) * 0.5, 1e-6)
+    if (
+        anchor_points
+        and vector_length(
+            subtract_points(anchor_points[0], centroid_points[0])
+        ) > 1e-6
+    ):
+        prefix = _resample_straight_segment(
+            anchor_points[0],
+            centroid_points[0],
+            terminal_spacing,
+        )
+        curve_points = prefix[:-1] + curve_points
+
+    if (
+        anchor_points
+        and vector_length(
+            subtract_points(anchor_points[-1], centroid_points[-1])
+        ) > 1e-6
+    ):
+        suffix = _resample_straight_segment(
+            centroid_points[-1],
+            anchor_points[-1],
+            terminal_spacing,
+        )
+        curve_points = curve_points + suffix[1:]
+    return curve_points
+
+
+def _resample_straight_segment(
+    start: Point3D,
+    end: Point3D,
+    spacing_mm: float,
+) -> List[Point3D]:
+    """退化情况下按首末点生成加密直线，保持阶段五采样稳定。"""
+
+    delta = subtract_points(end, start)
+    length = vector_length(delta)
+    if length <= 1e-6:
+        return [start]
+    steps = max(1, int(math.ceil(length / max(float(spacing_mm), 1e-6))))
+    return [
+        Point3D(
+            start.x + delta.x * step / steps,
+            start.y + delta.y * step / steps,
+            start.z + delta.z * step / steps,
+        )
+        for step in range(steps + 1)
+    ]
 
 
 def _minimum_image_spacing(image_info: Dict[str, Any]) -> float:

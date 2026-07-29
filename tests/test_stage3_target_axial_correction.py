@@ -3,6 +3,7 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import SimpleITK as sitk
@@ -794,6 +795,75 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertEqual(overlay_array[4, 4, 7], 20)
             self.assertEqual(overlay_array[6, 3, 14], 0)
 
+    def test_vertebral_body_candidate_ignores_raw_fragments_before_front_limit(self):
+        """原始 label 的前方碎片不应参与主体前缘估计并拉歪棱柱输入。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((10, 24, 36), dtype=np.uint16)
+        seg_array[4:8, 12:18, 10:18] = 20
+        # 与真实主体断开的同 label 碎片。它位于更靠前的 AP 位置，
+        # 如果先参与前缘阈值估计，会让真实主体切片被误跳过。
+        seg_array[0:2, 2:5, 24:27] = 20
+        target = LabelTarget("vertebrae_L4", [20])
+
+        body_mask = stage._vertebral_body_candidate_mask(seg_array, target)
+
+        self.assertIsNotNone(body_mask)
+        self.assertGreater(int(body_mask[4:8, 12:18, 10:18].sum()), 0)
+        self.assertEqual(int(body_mask[0:3, 2:7, 24:30].sum()), 0)
+
+    def test_vertebral_body_candidate_trims_connected_lateral_fragments(self):
+        """贴在主体侧边的同连通块碎片也不应撑大主体和棱柱。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((12, 24, 40), dtype=np.uint16)
+        seg_array[4:8, 8:14, 10:18] = 20
+        # 侧向碎片与主体在 x=18 处相连，不会被 3D 连通域过滤移除。
+        seg_array[5:7, 10:12, 18:26] = 20
+        target = LabelTarget("vertebrae_L4", [20])
+
+        body_mask = stage._vertebral_body_candidate_mask(seg_array, target)
+
+        self.assertIsNotNone(body_mask)
+        self.assertGreater(int(body_mask[4:8, 8:14, 10:18].sum()), 0)
+        self.assertEqual(int(body_mask[5:7, 10:12, 20:26].sum()), 0)
+
+    def test_vertebral_body_candidate_trims_lr_edge_columns_with_height_cliff(self):
+        """x 轴边缘 SI 高度断崖式下降的角落残留不应进入主体标注。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((12, 24, 32), dtype=np.uint16)
+        seg_array[3:9, 8:14, 10:18] = 20
+        # 左右角落和主体连在一起，但沿 x 看 SI 高度只有 2 层；
+        # 主体中央高度为 6 层，应按高度断崖裁掉。
+        seg_array[3:5, 9:13, 8:10] = 20
+        seg_array[7:9, 9:13, 18:20] = 20
+        target = LabelTarget("vertebrae_L4", [20])
+
+        body_mask = stage._vertebral_body_candidate_mask(seg_array, target)
+
+        self.assertIsNotNone(body_mask)
+        self.assertGreater(int(body_mask[3:9, 8:14, 10:18].sum()), 0)
+        self.assertEqual(int(body_mask[:, :, 8:10].sum()), 0)
+        self.assertEqual(int(body_mask[:, :, 18:20].sum()), 0)
+
+    def test_vertebral_body_candidate_trims_ap_edge_columns_with_height_cliff(self):
+        """矢状横轴上低 SI 高度的后缘残留应按整段裁掉。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((12, 28, 32), dtype=np.uint16)
+        seg_array[3:9, 8:14, 10:18] = 20
+        # 后缘三分之一 AP 位置只剩 2 层 SI 高度，但每个 y 上仍有多个
+        # x 体素相连；这正对应 sagittal 视图横轴上突然变矮的一段。
+        seg_array[3:5, 14:20, 11:17] = 20
+        target = LabelTarget("vertebrae_L4", [20])
+
+        body_mask = stage._vertebral_body_candidate_mask(seg_array, target)
+
+        self.assertIsNotNone(body_mask)
+        self.assertGreater(int(body_mask[3:9, 8:14, 10:18].sum()), 0)
+        self.assertEqual(int(body_mask[:, 14:20, :].sum()), 0)
+
     def test_debug_vertebral_body_mask_overlay_excludes_c1_but_keeps_c2(self):
         """主体定位 overlay 排除 C1 环形结构，但保留 C2 及以下椎体。"""
 
@@ -820,6 +890,99 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
             self.assertEqual(int((overlay_array == 20).sum()), 0)
             self.assertGreater(int((overlay_array == 21).sum()), 0)
+
+    def test_debug_vertebral_body_prism_mask_matches_geometry_centroid(self):
+        """写出的四棱柱体素必须与阶段三记录的质心来自同一规则。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            seg_array = np.zeros((10, 14, 16), dtype=np.uint16)
+            seg_array[2:8, 3:9, 4:11] = 20
+            seg_array[5, 6, 7] = 0
+            image = sitk.GetImageFromArray(seg_array)
+            image.SetSpacing((0.7, 0.9, 1.4))
+            image.SetOrigin((10.0, -20.0, 30.0))
+            target = LabelTarget("vertebrae_L2", [20])
+            path = Path(temp_dir) / "椎体四棱柱掩膜.nii.gz"
+
+            LocalizationStage._write_debug_vertebral_body_prism_mask_overlay(
+                reference_image=image,
+                seg_array=seg_array,
+                label_targets={"vertebrae_L2": target},
+                output_path=path,
+            )
+            overlay = sitk.GetArrayFromImage(sitk.ReadImage(str(path)))
+            overlay_indices = np.argwhere(overlay == 20)
+            geometry = LocalizationStage._build_spine_body_geometry(
+                "腰椎",
+                image,
+                seg_array,
+                {"vertebrae_L2": target},
+            )
+            annotation = geometry[
+                "filtered_annotation_centroids"
+            ]["vertebrae_L2"]
+
+            self.assertGreater(len(overlay_indices), 0)
+            self.assertEqual(
+                annotation["prism_voxel_count"],
+                len(overlay_indices),
+            )
+            np.testing.assert_allclose(
+                [
+                    annotation["prism_centroid_voxel"]["z"],
+                    annotation["prism_centroid_voxel"]["y"],
+                    annotation["prism_centroid_voxel"]["x"],
+                ],
+                overlay_indices.mean(axis=0),
+            )
+            centroid_z, centroid_y, centroid_x = overlay_indices.mean(axis=0)
+            expected_physical = image.TransformContinuousIndexToPhysicalPoint(
+                (
+                    float(centroid_x),
+                    float(centroid_y),
+                    float(centroid_z),
+                )
+            )
+            np.testing.assert_allclose(
+                [
+                    annotation["prism_centroid_physical"]["x"],
+                    annotation["prism_centroid_physical"]["y"],
+                    annotation["prism_centroid_physical"]["z"],
+                ],
+                expected_physical,
+            )
+
+    def test_overlapping_prisms_fail_together_without_label_overwrite(self):
+        """相交四棱柱不能在调试 labelmap 中互相覆盖并保留错误质心。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            seg_array = np.zeros((14, 16, 14), dtype=np.uint16)
+            seg_array[2:8, 2:9, 3:10] = 20
+            image = sitk.GetImageFromArray(seg_array)
+            targets = {
+                "vertebrae_L1": LabelTarget("vertebrae_L1", [20]),
+                "vertebrae_L2": LabelTarget("vertebrae_L2", [20]),
+            }
+            output_path = Path(temp_dir) / "椎体四棱柱掩膜.nii.gz"
+
+            geometry = LocalizationStage._build_spine_body_geometry(
+                "腰椎",
+                image,
+                seg_array,
+                targets,
+            )
+            LocalizationStage._write_debug_vertebral_body_prism_mask_overlay(
+                reference_image=image,
+                seg_array=seg_array,
+                label_targets=targets,
+                output_path=output_path,
+            )
+            overlay = sitk.GetArrayFromImage(sitk.ReadImage(str(output_path)))
+
+            annotations = geometry["filtered_annotation_centroids"]
+            self.assertFalse(annotations["vertebrae_L1"]["prism_found"])
+            self.assertFalse(annotations["vertebrae_L2"]["prism_found"])
+            self.assertEqual(int(np.count_nonzero(overlay)), 0)
 
     def test_stage3_spine_geometry_uses_filtered_annotation_centroid_and_excludes_c1(self):
         """阶段三应输出标注质心，不能改写全量定位质心，且 C1 不进入 CPR 几何。"""
@@ -878,6 +1041,27 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         for face in sagittal_faces:
             self.assertEqual(set(face["center"]), {"x", "y", "z"})
             self.assertEqual(set(face["normal"]), {"x", "y", "z"})
+        body_mask = stage._vertebral_body_candidate_mask(
+            seg_array,
+            label_targets["vertebrae_C2"],
+        )
+        prism_indices = np.argwhere(
+            stage._vertebral_body_prism_mask(body_mask, image)
+        )
+        self.assertTrue(c2["prism_found"])
+        self.assertEqual(c2["prism_voxel_count"], len(prism_indices))
+        self.assertAlmostEqual(
+            c2["prism_centroid_voxel"]["z"],
+            float(prism_indices[:, 0].mean()),
+        )
+        self.assertAlmostEqual(
+            c2["prism_centroid_voxel"]["y"],
+            float(prism_indices[:, 1].mean()),
+        )
+        self.assertAlmostEqual(
+            c2["prism_centroid_voxel"]["x"],
+            float(prism_indices[:, 2].mean()),
+        )
 
     def test_stage3_face_center_uses_in_plane_midpoint(self):
         """端面中心应取端面平面内范围的中点，不能被体素密度拉向角落。"""
@@ -926,6 +1110,137 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             {candidate["side"] for candidate in face_candidates},
             {"min", "max"},
         )
+
+    def test_stage3_prism_mask_fills_sagittal_quad_with_body_lr_bounds(self):
+        """四棱柱应填满主体四边形，并严格使用主体自身左右范围。"""
+
+        body_mask = np.zeros((12, 16, 14), dtype=bool)
+        for z_index in range(3, 9):
+            y_start = 3 + (z_index - 3) // 2
+            body_mask[z_index, y_start:y_start + 6, 4:10] = True
+        body_mask[6, 7, 7] = False
+        image = sitk.GetImageFromArray(body_mask.astype(np.uint8))
+        image.SetSpacing((0.7, 0.9, 1.4))
+
+        prism_mask = LocalizationStage._vertebral_body_prism_mask(
+            body_mask,
+            image,
+        )
+
+        self.assertIsNotNone(prism_mask)
+        self.assertTrue(prism_mask[6, 7, 7])
+        prism_indices = np.argwhere(prism_mask)
+        self.assertEqual(int(prism_indices[:, 2].min()), 4)
+        self.assertEqual(int(prism_indices[:, 2].max()), 9)
+        self.assertFalse(np.any(prism_mask[:, :, :4]))
+        self.assertFalse(np.any(prism_mask[:, :, 10:]))
+
+    def test_stage3_prism_mask_ignores_low_lr_support_sagittal_spur(self):
+        """低左右支撑的矢状挂渣不应成为四棱柱外轮廓顶点。"""
+
+        body_mask = np.zeros((14, 24, 28), dtype=bool)
+        body_mask[4:10, 8:14, 10:18] = True
+        # 这个挂渣和主体相连，但 LR 方向只有 1 个体素宽；在矢状投影
+        # 上它会把 AP 后界明显向后拉，旧凸包会因此生成变形棱柱。
+        body_mask[6:8, 14:20, 17] = True
+        image = sitk.GetImageFromArray(body_mask.astype(np.uint8))
+
+        prism_mask = LocalizationStage._vertebral_body_prism_mask(
+            body_mask,
+            image,
+        )
+
+        self.assertIsNotNone(prism_mask)
+        self.assertTrue(prism_mask[6, 11, 14])
+        self.assertFalse(np.any(prism_mask[:, 15:20, :]))
+
+    def test_stage3_prism_region_is_limited_to_body_bbox(self):
+        """内部棱柱只保留局部包围盒，不能为每个椎体复制整幅 CT。"""
+
+        body_mask = np.zeros((80, 160, 180), dtype=bool)
+        body_mask[30:38, 70:82, 90:104] = True
+        image = sitk.GetImageFromArray(body_mask.astype(np.uint8))
+
+        region = LocalizationStage._vertebral_body_prism_region(
+            np.argwhere(body_mask),
+            image,
+        )
+
+        self.assertIsNotNone(region)
+        minimum, local_mask = region
+        np.testing.assert_array_equal(minimum, [30, 70, 90])
+        self.assertEqual(local_mask.shape, (8, 12, 14))
+        self.assertLess(local_mask.size, body_mask.size // 100)
+
+    def test_stage3_geometry_does_not_materialize_full_prism_per_label(self):
+        """阶段三主流程必须走局部棱柱，不能调用整幅 mask 兼容接口。"""
+
+        seg_array = np.zeros((30, 60, 70), dtype=np.uint16)
+        seg_array[5:13, 12:24, 15:29] = 20
+        seg_array[17:25, 34:46, 40:54] = 21
+        image = sitk.GetImageFromArray(seg_array)
+        targets = {
+            "vertebrae_L1": LabelTarget("vertebrae_L1", [20]),
+            "vertebrae_L2": LabelTarget("vertebrae_L2", [21]),
+        }
+
+        with patch.object(
+            LocalizationStage,
+            "_vertebral_body_prism_mask",
+            side_effect=AssertionError("不应分配整幅棱柱 mask"),
+        ):
+            geometry = LocalizationStage._build_spine_body_geometry(
+                "腰椎",
+                image,
+                seg_array,
+                targets,
+            )
+
+        annotations = geometry["filtered_annotation_centroids"]
+        self.assertTrue(annotations["vertebrae_L1"]["prism_found"])
+        self.assertTrue(annotations["vertebrae_L2"]["prism_found"])
+
+    def test_stage3_prism_mask_rejects_degenerate_body(self):
+        """不足以形成四边形的主体不能产生伪四棱柱。"""
+
+        body_mask = np.zeros((6, 6, 6), dtype=bool)
+        body_mask[2, 2, 2] = True
+        image = sitk.GetImageFromArray(body_mask.astype(np.uint8))
+
+        self.assertIsNone(
+            LocalizationStage._vertebral_body_prism_mask(body_mask, image)
+        )
+
+    def test_stage3_prism_mask_keeps_boundary_with_physical_rounding(self):
+        """非整数物理空间下四边形边界体素也必须完整保留。"""
+
+        body_mask = np.zeros((12, 16, 14), dtype=bool)
+        body_mask[3:9, 4:11, 3:10] = True
+        image = sitk.GetImageFromArray(body_mask.astype(np.uint8))
+        image.SetSpacing((
+            0.6563392541725512,
+            1.3800633668368492,
+            0.4703072127382134,
+        ))
+        image.SetOrigin((
+            -185.72788849056155,
+            5.955528108548123,
+            -13.517589869884375,
+        ))
+        angle = 0.584034882469993
+        image.SetDirection((
+            1.0, 0.0, 0.0,
+            0.0, math.cos(angle), -math.sin(angle),
+            0.0, math.sin(angle), math.cos(angle),
+        ))
+
+        prism_mask = LocalizationStage._vertebral_body_prism_mask(
+            body_mask,
+            image,
+        )
+
+        self.assertIsNotNone(prism_mask)
+        self.assertTrue(np.all(prism_mask[body_mask]))
 
     def test_stage3_estimates_four_sagittal_body_faces(self):
         """过滤椎体主体应能抽象为矢状投影上的四个大面。"""
@@ -1263,15 +1578,27 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             overlay_path = temp_path / "metadata" / "定位框.nii.gz"
             target_overlay_path = temp_path / "metadata" / "目标掩膜.nii.gz"
             label_overlay_path = temp_path / "metadata" / "标签掩膜.nii.gz"
+            prism_overlay_path = (
+                temp_path / "metadata" / "椎体四棱柱掩膜.nii.gz"
+            )
             self.assertEqual(result["debug_bbox_overlay_path"], str(overlay_path))
             self.assertEqual(metadata["debug_bbox_overlay_path"], str(overlay_path))
             self.assertEqual(result["debug_target_mask_overlay_path"], str(target_overlay_path))
             self.assertEqual(metadata["debug_target_mask_overlay_path"], str(target_overlay_path))
             self.assertEqual(result["debug_label_mask_overlay_path"], str(label_overlay_path))
             self.assertEqual(metadata["debug_label_mask_overlay_path"], str(label_overlay_path))
+            self.assertEqual(
+                result["debug_vertebral_body_prism_mask_overlay_path"],
+                str(prism_overlay_path),
+            )
+            self.assertEqual(
+                metadata["debug_vertebral_body_prism_mask_overlay_path"],
+                str(prism_overlay_path),
+            )
             self.assertTrue(overlay_path.exists())
             self.assertTrue(target_overlay_path.exists())
             self.assertTrue(label_overlay_path.exists())
+            self.assertTrue(prism_overlay_path.exists())
             self.assertEqual(
                 result["spine_geometry"]["filtered_annotation"]["method"],
                 "vertebral_body_candidate_v1",

@@ -9,6 +9,7 @@ from src.models.enums import PlaneTypeEnum
 from src.planning.spine_cpr import (
     SPINE_CPR_LABELS,
     build_spine_sagittal_cpr_plan,
+    configured_spine_cpr_labels,
     spine_target_bbox,
 )
 from src.planning.base import PlanningResult
@@ -31,6 +32,12 @@ class SingleLabelWholeRangePlanner:
         plans = []
         warnings = []
         spine_labels = SPINE_CPR_LABELS.get(request.body_part.value)
+        if spine_labels is not None:
+            spine_labels = configured_spine_cpr_labels(
+                request.body_part.value,
+                localization_result,
+                spine_labels,
+            )
         for plane_config in request.plane_configs:
             target_region_bbox = None
             source_labels = None

@@ -56,6 +56,9 @@ class LocalizationModelsTest(unittest.TestCase):
             resolved_cut_config={"start": "L1", "end": "S1"},
             label_targets={},
             coords={},
+            debug_vertebral_body_prism_mask_overlay_path=(
+                "/tmp/椎体四棱柱掩膜.nii.gz"
+            ),
             spine_geometry={
                 "filtered_annotation": {
                     "method": "vertebral_body_candidate_v1",
@@ -75,6 +78,10 @@ class LocalizationModelsTest(unittest.TestCase):
             True,
         )
         self.assertEqual(data["coords"], {})
+        self.assertEqual(
+            data["debug_vertebral_body_prism_mask_overlay_path"],
+            "/tmp/椎体四棱柱掩膜.nii.gz",
+        )
 
 
 if __name__ == "__main__":

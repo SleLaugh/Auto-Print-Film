@@ -1908,7 +1908,7 @@ class LocalizationStage(BaseStage):
         if len(indices_zyx) == 0:
             return np.zeros(0, dtype=bool)
 
-        _, inverse, support_counts = np.unique(
+        projection_points, inverse, support_counts = np.unique(
             indices_zyx[:, [0, 1]],
             axis=0,
             return_inverse=True,
@@ -1923,9 +1923,75 @@ class LocalizationStage(BaseStage):
 
         minimum_support = max(2, int(math.ceil(max_support * 0.35)))
         retained_projection_points = support_counts >= minimum_support
-        retained_mask = retained_projection_points[inverse]
-        if np.count_nonzero(retained_mask) < 4:
+        supported_indices = np.flatnonzero(retained_projection_points)
+        supported_points = projection_points[supported_indices]
+        if len(supported_points) < 4:
             return np.ones(len(indices_zyx), dtype=bool)
+
+        minimum = supported_points.min(axis=0)
+        local_points = supported_points - minimum
+        local_shape = tuple(
+            (supported_points.max(axis=0) - minimum + 1).astype(int)
+        )
+        support_mask = np.zeros(local_shape, dtype=np.uint8)
+        support_mask[local_points[:, 0], local_points[:, 1]] = 1
+        components = sitk.GetArrayFromImage(
+            sitk.ConnectedComponent(
+                sitk.GetImageFromArray(support_mask),
+                True,
+            )
+        )
+        component_ids = components[
+            local_points[:, 0],
+            local_points[:, 1],
+        ]
+        weighted_center = np.average(
+            projection_points,
+            axis=0,
+            weights=support_counts,
+        )
+
+        def component_key(
+            component_id: int,
+        ) -> tuple[int, int, float, int]:
+            member_mask = component_ids == component_id
+            member_indices = supported_indices[member_mask]
+            member_support = support_counts[member_indices]
+            member_center = np.average(
+                projection_points[member_indices],
+                axis=0,
+                weights=member_support,
+            )
+            distance_squared = float(np.sum(
+                (member_center - weighted_center) ** 2
+            ))
+            return (
+                int(np.count_nonzero(member_mask)),
+                int(np.sum(member_support)),
+                -distance_squared,
+                -int(component_id),
+            )
+
+        selected_component = max(
+            (
+                int(value)
+                for value in np.unique(component_ids)
+                if value > 0
+            ),
+            key=component_key,
+        )
+        selected_members = component_ids == selected_component
+        if np.count_nonzero(selected_members) < 4:
+            return np.ones(len(indices_zyx), dtype=bool)
+
+        selected_projection_points = np.zeros(
+            len(projection_points),
+            dtype=bool,
+        )
+        selected_projection_points[
+            supported_indices[selected_members]
+        ] = True
+        retained_mask = selected_projection_points[inverse]
         return retained_mask
 
     @staticmethod

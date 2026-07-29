@@ -1154,6 +1154,52 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertTrue(prism_mask[6, 11, 14])
         self.assertFalse(np.any(prism_mask[:, 15:20, :]))
 
+    def test_stage3_prism_mask_ignores_separate_high_support_sagittal_debris(
+        self,
+    ):
+        """通过细丝连接的高支撑远端碎块也不能进入四边形拟合。"""
+
+        body_mask = np.zeros((24, 32, 26), dtype=bool)
+        body_mask[4:12, 6:14, 6:18] = True
+        for step in range(7):
+            body_mask[11 + step, 13 + step, 17] = True
+        body_mask[17:21, 19:25, 11:18] = True
+        image = sitk.GetImageFromArray(body_mask.astype(np.uint8))
+
+        prism_mask = LocalizationStage._vertebral_body_prism_mask(
+            body_mask,
+            image,
+        )
+
+        self.assertIsNotNone(prism_mask)
+        self.assertTrue(prism_mask[7, 11, 10])
+        self.assertFalse(np.any(prism_mask[:, 19:, :]))
+
+    def test_stage3_sagittal_support_tie_prefers_greater_total_support(self):
+        """合格块点数相同时，应稳定选择 LR 总支撑更大的主体块。"""
+
+        points = []
+        for z_index, y_index in ((0, 0), (0, 1), (1, 0), (1, 1)):
+            points.extend(
+                (z_index, y_index, x_index)
+                for x_index in range(5)
+            )
+        for z_index, y_index in ((4, 4), (4, 5), (5, 4), (5, 5)):
+            points.extend(
+                (z_index, y_index, x_index)
+                for x_index in range(4)
+            )
+        indices = np.asarray(points, dtype=int)
+
+        retained = (
+            LocalizationStage._retained_sagittal_projection_mask_by_lr_support(
+                indices,
+            )
+        )
+
+        self.assertTrue(np.all(retained[:20]))
+        self.assertFalse(np.any(retained[20:]))
+
     def test_stage3_prism_region_is_limited_to_body_bbox(self):
         """内部棱柱只保留局部包围盒，不能为每个椎体复制整幅 CT。"""
 

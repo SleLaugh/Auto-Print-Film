@@ -15,6 +15,7 @@ from src.models import PlaneConfig, Point3D, Request
 from src.models.enums import CutLineExtentModeEnum
 from src.models.enums import BodyPartEnum, CutModeEnum, PlaneTypeEnum
 from src.planning.base import select_planner
+from src.planning.geometry import normalize_vector, subtract_points
 from src.planning.lumbar import LumbarInterspacePlanner, LumbarWholeRangePlanner
 from src.planning.single_label import SingleLabelWholeRangePlanner
 from src.planning.spine_cpr import (
@@ -74,6 +75,75 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             ]))
             for point in curve_points
         )
+
+    @staticmethod
+    def _raw_label_exit_case(temp_dir, with_single_slice_hole=False):
+        """构造 bbox 远大于白线沿线标签范围的首尾椎体。"""
+
+        segmentation = np.zeros((64, 64, 64), dtype=np.uint8)
+        segmentation[40:47, 18:23, 18:23] = 1
+        segmentation[14:21, 18:23, 18:23] = 3
+        if with_single_slice_hole:
+            segmentation[44, 18:23, 18:23] = 0
+        segmentation_image = sitk.GetImageFromArray(segmentation)
+        segmentation_path = Path(temp_dir) / "seg.nii.gz"
+        sitk.WriteImage(segmentation_image, str(segmentation_path))
+
+        centers = [
+            ("vertebrae_L1", Point3D(20.0, 20.0, 40.0)),
+            ("vertebrae_L2", Point3D(20.0, 20.0, 30.0)),
+            ("vertebrae_L3", Point3D(20.0, 20.0, 20.0)),
+        ]
+        localization_result = {
+            "seg_for_reconstruction_path": str(segmentation_path),
+            "image": {
+                "spacing_xyz": [1.0, 1.0, 1.0],
+                "origin_xyz": [0.0, 0.0, 0.0],
+                "direction": [
+                    1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0,
+                ],
+                "size_xyz": [64, 64, 64],
+            },
+            "coords": {
+                "vertebrae_L1": {
+                    "label_ids": [1],
+                    "bbox": {
+                        "x_min": 0, "x_max": 63,
+                        "y_min": 0, "y_max": 63,
+                        "z_min": 40, "z_max": 60,
+                    },
+                },
+                "vertebrae_L3": {
+                    "label_ids": [3],
+                    "bbox": {
+                        "x_min": 0, "x_max": 63,
+                        "y_min": 0, "y_max": 63,
+                        "z_min": 0, "z_max": 20,
+                    },
+                },
+            },
+            "spine_geometry": {
+                "filtered_annotation_centroids": {
+                    "vertebrae_L1": {
+                        "found": True,
+                        "local_superior_inferior_face_centroids": {
+                            "min": {"x": 20.0, "y": 20.0, "z": 42.0},
+                            "max": {"x": 20.0, "y": 20.0, "z": 38.0},
+                        },
+                    },
+                    "vertebrae_L3": {
+                        "found": True,
+                        "local_superior_inferior_face_centroids": {
+                            "min": {"x": 20.0, "y": 20.0, "z": 22.0},
+                            "max": {"x": 20.0, "y": 20.0, "z": 18.0},
+                        },
+                    },
+                },
+            },
+        }
+        return localization_result, centers
 
     def test_mapping_derives_lumbar_axial_interspace_and_sagittal_straight_mpr(self):
         """腰椎横状位保持区间切基线，矢状位回到普通直线 MPR。"""
@@ -780,8 +850,10 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         ))
         self.assertEqual(path[1:-1], [center for _, center in centers])
 
-    def test_spine_cpr_limits_same_direction_face_to_inner_arc_angle(self):
-        """端面与弧线同向但过弯时，应最短投影到内部转角边界。"""
+    def test_spine_cpr_projects_out_of_range_face_to_outward_centroid_ray(
+        self,
+    ):
+        """端面越出局部弧线区间时，应最短投影到零角度外延线。"""
 
         inner_angle = math.radians(10.0)
         face_angle = math.radians(20.0)
@@ -835,10 +907,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             -corrected_delta[0],
             corrected_delta[1],
         )
-        boundary_ray = np.array([
-            -math.sin(inner_angle),
-            math.cos(inner_angle),
-        ])
+        outward_ray = np.array([0.0, 1.0])
         correction = np.array([
             raw_face.y - path[0].y,
             raw_face.z - path[0].z,
@@ -846,16 +915,124 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
         self.assertAlmostEqual(
             corrected_angle,
-            inner_angle,
+            0.0,
             places=6,
         )
         self.assertAlmostEqual(path[0].x, raw_face.x)
         self.assertAlmostEqual(
-            float(np.dot(correction, boundary_ray)),
+            float(np.dot(correction, outward_ray)),
             0.0,
             places=6,
         )
         self.assertEqual(path[1:], [center for _, center in centers])
+
+    def test_spine_cpr_keeps_nonzero_face_inside_local_arc_interval(self):
+        """端面位于正常非零弧线区间内时不应被吸附到零角度。"""
+
+        inner_angle = math.radians(10.0)
+        face_angle = math.radians(5.0)
+        centers = [
+            ("vertebrae_L1", Point3D(10.0, 0.0, 0.0)),
+            ("vertebrae_L2", Point3D(20.0, 0.0, -10.0)),
+            (
+                "vertebrae_L3",
+                Point3D(
+                    30.0,
+                    -10.0 * math.sin(inner_angle),
+                    -10.0 - 10.0 * math.cos(inner_angle),
+                ),
+            ),
+        ]
+        raw_face = Point3D(
+            30.0,
+            -5.0 * math.sin(face_angle),
+            5.0 * math.cos(face_angle),
+        )
+        localization_result = {
+            "image": {
+                "direction": [
+                    1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0,
+                ],
+            },
+            "spine_geometry": {
+                "filtered_annotation_centroids": {
+                    "vertebrae_L1": {
+                        "found": True,
+                        "local_superior_inferior_face_centroids": {
+                            "min": raw_face.to_dict(),
+                            "max": {
+                                "x": 30.0, "y": 0.0, "z": -10.0,
+                            },
+                        },
+                    },
+                },
+            },
+        }
+
+        path = _build_annotation_centroid_path(localization_result, centers)
+
+        self.assertEqual(path[0], raw_face)
+        self.assertEqual(path[1:], [center for _, center in centers])
+
+    def test_spine_cpr_extends_existing_endpoint_lines_to_raw_label_exit(self):
+        """首尾已有端线只应延伸到白线穿出原始标签的位置。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            localization_result, centers = self._raw_label_exit_case(temp_dir)
+
+            path = _build_annotation_centroid_path(
+                localization_result,
+                centers,
+            )
+
+        self.assertAlmostEqual(path[0].z, 46.0)
+        self.assertAlmostEqual(path[-1].z, 13.5)
+        self.assertEqual(path[1:-1], [center for _, center in centers])
+        for centroid, extended_endpoint in (
+            (centers[0][1], path[0]),
+            (centers[-1][1], path[-1]),
+        ):
+            endpoint_direction = normalize_vector(
+                subtract_points(extended_endpoint, centroid)
+            )
+            self.assertEqual(endpoint_direction.x, 0.0)
+            self.assertEqual(endpoint_direction.y, 0.0)
+
+    def test_spine_cpr_ignores_single_voxel_hole_when_finding_raw_label_exit(
+        self,
+    ):
+        """原始标签内部的单层孔洞不应让端线提前停止。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            localization_result, centers = self._raw_label_exit_case(
+                temp_dir,
+                with_single_slice_hole=True,
+            )
+
+            path = _build_annotation_centroid_path(
+                localization_result,
+                centers,
+            )
+
+        self.assertAlmostEqual(path[0].z, 46.0)
+        self.assertGreater(path[0].z, 44.0)
+
+    def test_spine_cpr_keeps_existing_endpoints_without_raw_segmentation(self):
+        """缺少原始分割时不得继续使用 bbox 极值延长端点。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            localization_result, centers = self._raw_label_exit_case(temp_dir)
+            localization_result.pop("seg_for_reconstruction_path")
+
+            path = _build_annotation_centroid_path(
+                localization_result,
+                centers,
+            )
+
+        self.assertEqual(path[0], Point3D(20.0, 20.0, 42.0))
+        self.assertEqual(path[-1], Point3D(20.0, 20.0, 18.0))
 
     def test_spine_cpr_omits_endpoint_face_collapsed_onto_centroid(self):
         """反向端面修正到端部质心时，不应留下零长度重复锚点。"""
@@ -1271,8 +1448,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             plan.curve_points[-1],
             Point3D(
                 60.0,
-                61.39940828402367,
-                -3.458579881656806,
+                53.0 + 93.0 / 13.0,
+                -62.0 / 13.0,
             ),
         ))
 

@@ -4,6 +4,7 @@ import math
 from typing import Any, Dict, Iterable, List, Tuple
 
 import numpy as np
+import SimpleITK as sitk
 
 from src.models import ExtentMM, PlannedSlice, Point3D, SlicePlan
 from src.models.enums import PlaneTypeEnum
@@ -338,6 +339,22 @@ def _build_annotation_centroid_path(
         centroid_path[-3] if len(centroid_path) >= 3 else None,
         left_right_axis,
     )
+    coords = localization_result.get("coords", {})
+    original_segmentation = _read_original_segmentation(
+        localization_result,
+    )
+    first_face = _extend_existing_endpoint_to_original_label_exit(
+        first_face,
+        centroid_path[0],
+        coords.get(centers[0][0], {}).get("label_ids"),
+        original_segmentation,
+    )
+    last_face = _extend_existing_endpoint_to_original_label_exit(
+        last_face,
+        centroid_path[-1],
+        coords.get(centers[-1][0], {}).get("label_ids"),
+        original_segmentation,
+    )
 
     path = list(centroid_path)
     if (
@@ -355,6 +372,108 @@ def _build_annotation_centroid_path(
     ):
         path.append(last_face)
     return path
+
+
+def _read_original_segmentation(
+    localization_result: Dict[str, Any],
+) -> sitk.Image | None:
+    """读取端点沿线检查所需的原始分割；不可用时安全跳过延伸。"""
+
+    segmentation_path = localization_result.get(
+        "seg_for_reconstruction_path"
+    )
+    if not segmentation_path:
+        return None
+    try:
+        return sitk.ReadImage(str(segmentation_path))
+    except (OSError, RuntimeError):
+        return None
+
+
+def _extend_existing_endpoint_to_original_label_exit(
+    endpoint: Point3D | None,
+    centroid: Point3D,
+    label_ids: Any,
+    segmentation: sitk.Image | None,
+) -> Point3D | None:
+    """沿已有端线延长到白线连续穿出原始标签的位置。"""
+
+    if endpoint is None or segmentation is None:
+        return endpoint
+
+    endpoint_delta = subtract_points(endpoint, centroid)
+    if vector_length(endpoint_delta) <= 1e-6:
+        return endpoint
+
+    if not isinstance(label_ids, (list, tuple, set)) or not label_ids:
+        return endpoint
+    try:
+        target_label_ids = {int(label_id) for label_id in label_ids}
+    except (TypeError, ValueError):
+        return endpoint
+
+    endpoint_direction = normalize_vector(endpoint_delta)
+    spacing = [abs(float(value)) for value in segmentation.GetSpacing()]
+    if not spacing or any(value <= 1e-6 for value in spacing):
+        return endpoint
+
+    if not _point_has_any_label(
+        segmentation,
+        endpoint,
+        target_label_ids,
+    ):
+        return endpoint
+
+    sample_step = min(spacing) * 0.5
+    exit_clearance = math.sqrt(sum(value ** 2 for value in spacing))
+    image_diagonal = math.sqrt(sum(
+        ((size - 1) * axis_spacing) ** 2
+        for size, axis_spacing in zip(segmentation.GetSize(), spacing)
+    ))
+    maximum_distance = image_diagonal + exit_clearance
+
+    last_inside = endpoint
+    outside_distance = 0.0
+    distance = sample_step
+    while distance <= maximum_distance + sample_step * 1e-6:
+        sample_point = _add(
+            endpoint,
+            _scale(endpoint_direction, distance),
+        )
+        if _point_has_any_label(
+            segmentation,
+            sample_point,
+            target_label_ids,
+        ):
+            last_inside = sample_point
+            outside_distance = 0.0
+        else:
+            outside_distance += sample_step
+            if outside_distance >= exit_clearance:
+                return last_inside
+        distance += sample_step
+    return endpoint
+
+
+def _point_has_any_label(
+    segmentation: sitk.Image,
+    point: Point3D,
+    label_ids: set[int],
+) -> bool:
+    """判断物理点的最近体素是否属于目标原始标签。"""
+
+    try:
+        index = segmentation.TransformPhysicalPointToIndex(
+            (point.x, point.y, point.z)
+        )
+    except RuntimeError:
+        return False
+    if any(
+        coordinate < 0 or coordinate >= size
+        for coordinate, size in zip(index, segmentation.GetSize())
+    ):
+        return False
+    return int(segmentation.GetPixel(index)) in label_ids
 
 
 def _correct_endpoint_face_to_local_arc(
@@ -407,9 +526,9 @@ def _correct_endpoint_face_to_local_arc(
             minimum_angle = min(0.0, inner_angle)
             maximum_angle = max(0.0, inner_angle)
             if face_angle < minimum_angle - 1e-6:
-                target_angle = minimum_angle
+                target_angle = 0.0
             elif face_angle > maximum_angle + 1e-6:
-                target_angle = maximum_angle
+                target_angle = 0.0
 
     if outward_component < -1e-6:
         target_angle = 0.0

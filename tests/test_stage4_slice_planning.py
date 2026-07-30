@@ -21,7 +21,9 @@ from src.planning.single_label import SingleLabelWholeRangePlanner
 from src.planning.spine_cpr import (
     SPINE_CPR_LABELS,
     _build_annotation_centroid_path,
+    _extend_curve_endpoints_to_terminal_raw_labels,
     _get_spine_annotation_centers,
+    _offsets_covering_interval,
     _resolve_endpoint_face_center,
 )
 from src.planning.whole_range import (
@@ -1018,6 +1020,74 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
         self.assertAlmostEqual(path[0].z, 46.0)
         self.assertGreater(path[0].z, 44.0)
+
+    def test_spine_cpr_extends_curve_endpoints_to_terminal_raw_label_edges(
+        self,
+    ):
+        """首尾曲线应沿现有切线补足到终端原始标签投影外缘。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            localization_result, _ = self._raw_label_exit_case(temp_dir)
+            segmentation = sitk.ReadImage(
+                localization_result["seg_for_reconstruction_path"]
+            )
+            array = sitk.GetArrayFromImage(segmentation)
+            array[50, 24, 24] = 1
+            array[9, 24, 24] = 3
+            sitk.WriteImage(
+                sitk.GetImageFromArray(array),
+                localization_result["seg_for_reconstruction_path"],
+            )
+            curve_points = [
+                Point3D(20.0, 20.0, 46.0),
+                Point3D(20.0, 20.0, 30.0),
+                Point3D(20.0, 20.0, 13.5),
+            ]
+
+            extended = _extend_curve_endpoints_to_terminal_raw_labels(
+                localization_result,
+                ["vertebrae_L1", "vertebrae_L2", "vertebrae_L3"],
+                curve_points,
+            )
+
+        self.assertGreater(extended[0].z, 52.0)
+        self.assertLess(extended[-1].z, 7.5)
+        self.assertEqual(extended[1], curve_points[1])
+        self.assertAlmostEqual(extended[0].x, 20.0)
+        self.assertAlmostEqual(extended[-1].y, 20.0)
+
+    def test_spine_cpr_matches_terminal_labels_when_curve_order_is_reversed(
+        self,
+    ):
+        """曲线点顺序反向时，首末原始标签也不能上下互换延伸。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            localization_result, _ = self._raw_label_exit_case(temp_dir)
+            segmentation = sitk.ReadImage(
+                localization_result["seg_for_reconstruction_path"]
+            )
+            array = sitk.GetArrayFromImage(segmentation)
+            array[50, 24, 24] = 1
+            array[9, 24, 24] = 3
+            sitk.WriteImage(
+                sitk.GetImageFromArray(array),
+                localization_result["seg_for_reconstruction_path"],
+            )
+            curve_points = [
+                Point3D(20.0, 20.0, 13.5),
+                Point3D(20.0, 20.0, 30.0),
+                Point3D(20.0, 20.0, 46.0),
+            ]
+
+            extended = _extend_curve_endpoints_to_terminal_raw_labels(
+                localization_result,
+                ["vertebrae_L1", "vertebrae_L2", "vertebrae_L3"],
+                curve_points,
+            )
+
+        self.assertLess(extended[0].z, 7.5)
+        self.assertGreater(extended[-1].z, 52.0)
+        self.assertEqual(extended[1], curve_points[1])
 
     def test_spine_cpr_keeps_existing_endpoints_without_raw_segmentation(self):
         """缺少原始分割时不得继续使用 bbox 极值延长端点。"""
@@ -2376,6 +2446,92 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 Point3D(60.0, 50.0, z),
             )
 
+    def test_spine_cpr_offsets_cover_original_mask_with_asymmetric_counts(self):
+        """CPR offset 张数应按原始标注体素外缘计算，且两侧可不对称。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            segmentation = np.zeros((32, 32, 32), dtype=np.uint8)
+            segmentation[8:24, 8:14, 10:22] = 1
+            segmentation[8:24, 14:26, 10:22] = 2
+            segmentation[8:24, 26:31, 10:22] = 3
+            segmentation_image = sitk.GetImageFromArray(segmentation)
+            segmentation_path = Path(temp_dir) / "raw_seg.nii.gz"
+            sitk.WriteImage(segmentation_image, str(segmentation_path))
+
+            localization_result = self._spine_localization_result(
+                ("T1", "T2", "T3"),
+                "胸椎",
+            )
+            localization_result["seg_for_reconstruction_path"] = str(
+                segmentation_path
+            )
+            for label_name, label_id in (
+                ("vertebrae_T1", 1),
+                ("vertebrae_T2", 2),
+                ("vertebrae_T3", 3),
+            ):
+                localization_result["coords"][label_name]["label_ids"] = [
+                    label_id
+                ]
+                localization_result["coords"][label_name]["bbox"].update({
+                    "x_min": 8, "x_max": 23,
+                    "y_min": 14, "y_max": 17,
+                    "z_min": 10, "z_max": 21,
+                })
+                localization_result["coords"][label_name]["centroid"].update({
+                    "x": 16.0,
+                    "y": 16.0,
+                })
+
+            request = Request(
+                dicom_dir="/tmp/dicom",
+                output_dir="/tmp/output",
+                body_part=BodyPartEnum.胸椎,
+                plane_configs=[
+                    PlaneConfig(PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"]),
+                ],
+            )
+
+            plan = SingleLabelWholeRangePlanner().build_plans(
+                request,
+                localization_result,
+            ).plans[0]
+
+            self.assertEqual(
+                plan.offsets_mm,
+                [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0],
+            )
+            self.assertEqual(
+                [planned.index for planned in plan.slices],
+                [1, 2, 3, 4, 5, 6],
+            )
+            self.assertEqual(
+                [planned.offset_mm for planned in plan.slices],
+                plan.offsets_mm,
+            )
+
+    def test_cpr_offsets_covering_interval_keeps_zero_and_adds_last_slab(self):
+        """最后厚层只差几毫米时，应补到不少包原始体素。"""
+
+        self.assertEqual(
+            _offsets_covering_interval(
+                d_min=-12.1,
+                d_max=18.1,
+                slice_thickness=6.0,
+                slice_spacing=5.0,
+            ),
+            [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0, 20.0],
+        )
+        self.assertEqual(
+            _offsets_covering_interval(
+                d_min=-1.0,
+                d_max=1.0,
+                slice_thickness=6.0,
+                slice_spacing=5.0,
+            ),
+            [0.0],
+        )
+
     def test_lumbar_coronal_cpr_uses_configured_whole_range_subset(self):
         """腰椎 CPR 应按配置范围取椎体，不应固定使用 L1 到 S1。"""
 
@@ -3582,8 +3738,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertGreater(len(highlighted), 20)
             self.assertGreater(self._max_line_fit_residual(highlighted), 2.0)
 
-    def test_mapping_cpr_overview_draws_only_baseline_curve(self):
-        """CPR 调试总览只画基准中心曲线。"""
+    def test_mapping_cpr_overview_draws_equally_spaced_offsets(self):
+        """CPR 调试总览应只画等间距 offset 中心线。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -3618,6 +3774,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 ],
                 "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
                 "offsets_mm": [-8.0, 0.0, 8.0],
+                "slice_thickness": 4.0,
                 "slices": [{
                     "index": 1,
                     "center": {"x": 18.0, "y": 18.0, "z": 18.0},
@@ -3636,7 +3793,10 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             overview = sitk.ReadImage(native_paths["矢状位"])
             highlighted = np.argwhere(sitk.GetArrayFromImage(overview) > 0)
 
-            self.assertEqual(np.unique(highlighted[:, 1]).tolist(), [18])
+            self.assertEqual(
+                np.unique(highlighted[:, 1]).tolist(),
+                [10, 18, 26],
+            )
 
     def test_center_cross_uses_lung_anatomical_origin_in_long_scan(self):
         """颈到盆长扫描的十字中线应落在肺中心，而不是整幅图像中心。"""

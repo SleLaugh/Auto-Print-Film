@@ -957,26 +957,25 @@ class MappingStage(BaseStage):
             plan,
             axes.fixed_axis,
         )
-        # 阶段四/五的 CPR 偏移切片不影响基准定位线；总览只画中心曲线，
-        # 便于先验证标注质心和局部定位线本身。
-        projected_points = [
-            self._offset_curve_point(
-                point,
-                plan.get("offset_axis"),
-                0.0,
-            )
-            for point in curve_points
-        ]
-        for start_point, end_point in zip(projected_points, projected_points[1:]):
-            self._paint_projected_physical_line(
-                reference_image=reference_image,
-                overlay_array=overlay_array,
-                start_point=start_point,
-                end_point=end_point,
-                axes=axes,
-                fixed_index=fixed_index,
-                value=value,
-            )
+        for offset_mm in self._curved_overview_offsets(plan):
+            projected_points = [
+                self._offset_curve_point(
+                    point,
+                    plan.get("offset_axis"),
+                    offset_mm,
+                )
+                for point in curve_points
+            ]
+            for start_point, end_point in zip(projected_points, projected_points[1:]):
+                self._paint_projected_physical_line(
+                    reference_image=reference_image,
+                    overlay_array=overlay_array,
+                    start_point=start_point,
+                    end_point=end_point,
+                    axes=axes,
+                    fixed_index=fixed_index,
+                    value=value,
+                )
 
     @staticmethod
     def _curved_overview_fixed_index(
@@ -1007,6 +1006,27 @@ class MappingStage(BaseStage):
                 index_xyz[fixed_axis] for index_xyz in curve_indices
             ]))))
         return min(max(fixed_index, 0), reference_image.GetSize()[fixed_axis] - 1)
+
+    @staticmethod
+    def _curved_overview_offsets(plan: Dict[str, Any]) -> list[float]:
+        """返回 CPR 调试总览需要投影的等间距 offset 中心线。"""
+
+        raw_offsets = plan.get("offsets_mm")
+        offsets: list[float] = []
+        if isinstance(raw_offsets, list):
+            for value in raw_offsets:
+                try:
+                    offset = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(offset):
+                    offsets.append(offset)
+        if not offsets:
+            offsets = [0.0]
+        if not any(abs(offset) <= 1e-6 for offset in offsets):
+            offsets.append(0.0)
+
+        return sorted({round(offset, 6) for offset in offsets})
 
     @staticmethod
     def _offset_curve_point(

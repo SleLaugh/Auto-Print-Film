@@ -11,6 +11,7 @@ MPR多平面重建与DICOM生成
 写盘由 DICOM 模块统一串行保护，避免多线程写入触发原生内存竞态。
 """
 
+import math
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
@@ -534,11 +535,24 @@ class ReconstructionStage(BaseStage):
 
     @staticmethod
     def _curved_localizer_offsets(plan: Dict[str, Any]) -> List[float]:
-        """返回 CPR 定位图需要投影的基准偏移。"""
+        """返回 CPR 定位图需要投影的等间距 offset 中心线。"""
 
-        # CPR 的实际重建仍可有多张前后偏移切片；当前校验阶段只画中心
-        # 定位线，避免把整组偏移曲线混在基准线里影响判断。
-        return [0.0]
+        raw_offsets = plan.get("offsets_mm")
+        offsets: list[float] = []
+        if isinstance(raw_offsets, list):
+            for value in raw_offsets:
+                try:
+                    offset = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(offset):
+                    offsets.append(offset)
+        if not offsets:
+            offsets = [0.0]
+        if not any(abs(offset) <= 1e-6 for offset in offsets):
+            offsets.append(0.0)
+
+        return sorted({round(offset, 6) for offset in offsets})
 
     @staticmethod
     def _offset_curve_point(

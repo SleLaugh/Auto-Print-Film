@@ -111,6 +111,26 @@ class DocumentationConsistencyTests(unittest.TestCase):
         self.assertIn("脊柱冠状位 CPR", reconstruction_readme)
         self.assertIn("脊柱矢状位保持既有直线 MPR", reconstruction_readme)
 
+    def test_current_cpr_docs_describe_thick_slab_support(self):
+        """当前 CPR 文档应说明层厚参与 offset 覆盖和厚层平均。"""
+
+        cpr_doc = (
+            SUPERPOWERS_ROOT
+            / "modules"
+            / "reconstruction"
+            / "2026-07-22-脊柱冠状位CPR设计.md"
+        ).read_text(encoding="utf-8")
+        coverage_doc = (
+            SUPERPOWERS_ROOT
+            / "modules"
+            / "reconstruction"
+            / "2026-07-30-脊柱CPR层厚层间距覆盖设计.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("厚层 CPR 作为后续版本", cpr_doc)
+        self.assertIn("层厚参与覆盖判定", coverage_doc)
+        self.assertIn("算术平均", coverage_doc)
+
     def test_current_plan_and_spec_directories_only_contain_current_work(self):
         """完成计划必须归档，旧 specs 路径不能继续保存具体规范。"""
 

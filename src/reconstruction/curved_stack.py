@@ -46,13 +46,19 @@ class CurvedStackResampler:
         ) * spacing_x
 
         source = sitk.GetArrayViewFromImage(image)
-        sampled = np.empty((rows, columns), dtype=np.float32)
-        for row in range(rows):
-            in_plane_dir = in_plane_directions[row]
-            row_center = curve_samples[row] + offset_axis * offset_mm
-            for column, in_plane_offset in enumerate(in_plane_offsets):
-                point = row_center + in_plane_dir * in_plane_offset
-                sampled[row, column] = self._sample_linear(image, source, point)
+        sampled = self._sample_curved_surface_slab(
+            image=image,
+            source=source,
+            curve_samples=curve_samples,
+            in_plane_directions=in_plane_directions,
+            offset_axis=offset_axis,
+            base_offset_mm=offset_mm,
+            in_plane_offsets=in_plane_offsets,
+            slab_offsets=self._slab_offsets(
+                image,
+                float(plan.get("slice_thickness", 1.0)),
+            ),
+        )
 
         output = sitk.GetImageFromArray(sampled[np.newaxis, ...])
         output.SetSpacing((spacing_x, spacing_y, 1.0))
@@ -149,6 +155,51 @@ class CurvedStackResampler:
             nearest = int(valid_indices[np.argmin(np.abs(valid_indices - index))])
             directions[index] = candidates[nearest] / lengths[nearest]
         return directions
+
+    def _sample_curved_surface_slab(
+        self,
+        image: sitk.Image,
+        source: np.ndarray,
+        curve_samples: np.ndarray,
+        in_plane_directions: np.ndarray,
+        offset_axis: np.ndarray,
+        base_offset_mm: float,
+        in_plane_offsets: np.ndarray,
+        slab_offsets: list[float],
+    ) -> np.ndarray:
+        """采样一个 CPR 厚层 slab，并对多个子曲面做算术平均。"""
+
+        rows = len(curve_samples)
+        columns = len(in_plane_offsets)
+        accumulated = np.zeros((rows, columns), dtype=np.float32)
+        for slab_offset in slab_offsets:
+            offset_mm = base_offset_mm + slab_offset
+            for row in range(rows):
+                in_plane_dir = in_plane_directions[row]
+                row_center = curve_samples[row] + offset_axis * offset_mm
+                for column, in_plane_offset in enumerate(in_plane_offsets):
+                    point = row_center + in_plane_dir * in_plane_offset
+                    accumulated[row, column] += self._sample_linear(
+                        image,
+                        source,
+                        point,
+                    )
+        return accumulated / float(len(slab_offsets))
+
+    @staticmethod
+    def _slab_offsets(image: sitk.Image, thickness: float) -> list[float]:
+        """按输入最小体素间距在 CPR 层厚内生成居中的子曲面偏移。"""
+
+        if thickness <= 0.0:
+            raise ValueError("slice_thickness 必须大于 0")
+        source_spacing = min(float(value) for value in image.GetSpacing())
+        sample_step = min(source_spacing / 2.0, 0.25)
+        sample_count = max(1, int(math.ceil(thickness / sample_step)))
+        sample_step = thickness / sample_count
+        return [
+            -thickness / 2.0 + sample_step / 2.0 + index * sample_step
+            for index in range(sample_count)
+        ]
 
     @staticmethod
     def _sample_linear(

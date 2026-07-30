@@ -381,8 +381,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
         self.assertGreater(len(highlighted), 20)
         self.assertGreater(self._max_line_fit_residual(highlighted), 2.0)
 
-    def test_curved_stack_localizer_draws_only_baseline_curve(self):
-        """CPR 校验阶段的定位图只画基准中心曲线。"""
+    def test_curved_stack_localizer_draws_equally_spaced_offsets(self):
+        """CPR 定位图应只画等间距 offset 中心线。"""
 
         image = sitk.GetImageFromArray(np.zeros((36, 36, 36), dtype=np.int16))
         plan = {
@@ -399,6 +399,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
             ],
             "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
             "offsets_mm": [-8.0, 0.0, 8.0],
+            "slice_thickness": 4.0,
             "slices": [{
                 "index": 1,
                 "center": {"x": 18.0, "y": 18.0, "z": 18.0},
@@ -412,7 +413,10 @@ class Stage5ReconstructionTest(unittest.TestCase):
         localizer = ReconstructionStage._build_plan_localizer(image, plan)
         highlighted = np.argwhere(sitk.GetArrayFromImage(localizer) > 0.0)
 
-        self.assertEqual(np.unique(highlighted[:, 1]).tolist(), [18])
+        self.assertEqual(
+            np.unique(highlighted[:, 1]).tolist(),
+            [10, 18, 26],
+        )
 
     def test_full_xyz_oblique_plan_is_resampled_with_planned_direction(self):
         """第五步应原样执行含 XYZ 三方向倾斜的通用平面计划。"""
@@ -616,6 +620,46 @@ class Stage5ReconstructionTest(unittest.TestCase):
         self.assertAlmostEqual(float(output_array[0, 0, 0]), 112.0)
         self.assertAlmostEqual(float(output_array[0, 2, 2]), 332.0)
         self.assertAlmostEqual(float(output_array[0, 4, 4]), 552.0)
+
+    def test_curved_stack_resampler_averages_slice_thickness_slab(self):
+        """curved_stack 应按 slice_thickness 对 offset 方向做厚层平均。"""
+
+        array = np.zeros((8, 8, 8), dtype=np.float32)
+        for x_index in range(8):
+            array[:, :, x_index] = float(x_index * x_index * 100)
+        image = sitk.GetImageFromArray(array)
+        plan = {
+            "plan_id": "腰椎_CPR_冠状位",
+            "geometry_type": "curved_stack",
+            "curve_points": [
+                {"x": 3.0, "y": 3.0, "z": 1.0},
+                {"x": 3.0, "y": 3.0, "z": 5.0},
+            ],
+            "curve_spacing_mm": 1.0,
+            "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+            "offsets_mm": [0.0],
+            "extent_mm": {"width": 0.0, "height": 4.0},
+            "output_spacing_mm": {"x": 1.0, "y": 1.0, "z": 0.0},
+            "slice_thickness": 4.0,
+            "slice_spacing": 5.0,
+            "slices": [{
+                "index": 1,
+                "offset_mm": 0.0,
+                "center": {"x": 3.0, "y": 3.0, "z": 3.0},
+                "normal": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+            }],
+        }
+
+        output = CurvedStackResampler().sample_slice(
+            image,
+            plan,
+            plan["slices"][0],
+        )
+
+        output_array = sitk.GetArrayFromImage(output)
+        self.assertAlmostEqual(float(output_array[0, 0, 0]), 1050.0)
 
     def test_curved_stack_resampler_reuses_nearest_valid_in_plane_direction(self):
         """局部切线平行堆叠轴时，不应因单行方向退化而中断 CPR。"""

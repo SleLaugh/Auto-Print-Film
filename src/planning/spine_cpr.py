@@ -74,6 +74,11 @@ def build_spine_sagittal_cpr_plan(
         _minimum_image_spacing(image_info),
         normalize_vector(image_axis_direction(image_info, 2)),
     )
+    curve_points = _extend_curve_endpoints_to_terminal_raw_labels(
+        localization_result,
+        source_labels,
+        curve_points,
+    )
     curve_length = _polyline_length(curve_points)
     if curve_length <= 0.0:
         return None, ["CPR 降级: 中心曲线长度无效"]
@@ -86,6 +91,7 @@ def build_spine_sagittal_cpr_plan(
         source_labels,
         curve_points,
         offset_axis,
+        float(plane_config.slice_thickness),
         float(plane_config.slice_spacing),
     )
     slices = [
@@ -856,11 +862,317 @@ def _resolve_offsets_mm(
     label_names: List[str],
     curve_points: List[Point3D],
     offset_axis: Point3D,
+    slice_thickness: float,
     slice_spacing: float,
 ) -> List[float]:
-    """根据全量椎体 bbox 沿 CPR 堆叠轴的覆盖生成 offset。"""
+    """按原始椎体标注体素外缘和层厚生成 CPR offset。"""
 
-    spacing = max(float(slice_spacing), 1e-6)
+    raw_interval = _raw_label_offset_interval_mm(
+        localization_result,
+        label_names,
+        curve_points,
+        offset_axis,
+    )
+    if raw_interval is not None:
+        return _offsets_covering_interval(
+            raw_interval[0],
+            raw_interval[1],
+            slice_thickness,
+            slice_spacing,
+        )
+    return _bbox_offsets_mm(
+        localization_result,
+        label_names,
+        curve_points,
+        offset_axis,
+        slice_thickness,
+        slice_spacing,
+    )
+
+
+def _raw_label_offset_interval_mm(
+    localization_result: Dict[str, Any],
+    label_names: List[str],
+    curve_points: List[Point3D],
+    offset_axis: Point3D,
+) -> Tuple[float, float] | None:
+    """计算原始标签体素相对现有 CPR 中线的前后偏移区间。"""
+
+    segmentation = _read_original_segmentation(localization_result)
+    if segmentation is None:
+        return None
+    label_ids = _configured_label_ids(localization_result, label_names)
+    if not label_ids:
+        return None
+
+    curve = np.asarray([
+        [point.x, point.y, point.z]
+        for point in curve_points
+    ], dtype=float)
+    if len(curve) < 2:
+        return None
+    axis = np.asarray(
+        [offset_axis.x, offset_axis.y, offset_axis.z],
+        dtype=float,
+    )
+    axis_length = float(np.linalg.norm(axis))
+    if axis_length <= 1e-6 or not math.isfinite(axis_length):
+        return None
+    axis = axis / axis_length
+
+    mask_points = _raw_label_physical_points(segmentation, label_ids)
+    if mask_points.size == 0:
+        return None
+
+    curve_without_axis = curve - np.outer(curve @ axis, axis)
+    points_without_axis = mask_points - np.outer(mask_points @ axis, axis)
+    nearest_indices = _nearest_curve_indices(
+        points_without_axis,
+        curve_without_axis,
+    )
+    offsets = np.sum((mask_points - curve[nearest_indices]) * axis, axis=1)
+    if offsets.size == 0:
+        return None
+
+    safety_margin = _voxel_safety_margin_mm(segmentation)
+    return (
+        float(np.min(offsets) - safety_margin),
+        float(np.max(offsets) + safety_margin),
+    )
+
+
+def _extend_curve_endpoints_to_terminal_raw_labels(
+    localization_result: Dict[str, Any],
+    label_names: List[str],
+    curve_points: List[Point3D],
+) -> List[Point3D]:
+    """沿当前首尾切线延长 CPR 中线到终端原始标签投影外缘。"""
+
+    if len(curve_points) < 2 or not label_names:
+        return list(curve_points)
+    segmentation = _read_original_segmentation(localization_result)
+    if segmentation is None:
+        return list(curve_points)
+
+    extended = list(curve_points)
+    start_ids = _configured_label_ids(localization_result, [label_names[0]])
+    end_ids = _configured_label_ids(localization_result, [label_names[-1]])
+    start_endpoint_index = _endpoint_index_nearest_label(
+        extended,
+        segmentation,
+        start_ids,
+    )
+    end_endpoint_index = _endpoint_index_nearest_label(
+        extended,
+        segmentation,
+        end_ids,
+    )
+    if (
+        start_endpoint_index is not None
+        and end_endpoint_index is not None
+        and start_endpoint_index == end_endpoint_index
+    ):
+        start_endpoint_index = 0
+        end_endpoint_index = -1
+
+    if start_ids and start_endpoint_index is not None:
+        extended[start_endpoint_index] = _extend_endpoint_to_label_projection(
+            endpoint=extended[start_endpoint_index],
+            adjacent=_adjacent_endpoint_point(extended, start_endpoint_index),
+            segmentation=segmentation,
+            label_ids=start_ids,
+        )
+    if end_ids and end_endpoint_index is not None:
+        extended[end_endpoint_index] = _extend_endpoint_to_label_projection(
+            endpoint=extended[end_endpoint_index],
+            adjacent=_adjacent_endpoint_point(extended, end_endpoint_index),
+            segmentation=segmentation,
+            label_ids=end_ids,
+        )
+    return extended
+
+
+def _endpoint_index_nearest_label(
+    curve_points: List[Point3D],
+    segmentation: sitk.Image,
+    label_ids: set[int],
+) -> int | None:
+    """返回距离指定终端原始标签最近的曲线端点下标。"""
+
+    if not label_ids:
+        return None
+    label_points = _raw_label_physical_points(segmentation, label_ids)
+    if label_points.size == 0:
+        return None
+    endpoint_arrays = [
+        np.asarray(
+            [curve_points[0].x, curve_points[0].y, curve_points[0].z],
+            dtype=float,
+        ),
+        np.asarray(
+            [curve_points[-1].x, curve_points[-1].y, curve_points[-1].z],
+            dtype=float,
+        ),
+    ]
+    mean_distances = [
+        float(np.mean(np.linalg.norm(label_points - endpoint, axis=1)))
+        for endpoint in endpoint_arrays
+    ]
+    return 0 if mean_distances[0] <= mean_distances[1] else -1
+
+
+def _adjacent_endpoint_point(
+    curve_points: List[Point3D],
+    endpoint_index: int,
+) -> Point3D:
+    """返回指定首/尾端点的相邻曲线点。"""
+
+    return curve_points[1] if endpoint_index == 0 else curve_points[-2]
+
+
+def _extend_endpoint_to_label_projection(
+    endpoint: Point3D,
+    adjacent: Point3D,
+    segmentation: sitk.Image,
+    label_ids: set[int],
+) -> Point3D:
+    """把端点沿远离相邻点的方向延伸到标签体素投影外缘。"""
+
+    outward_delta = subtract_points(endpoint, adjacent)
+    if vector_length(outward_delta) <= 1e-6:
+        return endpoint
+    label_points = _raw_label_physical_points(segmentation, label_ids)
+    if label_points.size == 0:
+        return endpoint
+
+    outward = normalize_vector(outward_delta)
+    outward_array = np.asarray([outward.x, outward.y, outward.z], dtype=float)
+    endpoint_array = np.asarray([endpoint.x, endpoint.y, endpoint.z], dtype=float)
+    projections = (label_points - endpoint_array) @ outward_array
+    max_extension = (
+        float(np.max(projections))
+        + _terminal_endpoint_padding_mm(segmentation)
+    )
+    if max_extension <= 1e-6 or not math.isfinite(max_extension):
+        return endpoint
+    return _add(endpoint, _scale(outward, max_extension))
+
+
+def _terminal_endpoint_padding_mm(image: sitk.Image) -> float:
+    """终端标签头足兜底额外多留一个最小体素间距，避免视觉上刚好擦边。"""
+
+    spacing = [abs(float(value)) for value in image.GetSpacing()]
+    return _voxel_safety_margin_mm(image) + min(spacing) * 1.5
+
+
+def _configured_label_ids(
+    localization_result: Dict[str, Any],
+    label_names: List[str],
+) -> set[int]:
+    """收集当前 CPR 配置范围内真实存在的原始分割 label id。"""
+
+    label_ids: set[int] = set()
+    coords = localization_result.get("coords", {})
+    for label_name in label_names:
+        values = coords.get(label_name, {}).get("label_ids")
+        if not isinstance(values, (list, tuple, set)):
+            continue
+        for value in values:
+            try:
+                label_ids.add(int(value))
+            except (TypeError, ValueError):
+                continue
+    return label_ids
+
+
+def _raw_label_physical_points(
+    segmentation: sitk.Image,
+    label_ids: set[int],
+) -> np.ndarray:
+    """返回原始标签体素中心的物理坐标数组。"""
+
+    array = sitk.GetArrayViewFromImage(segmentation)
+    mask = np.isin(array, list(label_ids))
+    indices_zyx = np.argwhere(mask)
+    if indices_zyx.size == 0:
+        return np.empty((0, 3), dtype=float)
+    indices_xyz = indices_zyx[:, [2, 1, 0]].astype(float)
+    origin = np.asarray(segmentation.GetOrigin(), dtype=float)
+    spacing = np.asarray(segmentation.GetSpacing(), dtype=float)
+    direction = np.asarray(
+        segmentation.GetDirection(),
+        dtype=float,
+    ).reshape(3, 3)
+    return origin + (indices_xyz * spacing) @ direction.T
+
+
+def _nearest_curve_indices(points: np.ndarray, curve: np.ndarray) -> np.ndarray:
+    """分块查找每个原始体素点最近的 CPR 曲线采样点。"""
+
+    nearest = np.empty((len(points),), dtype=int)
+    chunk_size = 4096
+    for start in range(0, len(points), chunk_size):
+        stop = min(start + chunk_size, len(points))
+        distances = np.sum(
+            (
+                points[start:stop, np.newaxis, :]
+                - curve[np.newaxis, :, :]
+            ) ** 2,
+            axis=2,
+        )
+        nearest[start:stop] = np.argmin(distances, axis=1)
+    return nearest
+
+
+def _voxel_safety_margin_mm(image: sitk.Image) -> float:
+    """用半个体素对角线覆盖体素中心到体素外缘的安全余量。"""
+
+    spacing = [abs(float(value)) for value in image.GetSpacing()]
+    return 0.5 * math.sqrt(sum(value ** 2 for value in spacing))
+
+
+def _offsets_covering_interval(
+    d_min: float,
+    d_max: float,
+    slice_thickness: float,
+    slice_spacing: float,
+) -> List[float]:
+    """生成不少包 `[d_min, d_max]` 的 CPR 厚层中心 offset。"""
+
+    thickness = float(slice_thickness)
+    spacing = float(slice_spacing)
+    if thickness <= 0.0:
+        raise ValueError("slice_thickness 必须大于 0")
+    if spacing <= 0.0:
+        raise ValueError("slice_spacing 必须大于 0")
+
+    half_thickness = thickness / 2.0
+    neg_count = int(
+        math.ceil(max(0.0, -float(d_min) - half_thickness) / spacing)
+    )
+    pos_count = int(
+        math.ceil(max(0.0, float(d_max) - half_thickness) / spacing)
+    )
+    while -neg_count * spacing - half_thickness > float(d_min) + 1e-6:
+        neg_count += 1
+    while pos_count * spacing + half_thickness < float(d_max) - 1e-6:
+        pos_count += 1
+    return [
+        round(index * spacing, 6)
+        for index in range(-neg_count, pos_count + 1)
+    ]
+
+
+def _bbox_offsets_mm(
+    localization_result: Dict[str, Any],
+    label_names: List[str],
+    curve_points: List[Point3D],
+    offset_axis: Point3D,
+    slice_thickness: float,
+    slice_spacing: float,
+) -> List[float]:
+    """原始分割不可用时，用完整 bbox 角点作为保守回退。"""
+
     center_projection = float(np.median([
         _dot(point, offset_axis)
         for point in curve_points
@@ -881,19 +1193,14 @@ def _resolve_offsets_mm(
         )
 
     if not projections:
+        spacing = max(float(slice_spacing), 1e-6)
         projections = [-spacing, 0.0, spacing]
-
-    start = math.floor(min(projections) / spacing) * spacing
-    end = math.ceil(max(projections) / spacing) * spacing
-    offsets = []
-    current = start
-    while current <= end + spacing * 1e-6:
-        offsets.append(round(current, 6))
-        current += spacing
-    if not any(abs(offset) <= 1e-6 for offset in offsets):
-        offsets.append(0.0)
-        offsets.sort()
-    return offsets
+    return _offsets_covering_interval(
+        min(projections),
+        max(projections),
+        slice_thickness,
+        slice_spacing,
+    )
 
 
 def _bbox_corners(bbox: Dict[str, float], image_info: Dict[str, Any]) -> List[Point3D]:

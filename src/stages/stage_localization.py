@@ -290,27 +290,8 @@ class LocalizationStage(BaseStage):
                 "全量 coords/bbox 保持不变"
             )
 
-        # 研发期调试输出：给 ITK-SNAP 看的 bbox 边框 overlay。
-        # 这不是业务结果，不参与后续阶段；后续稳定后删除这一处调用和
-        # _write_debug_bbox_overlay 方法即可。
-        debug_bbox_overlay_path = output_path / '定位框.nii.gz'
-        if is_debug_log_file_enabled():
-            self._write_debug_bbox_overlay(
-            reference_image=image,
-            label_coordinates=label_coordinates,
-            correction_scope_bbox=correction_scope_bbox,
-            output_path=debug_bbox_overlay_path,
-        )
-            DebugLog(f"    调试bbox overlay: {debug_bbox_overlay_path}")
-        debug_target_mask_overlay_path = output_path / '目标掩膜.nii.gz'
-        if is_debug_log_file_enabled():
-            self._write_debug_target_mask_overlay(
-            reference_image=image,
-            seg_array=seg_array,
-            label_targets=label_targets,
-            output_path=debug_target_mask_overlay_path,
-        )
-            DebugLog(f"    调试目标mask overlay: {debug_target_mask_overlay_path}")
+        # 研发期调试输出：定位框和目标二值掩膜信息已可由标签掩膜覆盖，
+        # 为缩短 debug 轮耗时，不再默认写出这两类重复产物。
         debug_label_mask_overlay_path = output_path / '标签掩膜.nii.gz'
         if is_debug_log_file_enabled():
             self._write_debug_label_mask_overlay(
@@ -376,8 +357,8 @@ class LocalizationStage(BaseStage):
             'is_skewed': correction_result['correction_applied'],
             'skew_params': correction_result['correction_params'],
             'spine_geometry': spine_geometry,
-            'debug_bbox_overlay_path': str(debug_bbox_overlay_path) if is_debug_log_file_enabled() else '',
-            'debug_target_mask_overlay_path': str(debug_target_mask_overlay_path) if is_debug_log_file_enabled() else '',
+            'debug_bbox_overlay_path': '',
+            'debug_target_mask_overlay_path': '',
             'debug_label_mask_overlay_path': str(debug_label_mask_overlay_path) if is_debug_log_file_enabled() else '',
             'debug_vertebral_body_mask_overlay_path': str(debug_vertebral_body_mask_overlay_path) if is_debug_log_file_enabled() else '',
             'debug_vertebral_body_prism_mask_overlay_path': str(debug_vertebral_body_prism_mask_overlay_path) if is_debug_log_file_enabled() else '',

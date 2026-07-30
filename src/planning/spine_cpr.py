@@ -1,6 +1,7 @@
 """脊柱冠状位 CPR 规划。"""
 
 import math
+import time
 from typing import Any, Dict, Iterable, List, Tuple
 
 import numpy as np
@@ -16,6 +17,7 @@ from src.planning.geometry import (
     voxel_index_to_physical,
 )
 from src.planning.spine_common import get_label_center, union_bboxes
+from src.utils import DebugLog
 
 
 SPINE_CPR_LABELS = {
@@ -47,6 +49,7 @@ def build_spine_sagittal_cpr_plan(
 ) -> Tuple[SlicePlan | None, List[str]]:
     """为脊柱冠状位生成 CPR plan；矢状位继续交给旧直线 MPR 逻辑。"""
 
+    perf_start = time.perf_counter()
     if plane_config.plane != PlaneTypeEnum.冠状位:
         return None, []
 
@@ -105,6 +108,17 @@ def build_spine_sagittal_cpr_plan(
         )
         for index, offset_mm in enumerate(offsets)
     ]
+
+    DebugLog(
+        "    [CPR规划性能] "
+        f"body_part={request.body_part.value}, "
+        f"plane={plane_config.plane.value}, "
+        f"labels={len(source_labels)}, "
+        f"curve_points={len(curve_points)}, "
+        f"offset_count={len(offsets)}, "
+        f"curve_length={curve_length:.3f}mm, "
+        f"耗时={time.perf_counter() - perf_start:.3f}s"
+    )
 
     return SlicePlan(
         plan_id=f"{request.body_part.value}_CPR_{plane_config.plane.value}",
@@ -898,6 +912,7 @@ def _raw_label_offset_interval_mm(
 ) -> Tuple[float, float] | None:
     """计算原始标签体素相对现有 CPR 中线的前后偏移区间。"""
 
+    perf_start = time.perf_counter()
     segmentation = _read_original_segmentation(localization_result)
     if segmentation is None:
         return None
@@ -924,21 +939,33 @@ def _raw_label_offset_interval_mm(
     if mask_points.size == 0:
         return None
 
+    nearest_start = time.perf_counter()
     curve_without_axis = curve - np.outer(curve @ axis, axis)
     points_without_axis = mask_points - np.outer(mask_points @ axis, axis)
     nearest_indices = _nearest_curve_indices(
         points_without_axis,
         curve_without_axis,
     )
+    nearest_elapsed = time.perf_counter() - nearest_start
     offsets = np.sum((mask_points - curve[nearest_indices]) * axis, axis=1)
     if offsets.size == 0:
         return None
 
     safety_margin = _voxel_safety_margin_mm(segmentation)
-    return (
+    interval = (
         float(np.min(offsets) - safety_margin),
         float(np.max(offsets) + safety_margin),
     )
+    DebugLog(
+        "    [CPR规划性能] 原始标注offset区间: "
+        f"labels={sorted(label_ids)}, "
+        f"raw_points={len(mask_points)}, "
+        f"curve_points={len(curve)}, "
+        f"nearest耗时={nearest_elapsed:.3f}s, "
+        f"interval=[{interval[0]:.3f}, {interval[1]:.3f}]mm, "
+        f"总耗时={time.perf_counter() - perf_start:.3f}s"
+    )
+    return interval
 
 
 def _extend_curve_endpoints_to_terminal_raw_labels(
@@ -948,6 +975,7 @@ def _extend_curve_endpoints_to_terminal_raw_labels(
 ) -> List[Point3D]:
     """沿当前首尾切线延长 CPR 中线到终端原始标签投影外缘。"""
 
+    perf_start = time.perf_counter()
     if len(curve_points) < 2 or not label_names:
         return list(curve_points)
     segmentation = _read_original_segmentation(localization_result)
@@ -989,6 +1017,14 @@ def _extend_curve_endpoints_to_terminal_raw_labels(
             segmentation=segmentation,
             label_ids=end_ids,
         )
+    DebugLog(
+        "    [CPR规划性能] 端点延伸到原始标注: "
+        f"start_labels={sorted(start_ids)}, "
+        f"end_labels={sorted(end_ids)}, "
+        f"start_endpoint_index={start_endpoint_index}, "
+        f"end_endpoint_index={end_endpoint_index}, "
+        f"耗时={time.perf_counter() - perf_start:.3f}s"
+    )
     return extended
 
 
@@ -1091,10 +1127,16 @@ def _raw_label_physical_points(
 ) -> np.ndarray:
     """返回原始标签体素中心的物理坐标数组。"""
 
+    perf_start = time.perf_counter()
     array = sitk.GetArrayViewFromImage(segmentation)
     mask = np.isin(array, list(label_ids))
     indices_zyx = np.argwhere(mask)
     if indices_zyx.size == 0:
+        DebugLog(
+            "    [CPR规划性能] 读取原始标注体素: "
+            f"labels={sorted(label_ids)}, voxels=0, "
+            f"耗时={time.perf_counter() - perf_start:.3f}s"
+        )
         return np.empty((0, 3), dtype=float)
     indices_xyz = indices_zyx[:, [2, 1, 0]].astype(float)
     origin = np.asarray(segmentation.GetOrigin(), dtype=float)
@@ -1103,7 +1145,15 @@ def _raw_label_physical_points(
         segmentation.GetDirection(),
         dtype=float,
     ).reshape(3, 3)
-    return origin + (indices_xyz * spacing) @ direction.T
+    points = origin + (indices_xyz * spacing) @ direction.T
+    DebugLog(
+        "    [CPR规划性能] 读取原始标注体素: "
+        f"labels={sorted(label_ids)}, "
+        f"voxels={len(points)}, "
+        f"image_size={segmentation.GetSize()}, "
+        f"耗时={time.perf_counter() - perf_start:.3f}s"
+    )
+    return points
 
 
 def _nearest_curve_indices(points: np.ndarray, curve: np.ndarray) -> np.ndarray:

@@ -1,10 +1,13 @@
 """曲面堆叠（curved_stack）CPR 重采样。"""
 
 import math
+import time
 from typing import Any, Dict
 
 import numpy as np
 import SimpleITK as sitk
+
+from src.utils import DebugLog
 
 
 class CurvedStackResampler:
@@ -18,6 +21,7 @@ class CurvedStackResampler:
     ) -> sitk.Image:
         """采样一张 CPR HU 图，返回 size=(cols, rows, 1) 的图像。"""
 
+        perf_start = time.perf_counter()
         curve_points = self._curve_points(plan)
         curve_spacing = float(plan["curve_spacing_mm"])
         if curve_spacing <= 0:
@@ -46,6 +50,8 @@ class CurvedStackResampler:
         ) * spacing_x
 
         source = sitk.GetArrayViewFromImage(image)
+        slice_thickness = float(plan.get("slice_thickness", 1.0))
+        slab_offsets = self._slab_offsets(image, slice_thickness)
         sampled = self._sample_curved_surface_slab(
             image=image,
             source=source,
@@ -54,10 +60,7 @@ class CurvedStackResampler:
             offset_axis=offset_axis,
             base_offset_mm=offset_mm,
             in_plane_offsets=in_plane_offsets,
-            slab_offsets=self._slab_offsets(
-                image,
-                float(plan.get("slice_thickness", 1.0)),
-            ),
+            slab_offsets=slab_offsets,
         )
 
         output = sitk.GetImageFromArray(sampled[np.newaxis, ...])
@@ -76,6 +79,16 @@ class CurvedStackResampler:
                 output_tangent,
                 offset_axis,
             )
+        )
+        DebugLog(
+            "    [CPR采样性能] "
+            f"plan={plan.get('plan_id', '')}, "
+            f"slice_index={planned_slice.get('index', '')}, "
+            f"offset_mm={offset_mm:.3f}, "
+            f"rows={rows}, cols={columns}, "
+            f"slab_count={len(slab_offsets)}, "
+            f"slice_thickness={slice_thickness:.3f}mm, "
+            f"耗时={time.perf_counter() - perf_start:.3f}s"
         )
         return output
 

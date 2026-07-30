@@ -12,6 +12,7 @@ MPR多平面重建与DICOM生成
 """
 
 import math
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
@@ -163,7 +164,14 @@ class ReconstructionStage(BaseStage):
         先完整采样能保证窗位线程不触碰重采样器，也符合“先采集、后显示处理”的流程。
         """
         if localizer_image is None and isinstance(image, sitk.Image):
+            localizer_start = time.perf_counter()
             localizer_image = self._build_plan_localizer(image, plan)
+            DebugLog(
+                "    [阶段五性能] Localizer生成完成: "
+                f"plan={plan.get('plan_id', '')}, "
+                f"has_localizer={localizer_image is not None}, "
+                f"耗时={time.perf_counter() - localizer_start:.3f}s"
+            )
 
         resampler = self._resampler_for_plan(plan)
         windows = unique_window_presets(plan["window_presets"])
@@ -185,13 +193,36 @@ class ReconstructionStage(BaseStage):
         # 第一步：只做 MPR 和层厚采样，保留原始 float32 HU 图像。
         # 所有采样完成之前不会开始任何窗宽窗位映射。
         DebugLog(f"    [1] MPR采样: 共 {len(plan['slices'])} 张")
-        sampled_slices = [
-            (
-                planned_slice,
-                resampler.sample_slice(image, plan, planned_slice),
-            )
-            for planned_slice in plan["slices"]
-        ]
+        sampling_start = time.perf_counter()
+        sampled_slices = []
+        slowest_slice_index = None
+        slowest_slice_elapsed = 0.0
+        for planned_slice in plan["slices"]:
+            single_start = time.perf_counter()
+            sampled_image = resampler.sample_slice(image, plan, planned_slice)
+            single_elapsed = time.perf_counter() - single_start
+            if single_elapsed > slowest_slice_elapsed:
+                slowest_slice_elapsed = single_elapsed
+                slowest_slice_index = planned_slice.get("index")
+            sampled_slices.append((planned_slice, sampled_image))
+        sampling_elapsed = time.perf_counter() - sampling_start
+        average_elapsed = (
+            sampling_elapsed / len(sampled_slices)
+            if sampled_slices
+            else 0.0
+        )
+        DebugLog(
+            "    [阶段五性能] MPR采样完成: "
+            f"plan={plan.get('plan_id', '')}, "
+            f"geometry={plan.get('geometry_type', 'plane_stack')}, "
+            f"slices={len(sampled_slices)}, "
+            f"slice_thickness={float(plan.get('slice_thickness', 0.0)):.3f}mm, "
+            f"slice_spacing={float(plan.get('slice_spacing', 0.0)):.3f}mm, "
+            f"总耗时={sampling_elapsed:.3f}s, "
+            f"平均={average_elapsed:.3f}s/张, "
+            f"最慢slice={slowest_slice_index}, "
+            f"最慢耗时={slowest_slice_elapsed:.3f}s"
+        )
         DebugLog("    [1] MPR采样完成")
 
         # 第二步：一个窗位任务负责处理整套已采样切片。每个任务写独立目录并使用
@@ -736,6 +767,7 @@ class ReconstructionStage(BaseStage):
             source_metadata: 从原始 DICOM 继承的患者和检查级标签。
         """
         total_slices = len(sampled_slices)
+        write_start = time.perf_counter()
         for planned_slice, sampled_image in sampled_slices:
             windowed_image = apply_window_to_image(sampled_image, window)
             output_path = output_dir / (
@@ -777,6 +809,14 @@ class ReconstructionStage(BaseStage):
                     windowed_localizer=windowed_localizer,
                     output_path=output_dir / "Localizer.png",
                 )
+        DebugLog(
+            "    [阶段五性能] 窗位写出完成: "
+            f"plan={plan.get('plan_id', '')}, "
+            f"window={getattr(window, 'name', window)}, "
+            f"slices={total_slices}, "
+            f"has_localizer={localizer_image is not None}, "
+            f"耗时={time.perf_counter() - write_start:.3f}s"
+        )
 
     @staticmethod
     def _write_debug_localizer_png(

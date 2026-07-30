@@ -1621,16 +1621,14 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertEqual(metadata["raw_for_reconstruction_path"], str(raw_path))
             self.assertEqual(metadata["seg_for_reconstruction_path"], str(seg_path))
             self.assertIn("correction_scope_bbox", metadata)
-            overlay_path = temp_path / "metadata" / "定位框.nii.gz"
-            target_overlay_path = temp_path / "metadata" / "目标掩膜.nii.gz"
             label_overlay_path = temp_path / "metadata" / "标签掩膜.nii.gz"
             prism_overlay_path = (
                 temp_path / "metadata" / "椎体四棱柱掩膜.nii.gz"
             )
-            self.assertEqual(result["debug_bbox_overlay_path"], str(overlay_path))
-            self.assertEqual(metadata["debug_bbox_overlay_path"], str(overlay_path))
-            self.assertEqual(result["debug_target_mask_overlay_path"], str(target_overlay_path))
-            self.assertEqual(metadata["debug_target_mask_overlay_path"], str(target_overlay_path))
+            self.assertEqual(result["debug_bbox_overlay_path"], "")
+            self.assertEqual(metadata["debug_bbox_overlay_path"], "")
+            self.assertEqual(result["debug_target_mask_overlay_path"], "")
+            self.assertEqual(metadata["debug_target_mask_overlay_path"], "")
             self.assertEqual(result["debug_label_mask_overlay_path"], str(label_overlay_path))
             self.assertEqual(metadata["debug_label_mask_overlay_path"], str(label_overlay_path))
             self.assertEqual(
@@ -1641,8 +1639,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                 metadata["debug_vertebral_body_prism_mask_overlay_path"],
                 str(prism_overlay_path),
             )
-            self.assertTrue(overlay_path.exists())
-            self.assertTrue(target_overlay_path.exists())
+            self.assertFalse((temp_path / "metadata" / "定位框.nii.gz").exists())
+            self.assertFalse((temp_path / "metadata" / "目标掩膜.nii.gz").exists())
             self.assertTrue(label_overlay_path.exists())
             self.assertTrue(prism_overlay_path.exists())
             self.assertEqual(

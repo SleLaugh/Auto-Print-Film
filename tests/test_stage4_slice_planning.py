@@ -3490,8 +3490,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(diagnostics[0]["leading_center_uncovered_mm"], 0.0)
         self.assertEqual(diagnostics[0]["trailing_center_uncovered_mm"], 0.0)
 
-    def test_mapping_stage_writes_slice_plan_line_overlay(self):
-        """验证 `test_mapping_stage_writes_slice_plan_line_overlay` 场景符合预期。"""
+    def test_mapping_stage_skips_whole_range_axial_debug_overlays(self):
+        """普通横状位整切不再写耗时 debug overlay。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -3524,28 +3524,22 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             MappingStage().execute(context)
 
             result = context.get_result("mapping")
-            overlay_path = Path(result["debug_slice_plan_overlay_path"])
-            self.assertEqual(overlay_path.name, "切片线_横_整.nii.gz")
-            overlay_image = sitk.ReadImage(str(overlay_path))
-            overlay_array = sitk.GetArrayFromImage(overlay_image)
-            self.assertTrue(overlay_path.exists())
-            self.assertEqual(overlay_image.GetSize(), image.GetSize())
-            # 11 表示第一组 plan 的中心路径线，12 表示切片中心点。
-            # 13 表示每张 slice 的平面引导线，应该离中心点有一段距离也能看到。
-            self.assertEqual(overlay_array[6, 50, 60], 12)
-            self.assertEqual(overlay_array[6, 50, 65], 13)
+            self.assertEqual(result["debug_slice_plan_overlay_path"], "")
+            self.assertEqual(result["debug_center_cross_overlay_path"], "")
             self.assertEqual(result["debug_slice_plan_overview_paths"], {})
             self.assertEqual(
                 result["debug_slice_plan_overview_with_image_paths"],
                 {},
             )
-            self.assertEqual(
-                set(result["debug_slice_plan_native_overview_paths"]),
-                {"横状位"},
-            )
+            self.assertEqual(result["debug_slice_plan_native_overview_paths"], {})
+            metadata_dir = temp_path / "metadata"
+            self.assertFalse((metadata_dir / "切片线_横_整.nii.gz").exists())
+            self.assertFalse((metadata_dir / "十字中线_横_整.nii.gz").exists())
+            self.assertFalse((metadata_dir / "切片总览含原图_横_整.nii.gz").exists())
+            self.assertFalse((metadata_dir / "切片原始网格总览_横_整.nii.gz").exists())
 
-    def test_mapping_stage_writes_separate_overviews_for_three_planes(self):
-        """横、矢、冠应分别生成普通检查网格和原始网格总览。"""
+    def test_mapping_stage_skips_cpr_debug_overlays(self):
+        """CPR 冠状位不再写阶段四调试 overlay 和总览。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -3589,41 +3583,20 @@ class Stage4SlicePlanningTest(unittest.TestCase):
 
             result = context.get_result("mapping")
             center_cross_path = Path(result["debug_center_cross_overlay_path"])
-            self.assertEqual(
-                center_cross_path.name,
-                "十字中线_横+矢+冠_区+整+CPR.nii.gz",
-            )
+            self.assertEqual(center_cross_path.name, "十字中线_横_区.nii.gz")
             self.assertTrue(center_cross_path.exists())
-            center_cross_image = sitk.ReadImage(str(center_cross_path))
-            center_cross_array = sitk.GetArrayFromImage(center_cross_image)
-            self.assertEqual(center_cross_image.GetSize(), image.GetSize())
-            # 三个状位合并绘制，但全部使用 uint16 最大值显示为纯白色。
-            self.assertEqual(
-                set(np.unique(center_cross_array)) - {0},
-                {65535},
-            )
             overview_paths = result["debug_slice_plan_overview_paths"]
             overview_with_image_paths = result[
                 "debug_slice_plan_overview_with_image_paths"
             ]
             native_paths = result["debug_slice_plan_native_overview_paths"]
-            expected_planes = {"横状位", "矢状位", "冠状位"}
+            expected_planes = {"横状位"}
             self.assertEqual(set(overview_paths), expected_planes)
             self.assertEqual(overview_with_image_paths, overview_paths)
             self.assertEqual(set(native_paths), expected_planes)
-            self.assertEqual(
-                Path(native_paths["矢状位"]).name,
-                "切片原始网格总览_矢_整.nii.gz",
-            )
-            self.assertEqual(
-                Path(native_paths["冠状位"]).name,
-                "切片原始网格总览_冠_CPR.nii.gz",
-            )
 
             expected_spacing = {
                 "横状位": (1.0, 2.0, 0.5),
-                "矢状位": (0.5, 2.0, 3.0),
-                "冠状位": (1.0, 0.5, 3.0),
             }
             for plane, path in overview_paths.items():
                 with self.subTest(kind="uniform", plane=plane):
@@ -3660,6 +3633,27 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(
                 result["debug_slice_plan_native_overview_overlay_path"],
                 native_paths["横状位"],
+            )
+            self.assertFalse(
+                (temp_path / "metadata" / "切片总览含原图_横_整.nii.gz").exists()
+            )
+            self.assertFalse(
+                (temp_path / "metadata" / "切片原始网格总览_矢_整.nii.gz").exists()
+            )
+            self.assertFalse(
+                (temp_path / "metadata" / "切片线_冠_CPR.nii.gz").exists()
+            )
+            self.assertFalse(
+                (temp_path / "metadata" / "切片原始网格总览_冠_CPR.nii.gz").exists()
+            )
+            self.assertFalse(
+                (temp_path / "metadata" / "切片总览含原图_冠_CPR.nii.gz").exists()
+            )
+            self.assertFalse(
+                (temp_path / "metadata" / "十字中线_冠_CPR.nii.gz").exists()
+            )
+            self.assertFalse(
+                (temp_path / "metadata" / "十字中线_横+冠_区+CPR.nii.gz").exists()
             )
             metadata = json.loads(
                 Path(result["metadata_path"]).read_text(encoding="utf-8"),
@@ -3877,8 +3871,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(int(overlay[80, 20, 30]), 65535)
             self.assertEqual(int(overlay[50, 20, 30]), 0)
 
-    def test_mapping_stage_writes_single_layer_overview_overlay(self):
-        """验证 `test_mapping_stage_writes_single_layer_overview_overlay` 场景符合预期。"""
+    def test_mapping_stage_skips_whole_range_overview_overlay(self):
+        """普通横状位整切不再写含原图和原始网格总览。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -3914,23 +3908,17 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             MappingStage().execute(context)
 
             result = context.get_result("mapping")
-            overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
-            self.assertEqual(overview_path.name, "切片总览含原图_横_整.nii.gz")
-            overview_image = sitk.ReadImage(str(overview_path))
-            overview_array = sitk.GetArrayFromImage(overview_image)
-            self.assertTrue(overview_path.exists())
-            self.assertEqual(overview_image.GetSpacing(), (1.0, 1.0, 0.5))
-            self.assertEqual(overview_image.GetSize(), (80, 80, 35))
-            self.assertEqual(overview_image.GetPixelID(), sitk.sitkInt16)
-            self.assertEqual(overview_image.GetOrigin(), (0.0, 0.0, 0.0))
-            # 5 mm 真实间距在 0.5 mm 等距展示网格上恒定相差 10 行。
-            center_rows = np.unique(np.argwhere(overview_array > 0)[:, 0])
-            self.assertEqual(center_rows.tolist(), [1, 11, 21, 31])
-            self.assertTrue(np.all(np.diff(center_rows) == 10))
-            native_path = Path(result["debug_slice_plan_native_overview_overlay_path"])
-            self.assertEqual(native_path.name, "切片原始网格总览_横_整.nii.gz")
-            native_image = sitk.ReadImage(str(native_path))
-            self.assertEqual(native_image.GetSize(), image.GetSize())
+            self.assertEqual(result["debug_slice_plan_overview_overlay_path"], "")
+            self.assertEqual(
+                result["debug_slice_plan_native_overview_overlay_path"],
+                "",
+            )
+            self.assertFalse(
+                (temp_path / "metadata" / "切片总览含原图_横_整.nii.gz").exists()
+            )
+            self.assertFalse(
+                (temp_path / "metadata" / "切片原始网格总览_横_整.nii.gz").exists()
+            )
 
     def test_mapping_stage_overview_uses_minimum_line_width(self):
         """验证 `test_mapping_stage_overview_uses_minimum_line_width` 场景符合预期。"""
@@ -3969,7 +3957,12 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             MappingStage().execute(context)
 
             result = context.get_result("mapping")
-            overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
+            overview_paths, _ = MappingStage()._write_slice_plan_overview_overlays(
+                context=context,
+                localization_result=localization_result,
+                plans=result["plans"],
+            )
+            overview_path = Path(overview_paths["横状位"])
             overview_image = sitk.ReadImage(str(overview_path))
             overview_array = sitk.GetArrayFromImage(overview_image)
             # 层厚不再决定显示宽度；每张切片只占等距网格一行。
@@ -4024,7 +4017,12 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             MappingStage().execute(context)
 
             result = context.get_result("mapping")
-            overview_path = Path(result["debug_slice_plan_overview_overlay_path"])
+            overview_paths, _ = MappingStage()._write_slice_plan_overview_overlays(
+                context=context,
+                localization_result=localization_result,
+                plans=result["plans"],
+            )
+            overview_path = Path(overview_paths["横状位"])
             overview_image = sitk.ReadImage(str(overview_path))
             overview_array = sitk.GetArrayFromImage(overview_image)
             center_rows = np.unique(np.argwhere(overview_array > 0)[:, 0])

@@ -661,6 +661,41 @@ class Stage5ReconstructionTest(unittest.TestCase):
         output_array = sitk.GetArrayFromImage(output)
         self.assertAlmostEqual(float(output_array[0, 0, 0]), 1050.0)
 
+    def test_curved_stack_resampler_logs_sampling_perf_summary(self):
+        """CPR 重采样应输出性能摘要，便于定位一轮耗时。"""
+
+        image = self._make_ramp_image(size=(8, 8, 8))
+        plan = {
+            "plan_id": "腰椎_CPR_矢状位",
+            "geometry_type": "curved_stack",
+            "curve_points": [
+                {"x": 2.0, "y": 3.0, "z": 1.0},
+                {"x": 2.0, "y": 3.0, "z": 5.0},
+            ],
+            "curve_spacing_mm": 1.0,
+            "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+            "offsets_mm": [0.0],
+            "extent_mm": {"width": 4.0, "height": 4.0},
+            "output_spacing_mm": {"x": 1.0, "y": 1.0, "z": 0.0},
+            "slice_thickness": 2.0,
+            "slice_spacing": 1.0,
+            "slices": [{
+                "index": 7,
+                "offset_mm": 0.0,
+                "center": {"x": 2.0, "y": 3.0, "z": 3.0},
+                "normal": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+            }],
+        }
+
+        with mock.patch("src.reconstruction.curved_stack.DebugLog") as debug_log:
+            CurvedStackResampler().sample_slice(image, plan, plan["slices"][0])
+
+        messages = [call.args[0] for call in debug_log.call_args_list]
+        self.assertTrue(any("[CPR采样性能]" in message for message in messages))
+        self.assertTrue(any("slab_count=" in message for message in messages))
+
     def test_curved_stack_resampler_reuses_nearest_valid_in_plane_direction(self):
         """局部切线平行堆叠轴时，不应因单行方向退化而中断 CPR。"""
 

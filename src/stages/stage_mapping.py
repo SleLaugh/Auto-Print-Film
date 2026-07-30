@@ -11,6 +11,7 @@
 
 import json
 import math
+import time
 from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,7 +108,16 @@ class MappingStage(BaseStage):
             DebugLog(f"    planner: {planner.planner_name}")
             scoped_request = copy(request)
             scoped_request.plane_configs = plane_configs
+            planner_start = time.perf_counter()
             partial_result = planner.build_plans(scoped_request, prev_result)
+            DebugLog(
+                "    [阶段四性能] build_plans完成: "
+                f"planner={planner.planner_name}, "
+                f"plane_configs={len(plane_configs)}, "
+                f"plans={len(partial_result.plans)}, "
+                f"warnings={len(partial_result.warnings)}, "
+                f"耗时={time.perf_counter() - planner_start:.3f}s"
+            )
             all_plans.extend(partial_result.plans)
             all_warnings.extend(partial_result.warnings)
         planner_name = "+".join(planner_names)
@@ -123,33 +133,60 @@ class MappingStage(BaseStage):
         metadata_path = ""
         if is_debug_log_file_enabled():
             DebugLog("  [3] write_debug_overlay: 写出切割线和含原图总览...")
-            debug_overlay_path = self._write_slice_plan_overlay(
-                context=context,
-                localization_result=prev_result,
-                plans=plans,
-            )
-            debug_center_cross_overlay_path = self._write_center_cross_overlay(
-                context=context,
-                localization_result=prev_result,
-                plans=plans,
-            )
-            (
-                debug_overview_paths,
-                debug_native_overview_paths,
-            ) = self._write_slice_plan_overview_overlays(
-                context=context,
-                localization_result=prev_result,
-                plans=plans,
-            )
-            debug_overview_overlay_path = self._legacy_overview_path(
-                debug_overview_paths,
-                plans,
-            )
-            debug_native_overview_overlay_path = self._legacy_overview_path(
-                debug_native_overview_paths,
-                plans,
-            )
+            debug_plans = self._debug_overlay_plans(plans)
+            if debug_plans:
+                overlay_start = time.perf_counter()
+                debug_overlay_path = self._write_slice_plan_overlay(
+                    context=context,
+                    localization_result=prev_result,
+                    plans=debug_plans,
+                )
+                DebugLog(
+                    "    [阶段四性能] write_slice_plan_overlay完成: "
+                    f"plans={len(debug_plans)}, "
+                    f"耗时={time.perf_counter() - overlay_start:.3f}s"
+                )
+                center_cross_start = time.perf_counter()
+                debug_center_cross_overlay_path = self._write_center_cross_overlay(
+                    context=context,
+                    localization_result=prev_result,
+                    plans=debug_plans,
+                )
+                DebugLog(
+                    "    [阶段四性能] write_center_cross_overlay完成: "
+                    f"plans={len(debug_plans)}, "
+                    f"耗时={time.perf_counter() - center_cross_start:.3f}s"
+                )
+                overview_start = time.perf_counter()
+                (
+                    debug_overview_paths,
+                    debug_native_overview_paths,
+                ) = self._write_slice_plan_overview_overlays(
+                    context=context,
+                    localization_result=prev_result,
+                    plans=debug_plans,
+                )
+                DebugLog(
+                    "    [阶段四性能] write_slice_plan_overview_overlays完成: "
+                    f"overview={len(debug_overview_paths)}, "
+                    f"native={len(debug_native_overview_paths)}, "
+                    f"耗时={time.perf_counter() - overview_start:.3f}s"
+                )
+                debug_overview_overlay_path = self._legacy_overview_path(
+                    debug_overview_paths,
+                    debug_plans,
+                )
+                debug_native_overview_overlay_path = self._legacy_overview_path(
+                    debug_native_overview_paths,
+                    debug_plans,
+                )
+            else:
+                DebugLog(
+                    "    [阶段四性能] write_debug_overlay跳过: "
+                    "仅包含横/矢普通整切计划"
+                )
             DebugLog("  [4] write_metadata: 写出 slice_plans.json...")
+            metadata_start = time.perf_counter()
             metadata_path = self._write_slice_plans(
                 context,
                 planner_name=planner_name,
@@ -162,6 +199,10 @@ class MappingStage(BaseStage):
                 debug_native_overview_overlay_path=debug_native_overview_overlay_path,
                 debug_overview_paths=debug_overview_paths,
                 debug_native_overview_paths=debug_native_overview_paths,
+            )
+            DebugLog(
+                "    [阶段四性能] write_metadata完成: "
+                f"耗时={time.perf_counter() - metadata_start:.3f}s"
             )
 
         result = {
@@ -206,6 +247,34 @@ class MappingStage(BaseStage):
         DebugLog("=" * 60)
         
         return context
+
+    @staticmethod
+    def _debug_overlay_plans(plans: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        """过滤掉耗时且当前不再需要的阶段四调试图计划。"""
+
+        return [
+            plan
+            for plan in plans
+            if not MappingStage._is_skipped_debug_overlay_plan(plan)
+        ]
+
+    @staticmethod
+    def _is_skipped_debug_overlay_plan(plan: Dict[str, Any]) -> bool:
+        """过滤当前不再默认落盘的阶段四 NIfTI 检查图。"""
+
+        plane = str(plan.get("plane", ""))
+        cut_mode = str(plan.get("cut_mode", ""))
+        geometry_type = str(plan.get("geometry_type", "plane_stack"))
+        is_plain_whole_range = (
+            plane in {"横状位", "矢状位"}
+            and geometry_type != "curved_stack"
+            and cut_mode in {"whole_range", "整切", "整"}
+        )
+        is_cpr_debug = (
+            plane == "冠状位"
+            and geometry_type == "curved_stack"
+        )
+        return is_plain_whole_range or is_cpr_debug
 
     def _write_slice_plans(
         self,

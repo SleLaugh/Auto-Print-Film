@@ -73,6 +73,12 @@ class CutSegment:
     source_labels: tuple[str, ...]
     """产生当前区间的定位 label，用于调试、报告和问题追踪。"""
 
+    frame: StraightPlaneFrame | None = None
+    """当前区间可选的专属直线坐标系；为空时由 planner 使用默认方向。"""
+
+    recenter_target_in_plane: bool = True
+    """是否把目标点搬到所选范围的平面中心；椎间最近点必须保留原位置。"""
+
 
 @dataclass(frozen=True)
 class SliceRangeExtension:
@@ -339,6 +345,37 @@ def resolve_projected_extent(
     return project_region_extent(points, frame)
 
 
+def expand_projected_extent_around_anchor(
+    projected_extent: ProjectedExtent,
+    anchor: Point3D,
+    frame: StraightPlaneFrame,
+) -> ProjectedExtent:
+    """以指定平面内锚点为中心扩展范围，且不裁掉原投影覆盖区。"""
+
+    half_width = projected_extent.extent_mm.width / 2.0
+    half_height = projected_extent.extent_mm.height / 2.0
+    minimum_u = projected_extent.center_u - half_width
+    maximum_u = projected_extent.center_u + half_width
+    minimum_v = projected_extent.center_v - half_height
+    maximum_v = projected_extent.center_v + half_height
+    anchor_u = _dot(anchor, frame.row_dir)
+    anchor_v = _dot(anchor, frame.col_dir)
+    return ProjectedExtent(
+        extent_mm=ExtentMM(
+            width=2.0 * max(
+                abs(anchor_u - minimum_u),
+                abs(maximum_u - anchor_u),
+            ),
+            height=2.0 * max(
+                abs(anchor_v - minimum_v),
+                abs(maximum_v - anchor_v),
+            ),
+        ),
+        center_u=anchor_u,
+        center_v=anchor_v,
+    )
+
+
 def cover_segment_range(
     target_start: Point3D,
     target_end: Point3D,
@@ -480,24 +517,40 @@ def build_straight_slice_plan(
         segment.target_region_bbox,
         frame,
     )
-    centered_target_start = recenter_point_in_plane(
-        segment.target_start,
-        projected_extent,
-        frame,
-    )
-    centered_target_end = recenter_point_in_plane(
-        segment.target_end,
-        projected_extent,
-        frame,
-    )
+    if segment.recenter_target_in_plane:
+        centered_target_start = recenter_point_in_plane(
+            segment.target_start,
+            projected_extent,
+            frame,
+        )
+        centered_target_end = recenter_point_in_plane(
+            segment.target_end,
+            projected_extent,
+            frame,
+        )
+    else:
+        centered_target_start = segment.target_start
+        centered_target_end = segment.target_end
+        target_anchor = Point3D(
+            (segment.target_start.x + segment.target_end.x) / 2.0,
+            (segment.target_start.y + segment.target_end.y) / 2.0,
+            (segment.target_start.z + segment.target_end.z) / 2.0,
+        )
+        # 最近点决定真实椎间位置，不能移到整幅图像中心。输出平面会以该
+        # 位置为中心，因此同步对称扩展宽高，确保原选定范围仍完整覆盖。
+        projected_extent = expand_projected_extent_around_anchor(
+            projected_extent,
+            target_anchor,
+            frame,
+        )
     range_extension = resolve_slice_range_extension(
         localization_result,
         cut_mode,
         plane_config.plane,
     )
-    # 必须先让两个目标边界落到最终切片坐标系的同一平面内中心，再沿二者
-    # 形成的最终法向计算中心范围。这样带角度切片也能保持固定层间距，
-    # 并让首末切片中心跨过目标边界。
+    # 重定位后的端点或已共用平面坐标的四棱柱最近点对，都沿二者形成的
+    # 最终法向计算中心范围。这样带角度切片也能保持固定层间距，并让
+    # 首末切片中心跨过目标边界。
     centered_range_start, centered_range_end = cover_segment_range(
         centered_target_start,
         centered_target_end,

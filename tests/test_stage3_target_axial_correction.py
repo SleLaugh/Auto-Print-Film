@@ -864,6 +864,127 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertGreater(int(body_mask[3:9, 8:14, 10:18].sum()), 0)
         self.assertEqual(int(body_mask[:, 14:20, :].sum()), 0)
 
+    def test_s1_body_annotation_preserves_full_sacral_label_before_prism(self):
+        """S1 不能套用腰椎前方主体启发式，否则骶骨尾端会被截掉。"""
+
+        seg_array = np.zeros((20, 40, 50), dtype=np.uint8)
+        for z_index in range(4, 16):
+            y_center = 18 + int((z_index - 10) * 1.5)
+            seg_array[z_index, y_center - 6:y_center + 8, 20 - int((z_index - 4) * 0.5):33] = 9
+        # 这是骶骨朝后的连续部分；普通腰椎主体筛选会把它整段误删。
+        seg_array[4:16, 5:12, 20:26] = 9
+        image = sitk.GetImageFromArray(seg_array)
+        targets = {"vertebrae_S1": LabelTarget("vertebrae_S1", [9])}
+
+        body_indices, prism_regions = LocalizationStage._build_spine_body_prism_regions(
+            seg_array,
+            targets,
+            image,
+        )
+
+        actual = np.zeros_like(seg_array, dtype=bool)
+        actual[tuple(body_indices["vertebrae_S1"].T)] = True
+        raw = seg_array == 9
+        self.assertLess(int(actual.sum()), int(raw.sum()))
+        self.assertGreater(int(actual[4:16, 12:32, 20:33].sum()), 0)
+        self.assertLess(
+            int(actual[4:16, 5:12, 20:26].sum()),
+            int(raw[4:16, 5:12, 20:26].sum()),
+        )
+        self.assertIsNotNone(prism_regions["vertebrae_S1"])
+
+    def test_s1_body_candidate_keeps_moderate_support_body_edge(self):
+        """S1 主体边缘支撑度中等时应保留，不能因阈值过高再缩小。"""
+
+        seg_array = np.zeros((8, 20, 100), dtype=np.uint8)
+        seg_array[2:6, 9:12, :] = 9
+        seg_array[2:6, 8:9, :68] = 9
+        # 更窄的附件支撑度明显低于主体边缘，应继续排除。
+        seg_array[2:6, 7:8, :40] = 9
+
+        body_mask = LocalizationStage._s1_body_candidate_mask(
+            seg_array,
+            LabelTarget("vertebrae_S1", [9]),
+        )
+
+        self.assertGreater(int(body_mask[:, 8:9, :].sum()), 0)
+        self.assertEqual(int(body_mask[:, 7:8, :].sum()), 0)
+
+    def test_s1_body_candidate_recovers_short_superior_body_cap(self):
+        """主体上缘只补回一层相连短段，附近孤立附件仍须排除。"""
+
+        seg_array = np.zeros((12, 20, 100), dtype=np.uint8)
+        seg_array[2:6, 9:12, 20:80] = 9
+        # 该段左右支撑较窄，容易被主体投影阈值误删，但它与主体头侧连续。
+        seg_array[6:9, 8:9, 20:50] = 9
+        # 同层附近还有一个足够大的孤立附件；它落在旧矩形补回范围内，
+        # 但没有接触主体上缘，不能被重新带回。
+        seg_array[6, 14:18, 5:80] = 9
+
+        body_mask = LocalizationStage._s1_body_candidate_mask(
+            seg_array,
+            LabelTarget("vertebrae_S1", [9]),
+        )
+
+        self.assertGreater(int(body_mask[6, 8:9, 20:50].sum()), 0)
+        self.assertEqual(int(body_mask[7:9, 8:9, 20:50].sum()), 0)
+        self.assertEqual(int(body_mask[6, 14:18, 5:80].sum()), 0)
+
+    def test_debug_vertebral_body_mask_overlay_uses_s1_specific_candidate(self):
+        """S1 调试 overlay 必须和生产四棱柱使用同一主体提取规则。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((4, 6, 8), dtype=np.uint16)
+        seg_array[1:3, 2:4, 2:6] = 9
+        reference_image = sitk.GetImageFromArray(seg_array)
+        expected_mask = np.zeros_like(seg_array, dtype=bool)
+        expected_mask[2, 3, 4] = True
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            LocalizationStage,
+            "_s1_body_candidate_mask",
+            return_value=expected_mask,
+        ) as s1_candidate, patch.object(
+            LocalizationStage,
+            "_vertebral_body_candidate_mask",
+        ) as regular_candidate:
+            overlay_path = Path(temp_dir) / "椎体主体掩膜.nii.gz"
+            stage._write_debug_vertebral_body_mask_overlay(
+                reference_image=reference_image,
+                seg_array=seg_array,
+                label_targets={
+                    "vertebrae_S1": LabelTarget("vertebrae_S1", [9]),
+                },
+                output_path=overlay_path,
+            )
+
+            overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
+            self.assertEqual(overlay_array[2, 3, 4], 9)
+            s1_candidate.assert_called_once()
+            regular_candidate.assert_not_called()
+
+    def test_spine_geometry_serializes_sagittal_quadrilateral_vertices(self):
+        """阶段三必须把四棱柱的矢状轮廓传给阶段四计算最近点。"""
+
+        image = sitk.GetImageFromArray(np.ones((12, 16, 20), dtype=np.uint8))
+        seg_array = np.zeros((12, 16, 20), dtype=np.uint8)
+        seg_array[2:10, 4:12, 5:15] = 7
+        geometry = LocalizationStage._build_spine_body_geometry(
+            body_part="腰椎",
+            image=image,
+            seg_array=seg_array,
+            label_targets={"vertebrae_L1": LabelTarget("vertebrae_L1", [7])},
+        )
+
+        annotation = geometry["filtered_annotation_centroids"]["vertebrae_L1"]
+        quadrilateral = annotation["sagittal_body_quadrilateral"]
+        self.assertEqual(len(quadrilateral["vertices"]), 4)
+        self.assertEqual(
+            set(quadrilateral["vertices"][0]),
+            {"x", "y", "z"},
+        )
+        self.assertIn("left_right_extent_mm", quadrilateral)
+
     def test_debug_vertebral_body_mask_overlay_excludes_c1_but_keeps_c2(self):
         """主体定位 overlay 排除 C1 环形结构，但保留 C2 及以下椎体。"""
 

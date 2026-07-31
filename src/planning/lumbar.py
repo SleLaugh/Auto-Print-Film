@@ -119,9 +119,9 @@ class LumbarInterspacePlanner:
                     warnings.append(f"暂不支持腰椎区间切状位: {plane_config.plane.value}")
                     continue
 
-                # 方向解析必须放在区间循环内部：当前返回零角度横状位；后续可在此
-                # 根据矢状位上的当前椎间隙方向，为每个 CutSegment 单独计算倾角。
-                frame = default_straight_frame(
+                # 方向解析必须放在区间循环内部：每个椎间可携带自己的端面斜横切坐标系，
+                # 旧定位结果没有该字段时才回退到零角度横状位。
+                frame = segment.frame or default_straight_frame(
                     plane_config.plane,
                     localization_result["image"],
                 )

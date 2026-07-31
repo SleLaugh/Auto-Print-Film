@@ -1377,10 +1377,9 @@ class LocalizationStage(BaseStage):
         """
         写出椎体主体候选 overlay，用于人工校验是否能排除后方附件。
 
-        该产物只服务 CPR/区间切前的几何可行性验证，不参与主流程。规则保持
-        保守可解释：对每个横状位层面从前往后扫描，取第一段达到宽度阈值
-        的连续 AP 区间；每个 AP 行只保留靠近椎体左右中心的连续 x 段，
-        再按原 label id 填色。
+        该产物只服务 CPR/区间切前的几何可行性验证，不参与主流程。普通椎体
+        逐横状位层面提取前方连续 AP 区间和中央 x 段；S1 与生产四棱柱一致，
+        使用左右投影支撑筛选和相连上缘补回。最后按原 label id 填色。
         """
 
         reference_array = sitk.GetArrayFromImage(reference_image)
@@ -1388,12 +1387,19 @@ class LocalizationStage(BaseStage):
         output_path = Path(output_path)
 
         for target in label_targets.values():
-            if LocalizationStage._vertebra_key(target.label_name) == "C1":
+            vertebra_key = LocalizationStage._vertebra_key(target.label_name)
+            if vertebra_key == "C1":
                 continue
-            body_mask = LocalizationStage._vertebral_body_candidate_mask(
-                seg_array,
-                target,
-            )
+            if vertebra_key == "S1":
+                body_mask = LocalizationStage._s1_body_candidate_mask(
+                    seg_array,
+                    target,
+                )
+            else:
+                body_mask = LocalizationStage._vertebral_body_candidate_mask(
+                    seg_array,
+                    target,
+                )
             if body_mask is None or not target.label_ids:
                 continue
             overlay_array[body_mask] = int(target.label_ids[0])
@@ -1461,10 +1467,18 @@ class LocalizationStage(BaseStage):
             vertebra_key = cls._vertebra_key(label_name)
             if vertebra_key is None or vertebra_key == "C1":
                 continue
-            body_mask = cls._vertebral_body_candidate_mask(
-                seg_array,
-                target,
-            )
+            # S1 的骶骨方向和腰椎不同，不能套用“前方稳定行 + 中央 x 行”
+            # 的普通腰椎启发式；改用专用左右支撑筛选和局部上缘补回。
+            if vertebra_key == "S1":
+                body_mask = cls._s1_body_candidate_mask(
+                    seg_array,
+                    target,
+                )
+            else:
+                body_mask = cls._vertebral_body_candidate_mask(
+                    seg_array,
+                    target,
+                )
             indices = (
                 np.argwhere(body_mask)
                 if body_mask is not None
@@ -1472,7 +1486,11 @@ class LocalizationStage(BaseStage):
             )
             body_indices[label_name] = indices
             prism_regions[label_name] = (
-                cls._vertebral_body_prism_region(indices, image)
+                cls._vertebral_body_prism_region(
+                    indices,
+                    image,
+                    retain_all_projection=(vertebra_key == "S1"),
+                )
                 if indices.size
                 else None
             )
@@ -1577,6 +1595,7 @@ class LocalizationStage(BaseStage):
                     "local_superior_inferior_face_centroids": None,
                     "local_superior_inferior_face_candidates": None,
                     "sagittal_body_faces": None,
+                    "sagittal_body_quadrilateral": None,
                     "prism_found": False,
                     "prism_voxel_count": 0,
                     "prism_centroid_voxel": None,
@@ -1600,7 +1619,47 @@ class LocalizationStage(BaseStage):
             sagittal_body_faces = cls._estimate_sagittal_body_faces(
                 indices,
                 image,
+                retain_all_projection=(vertebra_key == "S1"),
             )
+            sagittal_geometry = cls._sagittal_body_quadrilateral(
+                indices,
+                image,
+                retain_all_projection=(vertebra_key == "S1"),
+            )
+            sagittal_body_quadrilateral = None
+            if sagittal_geometry is not None:
+                sagittal_center, sagittal_axes, sagittal_quad = sagittal_geometry
+                indices_xyz = indices[:, [2, 1, 0]].astype(float)
+                spacing = np.asarray(image.GetSpacing(), dtype=float)
+                origin = np.asarray(image.GetOrigin(), dtype=float)
+                direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+                physical_points = origin + (indices_xyz * spacing) @ direction.T
+                left_right_axis = direction[:, 0]
+                left_right_projection = (
+                    (physical_points - sagittal_center) @ left_right_axis
+                )
+                physical_vertices = sagittal_center + (
+                    sagittal_quad @ sagittal_axes.T
+                )
+                sagittal_body_quadrilateral = {
+                    "center": {
+                        "x": float(sagittal_center[0]),
+                        "y": float(sagittal_center[1]),
+                        "z": float(sagittal_center[2]),
+                    },
+                    "vertices": [
+                        {
+                            "x": float(vertex[0]),
+                            "y": float(vertex[1]),
+                            "z": float(vertex[2]),
+                        }
+                        for vertex in physical_vertices
+                    ],
+                    "left_right_extent_mm": {
+                        "min": float(np.min(left_right_projection)),
+                        "max": float(np.max(left_right_projection)),
+                    },
+                }
             prism_region = prism_regions.get(label_name)
             if prism_region is not None:
                 prism_minimum, local_prism_mask = prism_region
@@ -1674,6 +1733,7 @@ class LocalizationStage(BaseStage):
                 ),
                 "local_superior_inferior_face_candidates": local_face_candidates,
                 "sagittal_body_faces": sagittal_body_faces,
+                "sagittal_body_quadrilateral": sagittal_body_quadrilateral,
                 "prism_found": bool(prism_voxel_count),
                 "prism_voxel_count": prism_voxel_count,
                 "prism_centroid_voxel": (
@@ -1852,6 +1912,7 @@ class LocalizationStage(BaseStage):
     def _sagittal_body_quadrilateral(
         indices_zyx: np.ndarray,
         image: sitk.Image,
+        retain_all_projection: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
         """返回主体物理中心、矢状二维轴和有序四边形角点。"""
 
@@ -1863,13 +1924,14 @@ class LocalizationStage(BaseStage):
         origin = np.asarray(image.GetOrigin(), dtype=float)
         direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
         physical_points = origin + (indices_xyz * spacing) @ direction.T
-        retained_projection_mask = (
-            LocalizationStage._retained_sagittal_projection_mask_by_lr_support(
-                indices_zyx,
+        if not retain_all_projection:
+            retained_projection_mask = (
+                LocalizationStage._retained_sagittal_projection_mask_by_lr_support(
+                    indices_zyx,
+                )
             )
-        )
-        if np.count_nonzero(retained_projection_mask) >= 4:
-            physical_points = physical_points[retained_projection_mask]
+            if np.count_nonzero(retained_projection_mask) >= 4:
+                physical_points = physical_points[retained_projection_mask]
         center = physical_points.mean(axis=0)
         sagittal_axes = direction[:, [1, 2]]
         sagittal_points = (physical_points - center) @ sagittal_axes
@@ -1883,6 +1945,7 @@ class LocalizationStage(BaseStage):
     @staticmethod
     def _retained_sagittal_projection_mask_by_lr_support(
         indices_zyx: np.ndarray,
+        minimum_support_fraction: float = 0.35,
     ) -> np.ndarray:
         """只让 LR 支撑足够的 Y/Z 投影点参与矢状四边形拟合。"""
 
@@ -1902,7 +1965,14 @@ class LocalizationStage(BaseStage):
         if max_support <= 2:
             return np.ones(len(indices_zyx), dtype=bool)
 
-        minimum_support = max(2, int(math.ceil(max_support * 0.35)))
+        minimum_support_fraction = min(
+            1.0,
+            max(0.0, float(minimum_support_fraction)),
+        )
+        minimum_support = max(
+            2,
+            int(math.ceil(max_support * minimum_support_fraction)),
+        )
         retained_projection_points = support_counts >= minimum_support
         supported_indices = np.flatnonzero(retained_projection_points)
         supported_points = projection_points[supported_indices]
@@ -1979,12 +2049,14 @@ class LocalizationStage(BaseStage):
     def _estimate_sagittal_body_faces(
         indices_zyx: np.ndarray,
         image: sitk.Image,
+        retain_all_projection: bool = False,
     ) -> list[dict[str, Any]] | None:
         """把过滤椎体主体抽象为矢状投影轮廓上的四个大面。"""
 
         geometry = LocalizationStage._sagittal_body_quadrilateral(
             indices_zyx,
             image,
+            retain_all_projection=retain_all_projection,
         )
         if geometry is None:
             return None
@@ -2099,12 +2171,14 @@ class LocalizationStage(BaseStage):
     def _vertebral_body_prism_region(
         body_indices: np.ndarray,
         image: sitk.Image,
+        retain_all_projection: bool = False,
     ) -> tuple[np.ndarray, np.ndarray] | None:
         """在主体包围盒内栅格化棱柱，返回最小 zyx 索引和局部 mask。"""
 
         geometry = LocalizationStage._sagittal_body_quadrilateral(
             body_indices,
             image,
+            retain_all_projection=retain_all_projection,
         )
         if geometry is None:
             return None
@@ -2303,6 +2377,82 @@ class LocalizationStage(BaseStage):
             return body_mask
         body_mask = LocalizationStage._retain_largest_3d_component(body_mask)
         return LocalizationStage._trim_lr_edge_columns_by_si_height(body_mask)
+
+    @staticmethod
+    def _s1_body_candidate_mask(
+        seg_array: np.ndarray,
+        target: LabelTarget,
+    ) -> np.ndarray | None:
+        """提取 S1 主体，保留骶骨主体同时压掉骶翼和后方附件。"""
+
+        mask = np.isin(seg_array, target.label_ids)
+        if not np.any(mask):
+            return None
+        mask = LocalizationStage._discard_small_3d_components(mask)
+        indices = np.argwhere(mask)
+        if len(indices) < 4:
+            return mask
+
+        # S1 的头脚轴和普通腰椎不同，不能用固定的“最前方 y 行”。
+        # 以左右方向的投影支撑度选主体：骶体在多层左右切片中连续出现，
+        # 骶翼/后方附件只在较少的左右位置出现。阈值取 65% 是为了同时
+        # 保留 S1 的前方和尾端主体，避免旧启发式的二次截断。
+        retained = LocalizationStage._retained_sagittal_projection_mask_by_lr_support(
+            indices,
+            minimum_support_fraction=0.65,
+        )
+        if np.count_nonzero(retained) < 4:
+            return mask
+        body_mask = np.zeros_like(mask, dtype=bool)
+        retained_indices = indices[retained]
+        body_mask[tuple(retained_indices.T)] = True
+        body_mask = LocalizationStage._retain_largest_3d_component(body_mask)
+
+        # 投影支撑阈值对 S1 上缘的小体积连续段尤其敏感。沿图像头侧
+        # 连续补回最多一层；候选连通块必须接触当前上缘的一像素二维膨胀，
+        # 避免把同一 label 的骶翼和后方孤立附件带入四棱柱。
+        retained_indices = np.argwhere(body_mask)
+        if len(retained_indices):
+            superior_z = int(retained_indices[:, 0].max())
+            superior_points = np.argwhere(body_mask[superior_z])
+            y_min = int(superior_points[:, 0].min()) - 4
+            y_max = int(superior_points[:, 0].max()) + 4
+            x_min = int(superior_points[:, 1].min()) - 4
+            x_max = int(superior_points[:, 1].max()) + 4
+            for z_index in range(superior_z + 1, superior_z + 2):
+                if z_index >= mask.shape[0]:
+                    break
+                candidate = mask[z_index].copy()
+                candidate[:max(0, y_min), :] = False
+                candidate[min(mask.shape[1], y_max + 1):, :] = False
+                candidate[:, :max(0, x_min)] = False
+                candidate[:, min(mask.shape[2], x_max + 1):] = False
+                if not np.any(candidate):
+                    break
+                top_slice = body_mask[superior_z]
+                padded_top = np.pad(top_slice, 1, mode="constant")
+                dilated_top = np.zeros_like(top_slice, dtype=bool)
+                for y_offset in range(3):
+                    for x_offset in range(3):
+                        dilated_top |= padded_top[
+                            y_offset:y_offset + top_slice.shape[0],
+                            x_offset:x_offset + top_slice.shape[1],
+                        ]
+                component_image = sitk.ConnectedComponent(
+                    sitk.GetImageFromArray(candidate.astype(np.uint8)),
+                    True,
+                )
+                component_array = sitk.GetArrayFromImage(component_image)
+                touching_components = np.unique(
+                    component_array[dilated_top & candidate],
+                )
+                touching_components = touching_components[touching_components > 0]
+                if touching_components.size:
+                    body_mask[z_index] |= np.isin(
+                        component_array,
+                        touching_components,
+                    )
+        return LocalizationStage._retain_largest_3d_component(body_mask)
 
     @staticmethod
     def _retain_largest_3d_component(mask: np.ndarray) -> np.ndarray:

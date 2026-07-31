@@ -2929,6 +2929,382 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             "height": 119.0,
         })
 
+    def test_interspace_plan_keeps_shortest_gap_at_vertebral_position(self):
+        """椎间切不能把最近点沿平面方向搬到整幅图像中心。"""
+
+        from src.models import Point3D
+        from src.planning.straight import (
+            CutSegment,
+            build_straight_slice_plan,
+            default_straight_frame,
+        )
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.横状位,
+                slice_thickness=1.0,
+                slice_spacing=1.0,
+                window_presets=["骨窗"],
+            )],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["image"]["size_xyz"] = [200, 200, 40]
+        frame = default_straight_frame(
+            PlaneTypeEnum.横状位,
+            localization_result["image"],
+        )
+        segment = CutSegment(
+            group_name="L1-L2",
+            target_start=Point3D(20.0, 30.0, 20.0),
+            target_end=Point3D(20.0, 30.0, 18.0),
+            target_region_bbox=localization_result["correction_scope_bbox"],
+            source_labels=("vertebrae_L1", "vertebrae_L2"),
+            recenter_target_in_plane=False,
+        )
+
+        plan = build_straight_slice_plan(
+            request=request,
+            cut_mode="interspace",
+            plane_config=request.plane_configs[0],
+            localization_result=localization_result,
+            segment=segment,
+            frame=frame,
+        )
+
+        self.assertAlmostEqual(plan.target_start.x, 20.0)
+        self.assertAlmostEqual(plan.target_end.x, 20.0)
+        self.assertAlmostEqual(plan.target_start.y, 30.0)
+        self.assertAlmostEqual(plan.extent_mm.width, 358.0)
+        self.assertAlmostEqual(plan.extent_mm.height, 338.0)
+
+    def test_interspace_uses_convex_prism_closest_pair_and_perpendicular_normal(self):
+        """椎间线应由两个四棱柱最近点决定，法向必须与最近连线一致。"""
+
+        from src.models import Point3D
+        from src.planning.lumbar import resolve_lumbar_interspace_segments
+
+        localization_result = self._lumbar_localization_result()
+        coords = localization_result["coords"]
+        for label_name in (
+            "vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1",
+        ):
+            coords[label_name]["found"] = False
+        coords["vertebrae_L1"]["bbox"].update({"z_min": 6, "z_max": 10})
+        coords["vertebrae_L2"]["bbox"].update({"z_min": 0, "z_max": 4})
+        annotations = {}
+        for label_name, vertices, center in (
+            (
+                "vertebrae_L1",
+                [(0, 10), (2, 10), (2, 6), (0, 6)],
+                (1, 8),
+            ),
+            (
+                "vertebrae_L2",
+                [(4, 4), (6, 4), (6, 0), (4, 0)],
+                (5, 2),
+            ),
+        ):
+            annotations[label_name] = {
+                "found": True,
+                "prism_found": True,
+                "centroid_physical": {"x": 20.0, "y": center[0], "z": center[1]},
+                "sagittal_body_quadrilateral": {
+                    "vertices": [
+                        {"x": 20.0, "y": y, "z": z}
+                        for y, z in vertices
+                    ],
+                    "left_right_extent_mm": {"min": -5.0, "max": 5.0},
+                },
+            }
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": annotations,
+        }
+
+        segments, warnings = resolve_lumbar_interspace_segments(localization_result)
+
+        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertFalse(any("L1-L2" in warning for warning in warnings))
+        segment = segments[0]
+        self.assertFalse(segment.recenter_target_in_plane)
+        vector = Point3D(
+            segment.target_end.x - segment.target_start.x,
+            segment.target_end.y - segment.target_start.y,
+            segment.target_end.z - segment.target_start.z,
+        )
+        length = (vector.x ** 2 + vector.y ** 2 + vector.z ** 2) ** 0.5
+        self.assertAlmostEqual(length, 2.0 * 2.0 ** 0.5, places=6)
+        self.assertAlmostEqual(vector.y / length, 2.0 ** 0.5 / 2.0, places=6)
+        self.assertAlmostEqual(vector.z / length, -2.0 ** 0.5 / 2.0, places=6)
+        self.assertAlmostEqual(
+            segment.frame.normal.x * vector.x
+            + segment.frame.normal.y * vector.y
+            + segment.frame.normal.z * vector.z,
+            length,
+            places=6,
+        )
+
+        localization_result["image"]["direction"][0] = -1.0
+        reflected_segments, reflected_warnings = (
+            resolve_lumbar_interspace_segments(localization_result)
+        )
+        self.assertEqual(
+            [item.group_name for item in reflected_segments],
+            ["L1-L2"],
+        )
+        self.assertIsNotNone(reflected_segments[0].frame)
+        self.assertFalse(any(
+            "L1-L2" in warning
+            for warning in reflected_warnings
+        ))
+
+    def test_interspace_closest_pair_rejects_crossing_prism_polygons(self):
+        """边相交但顶点互不包含的四边形也属于重叠，不能伪造非零间隙。"""
+
+        from src.planning.spine_common import _closest_convex_polygon_pair_2d
+
+        horizontal = [(-3.0, -1.0), (3.0, -1.0), (3.0, 1.0), (-3.0, 1.0)]
+        vertical = [(-1.0, -3.0), (1.0, -3.0), (1.0, 3.0), (-1.0, 3.0)]
+
+        self.assertIsNone(
+            _closest_convex_polygon_pair_2d(horizontal, vertical),
+        )
+
+    def test_interspace_invalid_quadrilateral_does_not_resurrect_face_geometry(self):
+        """存在但相交的四边形无效时，不能再用旧端面中心绕过碰撞检查。"""
+
+        from src.planning.lumbar import resolve_lumbar_interspace_segments
+
+        localization_result = self._lumbar_localization_result()
+        for label_name in (
+            "vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1",
+        ):
+            localization_result["coords"][label_name]["found"] = False
+        localization_result["coords"]["vertebrae_L1"]["bbox"].update({
+            "z_min": 8,
+            "z_max": 10,
+        })
+        localization_result["coords"]["vertebrae_L2"]["bbox"].update({
+            "z_min": 4,
+            "z_max": 6,
+        })
+        annotations = {}
+        for label_name, vertices, center_z in (
+            (
+                "vertebrae_L1",
+                [(-3.0, 7.0), (3.0, 7.0), (3.0, 9.0), (-3.0, 9.0)],
+                9.0,
+            ),
+            (
+                "vertebrae_L2",
+                [(-1.0, 5.0), (1.0, 5.0), (1.0, 11.0), (-1.0, 11.0)],
+                5.0,
+            ),
+        ):
+            annotations[label_name] = {
+                "found": True,
+                "prism_found": True,
+                "centroid_physical": {"x": 60.0, "y": 50.0, "z": center_z},
+                "sagittal_body_quadrilateral": {
+                    "vertices": [
+                        {"x": 60.0, "y": 50.0 + y, "z": z}
+                        for y, z in vertices
+                    ],
+                    "left_right_extent_mm": {"min": -5.0, "max": 5.0},
+                },
+                "sagittal_body_faces": [
+                    {
+                        "axis_index": 0,
+                        "side": "min",
+                        "point_count": 100,
+                        "center": {"x": 60.0, "y": 50.0, "z": center_z - 1.0},
+                        "normal": {"x": 0.0, "y": 0.0, "z": -1.0},
+                    },
+                    {
+                        "axis_index": 0,
+                        "side": "max",
+                        "point_count": 100,
+                        "center": {"x": 60.0, "y": 50.0, "z": center_z + 1.0},
+                        "normal": {"x": 0.0, "y": 0.0, "z": 1.0},
+                    },
+                ],
+            }
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": annotations,
+        }
+
+        segments, warnings = resolve_lumbar_interspace_segments(
+            localization_result,
+        )
+
+        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertIsNone(segments[0].frame)
+        self.assertTrue(segments[0].recenter_target_in_plane)
+        self.assertTrue(any("L1-L2" in warning for warning in warnings))
+
+    def test_interspace_prism_rejects_nonfinite_frame_and_concave_polygon(self):
+        """非有限图像方向或非凸四边形必须被拒绝，不能产生 NaN 坐标系。"""
+
+        from src.planning.spine_common import (
+            _parse_sagittal_prism,
+            _resolve_interspace_prism_geometry,
+        )
+        from src.planning.straight import default_straight_frame
+
+        localization_result = self._lumbar_localization_result()
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": {
+                label_name: {
+                    "found": True,
+                    "prism_found": True,
+                    "centroid_physical": {"x": 60.0, "y": 50.0, "z": center_z},
+                    "sagittal_body_quadrilateral": {
+                        "vertices": [
+                            {"x": 60.0, "y": y, "z": z}
+                            for y, z in vertices
+                        ],
+                        "left_right_extent_mm": {"min": -5.0, "max": 5.0},
+                    },
+                }
+                for label_name, center_z, vertices in (
+                    (
+                        "vertebrae_L1",
+                        9.0,
+                        [(45.0, 8.0), (55.0, 8.0), (50.0, 9.0), (55.0, 10.0)],
+                    ),
+                    (
+                        "vertebrae_L2",
+                        5.0,
+                        [(45.0, 4.0), (55.0, 4.0), (55.0, 6.0), (45.0, 6.0)],
+                    ),
+                )
+            },
+        }
+        frame = default_straight_frame(
+            PlaneTypeEnum.横状位,
+            localization_result["image"],
+        )
+        upper = localization_result["spine_geometry"][
+            "filtered_annotation_centroids"
+        ]["vertebrae_L1"]
+        self.assertIsNone(_parse_sagittal_prism(upper, frame))
+
+        localization_result["image"]["direction"][0] = math.nan
+        self.assertIsNone(_resolve_interspace_prism_geometry(
+            localization_result,
+            "vertebrae_L1",
+            "vertebrae_L2",
+        ))
+
+    def test_interspace_rejects_quadrilateral_when_prism_was_invalidated(self):
+        """阶段三判定四棱柱碰撞失效后，阶段四不能继续使用残留四边形。"""
+
+        from src.planning.lumbar import resolve_lumbar_interspace_segments
+
+        localization_result = self._lumbar_localization_result()
+        for label_name in (
+            "vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1",
+        ):
+            localization_result["coords"][label_name]["found"] = False
+        localization_result["coords"]["vertebrae_L1"]["bbox"].update({
+            "z_min": 8,
+            "z_max": 10,
+        })
+        localization_result["coords"]["vertebrae_L2"]["bbox"].update({
+            "z_min": 4,
+            "z_max": 6,
+        })
+        annotations = {}
+        for label_name, z_min, z_max in (
+            ("vertebrae_L1", 8.0, 10.0),
+            ("vertebrae_L2", 4.0, 6.0),
+        ):
+            annotations[label_name] = {
+                "found": True,
+                "prism_found": False,
+                "centroid_physical": {
+                    "x": 60.0,
+                    "y": 50.0,
+                    "z": (z_min + z_max) / 2.0,
+                },
+                "sagittal_body_quadrilateral": {
+                    "vertices": [
+                        {"x": 60.0, "y": y, "z": z}
+                        for y, z in (
+                            (45.0, z_min),
+                            (55.0, z_min),
+                            (55.0, z_max),
+                            (45.0, z_max),
+                        )
+                    ],
+                    "left_right_extent_mm": {"min": -5.0, "max": 5.0},
+                },
+            }
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": annotations,
+        }
+
+        segments, warnings = resolve_lumbar_interspace_segments(
+            localization_result,
+        )
+
+        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertIsNone(segments[0].frame)
+        self.assertTrue(segments[0].recenter_target_in_plane)
+        self.assertTrue(any("L1-L2" in warning for warning in warnings))
+
+    def test_interspace_missing_label_bbox_recenters_centroid_fallback(self):
+        """四棱柱有效但 label bbox 缺失时，质心回退不能保留 prism 定位标记。"""
+
+        from src.planning.lumbar import resolve_lumbar_interspace_segments
+
+        localization_result = self._lumbar_localization_result()
+        for label_name in (
+            "vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1",
+        ):
+            localization_result["coords"][label_name]["found"] = False
+        localization_result["coords"]["vertebrae_L1"].pop("bbox")
+        annotations = {}
+        for label_name, center_z in (
+            ("vertebrae_L1", 10.0),
+            ("vertebrae_L2", 8.0),
+        ):
+            annotations[label_name] = {
+                "found": True,
+                "prism_found": True,
+                "centroid_physical": {
+                    "x": 60.0,
+                    "y": 50.0,
+                    "z": center_z,
+                },
+                "sagittal_body_quadrilateral": {
+                    "vertices": [
+                        {"x": 60.0, "y": y, "z": z}
+                        for y, z in (
+                            (45.0, center_z - 0.5),
+                            (55.0, center_z - 0.5),
+                            (55.0, center_z + 0.5),
+                            (45.0, center_z + 0.5),
+                        )
+                    ],
+                    "left_right_extent_mm": {"min": -5.0, "max": 5.0},
+                },
+            }
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": annotations,
+        }
+
+        segments, warnings = resolve_lumbar_interspace_segments(
+            localization_result,
+        )
+
+        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertIsNone(segments[0].frame)
+        self.assertTrue(segments[0].recenter_target_in_plane)
+        self.assertTrue(any("L1-L2" in warning for warning in warnings))
+
     def test_straight_plan_covers_target_along_final_tilted_normal(self):
         """倾斜区间也应沿最终法向等距展开并完整覆盖首尾。"""
 
@@ -3328,6 +3704,78 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         ])
         self.assertTrue(all(plan.slices for plan in result.plans))
 
+    def test_lumbar_interspace_resolves_five_valid_prism_frames_and_bbox_unions(self):
+        """L1–S1 五个四棱柱间隙均应生成有限斜法向并覆盖相邻全量 bbox。"""
+
+        from src.planning.lumbar import resolve_lumbar_interspace_segments
+        from src.planning.spine_common import union_bboxes
+
+        localization_result = self._lumbar_localization_result()
+        annotations = {}
+        labels = ("L1", "L2", "L3", "L4", "L5", "S1")
+        for index, label in enumerate(labels):
+            center_y = 40.0 + 3.0 * index
+            center_z = 10.0 - 2.0 * index
+            annotations[f"vertebrae_{label}"] = {
+                "found": True,
+                "prism_found": True,
+                "centroid_physical": {
+                    "x": 60.0,
+                    "y": center_y,
+                    "z": center_z,
+                },
+                "sagittal_body_quadrilateral": {
+                    "vertices": [
+                        {"x": 60.0, "y": y, "z": z}
+                        for y, z in (
+                            (center_y - 0.5, center_z - 0.5),
+                            (center_y + 0.5, center_z - 0.5),
+                            (center_y + 0.5, center_z + 0.5),
+                            (center_y - 0.5, center_z + 0.5),
+                        )
+                    ],
+                    "left_right_extent_mm": {"min": -5.0, "max": 5.0},
+                },
+            }
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": annotations,
+        }
+
+        segments, warnings = resolve_lumbar_interspace_segments(
+            localization_result,
+        )
+
+        self.assertEqual(
+            [segment.group_name for segment in segments],
+            ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"],
+        )
+        self.assertEqual(warnings, [])
+        for index, segment in enumerate(segments):
+            with self.subTest(group_name=segment.group_name):
+                self.assertIsNotNone(segment.frame)
+                self.assertFalse(segment.recenter_target_in_plane)
+                self.assertTrue(all(
+                    math.isfinite(value)
+                    for direction in (
+                        segment.frame.row_dir,
+                        segment.frame.col_dir,
+                        segment.frame.normal,
+                    )
+                    for value in (direction.x, direction.y, direction.z)
+                ))
+                self.assertGreater(abs(segment.frame.normal.y), 0.1)
+                self.assertNotAlmostEqual(abs(segment.frame.normal.z), 1.0)
+                upper_bbox = localization_result["coords"][
+                    f"vertebrae_{labels[index]}"
+                ]["bbox"]
+                lower_bbox = localization_result["coords"][
+                    f"vertebrae_{labels[index + 1]}"
+                ]["bbox"]
+                self.assertEqual(
+                    segment.target_region_bbox,
+                    union_bboxes(upper_bbox, lower_bbox),
+                )
+
     def test_lumbar_interspace_resolves_one_segment_per_available_gap(self):
         """腰椎区间解析应使用相邻椎体相向 bbox 表面生成独立区间。"""
 
@@ -3357,7 +3805,246 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         )
         self.assertEqual(segments[0].target_region_bbox["z_min"], 5)
         self.assertEqual(segments[0].target_region_bbox["z_max"], 11)
+        self.assertTrue(segments[0].recenter_target_in_plane)
         self.assertTrue(any("L3-L4" in warning for warning in warnings))
+
+    def test_lumbar_interspace_uses_sagittal_faces_when_full_bboxes_overlap(self):
+        """全量 bbox 重叠时，仍应使用四棱柱相向端面生成斜横切区间。"""
+
+        from src.planning.lumbar import resolve_lumbar_interspace_segments
+
+        localization_result = self._lumbar_localization_result()
+        coords = localization_result["coords"]
+        coords["vertebrae_L1"]["bbox"].update({"z_min": 8, "z_max": 14})
+        coords["vertebrae_L2"]["bbox"].update({"z_min": 6, "z_max": 12})
+        for label_name in ("vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1"):
+            coords[label_name]["found"] = False
+
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": {
+                "vertebrae_L1": {
+                    "found": True,
+                    "centroid_physical": {"x": 60.0, "y": 50.0, "z": 12.0},
+                    "sagittal_body_faces": [
+                        {
+                            "axis_index": 0,
+                            "side": "min",
+                            "point_count": 100,
+                            "center": {"x": 60.0, "y": 50.0, "z": 11.0},
+                            "normal": {"x": 0.0, "y": -0.5, "z": -0.8660254},
+                        },
+                        {
+                            "axis_index": 0,
+                            "side": "max",
+                            "point_count": 100,
+                            "center": {"x": 60.0, "y": 50.0, "z": 13.0},
+                            "normal": {"x": 0.0, "y": 0.5, "z": 0.8660254},
+                        },
+                    ],
+                },
+                "vertebrae_L2": {
+                    "found": True,
+                    "centroid_physical": {"x": 60.0, "y": 50.0, "z": 8.0},
+                    "sagittal_body_faces": [
+                        {
+                            "axis_index": 0,
+                            "side": "min",
+                            "point_count": 100,
+                            "center": {"x": 60.0, "y": 50.0, "z": 7.0},
+                            "normal": {"x": 0.0, "y": -0.5, "z": -0.8660254},
+                        },
+                        {
+                            "axis_index": 0,
+                            "side": "max",
+                            "point_count": 100,
+                            "center": {"x": 60.0, "y": 50.0, "z": 9.0},
+                            "normal": {"x": 0.0, "y": 0.5, "z": 0.8660254},
+                        },
+                    ],
+                },
+            },
+        }
+
+        segments, warnings = resolve_lumbar_interspace_segments(
+            localization_result,
+        )
+
+        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertFalse(any("L1-L2" in warning for warning in warnings))
+        segment = segments[0]
+        self.assertAlmostEqual(segment.target_start.z, 11.0)
+        self.assertAlmostEqual(segment.target_end.z, 9.0)
+        self.assertIsNotNone(segment.frame)
+        self.assertTrue(segment.recenter_target_in_plane)
+        self.assertLess(segment.frame.normal.z, -0.8)
+        self.assertLess(segment.frame.normal.y, -0.2)
+        self.assertNotEqual(segment.frame.normal.to_dict(), {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 1.0,
+        })
+
+    def test_lumbar_interspace_planner_consumes_segment_face_frame(self):
+        """腰椎 planner 应把 resolver 的端面坐标系传给通用直线计划。"""
+
+        localization_result = self._lumbar_localization_result()
+        self._add_lumbar_face_geometry(localization_result)
+        localization_result["coords"]["vertebrae_L1"]["bbox"].update({
+            "z_min": 8,
+            "z_max": 14,
+        })
+        localization_result["coords"]["vertebrae_L2"]["bbox"].update({
+            "z_min": 6,
+            "z_max": 12,
+        })
+        for label_name in ("vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1"):
+            localization_result["coords"][label_name]["found"] = False
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.横状位,
+                slice_thickness=1.0,
+                slice_spacing=1.0,
+                window_presets=["骨窗"],
+                line_extent_mode=CutLineExtentModeEnum.部位范围,
+            )],
+        )
+
+        result = LumbarInterspacePlanner().build_plans(
+            request,
+            localization_result,
+        )
+
+        self.assertEqual(len(result.plans), 1)
+        plan = result.plans[0]
+        self.assertEqual(plan.group_name, "L1-L2")
+        self.assertLess(plan.slices[0].normal.y, -0.2)
+        self.assertLess(plan.slices[0].normal.z, -0.8)
+        self.assertAlmostEqual(plan.extent_mm.width, 10.0)
+        self.assertAlmostEqual(plan.extent_mm.height, 12.660254, places=5)
+
+    def test_lumbar_interspace_warns_and_falls_back_when_faces_are_invalid(self):
+        """端面字段非法时应回退 bbox，并只对当前区间写 warning。"""
+
+        from src.planning.lumbar import resolve_lumbar_interspace_segments
+
+        localization_result = self._lumbar_localization_result()
+        coords = localization_result["coords"]
+        coords["vertebrae_L1"]["bbox"].update({"z_min": 9, "z_max": 11})
+        coords["vertebrae_L2"]["bbox"].update({"z_min": 5, "z_max": 7})
+        for label_name in ("vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1"):
+            coords[label_name]["found"] = False
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": {
+                "vertebrae_L1": {
+                    "found": True,
+                    "centroid_physical": {"x": 60.0, "y": 50.0, "z": 10.0},
+                    "sagittal_body_faces": [],
+                },
+                "vertebrae_L2": {
+                    "found": True,
+                    "centroid_physical": {"x": 60.0, "y": 50.0, "z": 6.0},
+                    "sagittal_body_faces": [],
+                },
+            },
+        }
+
+        segments, warnings = resolve_lumbar_interspace_segments(
+            localization_result,
+        )
+
+        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertIsNone(segments[0].frame)
+        self.assertTrue(any("L1-L2" in warning and "端面" in warning for warning in warnings))
+
+    def test_lumbar_interspace_falls_back_when_face_interval_is_degenerate(self):
+        """端面中心退化时不能丢弃有效 bbox 区间。"""
+
+        from src.planning.lumbar import resolve_lumbar_interspace_segments
+
+        localization_result = self._lumbar_localization_result()
+        self._add_lumbar_face_geometry(localization_result)
+        localization_result["coords"]["vertebrae_L1"]["bbox"].update({
+            "z_min": 9,
+            "z_max": 11,
+        })
+        localization_result["coords"]["vertebrae_L2"]["bbox"].update({
+            "z_min": 5,
+            "z_max": 7,
+        })
+        for label_name in ("vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1"):
+            localization_result["coords"][label_name]["found"] = False
+        for annotation in localization_result["spine_geometry"][
+            "filtered_annotation_centroids"
+        ].values():
+            for face in annotation["sagittal_body_faces"]:
+                face["center"]["z"] = 8.0
+
+        segments, warnings = resolve_lumbar_interspace_segments(
+            localization_result,
+        )
+
+        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertIsNone(segments[0].frame)
+        self.assertTrue(any("L1-L2" in warning and "端面" in warning for warning in warnings))
+
+    def test_lumbar_interspace_tolerates_malformed_spine_geometry_container(self):
+        """损坏的 spine_geometry 容器应安全回退到 bbox。"""
+
+        from src.planning.lumbar import resolve_lumbar_interspace_segments
+
+        localization_result = self._lumbar_localization_result()
+        localization_result["coords"]["vertebrae_L1"]["bbox"].update({
+            "z_min": 9,
+            "z_max": 11,
+        })
+        localization_result["coords"]["vertebrae_L2"]["bbox"].update({
+            "z_min": 5,
+            "z_max": 7,
+        })
+        for label_name in ("vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1"):
+            localization_result["coords"][label_name]["found"] = False
+        localization_result["spine_geometry"] = None
+
+        segments, warnings = resolve_lumbar_interspace_segments(
+            localization_result,
+        )
+
+        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertIsNone(segments[0].frame)
+        self.assertFalse(any("L1-L2" in warning for warning in warnings))
+
+    def test_lumbar_interspace_rejects_incomplete_face_pair(self):
+        """只有一条头脚面时应视为不完整几何并回退 bbox。"""
+
+        from src.planning.lumbar import resolve_lumbar_interspace_segments
+
+        localization_result = self._lumbar_localization_result()
+        self._add_lumbar_face_geometry(localization_result)
+        localization_result["coords"]["vertebrae_L1"]["bbox"].update({
+            "z_min": 9,
+            "z_max": 11,
+        })
+        localization_result["coords"]["vertebrae_L2"]["bbox"].update({
+            "z_min": 5,
+            "z_max": 7,
+        })
+        for label_name in ("vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1"):
+            localization_result["coords"][label_name]["found"] = False
+        for annotation in localization_result["spine_geometry"][
+            "filtered_annotation_centroids"
+        ].values():
+            annotation["sagittal_body_faces"] = annotation["sagittal_body_faces"][:1]
+
+        segments, warnings = resolve_lumbar_interspace_segments(
+            localization_result,
+        )
+
+        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertIsNone(segments[0].frame)
+        self.assertTrue(any("L1-L2" in warning and "端面" in warning for warning in warnings))
 
     def test_lumbar_interspace_target_extent_uses_current_label_pair(self):
         """区间范围切应使用当前相邻椎体 bbox 并集构造横状位计划。"""
@@ -4073,6 +4760,55 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 "size_xyz": [120, 120, 40],
             },
             "coords": coords,
+        }
+
+    @staticmethod
+    def _add_lumbar_face_geometry(localization_result):
+        """为测试注入一对相邻椎体的有效矢状端面。"""
+
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": {
+                "vertebrae_L1": {
+                    "found": True,
+                    "centroid_physical": {"x": 60.0, "y": 50.0, "z": 12.0},
+                    "sagittal_body_faces": [
+                        {
+                            "axis_index": 0,
+                            "side": "min",
+                            "point_count": 100,
+                            "center": {"x": 60.0, "y": 50.0, "z": 11.0},
+                            "normal": {"x": 0.0, "y": -0.5, "z": -0.8660254},
+                        },
+                        {
+                            "axis_index": 0,
+                            "side": "max",
+                            "point_count": 100,
+                            "center": {"x": 60.0, "y": 50.0, "z": 13.0},
+                            "normal": {"x": 0.0, "y": 0.5, "z": 0.8660254},
+                        },
+                    ],
+                },
+                "vertebrae_L2": {
+                    "found": True,
+                    "centroid_physical": {"x": 60.0, "y": 50.0, "z": 8.0},
+                    "sagittal_body_faces": [
+                        {
+                            "axis_index": 0,
+                            "side": "min",
+                            "point_count": 100,
+                            "center": {"x": 60.0, "y": 50.0, "z": 7.0},
+                            "normal": {"x": 0.0, "y": -0.5, "z": -0.8660254},
+                        },
+                        {
+                            "axis_index": 0,
+                            "side": "max",
+                            "point_count": 100,
+                            "center": {"x": 60.0, "y": 50.0, "z": 9.0},
+                            "normal": {"x": 0.0, "y": 0.5, "z": 0.8660254},
+                        },
+                    ],
+                },
+            },
         }
 
     @staticmethod

@@ -129,17 +129,20 @@ class LocalizationResult:
     coords: Dict[str, LabelCoordinate]  # 每个目标 label 的 bbox/centroid 定位结果
     raw_for_reconstruction_path: str = ""  # 阶段五实际应该读取的 raw 图像；未回正时指向原始 raw_0000
     seg_for_reconstruction_path: str = ""  # 与 raw 同步的分割图；未回正时指向原始 seg.nii.gz
-    correction_applied: bool = False  # 是否真的执行了图像回正；当前默认固定为 False
-    correction_angle_degrees: float = 0.0  # 回正逻辑当前为 TODO，默认不输出可执行角度
-    correction_scope_bbox: Optional[VoxelBBox] = None  # 本次定位目标的整体 bbox，后续回正算法可用它定义作用范围
-    correction_params: Dict[str, Any] = field(default_factory=dict)  # 回正请求状态、TODO 原因、阈值等诊断参数
+    correction_applied: bool = False  # 是否真的把回正图切换为主流程输入；候选阶段固定为 False
+    correction_angle_degrees: float = 0.0  # 横状位 XY 候选角；拒绝或禁用时为 0.0
+    correction_scope_bbox: Optional[VoxelBBox] = None  # 本次定位目标的整体 bbox，用作候选回正中心参考
+    correction_params: Dict[str, Any] = field(default_factory=dict)  # 回正候选状态、阈值、角度和拒绝原因等诊断参数
     corrected_raw_path: str = ""  # 兼容旧字段；未回正时等于 raw_for_reconstruction_path
     corrected_seg_path: str = ""  # 兼容旧字段；未回正时等于 seg_for_reconstruction_path
+    candidate_raw_path: str = ""  # 横状位 XY 候选回正 raw；第一版不作为主流程输入
+    candidate_seg_path: str = ""  # 横状位 XY 候选回正 seg；第一版不作为主流程输入
     debug_bbox_overlay_path: str = ""  # 研发期 ITK-SNAP bbox 边框 overlay；后续稳定后可删除
     debug_target_mask_overlay_path: str = ""  # 研发期 ITK-SNAP 真实目标 mask overlay；用于避免把外接盒投影视为定位偏移
     debug_label_mask_overlay_path: str = ""  # 研发期 ITK-SNAP 分 label mask overlay；保留各椎体原始 label id
     debug_vertebral_body_mask_overlay_path: str = ""  # 研发期椎体主体候选 mask overlay；用于校验是否能从完整椎体 label 中排除后方附件
     debug_vertebral_body_prism_mask_overlay_path: str = ""  # 研发期椎体四棱柱 mask overlay；用于核对规则化主体与 CPR 质心
+    debug_xy_correction_crosshair_overlay_path: str = ""  # 横状位 XY 候选回正方向线 overlay
     is_skewed: bool = False  # 兼容旧字段；当前语义等同于 correction_applied，不再表示已可靠检测到歪斜
     skew_params: Dict[str, Any] = field(default_factory=dict)  # 兼容旧字段；语义等同于 correction_params
     anatomical_geometry: Optional[AnatomicalGeometryResult] = None  # 第三步输出给第四步的统一解剖坐标；未适配部位为空
@@ -177,11 +180,14 @@ class LocalizationResult:
             'correction_params': self.correction_params,
             'corrected_raw_path': self.corrected_raw_path,
             'corrected_seg_path': self.corrected_seg_path,
+            'candidate_raw_path': self.candidate_raw_path,
+            'candidate_seg_path': self.candidate_seg_path,
             'debug_bbox_overlay_path': self.debug_bbox_overlay_path,
             'debug_target_mask_overlay_path': self.debug_target_mask_overlay_path,
             'debug_label_mask_overlay_path': self.debug_label_mask_overlay_path,
             'debug_vertebral_body_mask_overlay_path': self.debug_vertebral_body_mask_overlay_path,
             'debug_vertebral_body_prism_mask_overlay_path': self.debug_vertebral_body_prism_mask_overlay_path,
+            'debug_xy_correction_crosshair_overlay_path': self.debug_xy_correction_crosshair_overlay_path,
             'is_skewed': self.is_skewed,
             'skew_params': self.skew_params,
         }

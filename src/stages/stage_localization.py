@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-阶段三：定位与回正占位
-椎体/目标 label 定位、目标 bbox 输出，以及回正 TODO 状态记录
+阶段三：定位与横状位 XY 回正候选
+椎体/目标 label 定位、目标 bbox 输出，以及不切换主流程输入的回正候选诊断
 """
 
 from pathlib import Path
@@ -46,6 +46,9 @@ class LocalizationStage(BaseStage):
         self.correction_angle_threshold_degrees = float(
             self.config.get('correction_angle_threshold_degrees', 3.0)
         )
+        self.correction_non_spine_angle_threshold_degrees = float(
+            self.config.get('correction_non_spine_angle_threshold_degrees', 8.0)
+        )
         # PCA 至少需要一定数量的目标体素；太少时方向不稳定，直接跳过回正。
         self.correction_min_points = int(
             self.config.get('correction_min_points', 10)
@@ -54,9 +57,13 @@ class LocalizationStage(BaseStage):
         self.correction_min_vertebrae = int(
             self.config.get('correction_min_vertebrae', 2)
         )
-        # 当前“椎体 PCA -> 全局刚性回正”的角度定义已在真实颈椎 CT 上验证不可靠。
-        # 阶段三保留“回正”流程位置，但算法状态是 TODO：默认请求回正、记录
-        # 待实现原因，不再自动生成 raw_corrected/seg_corrected，避免正片被误旋转。
+        # 多个椎体的横状位候选角必须彼此接近；离散过大通常说明不是
+        # 整体体位旋转，而是椎体形态、曲度或局部附件在拉动 PCA。
+        self.correction_max_label_angle_spread_degrees = float(
+            self.config.get('correction_max_label_angle_spread_degrees', 15.0)
+        )
+        # 阶段三只写候选回正图和诊断信息，不把候选图切换为阶段四/五输入。
+        # 主流程真正启用回正仍由 enable_experimental_global_correction 单独控制。
         self.correction_requested = bool(
             self.config.get('correction_requested', True)
         )
@@ -218,37 +225,31 @@ class LocalizationStage(BaseStage):
         DebugLog(f"    已提取 {len(label_coordinates)} 个Label坐标")
         DebugLog(f"    目标整体bbox: {correction_scope_bbox.to_dict()}")
         
-        # [3] detect_skew: 当前只保留定位，回正算法先作为 TODO 占位。
-        # 旧算法会把椎体形态/颈椎走形误当成病人横断面旋转角，真实正片会被
-        # 硬转歪。这里不再给主流程输出可执行角度，只记录禁用原因。
-        if self.enable_global_correction:
-            DebugLog("  [3] detect_skew: 基于目标范围检测横状位歪斜...")
-            skew_info = self._detect_target_axial_skew(seg_array, label_targets)
-            DebugLog(f"    横状位偏角: {skew_info['angle_degrees']:.3f}°")
-            DebugLog(f"    是否需要回正: {skew_info['should_correct']}")
-        else:
-            DebugLog("  [3] detect_skew: 回正逻辑 TODO，阶段三只输出定位结果")
-            skew_info = self._todo_correction_info()
-        
-        # [4] correct_skew: 回正变换
+        # [3] detect_skew: 只估计横状位 XY 回正候选，不让主流程直接使用候选图。
+        DebugLog("  [3] detect_skew: 估计横状位 XY 回正候选...")
+        xy_correction_candidate = self._build_xy_correction_candidate(
+            seg_array,
+            label_targets,
+            body_part=request.body_part.value,
+        )
+        DebugLog(
+            "    横状位 XY 候选角: "
+            f"{xy_correction_candidate['angle_degrees']:.3f}°, "
+            f"status={xy_correction_candidate['correction_status']}"
+        )
+
+        # [4] correct_skew: 写出候选回正图，但默认保持原始 raw/seg 给阶段四五。
         nifti_path = Path(request.output_dir) / 'nifti'
-        DebugLog("  [4] correct_skew: 回正逻辑 TODO，占位返回原始 raw/seg...")
-        correction_result = self._correct_images_if_needed(
+        DebugLog("  [4] correct_skew: 写出候选回正图，主流程继续使用原始 raw/seg...")
+        correction_result = self._write_xy_correction_candidate_images(
             raw_path=str(raw_path),
             seg_path=str(seg_path),
             output_dir=nifti_path,
-            skew_info=skew_info,
+            candidate=xy_correction_candidate,
             correction_center_bbox=correction_scope_bbox,
         )
 
-        if correction_result['correction_applied']:
-            DebugLog("    已写出回正图像，重新从 seg_corrected.nii.gz 提取坐标")
-            image = sitk.ReadImage(correction_result['seg_for_reconstruction_path'])
-            seg_array = sitk.GetArrayFromImage(image)
-            label_coordinates = self._extract_label_coordinates(seg_array, label_targets)
-            self._validate_found_labels(label_coordinates)
-        else:
-            DebugLog("    未执行回正，后续阶段继续使用原始 raw/seg")
+        DebugLog("    未执行主流程回正，后续阶段继续使用原始 raw/seg")
 
         target_mask = self._build_target_mask(seg_array, label_targets)
         label_masks = {
@@ -324,6 +325,20 @@ class LocalizationStage(BaseStage):
                 "    调试椎体四棱柱 mask overlay: "
                 f"{debug_vertebral_body_prism_mask_overlay_path}"
             )
+        debug_xy_correction_crosshair_overlay_path = (
+            output_path / '横状位XY回正十字线.nii.gz'
+        )
+        if is_debug_log_file_enabled():
+            self._write_xy_correction_crosshair_overlay(
+                reference_image=image,
+                output_path=debug_xy_correction_crosshair_overlay_path,
+                correction_center_bbox=correction_scope_bbox,
+                candidate=xy_correction_candidate,
+            )
+            DebugLog(
+                "    调试横状位 XY 回正十字线 overlay: "
+                f"{debug_xy_correction_crosshair_overlay_path}"
+            )
 
         localization_result_path = output_path / 'localization_result.json'
         if not is_debug_log_file_enabled():
@@ -349,11 +364,13 @@ class LocalizationStage(BaseStage):
             'raw_for_reconstruction_path': correction_result['raw_for_reconstruction_path'],
             'seg_for_reconstruction_path': correction_result['seg_for_reconstruction_path'],
             'correction_applied': correction_result['correction_applied'],
-            'correction_angle_degrees': skew_info['angle_degrees'],
+            'correction_angle_degrees': xy_correction_candidate['angle_degrees'],
             'correction_scope_bbox': correction_scope_bbox.to_dict(),
             'correction_params': correction_result['correction_params'],
             'corrected_raw_path': correction_result['corrected_raw_path'],
             'corrected_seg_path': correction_result['corrected_seg_path'],
+            'candidate_raw_path': correction_result['candidate_raw_path'],
+            'candidate_seg_path': correction_result['candidate_seg_path'],
             'is_skewed': correction_result['correction_applied'],
             'skew_params': correction_result['correction_params'],
             'spine_geometry': spine_geometry,
@@ -362,6 +379,7 @@ class LocalizationStage(BaseStage):
             'debug_label_mask_overlay_path': str(debug_label_mask_overlay_path) if is_debug_log_file_enabled() else '',
             'debug_vertebral_body_mask_overlay_path': str(debug_vertebral_body_mask_overlay_path) if is_debug_log_file_enabled() else '',
             'debug_vertebral_body_prism_mask_overlay_path': str(debug_vertebral_body_prism_mask_overlay_path) if is_debug_log_file_enabled() else '',
+            'debug_xy_correction_crosshair_overlay_path': str(debug_xy_correction_crosshair_overlay_path) if is_debug_log_file_enabled() else '',
         }
         if anatomical_geometry is not None:
             result['anatomical_geometry'] = anatomical_geometry.to_dict()
@@ -389,6 +407,8 @@ class LocalizationStage(BaseStage):
             spine_geometry=result['spine_geometry'],
             corrected_raw_path=result['corrected_raw_path'],
             corrected_seg_path=result['corrected_seg_path'],
+            candidate_raw_path=result['candidate_raw_path'],
+            candidate_seg_path=result['candidate_seg_path'],
             debug_bbox_overlay_path=result['debug_bbox_overlay_path'],
             debug_target_mask_overlay_path=result['debug_target_mask_overlay_path'],
             debug_label_mask_overlay_path=result['debug_label_mask_overlay_path'],
@@ -396,6 +416,9 @@ class LocalizationStage(BaseStage):
             debug_vertebral_body_prism_mask_overlay_path=result[
                 'debug_vertebral_body_prism_mask_overlay_path'
             ],
+            debug_xy_correction_crosshair_overlay_path=(
+                result['debug_xy_correction_crosshair_overlay_path']
+            ),
             is_skewed=result['is_skewed'],
             skew_params=result['skew_params'],
             anatomical_geometry=anatomical_geometry,
@@ -855,10 +878,11 @@ class LocalizationStage(BaseStage):
         根据目标类型选择横状位角度检测方法。
 
         脊柱类目标优先用单个椎体的横状位主轴做稳健聚合；头骨、肺部等
-        非脊柱目标没有天然的椎体顺序，继续使用整体 mask PCA。
+        非脊柱目标没有天然的椎体顺序，候选入口会用更高阈值约束整体
+        mask PCA，避免小角度形态偏差生成误导性候选。
 
-        注意：这个方法目前只允许在 enable_experimental_global_correction
-        显式打开时进入主流程。默认流程不会使用这里的角度执行回正。
+        默认流程只把这里的角度写入候选诊断和候选 NIfTI，不把它作为
+        阶段四/五重建输入。
         """
         if self._is_vertebrae_targets(label_targets):
             vertebrae_info = self._detect_vertebrae_axial_skew(seg_array, label_targets)
@@ -901,6 +925,81 @@ class LocalizationStage(BaseStage):
             'correction_todo_reason': (
                 '回正逻辑待实现，阶段三当前只保留定位坐标和目标 bbox'
             ),
+        }
+
+    def _build_xy_correction_candidate(
+        self,
+        seg_array: np.ndarray,
+        label_targets: Dict[str, LabelTarget],
+        body_part: str | None = None,
+    ) -> Dict[str, Any]:
+        """估计横状位 XY 回正候选角，但不执行主流程回正。
+
+        脊柱目标使用逐椎体角度聚合；非脊柱目标保留整体 PCA，但必须超过
+        更高阈值才生成候选，避免正位头骨等被 3-4 度形态偏差误触发。
+        """
+
+        if not self.correction_requested:
+            return {
+                'method': 'xy_correction_disabled',
+                'axis': 'image_z',
+                'angle_degrees': 0.0,
+                'abs_angle_degrees': 0.0,
+                'confidence': 0.0,
+                'correction_status': 'disabled',
+                'correction_applied': False,
+                'reason': 'correction_requested 为 false',
+            }
+        if not self._is_vertebrae_targets(label_targets):
+            target_mask = self._build_target_mask(seg_array, label_targets)
+            skew_info = self._detect_axial_skew(target_mask)
+            abs_angle = float(skew_info.get('abs_angle_degrees', 0.0))
+            enough_points = bool(skew_info.get('enough_points'))
+            should_correct = (
+                enough_points
+                and abs_angle > self.correction_non_spine_angle_threshold_degrees
+            )
+            reason = ''
+            if not enough_points:
+                reason = str(skew_info.get('reason', '有效目标体素不足'))
+            elif not should_correct:
+                reason = '非脊柱候选角未超过高置信阈值'
+            return {
+                **skew_info,
+                'method': 'pca_xy_projection_non_spine',
+                'axis': 'image_z',
+                'angle_degrees': float(skew_info.get('angle_degrees', 0.0)),
+                'abs_angle_degrees': abs_angle,
+                'confidence': max(0.0, min(1.0, abs_angle / 15.0)),
+                'correction_status': 'candidate' if should_correct else 'rejected',
+                'correction_applied': False,
+                'non_spine_threshold_degrees': (
+                    self.correction_non_spine_angle_threshold_degrees
+                ),
+                'should_correct': should_correct,
+                'body_part': body_part,
+                'reason': reason,
+            }
+        skew_info = self._detect_target_axial_skew(seg_array, label_targets)
+        abs_angle = float(skew_info.get('abs_angle_degrees', 0.0))
+        enough_points = bool(skew_info.get('enough_points'))
+        should_correct = bool(skew_info.get('should_correct'))
+        status = 'candidate' if enough_points and should_correct else 'rejected'
+        reason = ''
+        if not enough_points:
+            reason = str(skew_info.get('reason', '有效目标体素不足'))
+        elif not should_correct:
+            reason = str(skew_info.get('reason') or '候选角未超过回正阈值')
+
+        return {
+            **skew_info,
+            'axis': 'image_z',
+            'angle_degrees': float(skew_info.get('angle_degrees', 0.0)),
+            'abs_angle_degrees': abs_angle,
+            'confidence': max(0.0, min(1.0, abs_angle / 15.0)),
+            'correction_status': status,
+            'correction_applied': False,
+            'reason': reason,
         }
 
     @staticmethod
@@ -972,6 +1071,10 @@ class LocalizationStage(BaseStage):
             'min_points': self.correction_min_points,
             'min_vertebrae': self.correction_min_vertebrae,
             'threshold_degrees': self.correction_angle_threshold_degrees,
+            'max_label_angle_spread_degrees': (
+                self.correction_max_label_angle_spread_degrees
+            ),
+            'angle_spread_degrees': 0.0,
             'raw_pca_angle_degrees': 0.0,
             'angle_degrees': 0.0,
             'abs_angle_degrees': 0.0,
@@ -985,6 +1088,25 @@ class LocalizationStage(BaseStage):
             base_info['reason'] = '可用于聚合的完整椎体数量不足'
             return base_info
 
+        angle_values = [
+            float(item['angle_degrees'])
+            for item in label_angles
+        ]
+        median_angle = float(np.median(angle_values))
+        angle_spread = max(
+            abs(angle - median_angle)
+            for angle in angle_values
+        )
+        if angle_spread > self.correction_max_label_angle_spread_degrees:
+            return {
+                **base_info,
+                'angle_spread_degrees': float(angle_spread),
+                'median_label_angle_degrees': median_angle,
+                'enough_points': True,
+                'should_correct': False,
+                'reason': '椎体横状位候选角离散过大，拒绝整体 XY 回正候选',
+            }
+
         mean_raw_angle = self._weighted_axis_angle_mean([
             (item['raw_pca_angle_degrees'], item['point_count'])
             for item in label_angles
@@ -993,6 +1115,8 @@ class LocalizationStage(BaseStage):
         abs_angle = abs(deviation_angle)
         return {
             **base_info,
+            'angle_spread_degrees': float(angle_spread),
+            'median_label_angle_degrees': median_angle,
             'raw_pca_angle_degrees': float(mean_raw_angle),
             'angle_degrees': float(deviation_angle),
             'abs_angle_degrees': float(abs_angle),
@@ -1174,6 +1298,160 @@ class LocalizationStage(BaseStage):
             'correction_applied': True,
             'correction_params': correction_params,
         }
+
+    def _write_xy_correction_candidate_images(
+        self,
+        raw_path: str,
+        seg_path: str,
+        output_dir: Path,
+        candidate: Dict[str, Any],
+        correction_center_bbox: VoxelBBox | None,
+    ) -> Dict[str, Any]:
+        """写出候选回正 raw/seg，但不切换后续阶段输入。"""
+
+        raw_path = str(raw_path)
+        seg_path = str(seg_path)
+        output_dir = Path(output_dir)
+        params = {
+            **candidate,
+            'candidate_raw_path': '',
+            'candidate_seg_path': '',
+            'raw_interpolator': 'none',
+            'seg_interpolator': 'none',
+            'rotation_center_source': 'none',
+            'rotation_center_index_xyz': None,
+        }
+        if candidate.get('correction_status') != 'candidate':
+            return {
+                'raw_for_reconstruction_path': raw_path,
+                'seg_for_reconstruction_path': seg_path,
+                'corrected_raw_path': raw_path,
+                'corrected_seg_path': seg_path,
+                'candidate_raw_path': '',
+                'candidate_seg_path': '',
+                'correction_applied': False,
+                'correction_params': params,
+            }
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        candidate_raw_path = output_dir / 'raw_corrected_candidate.nii.gz'
+        candidate_seg_path = output_dir / 'seg_corrected_candidate.nii.gz'
+        raw_image = sitk.ReadImage(raw_path)
+        seg_image = sitk.ReadImage(seg_path)
+        center_index_xyz = self._rotation_center_index_xyz(
+            correction_center_bbox,
+            raw_image,
+        )
+        angle_degrees = float(candidate.get('angle_degrees', 0.0))
+        corrected_raw = self._rotate_image_xy(
+            image=raw_image,
+            rotation_degrees=angle_degrees,
+            interpolator=sitk.sitkLinear,
+            default_value=self._image_min_value(raw_image),
+            center_index_xyz=center_index_xyz,
+        )
+        corrected_seg = self._rotate_image_xy(
+            image=seg_image,
+            rotation_degrees=angle_degrees,
+            interpolator=sitk.sitkNearestNeighbor,
+            default_value=0,
+            center_index_xyz=center_index_xyz,
+        )
+        corrected_seg = sitk.Cast(corrected_seg, seg_image.GetPixelID())
+
+        sitk.WriteImage(corrected_raw, str(candidate_raw_path))
+        sitk.WriteImage(corrected_seg, str(candidate_seg_path))
+
+        params.update({
+            'candidate_raw_path': str(candidate_raw_path),
+            'candidate_seg_path': str(candidate_seg_path),
+            'raw_interpolator': 'linear',
+            'seg_interpolator': 'nearest_neighbor',
+            'raw_default_value': self._image_min_value(raw_image),
+            'seg_default_value': 0,
+            'rotation_center_source': (
+                'target_bbox' if correction_center_bbox else 'image_center'
+            ),
+            'rotation_center_index_xyz': center_index_xyz,
+        })
+        return {
+            'raw_for_reconstruction_path': raw_path,
+            'seg_for_reconstruction_path': seg_path,
+            'corrected_raw_path': raw_path,
+            'corrected_seg_path': seg_path,
+            'candidate_raw_path': str(candidate_raw_path),
+            'candidate_seg_path': str(candidate_seg_path),
+            'correction_applied': False,
+            'correction_params': params,
+        }
+
+    @staticmethod
+    def _draw_xy_line(
+        overlay: np.ndarray,
+        z_index: int,
+        center_yx: tuple[float, float],
+        angle_degrees: float,
+        half_length: float,
+        label_id: int,
+    ) -> None:
+        """在单个横状位层面画一条指定角度的诊断线。"""
+
+        radians = math.radians(angle_degrees)
+        center_y, center_x = center_yx
+        sample_count = int(max(2.0, half_length * 2.0))
+        for distance in np.linspace(-half_length, half_length, sample_count):
+            x_index = int(round(center_x + distance * math.cos(radians)))
+            y_index = int(round(center_y + distance * math.sin(radians)))
+            if (
+                0 <= z_index < overlay.shape[0]
+                and 0 <= y_index < overlay.shape[1]
+                and 0 <= x_index < overlay.shape[2]
+            ):
+                overlay[z_index, y_index, x_index] = label_id
+
+    def _write_xy_correction_crosshair_overlay(
+        self,
+        reference_image: sitk.Image,
+        output_path: Path,
+        correction_center_bbox: VoxelBBox,
+        candidate: Dict[str, Any],
+    ) -> str:
+        """在原始网格上写出原始 x/y 轴和候选目标轴。"""
+
+        overlay = np.zeros(tuple(reversed(reference_image.GetSize())), dtype=np.uint8)
+        z_index = int(round(
+            (correction_center_bbox.z_min + correction_center_bbox.z_max) / 2.0
+        ))
+        center_y = (
+            correction_center_bbox.y_min + correction_center_bbox.y_max
+        ) / 2.0
+        center_x = (
+            correction_center_bbox.x_min + correction_center_bbox.x_max
+        ) / 2.0
+        half_length = max(
+            8.0,
+            min(
+                float(correction_center_bbox.x_max - correction_center_bbox.x_min),
+                float(correction_center_bbox.y_max - correction_center_bbox.y_min),
+            ) / 2.0,
+        )
+        self._draw_xy_line(overlay, z_index, (center_y, center_x), 0.0, half_length, 1)
+        self._draw_xy_line(overlay, z_index, (center_y, center_x), 90.0, half_length, 2)
+        self._draw_xy_line(
+            overlay,
+            z_index,
+            (center_y, center_x),
+            float(candidate.get('angle_degrees', 0.0)),
+            half_length,
+            3,
+        )
+
+        overlay_image = sitk.GetImageFromArray(overlay)
+        overlay_image.CopyInformation(reference_image)
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        sitk.WriteImage(overlay_image, str(output_path))
+        return str(output_path)
 
     @staticmethod
     def _rotate_image_xy(
@@ -2754,11 +3032,14 @@ class LocalizationStage(BaseStage):
         correction_params: Dict[str, Any],
         corrected_raw_path: str,
         corrected_seg_path: str,
+        candidate_raw_path: str,
+        candidate_seg_path: str,
         debug_bbox_overlay_path: str,
         debug_target_mask_overlay_path: str,
         debug_label_mask_overlay_path: str,
         debug_vertebral_body_mask_overlay_path: str,
         debug_vertebral_body_prism_mask_overlay_path: str,
+        debug_xy_correction_crosshair_overlay_path: str,
         spine_geometry: Dict[str, Any] | None,
         is_skewed: bool,
         skew_params: Dict[str, Any],
@@ -2790,12 +3071,17 @@ class LocalizationStage(BaseStage):
             correction_params=correction_params,
             corrected_raw_path=corrected_raw_path,
             corrected_seg_path=corrected_seg_path,
+            candidate_raw_path=candidate_raw_path,
+            candidate_seg_path=candidate_seg_path,
             debug_bbox_overlay_path=debug_bbox_overlay_path,
             debug_target_mask_overlay_path=debug_target_mask_overlay_path,
             debug_label_mask_overlay_path=debug_label_mask_overlay_path,
             debug_vertebral_body_mask_overlay_path=debug_vertebral_body_mask_overlay_path,
             debug_vertebral_body_prism_mask_overlay_path=(
                 debug_vertebral_body_prism_mask_overlay_path
+            ),
+            debug_xy_correction_crosshair_overlay_path=(
+                debug_xy_correction_crosshair_overlay_path
             ),
             spine_geometry=spine_geometry,
             is_skewed=is_skewed,

@@ -217,6 +217,191 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertEqual(skew_info["angle_degrees"], 0.0)
         self.assertFalse(skew_info["should_correct"])
 
+    def test_xy_correction_candidate_records_angle_without_applying(self):
+        """横状位 XY 候选角应写入诊断，但第一版不能启用主流程回正。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((8, 80, 80), dtype=np.uint8)
+        expected_angle = 18.0
+        radians = math.radians(expected_angle)
+        for z_index in range(2, 6):
+            for distance in np.linspace(-22, 22, 120):
+                x_index = int(round(40 + distance * math.cos(radians)))
+                y_index = int(round(40 + distance * math.sin(radians)))
+                seg_array[
+                    z_index,
+                    y_index - 1:y_index + 2,
+                    x_index - 1:x_index + 2,
+                ] = 3
+
+        candidate = stage._build_xy_correction_candidate(
+            seg_array,
+            {"vertebrae_L5": LabelTarget("vertebrae_L5", [3])},
+        )
+
+        self.assertEqual(candidate["correction_status"], "candidate")
+        self.assertFalse(candidate["correction_applied"])
+        self.assertAlmostEqual(
+            abs(candidate["angle_degrees"]),
+            expected_angle,
+            delta=3.0,
+        )
+        self.assertEqual(candidate["axis"], "image_z")
+        self.assertEqual(candidate["method"], "pca_xy_projection_fallback")
+
+    def test_xy_correction_candidate_rejects_inconsistent_vertebra_angles(self):
+        """椎体角度离散过大时应拒绝候选，避免正位颈椎被局部形态拉歪。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((8, 80, 80), dtype=np.uint8)
+        for label_id, angle_degrees, center_y in (
+            (3, 30.0, 18),
+            (4, 1.0, 32),
+            (5, 12.0, 48),
+        ):
+            radians = math.radians(angle_degrees)
+            for distance in np.linspace(-22, 22, 120):
+                x_index = int(round(40 + distance * math.cos(radians)))
+                y_index = int(round(center_y + distance * math.sin(radians)))
+                seg_array[
+                    label_id,
+                    y_index - 1:y_index + 2,
+                    x_index - 1:x_index + 2,
+                ] = label_id
+
+        candidate = stage._build_xy_correction_candidate(
+            seg_array,
+            {
+                "vertebrae_C3": LabelTarget("vertebrae_C3", [3]),
+                "vertebrae_C4": LabelTarget("vertebrae_C4", [4]),
+                "vertebrae_C5": LabelTarget("vertebrae_C5", [5]),
+            },
+            body_part="颈椎",
+        )
+
+        self.assertEqual(candidate["correction_status"], "rejected")
+        self.assertFalse(candidate["correction_applied"])
+        self.assertFalse(candidate["should_correct"])
+        self.assertGreater(candidate["angle_spread_degrees"], 15.0)
+        self.assertIn("离散", candidate["reason"])
+
+    def test_xy_correction_candidate_rejects_low_angle_non_spine_whole_mask_pca(self):
+        """头骨等非脊柱整体 mask PCA 小角度偏斜不应作为 XY 回正候选。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((8, 80, 80), dtype=np.uint8)
+        radians = math.radians(4.0)
+        for z_index in range(2, 6):
+            for distance in np.linspace(-24, 24, 140):
+                x_index = int(round(40 + distance * math.cos(radians)))
+                y_index = int(round(40 + distance * math.sin(radians)))
+                seg_array[
+                    z_index,
+                    y_index - 3:y_index + 4,
+                    x_index - 3:x_index + 4,
+                ] = 1
+
+        candidate = stage._build_xy_correction_candidate(
+            seg_array,
+            {"skull": LabelTarget("skull", [1])},
+            body_part="头骨",
+        )
+
+        self.assertEqual(candidate["correction_status"], "rejected")
+        self.assertEqual(candidate["method"], "pca_xy_projection_non_spine")
+        self.assertFalse(candidate["should_correct"])
+        self.assertGreater(candidate["abs_angle_degrees"], 3.0)
+        self.assertIn("非脊柱候选角未超过高置信阈值", candidate["reason"])
+
+    def test_xy_correction_candidate_accepts_high_angle_non_spine_whole_mask_pca(self):
+        """头骨等非脊柱整体 mask PCA 大角度偏斜仍应输出候选。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((8, 80, 80), dtype=np.uint8)
+        expected_angle = 15.0
+        radians = math.radians(expected_angle)
+        for z_index in range(2, 6):
+            for distance in np.linspace(-24, 24, 140):
+                x_index = int(round(40 + distance * math.cos(radians)))
+                y_index = int(round(40 + distance * math.sin(radians)))
+                seg_array[
+                    z_index,
+                    y_index - 3:y_index + 4,
+                    x_index - 3:x_index + 4,
+                ] = 1
+
+        candidate = stage._build_xy_correction_candidate(
+            seg_array,
+            {"skull": LabelTarget("skull", [1])},
+            body_part="头骨",
+        )
+
+        self.assertEqual(candidate["correction_status"], "candidate")
+        self.assertEqual(candidate["method"], "pca_xy_projection_non_spine")
+        self.assertTrue(candidate["should_correct"])
+        self.assertAlmostEqual(
+            abs(candidate["angle_degrees"]),
+            expected_angle,
+            delta=2.0,
+        )
+
+    def test_xy_correction_candidate_writes_raw_and_seg_without_reconstruction_switch(self):
+        """候选回正写出 raw/seg，但阶段四五仍读取原始路径。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            raw_path = temp_path / "raw.nii.gz"
+            seg_path = temp_path / "seg.nii.gz"
+            raw_array = np.zeros((1, 24, 24), dtype=np.int16)
+            raw_array[0, 6:18, 10:14] = 100
+            seg_array = np.zeros((1, 24, 24), dtype=np.uint8)
+            seg_array[0, 6:18, 10:14] = 2
+            self._write_image(raw_path, raw_array)
+            self._write_image(seg_path, seg_array)
+
+            result = stage._write_xy_correction_candidate_images(
+                raw_path=str(raw_path),
+                seg_path=str(seg_path),
+                output_dir=temp_path,
+                candidate={
+                    "correction_status": "candidate",
+                    "angle_degrees": 12.0,
+                },
+                correction_center_bbox=VoxelBBox(0, 0, 6, 18, 10, 14),
+            )
+
+            self.assertEqual(result["raw_for_reconstruction_path"], str(raw_path))
+            self.assertEqual(result["seg_for_reconstruction_path"], str(seg_path))
+            self.assertFalse(result["correction_applied"])
+            self.assertTrue(Path(result["candidate_raw_path"]).exists())
+            self.assertTrue(Path(result["candidate_seg_path"]).exists())
+            corrected_seg = sitk.GetArrayFromImage(
+                sitk.ReadImage(result["candidate_seg_path"])
+            )
+            self.assertTrue(set(np.unique(corrected_seg)).issubset({0, 2}))
+
+    def test_xy_correction_crosshair_overlay_writes_reference_and_candidate_axes(self):
+        """十字线 overlay 应在原始网格上标出参考轴和候选轴。"""
+
+        stage = LocalizationStage()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image = sitk.GetImageFromArray(np.zeros((3, 40, 40), dtype=np.uint8))
+            output_path = Path(temp_dir) / "横状位XY回正十字线.nii.gz"
+
+            written_path = stage._write_xy_correction_crosshair_overlay(
+                reference_image=image,
+                output_path=output_path,
+                correction_center_bbox=VoxelBBox(1, 1, 10, 30, 10, 30),
+                candidate={"correction_status": "candidate", "angle_degrees": 20.0},
+            )
+
+            overlay = sitk.GetArrayFromImage(sitk.ReadImage(written_path))
+            self.assertEqual(overlay.shape, (3, 40, 40))
+            self.assertGreater(int(np.count_nonzero(overlay == 1)), 0)
+            self.assertGreater(int(np.count_nonzero(overlay == 2)), 0)
+            self.assertGreater(int(np.count_nonzero(overlay == 3)), 0)
+
     def test_find_dataset_json_prefers_segmentation_sidecar_file(self):
         # nnUNet 模型目录可能有多个 dataset.json；seg 同目录的 sidecar 最贴近当前分割结果。
         """验证 `test_find_dataset_json_prefers_segmentation_sidecar_file` 场景符合预期。"""
@@ -1657,10 +1842,21 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             seg_path.parent.mkdir(parents=True)
             dataset_dir.mkdir(parents=True)
 
-            raw_array = np.zeros((2, 40, 40), dtype=np.float32)
-            seg_array = np.zeros((2, 40, 40), dtype=np.uint8)
-            seg_array[0, 10:15, 18:23] = 5
-            seg_array[1, 24:29, 18:23] = 9
+            raw_array = np.zeros((6, 60, 60), dtype=np.float32)
+            seg_array = np.zeros((6, 60, 60), dtype=np.uint8)
+            radians = math.radians(18.0)
+            for z_index, label_id, center_y in (
+                (2, 5, 22),
+                (3, 9, 38),
+            ):
+                for distance in np.linspace(-14, 14, 100):
+                    x_index = int(round(30 + distance * math.cos(radians)))
+                    y_index = int(round(center_y + distance * math.sin(radians)))
+                    seg_array[
+                        z_index,
+                        y_index - 1:y_index + 2,
+                        x_index - 1:x_index + 2,
+                    ] = label_id
             self._write_image(raw_path, raw_array)
             self._write_image(seg_path, seg_array)
             dataset_json_path.write_text(
@@ -1741,8 +1937,26 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             )
             self.assertEqual(metadata["raw_for_reconstruction_path"], str(raw_path))
             self.assertEqual(metadata["seg_for_reconstruction_path"], str(seg_path))
+            self.assertEqual(result["candidate_raw_path"], str(
+                temp_path / "nifti" / "raw_corrected_candidate.nii.gz"
+            ))
+            self.assertEqual(result["candidate_seg_path"], str(
+                temp_path / "nifti" / "seg_corrected_candidate.nii.gz"
+            ))
+            self.assertEqual(metadata["candidate_raw_path"], result["candidate_raw_path"])
+            self.assertEqual(metadata["candidate_seg_path"], result["candidate_seg_path"])
+            self.assertTrue(Path(result["candidate_raw_path"]).exists())
+            self.assertTrue(Path(result["candidate_seg_path"]).exists())
+            self.assertEqual(
+                result["correction_params"]["correction_status"],
+                "candidate",
+            )
+            self.assertFalse(result["correction_params"]["correction_applied"])
             self.assertIn("correction_scope_bbox", metadata)
             label_overlay_path = temp_path / "metadata" / "标签掩膜.nii.gz"
+            xy_crosshair_path = (
+                temp_path / "metadata" / "横状位XY回正十字线.nii.gz"
+            )
             prism_overlay_path = (
                 temp_path / "metadata" / "椎体四棱柱掩膜.nii.gz"
             )
@@ -1752,6 +1966,14 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertEqual(metadata["debug_target_mask_overlay_path"], "")
             self.assertEqual(result["debug_label_mask_overlay_path"], str(label_overlay_path))
             self.assertEqual(metadata["debug_label_mask_overlay_path"], str(label_overlay_path))
+            self.assertEqual(
+                result["debug_xy_correction_crosshair_overlay_path"],
+                str(xy_crosshair_path),
+            )
+            self.assertEqual(
+                metadata["debug_xy_correction_crosshair_overlay_path"],
+                str(xy_crosshair_path),
+            )
             self.assertEqual(
                 result["debug_vertebral_body_prism_mask_overlay_path"],
                 str(prism_overlay_path),
@@ -1763,6 +1985,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertFalse((temp_path / "metadata" / "定位框.nii.gz").exists())
             self.assertFalse((temp_path / "metadata" / "目标掩膜.nii.gz").exists())
             self.assertTrue(label_overlay_path.exists())
+            self.assertTrue(xy_crosshair_path.exists())
             self.assertTrue(prism_overlay_path.exists())
             self.assertEqual(
                 result["spine_geometry"]["filtered_annotation"]["method"],

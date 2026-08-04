@@ -559,11 +559,11 @@ class ReconstructionStage(BaseStage):
                     index_xyz[0],
                 ] = center_value
 
-        for offset_mm in cls._curved_localizer_offsets(plan):
-            projected_points = [
-                cls._offset_curve_point(point, plan.get("offset_axis"), offset_mm)
-                for point in curve_points
-            ]
+        projected_curves = cls._curved_localizer_projected_curves(
+            plan=plan,
+            fixed_axis=fixed_axis,
+        )
+        for projected_points in projected_curves.values():
             for start_point, end_point in zip(projected_points, projected_points[1:]):
                 start_xyz = np.asarray(
                     image.TransformPhysicalPointToContinuousIndex(start_point),
@@ -658,25 +658,249 @@ class ReconstructionStage(BaseStage):
 
         return sorted({round(offset, 6) for offset in offsets})
 
-    @staticmethod
-    def _offset_curve_point(
-        point: Dict[str, Any],
-        offset_axis: Dict[str, Any] | None,
-        offset_mm: float,
-    ) -> tuple[float, float, float]:
-        """把 CPR 中心曲线点按左右偏移投影到定位图。"""
+    @classmethod
+    def _curved_localizer_projected_curves(
+        cls,
+        *,
+        plan: Dict[str, Any],
+        fixed_axis: int,
+    ) -> Dict[float, List[tuple[float, float, float]]]:
+        """按实际 CPR 采样曲线和 offset 生成定位曲线。"""
 
-        if not offset_axis:
-            return (
-                float(point["x"]),
-                float(point["y"]),
-                float(point["z"]),
-            )
-        return (
-            float(point["x"]) + float(offset_axis["x"]) * offset_mm,
-            float(point["y"]) + float(offset_axis["y"]) * offset_mm,
-            float(point["z"]) + float(offset_axis["z"]) * offset_mm,
+        curve = np.asarray([
+            cls._point_array(point)
+            for point in (plan.get("curve_points") or [])
+        ], dtype=float)
+        if len(curve) < 2:
+            return {}
+        offsets = cls._curved_localizer_offsets(plan)
+        rows = cls._curved_localizer_sample_count(plan, len(curve))
+        curve = CurvedStackResampler._resample_curve(curve, rows)
+        offset_axis = cls._point_array(plan.get("offset_axis") or {})
+        offset_length = float(np.linalg.norm(offset_axis))
+        if not np.isfinite(offset_length) or offset_length <= 1e-8:
+            return {}
+        offset_axis /= offset_length
+
+        projected_curves: Dict[float, List[tuple[float, float, float]]] = {}
+        for offset_mm in offsets:
+            projected = curve + offset_axis * offset_mm
+            projected_curves[offset_mm] = [
+                tuple(float(value) for value in point)
+                for point in projected
+            ]
+        return projected_curves
+
+    @staticmethod
+    def _curved_localizer_sample_count(plan: Dict[str, Any], fallback: int) -> int:
+        """复用 CPR 重建器的纵向输出行数。"""
+
+        extent = plan.get("extent_mm") or {}
+        spacing = plan.get("output_spacing_mm") or {}
+        try:
+            height = float(extent["height"])
+            spacing_y = float(spacing["y"])
+        except (KeyError, TypeError, ValueError):
+            return fallback
+        if not math.isfinite(height) or not math.isfinite(spacing_y) or spacing_y <= 0.0:
+            return fallback
+        return max(1, int(round(height / spacing_y)) + 1)
+
+    @classmethod
+    def _curved_localizer_projected_normals(
+        cls,
+        *,
+        curve: np.ndarray,
+        offset_axis: Dict[str, Any] | None,
+        fixed_axis: int,
+    ) -> np.ndarray:
+        """返回定位图投影平面内、沿中心曲线局部法向的单位向量。"""
+
+        display_axes = [axis for axis in range(3) if axis != fixed_axis]
+        projected_axis = (
+            cls._point_array(offset_axis)
+            if offset_axis
+            else np.zeros(3, dtype=float)
         )
+        projected_axis[fixed_axis] = 0.0
+        axis_length = float(np.linalg.norm(projected_axis))
+        if not np.isfinite(axis_length) or axis_length <= 1e-8:
+            projected_axis[display_axes[0]] = 1.0
+            axis_length = 1.0
+        projected_axis /= axis_length
+
+        normals = np.zeros_like(curve)
+        for index in range(len(curve)):
+            if index == 0:
+                tangent = curve[1] - curve[0]
+            elif index == len(curve) - 1:
+                tangent = curve[-1] - curve[-2]
+            else:
+                tangent = curve[index + 1] - curve[index - 1]
+            tangent[fixed_axis] = 0.0
+            tangent_length = float(np.linalg.norm(tangent))
+            if not np.isfinite(tangent_length) or tangent_length <= 1e-8:
+                tangent = projected_axis.copy()
+                tangent_length = 1.0
+            tangent /= tangent_length
+            normal = np.zeros(3, dtype=float)
+            normal[display_axes[0]] = -tangent[display_axes[1]]
+            normal[display_axes[1]] = tangent[display_axes[0]]
+            if float(np.dot(normal, projected_axis)) < 0.0:
+                normal *= -1.0
+            normals[index] = normal
+        return normals
+
+    @classmethod
+    def _curved_localizer_safe_offset_normals(
+        cls,
+        *,
+        curve: np.ndarray,
+        offset_axis: Dict[str, Any] | None,
+        fixed_axis: int,
+        offsets: List[float],
+    ) -> np.ndarray:
+        """限制法向旋转，避免大范围 CPR offset 在内弯处相交。"""
+
+        normals = cls._curved_localizer_projected_normals(
+            curve=curve,
+            offset_axis=offset_axis,
+            fixed_axis=fixed_axis,
+        )
+        max_offset = max((abs(float(offset)) for offset in offsets), default=0.0)
+        if max_offset <= 1e-8 or len(curve) < 2:
+            return normals
+
+        display_axes = [axis for axis in range(3) if axis != fixed_axis]
+        angles = np.unwrap(np.arctan2(
+            normals[:, display_axes[1]],
+            normals[:, display_axes[0]],
+        ))
+        limited_turns = []
+        for index in range(1, len(curve)):
+            delta = curve[index] - curve[index - 1]
+            delta[fixed_axis] = 0.0
+            arc_step = float(np.linalg.norm(delta))
+            max_turn = math.atan2(
+                arc_step,
+                max_offset * 1.25,
+            )
+            limited_turns.append(np.clip(
+                angles[index] - angles[index - 1],
+                -max_turn,
+                max_turn,
+            ))
+
+        if limited_turns:
+            kernel = np.asarray([1.0, 10.0, 45.0, 120.0, 210.0, 252.0, 210.0, 120.0, 45.0, 10.0, 1.0]) / 1024.0
+            padded_turns = np.pad(
+                np.asarray(limited_turns, dtype=float),
+                (5, 5),
+                mode="edge",
+            )
+            smooth_turns = np.convolve(
+                padded_turns,
+                kernel,
+                mode="valid",
+            )
+            trend = float(np.sign(angles[-1] - angles[0]))
+            if trend != 0.0:
+                smooth_turns = trend * np.maximum(trend * smooth_turns, 0.0)
+            safe_angles = np.concatenate((
+                [angles[0]],
+                angles[0] + np.cumsum(smooth_turns),
+            ))
+        else:
+            safe_angles = angles.copy()
+
+        safe_normals = np.zeros_like(normals)
+        safe_normals[:, display_axes[0]] = np.cos(safe_angles)
+        safe_normals[:, display_axes[1]] = np.sin(safe_angles)
+        return safe_normals
+
+    @classmethod
+    def _smooth_curved_localizer_display_curve(
+        cls,
+        *,
+        curve: np.ndarray,
+        fixed_axis: int,
+    ) -> np.ndarray:
+        """把定位图上的急折 CPR 中心线平滑成显示用曲线。"""
+
+        if len(curve) < 3:
+            return curve
+
+        smoothed = curve.copy()
+        for _ in range(3):
+            points = [smoothed[0]]
+            for start, end in zip(smoothed, smoothed[1:]):
+                points.append(start * 0.75 + end * 0.25)
+                points.append(start * 0.25 + end * 0.75)
+            points.append(smoothed[-1])
+            smoothed = np.asarray(points, dtype=float)
+        return cls._resample_projected_curve(
+            curve=smoothed,
+            fixed_axis=fixed_axis,
+            step_mm=1.5,
+        )
+
+    @staticmethod
+    def _curved_localizer_stack_axes(
+        *,
+        curve: np.ndarray,
+        fixed_axis: int,
+    ) -> tuple[int, int]:
+        """选择 CPR 在定位图上的纵向与横向坐标轴。"""
+
+        display_axes = [axis for axis in range(3) if axis != fixed_axis]
+        spans = [float(np.ptp(curve[:, axis])) for axis in display_axes]
+        longitudinal_index = int(np.argmax(spans))
+        longitudinal_axis = display_axes[longitudinal_index]
+        lateral_axis = display_axes[1 - longitudinal_index]
+        return longitudinal_axis, lateral_axis
+
+    @staticmethod
+    def _resample_projected_curve(
+        *,
+        curve: np.ndarray,
+        fixed_axis: int,
+        step_mm: float,
+    ) -> np.ndarray:
+        """按定位图投影弧长重采样曲线，便于连续绘制平滑 offset。"""
+
+        projected = curve.copy()
+        projected[:, fixed_axis] = 0.0
+        deltas = np.diff(projected, axis=0)
+        lengths = np.linalg.norm(deltas, axis=1)
+        total_length = float(np.sum(lengths))
+        if total_length <= 0.0 or not np.isfinite(total_length):
+            return curve
+
+        count = max(2, int(math.ceil(total_length / step_mm)) + 1)
+        cumulative = np.concatenate(([0.0], np.cumsum(lengths)))
+        distances = np.linspace(0.0, total_length, count)
+        samples = np.empty((count, 3), dtype=float)
+        for index, distance in enumerate(distances):
+            segment = min(
+                int(np.searchsorted(cumulative, distance, side="right") - 1),
+                len(lengths) - 1,
+            )
+            segment_length = lengths[segment]
+            ratio = 0.0 if segment_length <= 0.0 else (
+                distance - cumulative[segment]
+            ) / segment_length
+            samples[index] = curve[segment] + (curve[segment + 1] - curve[segment]) * ratio
+        return samples
+
+    @staticmethod
+    def _point_array(point: Dict[str, Any]) -> np.ndarray:
+        """读取物理点或方向字典。"""
+
+        return np.asarray([
+            float(point["x"]),
+            float(point["y"]),
+            float(point["z"]),
+        ], dtype=float)
 
     @classmethod
     def _resolve_localizer_axes(

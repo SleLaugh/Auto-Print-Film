@@ -131,6 +131,8 @@ class DocumentationConsistencyTests(unittest.TestCase):
         self.assertNotIn("厚层 CPR 作为后续版本", cpr_doc)
         self.assertIn("层厚参与覆盖判定", coverage_doc)
         self.assertIn("算术平均", coverage_doc)
+        self.assertIn("必须与实际 CPR 重建一致", cpr_doc)
+        self.assertIn("复用实际 CPR 的曲线", coverage_doc)
 
     def test_current_docs_describe_debug_artifact_pruning(self):
         """当前文档应说明阶段三/四默认调试 NIfTI 的保留边界。"""

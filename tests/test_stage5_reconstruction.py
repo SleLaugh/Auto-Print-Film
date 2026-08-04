@@ -418,8 +418,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             [10, 18, 26],
         )
 
-    def test_curved_stack_localizer_offsets_follow_planned_offset_axis_on_bends(self):
-        """CPR 弯曲段定位线应按计划 offset_axis 平移，保持与切片一致。"""
+    def test_curved_stack_localizer_offsets_follow_bend_normals(self):
+        """CPR 弯曲段定位线应随局部法向偏移，而不是固定方向平移。"""
 
         image = sitk.GetImageFromArray(np.zeros((64, 64, 64), dtype=np.int16))
         plan = {
@@ -429,9 +429,13 @@ class Stage5ReconstructionTest(unittest.TestCase):
             "localizer_reference": {"x": 32.0, "y": 32.0, "z": 32.0},
             "extent_mm": {"width": 20.0, "height": 40.0},
             "curve_points": [
-                {"x": 32.0, "y": 24.0, "z": 12.0},
-                {"x": 32.0, "y": 24.0, "z": 32.0},
-                {"x": 32.0, "y": 44.0, "z": 42.0},
+                {"x": 32.0, "y": 20.0, "z": 0.0},
+                {"x": 32.0, "y": 20.0, "z": 10.0},
+                {"x": 32.0, "y": 21.0, "z": 20.0},
+                {"x": 32.0, "y": 25.0, "z": 29.0},
+                {"x": 32.0, "y": 35.0, "z": 35.0},
+                {"x": 32.0, "y": 45.0, "z": 38.0},
+                {"x": 32.0, "y": 55.0, "z": 40.0},
             ],
             "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
             "offsets_mm": [-10.0, 10.0],
@@ -449,8 +453,210 @@ class Stage5ReconstructionTest(unittest.TestCase):
         localizer = ReconstructionStage._build_plan_localizer(image, plan)
         highlighted = np.argwhere(sitk.GetArrayFromImage(localizer) > 0.0)
 
-        self.assertEqual(int(np.ptp(highlighted[:, 0])), 30)
+        self.assertGreater(int(np.ptp(highlighted[:, 0])), 30)
         self.assertGreaterEqual(len(np.unique(highlighted[:, 1])), 2)
+
+    def test_curved_stack_localizer_uses_actual_offset_axis_on_bends(self):
+        """CPR 定位线应按实际采样 offset_axis 平移。"""
+
+        curve_points = [
+            {"x": 32.0, "y": 24.0, "z": 12.0},
+            {"x": 32.0, "y": 24.0, "z": 32.0},
+            {"x": 32.0, "y": 44.0, "z": 42.0},
+        ]
+        plan = {
+            "curve_points": curve_points,
+            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+            "offsets_mm": [-10.0, 0.0, 10.0],
+            "localizer_plane": "矢状位",
+        }
+
+        projected = ReconstructionStage._curved_localizer_projected_curves(
+            plan=plan,
+            fixed_axis=0,
+        )
+
+        lower = np.asarray(projected[-10.0][-1], dtype=float)
+        center_curve = np.asarray(projected[0.0], dtype=float)
+        center = center_curve[-1]
+        upper = np.asarray(projected[10.0][-1], dtype=float)
+        self.assertAlmostEqual(float(np.linalg.norm(center - lower)), 10.0)
+        self.assertAlmostEqual(float(np.linalg.norm(upper - center)), 10.0)
+        self.assertAlmostEqual(lower[2], center[2])
+        self.assertAlmostEqual(upper[2], center[2])
+
+    def test_curved_stack_localizer_offsets_match_actual_sampling_geometry(self):
+        """每条定位线必须是实际采样曲线的刚体平移。"""
+
+        plan = {
+            "curve_points": [
+                {"x": 32.0, "y": 24.0, "z": 12.0},
+                {"x": 32.0, "y": 24.0, "z": 32.0},
+                {"x": 32.0, "y": 44.0, "z": 42.0},
+            ],
+            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+            "offsets_mm": [-10.0, 0.0, 10.0, 20.0],
+        }
+
+        projected = ReconstructionStage._curved_localizer_projected_curves(
+            plan=plan,
+            fixed_axis=0,
+        )
+        center = np.asarray(projected[0.0], dtype=float)
+        offset = np.asarray(projected[10.0], dtype=float)
+        deltas = offset - center
+        expected_delta = np.asarray([0.0, 10.0, 0.0])
+        expected_deltas = np.tile(expected_delta, (len(center), 1))
+        np.testing.assert_allclose(deltas, expected_deltas, atol=1e-6)
+
+        for lower, upper in [(-10.0, 0.0), (0.0, 10.0), (10.0, 20.0)]:
+            gap = np.asarray(projected[upper], dtype=float) - np.asarray(
+                projected[lower], dtype=float
+            )
+            np.testing.assert_allclose(gap, expected_deltas, atol=1e-6)
+
+    def test_curved_stack_localizer_limits_normal_turn_for_extended_offsets(self):
+        """slice_range_extension 较大时应限制法向旋转，避免内弯相交。"""
+
+        plan = {
+            "curve_points": [
+                {"x": 32.0, "y": 24.0, "z": 12.0},
+                {"x": 32.0, "y": 24.0, "z": 32.0},
+                {"x": 32.0, "y": 44.0, "z": 42.0},
+            ],
+            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+            "offsets_mm": [-70.0, 0.0, 70.0],
+        }
+
+        projected = ReconstructionStage._curved_localizer_projected_curves(
+            plan=plan,
+            fixed_axis=0,
+        )
+        curve = np.asarray(projected[0.0], dtype=float)
+        extended = np.asarray(projected[70.0], dtype=float)
+        center_steps = np.diff(curve[:, [1, 2]], axis=0)
+        extended_steps = np.diff(extended[:, [1, 2]], axis=0)
+
+        self.assertTrue(np.all(
+            np.sum(center_steps * extended_steps, axis=1) > 0.0
+        ))
+
+    def test_curved_stack_localizer_smooths_limited_normal_turns(self):
+        """防叠加限幅后的法向变化也应连续，不能形成折线。"""
+
+        plan = {
+            "curve_points": [
+                {"x": 32.0, "y": 20.0, "z": 0.0},
+                {"x": 32.0, "y": 20.0, "z": 10.0},
+                {"x": 32.0, "y": 21.0, "z": 20.0},
+                {"x": 32.0, "y": 25.0, "z": 29.0},
+                {"x": 32.0, "y": 35.0, "z": 35.0},
+                {"x": 32.0, "y": 45.0, "z": 38.0},
+                {"x": 32.0, "y": 55.0, "z": 40.0},
+            ],
+            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+            "offsets_mm": [-70.0, 0.0, 70.0],
+        }
+        curve = np.asarray([
+            [32.0, 20.0, 0.0],
+            [32.0, 20.0, 10.0],
+            [32.0, 21.0, 20.0],
+            [32.0, 25.0, 29.0],
+            [32.0, 35.0, 35.0],
+            [32.0, 45.0, 38.0],
+            [32.0, 55.0, 40.0],
+        ])
+        normals = ReconstructionStage._curved_localizer_safe_offset_normals(
+            curve=curve,
+            offset_axis=plan["offset_axis"],
+            fixed_axis=0,
+            offsets=plan["offsets_mm"],
+        )
+        angles = np.unwrap(np.arctan2(normals[:, 2], normals[:, 1]))
+        turns = np.diff(angles)
+
+        self.assertLess(float(np.max(np.abs(np.diff(turns)))), 0.02)
+
+    def test_curved_stack_localizer_does_not_reverse_turn_direction(self):
+        """弯曲前后的 offset 方向应单调转向，不能先转回再转出。"""
+
+        curve = np.asarray([
+            [32.0, 20.0, 0.0],
+            [32.0, 20.0, 10.0],
+            [32.0, 22.0, 20.0],
+            [32.0, 28.0, 29.0],
+            [32.0, 38.0, 35.0],
+            [32.0, 45.0, 38.0],
+            [32.0, 43.0, 40.0],
+        ])
+        normals = ReconstructionStage._curved_localizer_safe_offset_normals(
+            curve=curve,
+            offset_axis={"x": 0.0, "y": 1.0, "z": 0.0},
+            fixed_axis=0,
+            offsets=[-70.0, 0.0, 70.0],
+        )
+        angles = np.unwrap(np.arctan2(normals[:, 2], normals[:, 1]))
+        turns = np.diff(angles)
+        trend = np.sign(angles[-1] - angles[0])
+
+        self.assertTrue(np.all(turns * trend >= -1e-8))
+
+    def test_curved_stack_localizer_removes_lateral_backtracking(self):
+        """弯曲末端不能沿显示横向先回折再折回。"""
+
+        curve = np.asarray([
+            [32.0, 20.0, 0.0],
+            [32.0, 20.0, 10.0],
+            [32.0, 22.0, 20.0],
+            [32.0, 28.0, 29.0],
+            [32.0, 38.0, 35.0],
+            [32.0, 45.0, 38.0],
+            [32.0, 43.0, 40.0],
+        ])
+
+        projected = ReconstructionStage._curved_localizer_projected_curves(
+            plan={
+                "curve_points": [
+                    {"x": float(point[0]), "y": float(point[1]), "z": float(point[2])}
+                    for point in curve
+                ],
+                "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "offsets_mm": [70.0],
+            },
+            fixed_axis=0,
+        )
+        adjusted = np.asarray(projected[70.0])
+        center = np.asarray(projected[0.0])
+
+        np.testing.assert_allclose(adjusted[:, 2], center[:, 2])
+        np.testing.assert_allclose(
+            np.diff(adjusted[:, 2]),
+            np.diff(center[:, 2]),
+        )
+
+    def test_curved_stack_localizer_shares_longitudinal_samples(self):
+        """所有 offset 线应共用纵向采样，避免弯角处回环。"""
+
+        plan = {
+            "curve_points": [
+                {"x": 32.0, "y": 20.0, "z": 0.0},
+                {"x": 32.0, "y": 20.0, "z": 10.0},
+                {"x": 32.0, "y": 24.0, "z": 20.0},
+                {"x": 32.0, "y": 38.0, "z": 29.0},
+                {"x": 32.0, "y": 50.0, "z": 35.0},
+            ],
+            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+            "offsets_mm": [-20.0, 0.0, 20.0],
+        }
+
+        projected = ReconstructionStage._curved_localizer_projected_curves(
+            plan=plan,
+            fixed_axis=0,
+        )
+        center = np.asarray(projected[0.0])
+
+        np.testing.assert_allclose(np.asarray(projected[-20.0])[:, 2], center[:, 2])
+        np.testing.assert_allclose(np.asarray(projected[20.0])[:, 2], center[:, 2])
 
     def test_curved_stack_localizer_draws_every_planned_offset(self):
         """CPR 定位图必须按实际切片 offset 一张对应一条线。"""

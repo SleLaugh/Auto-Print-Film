@@ -59,6 +59,23 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                         "slice_range_extension": extension,
                     })
 
+    def test_spine_cpr_config_is_read_from_spine_body_part_only(self):
+        """脊柱 CPR 配置只从对应脊柱部位读取，其他部位不返回该配置。"""
+
+        stage = LocalizationStage()
+        stage._localization_config = {
+            "targets": {
+                "腰椎": {"spine_cpr": {"full_label": False}},
+                "肺部": {"whole_range": {"start": "lung", "end": "lung"}},
+            }
+        }
+
+        self.assertEqual(
+            stage._resolve_spine_cpr_config("腰椎"),
+            {"full_label": False},
+        )
+        self.assertEqual(stage._resolve_spine_cpr_config("肺部"), {})
+
     def test_lung_builds_typed_anatomical_geometry_for_stage4(self):
         """验证 `test_lung_builds_typed_anatomical_geometry_for_stage4` 场景符合预期。"""
 
@@ -346,7 +363,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         )
 
     def test_xy_correction_candidate_writes_raw_and_seg_without_reconstruction_switch(self):
-        """候选回正写出 raw/seg，但阶段四五仍读取原始路径。"""
+        """候选写出 helper 只负责产物落盘，主流程切换由提升 helper 负责。"""
 
         stage = LocalizationStage()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -380,6 +397,82 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                 sitk.ReadImage(result["candidate_seg_path"])
             )
             self.assertTrue(set(np.unique(corrected_seg)).issubset({0, 2}))
+
+    def test_xy_correction_candidate_missing_files_keeps_original_reconstruction_paths(self):
+        """候选 raw/seg 不是双文件可用时，不得切换主流程输入。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            raw_path = temp_path / "raw.nii.gz"
+            seg_path = temp_path / "seg.nii.gz"
+            candidate_raw_path = temp_path / "raw_corrected_candidate.nii.gz"
+            self._write_image(raw_path, np.zeros((1, 4, 4), dtype=np.int16))
+            self._write_image(seg_path, np.zeros((1, 4, 4), dtype=np.uint8))
+            self._write_image(
+                candidate_raw_path,
+                np.zeros((1, 4, 4), dtype=np.int16),
+            )
+
+            result = LocalizationStage._promote_xy_correction_candidate_if_available({
+                "raw_for_reconstruction_path": str(raw_path),
+                "seg_for_reconstruction_path": str(seg_path),
+                "corrected_raw_path": str(raw_path),
+                "corrected_seg_path": str(seg_path),
+                "candidate_raw_path": str(candidate_raw_path),
+                "candidate_seg_path": str(temp_path / "missing_seg.nii.gz"),
+                "correction_applied": False,
+                "correction_params": {"correction_status": "candidate"},
+            })
+
+            self.assertFalse(result["correction_applied"])
+            self.assertEqual(result["raw_for_reconstruction_path"], str(raw_path))
+            self.assertEqual(result["seg_for_reconstruction_path"], str(seg_path))
+            self.assertEqual(
+                result["correction_params"]["candidate_promotion_status"],
+                "missing_files",
+            )
+            self.assertFalse(
+                result["correction_params"]["promoted_candidate_for_reconstruction"]
+            )
+
+    def test_xy_correction_candidate_rejected_status_keeps_original_paths(self):
+        """即使残留候选文件存在，rejected 状态也不能提升为主流程输入。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            raw_path = temp_path / "raw.nii.gz"
+            seg_path = temp_path / "seg.nii.gz"
+            candidate_raw_path = temp_path / "raw_corrected_candidate.nii.gz"
+            candidate_seg_path = temp_path / "seg_corrected_candidate.nii.gz"
+            self._write_image(raw_path, np.zeros((1, 4, 4), dtype=np.int16))
+            self._write_image(seg_path, np.zeros((1, 4, 4), dtype=np.uint8))
+            self._write_image(
+                candidate_raw_path,
+                np.zeros((1, 4, 4), dtype=np.int16),
+            )
+            self._write_image(
+                candidate_seg_path,
+                np.zeros((1, 4, 4), dtype=np.uint8),
+            )
+
+            result = LocalizationStage._promote_xy_correction_candidate_if_available({
+                "raw_for_reconstruction_path": str(raw_path),
+                "seg_for_reconstruction_path": str(seg_path),
+                "corrected_raw_path": str(raw_path),
+                "corrected_seg_path": str(seg_path),
+                "candidate_raw_path": str(candidate_raw_path),
+                "candidate_seg_path": str(candidate_seg_path),
+                "correction_applied": False,
+                "correction_params": {"correction_status": "rejected"},
+            })
+
+            self.assertFalse(result["correction_applied"])
+            self.assertEqual(result["raw_for_reconstruction_path"], str(raw_path))
+            self.assertEqual(result["seg_for_reconstruction_path"], str(seg_path))
+            self.assertEqual(
+                result["correction_params"]["candidate_promotion_status"],
+                "not_candidate",
+            )
 
     def test_xy_correction_crosshair_overlay_writes_reference_and_candidate_axes(self):
         """十字线 overlay 应在原始网格上标出参考轴和候选轴。"""
@@ -1095,6 +1188,76 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertGreater(int(body_mask[:, 8:9, :].sum()), 0)
         self.assertEqual(int(body_mask[:, 7:8, :].sum()), 0)
 
+    def test_s1_body_candidate_relaxes_support_when_body_is_too_small(self):
+        """S1 初筛占比异常偏小时应放宽主体边缘，仍排除低支撑附件。"""
+
+        seg_array = np.zeros((10, 24, 100), dtype=np.uint8)
+        seg_array[2:8, 10:13, 20:80] = 9
+        # 歪斜 S1 回正后，真实主体边缘可能只保留中等 LR 支撑；
+        # 固定 65% 阈值会把这些连续主体边缘整段误删。
+        seg_array[2:8, 7:10, 20:55] = 9
+        # 更窄的附件应继续排除，避免四棱柱被骶翼/后方结构拉大。
+        seg_array[2:8, 5:6, 20:45] = 9
+
+        body_mask = LocalizationStage._s1_body_candidate_mask(
+            seg_array,
+            LabelTarget("vertebrae_S1", [9]),
+        )
+
+        self.assertIsNotNone(body_mask)
+        self.assertGreater(int(body_mask[:, 7:10, 20:55].sum()), 0)
+        self.assertEqual(int(body_mask[:, 5:6, 20:45].sum()), 0)
+        self.assertGreater(
+            int(body_mask.sum()) / int(np.count_nonzero(seg_array == 9)),
+            0.7,
+        )
+
+    def test_s1_body_candidate_relaxed_fallback_excludes_posterior_tail(self):
+        """S1 fallback 可补主体边缘，但不能把远端后方结构带入四棱柱。"""
+
+        seg_array = np.zeros((10, 32, 100), dtype=np.uint8)
+        seg_array[2:8, 10:13, 20:80] = 9
+        seg_array[2:8, 7:10, 20:55] = 9
+        # 与主体相连、LR 支撑也达到放宽阈值，但位置明显超过严格主体后缘；
+        # 这是歪图里红框后方结构的最小复现。
+        seg_array[2:8, 13:23, 20:55] = 9
+
+        body_mask = LocalizationStage._s1_body_candidate_mask(
+            seg_array,
+            LabelTarget("vertebrae_S1", [9]),
+        )
+
+        self.assertIsNotNone(body_mask)
+        self.assertGreater(int(body_mask[:, 7:10, 20:55].sum()), 0)
+        self.assertEqual(int(body_mask[:, 18:23, 20:55].sum()), 0)
+
+    def test_s1_prism_region_is_clipped_to_body_mask(self):
+        """S1 四棱柱不能把主体凹角外的空区域补成多余斜角。"""
+
+        seg_array = np.zeros((10, 32, 100), dtype=np.uint8)
+        seg_array[2:8, 10:13, 20:80] = 9
+        seg_array[2:8, 7:10, 20:55] = 9
+        image = sitk.GetImageFromArray(seg_array)
+        targets = {"vertebrae_S1": LabelTarget("vertebrae_S1", [9])}
+
+        body_indices, prism_regions = LocalizationStage._build_spine_body_prism_regions(
+            seg_array,
+            targets,
+            image,
+        )
+
+        body_mask = np.zeros_like(seg_array, dtype=bool)
+        body_mask[tuple(body_indices["vertebrae_S1"].T)] = True
+        prism_minimum, prism_mask = prism_regions["vertebrae_S1"]
+        prism_full = np.zeros_like(seg_array, dtype=bool)
+        prism_slices = tuple(
+            slice(int(start), int(start) + int(size))
+            for start, size in zip(prism_minimum, prism_mask.shape)
+        )
+        prism_full[prism_slices] = prism_mask
+
+        self.assertFalse(np.any(prism_full & ~body_mask))
+
     def test_s1_body_candidate_recovers_short_superior_body_cap(self):
         """主体上缘只补回一层相连短段，附近孤立附件仍须排除。"""
 
@@ -1169,6 +1332,38 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             {"x", "y", "z"},
         )
         self.assertIn("left_right_extent_mm", quadrilateral)
+
+    def test_spine_geometry_serializes_filtered_body_and_prism_bboxes(self):
+        """阶段三应记录过滤主体和四棱柱 bbox，供 CPR offset 避开完整附件。"""
+
+        image = sitk.GetImageFromArray(np.ones((12, 16, 20), dtype=np.uint8))
+        seg_array = np.zeros((12, 16, 20), dtype=np.uint8)
+        seg_array[2:10, 4:12, 5:15] = 7
+        geometry = LocalizationStage._build_spine_body_geometry(
+            body_part="腰椎",
+            image=image,
+            seg_array=seg_array,
+            label_targets={"vertebrae_L1": LabelTarget("vertebrae_L1", [7])},
+        )
+
+        annotation = geometry["filtered_annotation_centroids"]["vertebrae_L1"]
+
+        self.assertEqual(
+            annotation["body_bbox"],
+            {
+                "z_min": 2,
+                "z_max": 9,
+                "y_min": 4,
+                "y_max": 11,
+                "x_min": 5,
+                "x_max": 14,
+            },
+        )
+        self.assertIn("prism_bbox", annotation)
+        self.assertEqual(
+            set(annotation["prism_bbox"]),
+            {"z_min", "z_max", "y_min", "y_max", "x_min", "x_max"},
+        )
 
     def test_debug_vertebral_body_mask_overlay_excludes_c1_but_keeps_c2(self):
         """主体定位 overlay 排除 C1 环形结构，但保留 C2 及以下椎体。"""
@@ -1918,10 +2113,23 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             metadata = json.loads(
                 (temp_path / "metadata" / "localization_result.json").read_text(encoding="utf-8")
             )
-            self.assertFalse(result["correction_applied"])
-            self.assertEqual(result["raw_for_reconstruction_path"], str(raw_path))
-            self.assertEqual(result["seg_for_reconstruction_path"], str(seg_path))
-            self.assertEqual(result["corrected_raw_path"], str(raw_path))
+            expected_candidate_raw_path = str(
+                temp_path / "nifti" / "raw_corrected_candidate.nii.gz"
+            )
+            expected_candidate_seg_path = str(
+                temp_path / "nifti" / "seg_corrected_candidate.nii.gz"
+            )
+            self.assertTrue(result["correction_applied"])
+            self.assertEqual(
+                result["raw_for_reconstruction_path"],
+                expected_candidate_raw_path,
+            )
+            self.assertEqual(
+                result["seg_for_reconstruction_path"],
+                expected_candidate_seg_path,
+            )
+            self.assertEqual(result["corrected_raw_path"], expected_candidate_raw_path)
+            self.assertEqual(result["corrected_seg_path"], expected_candidate_seg_path)
             self.assertEqual(result["image"]["spacing_xyz"], [1.0, 1.0, 1.0])
             self.assertEqual(result["image"], metadata["image"])
             self.assertIn("cut_configs", result)
@@ -1935,23 +2143,32 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                 ["slice_range_extension"]["横状位"]["end"],
                 1.0,
             )
-            self.assertEqual(metadata["raw_for_reconstruction_path"], str(raw_path))
-            self.assertEqual(metadata["seg_for_reconstruction_path"], str(seg_path))
-            self.assertEqual(result["candidate_raw_path"], str(
-                temp_path / "nifti" / "raw_corrected_candidate.nii.gz"
-            ))
-            self.assertEqual(result["candidate_seg_path"], str(
-                temp_path / "nifti" / "seg_corrected_candidate.nii.gz"
-            ))
+            self.assertEqual(
+                metadata["raw_for_reconstruction_path"],
+                expected_candidate_raw_path,
+            )
+            self.assertEqual(
+                metadata["seg_for_reconstruction_path"],
+                expected_candidate_seg_path,
+            )
+            self.assertEqual(result["candidate_raw_path"], expected_candidate_raw_path)
+            self.assertEqual(result["candidate_seg_path"], expected_candidate_seg_path)
             self.assertEqual(metadata["candidate_raw_path"], result["candidate_raw_path"])
             self.assertEqual(metadata["candidate_seg_path"], result["candidate_seg_path"])
             self.assertTrue(Path(result["candidate_raw_path"]).exists())
             self.assertTrue(Path(result["candidate_seg_path"]).exists())
             self.assertEqual(
                 result["correction_params"]["correction_status"],
+                "applied",
+            )
+            self.assertTrue(result["correction_params"]["correction_applied"])
+            self.assertTrue(
+                result["correction_params"]["promoted_candidate_for_reconstruction"]
+            )
+            self.assertEqual(
+                result["correction_params"]["source_correction_status"],
                 "candidate",
             )
-            self.assertFalse(result["correction_params"]["correction_applied"])
             self.assertIn("correction_scope_bbox", metadata)
             label_overlay_path = temp_path / "metadata" / "标签掩膜.nii.gz"
             xy_crosshair_path = (
@@ -1996,6 +2213,130 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                 result["spine_geometry"]["filtered_annotation_centroids"],
             )
             self.assertIn("spine_geometry", metadata)
+
+    def test_execute_promotes_existing_xy_candidate_for_geometry_and_reconstruction(self):
+        """候选回正文件存在时，阶段三几何和后续路径应统一切到候选空间。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            raw_path = temp_path / "raw.nii.gz"
+            seg_path = temp_path / "seg.nii.gz"
+            candidate_raw_path = temp_path / "nifti" / "raw_corrected_candidate.nii.gz"
+            candidate_seg_path = temp_path / "nifti" / "seg_corrected_candidate.nii.gz"
+            dataset_json_path = temp_path / "dataset.json"
+            candidate_raw_path.parent.mkdir(parents=True)
+
+            raw_array = np.zeros((6, 24, 24), dtype=np.int16)
+            seg_array = np.zeros((6, 24, 24), dtype=np.uint8)
+            seg_array[1:3, 3:6, 4:7] = 5
+            seg_array[3:5, 6:9, 7:10] = 9
+            candidate_raw_array = np.zeros((8, 32, 32), dtype=np.int16)
+            candidate_seg_array = np.zeros((8, 32, 32), dtype=np.uint8)
+            candidate_seg_array[2:5, 14:18, 15:19] = 5
+            candidate_seg_array[5:7, 20:24, 21:25] = 9
+            self._write_image(raw_path, raw_array)
+            self._write_image(seg_path, seg_array)
+            self._write_image(candidate_raw_path, candidate_raw_array)
+            self._write_image(candidate_seg_path, candidate_seg_array)
+            dataset_json_path.write_text(
+                json.dumps({
+                    "labels": {
+                        "background": 0,
+                        "vertebrae_L1": 5,
+                        "vertebrae_S1": 9,
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            context = ProcessingContext(Request(dicom_dir="/tmp/dicom", output_dir=temp_dir))
+            context.set_result("preprocessing", {"nifti_path": str(raw_path)})
+            context.set_result("segmentation", {
+                "seg_path": str(seg_path),
+                "model": {"dataset_id": 1},
+            })
+            stage = LocalizationStage()
+            stage._nnunet_paths = {
+                "nnUNet_results": str(temp_path / "nnUNet_results"),
+                "nnUNet_preprocessed": "",
+                "nnUNet_raw": "",
+            }
+            stage._localization_config = {
+                "label_aliases": {
+                    "L1": "vertebrae_L1",
+                    "S1": "vertebrae_S1",
+                },
+                "targets": {
+                    "腰椎": {
+                        "whole_range": {
+                            "start": "L1",
+                            "end": "S1",
+                        },
+                        "interspace": {
+                            "intervals": [{"start": "L1", "end": "S1"}],
+                        },
+                    }
+                },
+            }
+            patched_correction = {
+                "raw_for_reconstruction_path": str(raw_path),
+                "seg_for_reconstruction_path": str(seg_path),
+                "corrected_raw_path": str(raw_path),
+                "corrected_seg_path": str(seg_path),
+                "candidate_raw_path": str(candidate_raw_path),
+                "candidate_seg_path": str(candidate_seg_path),
+                "correction_applied": False,
+                "correction_params": {
+                    "correction_status": "candidate",
+                    "candidate_raw_path": str(candidate_raw_path),
+                    "candidate_seg_path": str(candidate_seg_path),
+                },
+            }
+
+            with patch.object(
+                LocalizationStage,
+                "_write_xy_correction_candidate_images",
+                return_value=patched_correction,
+            ):
+                stage.execute(context)
+
+            result = context.get_result("localization")
+            self.assertTrue(result["correction_applied"])
+            self.assertEqual(result["raw_for_reconstruction_path"], str(candidate_raw_path))
+            self.assertEqual(result["seg_for_reconstruction_path"], str(candidate_seg_path))
+            self.assertEqual(result["corrected_raw_path"], str(candidate_raw_path))
+            self.assertEqual(result["corrected_seg_path"], str(candidate_seg_path))
+            self.assertEqual(result["image"]["size_xyz"], [32, 32, 8])
+            self.assertEqual(
+                result["coords"]["vertebrae_L1"]["bbox"],
+                {
+                    "z_min": 2,
+                    "z_max": 4,
+                    "y_min": 14,
+                    "y_max": 17,
+                    "x_min": 15,
+                    "x_max": 18,
+                },
+            )
+            self.assertEqual(
+                result["correction_scope_bbox"],
+                {
+                    "z_min": 2,
+                    "z_max": 6,
+                    "y_min": 14,
+                    "y_max": 23,
+                    "x_min": 15,
+                    "x_max": 24,
+                },
+            )
+            self.assertEqual(
+                result["correction_params"]["correction_status"],
+                "applied",
+            )
+            self.assertEqual(
+                result["correction_params"]["source_correction_status"],
+                "candidate",
+            )
 
     @staticmethod
     def _write_image(path: Path, array: np.ndarray) -> None:

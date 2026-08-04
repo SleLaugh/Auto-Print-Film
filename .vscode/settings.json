@@ -3,5 +3,16 @@
   "python.analysis.extraPaths": [
     "${workspaceFolder}"
   ],
-  "python.terminal.activateEnvironment": true
+  "python.terminal.activateEnvironment": true,
+  "vs-yuedu.readingList": [
+      {
+          "filePath": "/home/peng/03_data/demo/code/Accountin/1/神秘尽头.txt",
+          "displayName": "我的小说",
+          "lastReadChapter": "",
+          "lastReadLine": 0
+      },
+      {
+          "filePath": "/Users/username/Documents/technical-book.md"
+      }
+  ]
 }

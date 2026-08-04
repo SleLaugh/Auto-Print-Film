@@ -138,7 +138,7 @@ class ReconstructionStage(BaseStage):
                 )
             DebugLog(f"  状位处理完成: {plane}")
 
-        result = self._build_plan_summary(plans, output_root)
+        result = self._build_plan_summary(plan_results, output_root)
         result["outputs"] = plan_results
         
         context.set_stage_result(ReconstructionStageResult(payload=result))
@@ -173,7 +173,6 @@ class ReconstructionStage(BaseStage):
                 f"耗时={time.perf_counter() - localizer_start:.3f}s"
             )
 
-        resampler = self._resampler_for_plan(plan)
         windows = unique_window_presets(plan["window_presets"])
         series_uids = {window.name: new_uid() for window in windows}
         localizer_series_uids = {window.name: new_uid() for window in windows}
@@ -189,6 +188,39 @@ class ReconstructionStage(BaseStage):
         }
         for output_dir in output_dirs.values():
             output_dir.mkdir(parents=True, exist_ok=True)
+
+        localizer_only = self._should_write_localizer_only(plan)
+        if localizer_only:
+            DebugLog(
+                "    [1] 跳过实际切片重建: "
+                f"plan={plan.get('plan_id', '')}, reason=coronal_cpr_localizer_only"
+            )
+            sampled_slices: list[tuple[dict[str, Any], sitk.Image]] = []
+            self._write_plan_windows(
+                sampled_slices=sampled_slices,
+                windows=windows,
+                output_dirs=output_dirs,
+                plan=plan,
+                series_uids=series_uids,
+                study_uid=study_uid,
+                source_metadata=source_metadata,
+                localizer_image=localizer_image,
+                localizer_series_uids=localizer_series_uids,
+            )
+            return {
+                "plan_id": plan["plan_id"],
+                "plane": plan["plane"],
+                "group_name": plan.get("group_name", ""),
+                "slice_count": 0,
+                "image_count": 0,
+                "window_outputs": {
+                    name: str(path)
+                    for name, path in output_dirs.items()
+                },
+                "localizer_only": True,
+            }
+
+        resampler = self._resampler_for_plan(plan)
 
         # 第一步：只做 MPR 和层厚采样，保留原始 float32 HU 图像。
         # 所有采样完成之前不会开始任何窗宽窗位映射。
@@ -225,9 +257,52 @@ class ReconstructionStage(BaseStage):
         )
         DebugLog("    [1] MPR采样完成")
 
-        # 第二步：一个窗位任务负责处理整套已采样切片。每个任务写独立目录并使用
-        # 独立序列 UID，因此没有文件名或序列状态冲突；底层 GDCM 写盘仍通过
-        # DICOM 模块的进程内锁串行执行，线程池只并行安全的窗位计算和输出准备。
+        self._write_plan_windows(
+            sampled_slices=sampled_slices,
+            windows=windows,
+            output_dirs=output_dirs,
+            plan=plan,
+            series_uids=series_uids,
+            study_uid=study_uid,
+            source_metadata=source_metadata,
+            localizer_image=localizer_image,
+            localizer_series_uids=localizer_series_uids,
+        )
+
+        return {
+            "plan_id": plan["plan_id"],
+            "plane": plan["plane"],
+            "group_name": plan.get("group_name", ""),
+            "slice_count": len(plan["slices"]),
+            "image_count": len(plan["slices"]) * len(windows),
+            "window_outputs": {
+                name: str(path)
+                for name, path in output_dirs.items()
+            },
+            "localizer_only": False,
+        }
+
+    def _write_plan_windows(
+        self,
+        *,
+        sampled_slices: list[tuple[dict[str, Any], sitk.Image]],
+        windows: list[Any],
+        output_dirs: dict[str, Path],
+        plan: Dict[str, Any],
+        series_uids: dict[str, str],
+        study_uid: str,
+        source_metadata: Dict[str, str],
+        localizer_image: sitk.Image | None,
+        localizer_series_uids: dict[str, str],
+    ) -> None:
+        """
+        一个窗位任务负责处理整套已采样切片。
+
+        每个任务写独立目录并使用独立序列 UID，因此没有文件名或序列状态冲突；
+        底层 GDCM 写盘仍通过 DICOM 模块的进程内锁串行执行，线程池只并行安全的
+        窗位计算和输出准备。
+        """
+
         if self.parallel and len(windows) > 1:
             worker_count = min(len(windows), self.max_window_workers)
             DebugLog(
@@ -268,20 +343,18 @@ class ReconstructionStage(BaseStage):
                     study_uid=study_uid,
                     source_metadata=source_metadata,
                     localizer_image=localizer_image,
-                    localizer_series_uid=localizer_series_uids[window.name],
-                )
+                        localizer_series_uid=localizer_series_uids[window.name],
+                    )
 
-        return {
-            "plan_id": plan["plan_id"],
-            "plane": plan["plane"],
-            "group_name": plan.get("group_name", ""),
-            "slice_count": len(plan["slices"]),
-            "image_count": len(plan["slices"]) * len(windows),
-            "window_outputs": {
-                name: str(path)
-                for name, path in output_dirs.items()
-            },
-        }
+    @staticmethod
+    def _should_write_localizer_only(plan: Dict[str, Any]) -> bool:
+        """临时跳过冠状位 CPR 实际切片，只保留定位图。"""
+
+        return (
+            str(plan.get("plane", "")) == "冠状位"
+            and str(plan.get("geometry_type", "")) == "curved_stack"
+            and str(plan.get("cut_mode", "")).lower() == "cpr"
+        )
 
     @classmethod
     def _build_plan_localizer(
@@ -566,7 +639,7 @@ class ReconstructionStage(BaseStage):
 
     @staticmethod
     def _curved_localizer_offsets(plan: Dict[str, Any]) -> List[float]:
-        """返回 CPR 定位图需要投影的等间距 offset 中心线。"""
+        """返回 CPR 定位图需要投影的全部 offset 中心线。"""
 
         raw_offsets = plan.get("offsets_mm")
         offsets: list[float] = []
@@ -988,15 +1061,14 @@ class ReconstructionStage(BaseStage):
 
     @staticmethod
     def _build_plan_summary(
-        plans: List[Dict[str, Any]],
+        plan_results: List[Dict[str, Any]],
         output_root: Path,
     ) -> Dict[str, Any]:
-        """按状位汇总计划数、切片数、窗位展开图像数和输出目录。"""
+        """按实际输出汇总计划数、切片数、窗位展开图像数和输出目录。"""
 
         plane_summary = {}
-        for plan in plans:
-            plane = plan["plane"]
-            window_count = len(dict.fromkeys(plan["window_presets"]))
+        for plan_result in plan_results:
+            plane = plan_result["plane"]
             summary = plane_summary.setdefault(
                 plane,
                 {
@@ -1007,16 +1079,17 @@ class ReconstructionStage(BaseStage):
                     "output_dir": str(output_root / plane),
                 },
             )
-            slice_count = len(plan["slices"])
+            slice_count = int(plan_result.get("slice_count", 0))
+            image_count = int(plan_result.get("image_count", 0))
             summary["plan_count"] += 1
             summary["count"] += slice_count
             summary["slice_count"] += slice_count
-            summary["image_count"] += slice_count * window_count
+            summary["image_count"] += image_count
 
         slice_count = sum(summary["slice_count"] for summary in plane_summary.values())
         image_count = sum(summary["image_count"] for summary in plane_summary.values())
         result = {
-            "plan_count": len(plans),
+            "plan_count": len(plan_results),
             "slice_count": slice_count,
             "image_count": image_count,
             "planes": plane_summary,

@@ -24,6 +24,7 @@ from src.planning.spine_cpr import (
     _extend_curve_endpoints_to_terminal_raw_labels,
     _get_spine_annotation_centers,
     _offsets_covering_interval,
+    _resolve_offsets_mm,
     _resolve_endpoint_face_center,
 )
 from src.planning.whole_range import (
@@ -2510,6 +2511,257 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 plan.offsets_mm,
             )
 
+    def test_spine_cpr_offsets_keep_raw_label_extent_when_filtered_prism_exists(self):
+        """四棱柱决定 CPR 中心线，但 offset 范围仍应覆盖原始完整标注。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            segmentation = np.zeros((24, 128, 128), dtype=np.uint8)
+            segmentation[8:16, 10:101, 55:66] = 1
+            segmentation_path = Path(temp_dir) / "raw_seg.nii.gz"
+            sitk.WriteImage(
+                sitk.GetImageFromArray(segmentation),
+                str(segmentation_path),
+            )
+
+            localization_result = self._spine_localization_result(
+                ("L1", "L2", "L3"),
+                "腰椎",
+            )
+            localization_result["seg_for_reconstruction_path"] = str(
+                segmentation_path
+            )
+            localization_result["spine_geometry"] = {
+                "filtered_annotation_centroids": {}
+            }
+            for label_name in ("vertebrae_L1", "vertebrae_L2", "vertebrae_L3"):
+                localization_result["coords"][label_name]["label_ids"] = [1]
+                localization_result["spine_geometry"][
+                    "filtered_annotation_centroids"
+                ][label_name] = {
+                    "found": True,
+                    "centroid_physical": {"x": 60.0, "y": 50.0, "z": 10.0},
+                    "prism_found": True,
+                    "prism_bbox": {
+                        "z_min": 8,
+                        "z_max": 12,
+                        "y_min": 45,
+                        "y_max": 55,
+                        "x_min": 55,
+                        "x_max": 65,
+                    },
+                }
+
+            offsets = _resolve_offsets_mm(
+                localization_result,
+                ["vertebrae_L1", "vertebrae_L2", "vertebrae_L3"],
+                [
+                    Point3D(60.0, 50.0, 16.0),
+                    Point3D(60.0, 50.0, 12.0),
+                    Point3D(60.0, 50.0, 8.0),
+                ],
+                Point3D(0.0, 1.0, 0.0),
+                slice_thickness=4.0,
+                slice_spacing=5.0,
+            )
+
+        self.assertEqual(
+            offsets,
+            [float(value) for value in range(-40, 55, 5)],
+        )
+
+    def test_spine_cpr_full_label_false_uses_filtered_prism_extent(self):
+        """full_label=false 时，CPR offset 应按四棱柱/主体范围生成。"""
+
+        localization_result = self._spine_localization_result(
+            ("L1", "L2", "L3"),
+            "腰椎",
+        )
+        localization_result["spine_cpr_config"] = {"full_label": False}
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": {}
+        }
+        for index, label_name in enumerate(("vertebrae_L1", "vertebrae_L2", "vertebrae_L3")):
+            z_center = 12.0 - index * 4.0
+            localization_result["coords"][label_name]["bbox"].update({
+                "y_min": 10,
+                "y_max": 100,
+            })
+            localization_result["spine_geometry"][
+                "filtered_annotation_centroids"
+            ][label_name] = {
+                "found": True,
+                "centroid_physical": {"x": 60.0, "y": 50.0, "z": z_center},
+                "prism_found": True,
+                "prism_bbox": {
+                    "z_min": int(z_center) - 2,
+                    "z_max": int(z_center) + 2,
+                    "y_min": 45,
+                    "y_max": 55,
+                    "x_min": 55,
+                    "x_max": 65,
+                },
+            }
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"]),
+            ],
+        )
+
+        plan = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.cpr_range_mode, "body_prism")
+        self.assertEqual(plan.plan_id, "腰椎_CPR_冠状位_body_prism")
+        self.assertEqual(plan.group_name, "CPR_主椎体")
+        self.assertEqual(plan.offsets_mm, [-5.0, 0.0, 5.0])
+
+    def test_spine_cpr_full_label_true_keeps_full_extent_and_legacy_identity(self):
+        """full_label=true 时，保持整体范围和旧 CPR 输出命名。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            segmentation = np.zeros((24, 128, 128), dtype=np.uint8)
+            segmentation[8:16, 10:101, 55:66] = 1
+            segmentation_path = Path(temp_dir) / "raw_seg.nii.gz"
+            sitk.WriteImage(
+                sitk.GetImageFromArray(segmentation),
+                str(segmentation_path),
+            )
+            localization_result = self._spine_localization_result(
+                ("L1", "L2", "L3"),
+                "腰椎",
+            )
+            localization_result["seg_for_reconstruction_path"] = str(
+                segmentation_path
+            )
+            localization_result["spine_cpr_config"] = {"full_label": True}
+            localization_result["spine_geometry"] = {
+                "filtered_annotation_centroids": {}
+            }
+            for index, label_name in enumerate(("vertebrae_L1", "vertebrae_L2", "vertebrae_L3")):
+                z_center = 16.0 - index * 4.0
+                localization_result["coords"][label_name]["label_ids"] = [1]
+                localization_result["spine_geometry"][
+                    "filtered_annotation_centroids"
+                ][label_name] = {
+                    "found": True,
+                    "centroid_physical": {"x": 60.0, "y": 50.0, "z": z_center},
+                    "prism_found": True,
+                    "prism_bbox": {
+                        "z_min": int(z_center) - 2,
+                        "z_max": int(z_center) + 2,
+                        "y_min": 45,
+                        "y_max": 55,
+                        "x_min": 55,
+                        "x_max": 65,
+                    },
+                }
+            request = Request(
+                dicom_dir="/tmp/dicom",
+                output_dir="/tmp/output",
+                body_part=BodyPartEnum.腰椎,
+                plane_configs=[
+                    PlaneConfig(PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"]),
+                ],
+            )
+
+            plans = SingleLabelWholeRangePlanner().build_plans(
+                request,
+                localization_result,
+            ).plans
+
+        self.assertEqual(
+            [plan.cpr_range_mode for plan in plans],
+            ["full_label"],
+        )
+        self.assertEqual(
+            [plan.group_name for plan in plans],
+            ["CPR"],
+        )
+        self.assertEqual(
+            [plan.plan_id for plan in plans],
+            ["腰椎_CPR_冠状位"],
+        )
+        self.assertGreater(len(plans[0].offsets_mm), 3)
+
+    def test_checked_in_spine_cpr_full_label_config_lives_under_spine_targets(self):
+        """CPR 范围配置只放在三个脊柱部位下，且必须使用 bool。"""
+
+        config_path = Path("src/config/localization_config.json")
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertNotIn("spine_cpr", config)
+        for body_part in ("颈椎", "胸椎", "腰椎"):
+            with self.subTest(body_part=body_part):
+                self.assertIsInstance(
+                    config["targets"][body_part]["spine_cpr"].get("full_label"),
+                    bool,
+                )
+        for body_part in ("肺部", "头骨", "髋骨"):
+            with self.subTest(body_part=body_part):
+                self.assertNotIn("spine_cpr", config["targets"][body_part])
+
+    def test_spine_cpr_ignores_legacy_range_mode_without_full_label_bool(self):
+        """旧 range_mode 字段不再作为 CPR 范围配置入口。"""
+
+        localization_result = self._spine_localization_result(
+            ("L1", "L2", "L3"),
+            "腰椎",
+        )
+        localization_result["spine_cpr_config"] = {"range_mode": "body_prism"}
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"]),
+            ],
+        )
+
+        plan = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.cpr_range_mode, "full_label")
+        self.assertEqual(plan.group_name, "CPR")
+
+    def test_spine_cpr_offsets_read_coronal_whole_range_extension(self):
+        """冠状位 CPR 应用整切冠状位扩展增加左右 offset 范围。"""
+
+        localization_result = self._spine_localization_result(
+            ("L1", "L2", "L3"),
+            "腰椎",
+        )
+        localization_result["cut_configs"] = {
+            "whole_range": {
+                "slice_range_extension": {
+                    "冠状位": {"start": 4.0, "end": 6.0},
+                },
+            },
+        }
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"]),
+            ],
+        )
+
+        plan = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.geometry_type, "curved_stack")
+        self.assertEqual(plan.offsets_mm, [-10.0, -5.0, 0.0, 5.0, 10.0])
+        self.assertAlmostEqual(plan.extent_mm.width, 10.0)
+
     def test_cpr_offsets_covering_interval_keeps_zero_and_adds_last_slab(self):
         """最后厚层只差几毫米时，应补到不少包原始体素。"""
 
@@ -4478,6 +4730,19 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 np.unique(highlighted[:, 1]).tolist(),
                 [10, 18, 26],
             )
+
+    def test_mapping_cpr_overview_draws_every_planned_offset(self):
+        """CPR 调试总览必须按实际切片 offset 一张对应一条线。"""
+
+        plan = {
+            "offsets_mm": [float(value) for value in range(-35, 70, 5)],
+        }
+
+        self.assertEqual(
+            MappingStage._curved_overview_offsets(plan),
+            [float(value) for value in range(-35, 70, 5)],
+        )
+        self.assertEqual(len(plan["offsets_mm"]), 21)
 
     def test_center_cross_uses_lung_anatomical_origin_in_long_scan(self):
         """颈到盆长扫描的十字中线应落在肺中心，而不是整幅图像中心。"""

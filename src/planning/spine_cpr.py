@@ -17,6 +17,7 @@ from src.planning.geometry import (
     voxel_index_to_physical,
 )
 from src.planning.spine_common import get_label_center, union_bboxes
+from src.planning.straight import SliceRangeExtension, resolve_slice_range_extension
 from src.utils import DebugLog
 
 
@@ -40,6 +41,9 @@ SPINE_CONFIG_LABEL_ORDER = (
     + ["vertebrae_S1"]
 )
 
+CPR_RANGE_MODE_FULL_LABEL = "full_label"
+CPR_RANGE_MODE_BODY_PRISM = "body_prism"
+
 
 def build_spine_sagittal_cpr_plan(
     request: Any,
@@ -47,11 +51,28 @@ def build_spine_sagittal_cpr_plan(
     localization_result: Dict[str, Any],
     label_names: Iterable[str],
 ) -> Tuple[SlicePlan | None, List[str]]:
+    """兼容旧入口：返回当前配置生成的第一套 CPR plan。"""
+
+    plans, warnings = build_spine_sagittal_cpr_plans(
+        request=request,
+        plane_config=plane_config,
+        localization_result=localization_result,
+        label_names=label_names,
+    )
+    return (plans[0] if plans else None), warnings
+
+
+def build_spine_sagittal_cpr_plans(
+    request: Any,
+    plane_config: Any,
+    localization_result: Dict[str, Any],
+    label_names: Iterable[str],
+) -> Tuple[List[SlicePlan], List[str]]:
     """为脊柱冠状位生成 CPR plan；矢状位继续交给旧直线 MPR 逻辑。"""
 
     perf_start = time.perf_counter()
     if plane_config.plane != PlaneTypeEnum.冠状位:
-        return None, []
+        return [], []
 
     centers, center_warnings = _get_spine_annotation_centers(
         localization_result,
@@ -59,7 +80,7 @@ def build_spine_sagittal_cpr_plan(
     )
 
     if len(centers) < 3:
-        return None, center_warnings + [
+        return [], center_warnings + [
             f"CPR 降级: 有效椎体少于 3 个，当前 {len(centers)} 个"
         ]
 
@@ -84,30 +105,82 @@ def build_spine_sagittal_cpr_plan(
     )
     curve_length = _polyline_length(curve_points)
     if curve_length <= 0.0:
-        return None, ["CPR 降级: 中心曲线长度无效"]
+        return [], ["CPR 降级: 中心曲线长度无效"]
 
     offset_axis = _offset_axis_for_plane(image_info, plane_config.plane)
     tangent_dir = normalize_vector(subtract_points(curve_points[-1], curve_points[0]))
     row_dir = normalize_vector(_cross(tangent_dir, offset_axis))
-    offsets = _resolve_offsets_mm(
-        localization_result,
-        source_labels,
-        curve_points,
-        offset_axis,
-        float(plane_config.slice_thickness),
-        float(plane_config.slice_spacing),
-    )
-    slices = [
-        PlannedSlice(
-            index=index + 1,
-            center=_add(center, _scale(offset_axis, offset_mm)),
-            normal=offset_axis,
-            row_dir=row_dir,
-            col_dir=tangent_dir,
-            offset_mm=offset_mm,
+
+    range_modes = _configured_cpr_range_modes(localization_result)
+    include_range_suffix = range_modes != ["full_label"]
+    plans: list[SlicePlan] = []
+    for range_mode in range_modes:
+        offsets = _resolve_offsets_mm(
+            localization_result,
+            source_labels,
+            curve_points,
+            offset_axis,
+            float(plane_config.slice_thickness),
+            float(plane_config.slice_spacing),
+            range_mode=range_mode,
         )
-        for index, offset_mm in enumerate(offsets)
-    ]
+        slices = [
+            PlannedSlice(
+                index=index + 1,
+                center=_add(center, _scale(offset_axis, offset_mm)),
+                normal=offset_axis,
+                row_dir=row_dir,
+                col_dir=tangent_dir,
+                offset_mm=offset_mm,
+            )
+            for index, offset_mm in enumerate(offsets)
+        ]
+        plan_id, group_name = _cpr_plan_identity(
+            request.body_part.value,
+            plane_config.plane.value,
+            range_mode,
+            include_range_suffix,
+        )
+        plans.append(SlicePlan(
+            plan_id=plan_id,
+            body_part=request.body_part.value,
+            cut_mode="cpr",
+            plane=plane_config.plane.value,
+            group_name=group_name,
+            geometry_type="curved_stack",
+            range_start=curve_points[0],
+            range_end=curve_points[-1],
+            path_points=curve_points,
+            slices=slices,
+            extent_mm=ExtentMM(
+                width=_resolve_cpr_width_extent_mm(
+                    localization_result,
+                    source_labels,
+                    row_dir,
+                ),
+                height=curve_length,
+            ),
+            output_spacing_mm=Point3D(
+                _minimum_image_spacing(image_info),
+                _minimum_image_spacing(image_info),
+                0.0,
+            ),
+            slice_thickness=plane_config.slice_thickness,
+            slice_spacing=plane_config.slice_spacing,
+            window_presets=list(plane_config.window_presets),
+            source_labels=source_labels,
+            curve_points=curve_points,
+            curve_spacing_mm=_minimum_image_spacing(image_info),
+            offset_axis=offset_axis,
+            offsets_mm=offsets,
+            cpr_range_mode=range_mode,
+            target_start=curve_points[0],
+            target_end=curve_points[-1],
+            localizer_reference=center,
+            localizer_plane="矢状位",
+            confidence=1.0,
+            warnings=center_warnings,
+        ))
 
     DebugLog(
         "    [CPR规划性能] "
@@ -115,50 +188,60 @@ def build_spine_sagittal_cpr_plan(
         f"plane={plane_config.plane.value}, "
         f"labels={len(source_labels)}, "
         f"curve_points={len(curve_points)}, "
-        f"offset_count={len(offsets)}, "
+        f"range_modes={range_modes}, "
+        f"offset_count={[len(plan.offsets_mm or []) for plan in plans]}, "
         f"curve_length={curve_length:.3f}mm, "
         f"耗时={time.perf_counter() - perf_start:.3f}s"
     )
 
-    return SlicePlan(
-        plan_id=f"{request.body_part.value}_CPR_{plane_config.plane.value}",
-        body_part=request.body_part.value,
-        cut_mode="cpr",
-        plane=plane_config.plane.value,
-        group_name="CPR",
-        geometry_type="curved_stack",
-        range_start=curve_points[0],
-        range_end=curve_points[-1],
-        path_points=curve_points,
-        slices=slices,
-        extent_mm=ExtentMM(
-            width=_resolve_cpr_width_extent_mm(
-                localization_result,
-                source_labels,
-                row_dir,
-            ),
-            height=curve_length,
-        ),
-        output_spacing_mm=Point3D(
-            _minimum_image_spacing(image_info),
-            _minimum_image_spacing(image_info),
-            0.0,
-        ),
-        slice_thickness=plane_config.slice_thickness,
-        slice_spacing=plane_config.slice_spacing,
-        window_presets=list(plane_config.window_presets),
-        source_labels=source_labels,
-        curve_points=curve_points,
-        curve_spacing_mm=_minimum_image_spacing(image_info),
-        offset_axis=offset_axis,
-        offsets_mm=offsets,
-        target_start=curve_points[0],
-        target_end=curve_points[-1],
-        localizer_reference=center,
-        localizer_plane="矢状位",
-        confidence=1.0,
-        warnings=center_warnings,
-    ), center_warnings
+    return plans, center_warnings
+
+
+def _configured_cpr_range_modes(
+    localization_result: Dict[str, Any],
+) -> List[str]:
+    """从阶段三配置解析 CPR 范围模式。"""
+
+    config = localization_result.get("spine_cpr_config")
+    if not isinstance(config, dict):
+        config = localization_result.get("spine_cpr", {})
+    if not isinstance(config, dict):
+        config = {}
+    return (
+        [CPR_RANGE_MODE_FULL_LABEL]
+        if _config_bool(config.get("full_label"), default=True)
+        else [CPR_RANGE_MODE_BODY_PRISM]
+    )
+
+
+def _config_bool(value: Any, default: bool) -> bool:
+    """把配置中的布尔或常见字符串布尔值规整成 bool。"""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "off"}:
+            return False
+    return default
+
+
+def _cpr_plan_identity(
+    body_part: str,
+    plane: str,
+    range_mode: str,
+    include_range_suffix: bool,
+) -> tuple[str, str]:
+    """按范围模式生成稳定 plan_id 和输出组名。"""
+
+    base_plan_id = f"{body_part}_CPR_{plane}"
+    if not include_range_suffix:
+        return base_plan_id, "CPR"
+    if range_mode == CPR_RANGE_MODE_BODY_PRISM:
+        return f"{base_plan_id}_body_prism", "CPR_主椎体"
+    return f"{base_plan_id}_full_label", "CPR_整体范围"
 
 
 def configured_spine_cpr_labels(
@@ -878,8 +961,28 @@ def _resolve_offsets_mm(
     offset_axis: Point3D,
     slice_thickness: float,
     slice_spacing: float,
+    range_mode: str = CPR_RANGE_MODE_FULL_LABEL,
 ) -> List[float]:
     """按原始椎体标注体素外缘和层厚生成 CPR offset。"""
+
+    if range_mode == CPR_RANGE_MODE_BODY_PRISM:
+        filtered_interval = _filtered_annotation_offset_interval_mm(
+            localization_result,
+            label_names,
+            curve_points,
+            offset_axis,
+        )
+        if filtered_interval is not None:
+            filtered_interval = _extend_cpr_offset_interval(
+                localization_result,
+                filtered_interval,
+            )
+            return _offsets_covering_interval(
+                filtered_interval[0],
+                filtered_interval[1],
+                slice_thickness,
+                slice_spacing,
+            )
 
     raw_interval = _raw_label_offset_interval_mm(
         localization_result,
@@ -888,6 +991,10 @@ def _resolve_offsets_mm(
         offset_axis,
     )
     if raw_interval is not None:
+        raw_interval = _extend_cpr_offset_interval(
+            localization_result,
+            raw_interval,
+        )
         return _offsets_covering_interval(
             raw_interval[0],
             raw_interval[1],
@@ -901,6 +1008,70 @@ def _resolve_offsets_mm(
         offset_axis,
         slice_thickness,
         slice_spacing,
+    )
+
+
+def _filtered_annotation_offset_interval_mm(
+    localization_result: Dict[str, Any],
+    label_names: List[str],
+    curve_points: List[Point3D],
+    offset_axis: Point3D,
+) -> Tuple[float, float] | None:
+    """用阶段三过滤后的四棱柱/主体 bbox 计算 CPR offset 区间。"""
+
+    annotations = (
+        localization_result
+        .get("spine_geometry", {})
+        .get("filtered_annotation_centroids", {})
+    )
+    if not isinstance(annotations, dict) or not annotations:
+        return None
+
+    center_projection = float(np.median([
+        _dot(point, offset_axis)
+        for point in curve_points
+    ]))
+    projections: list[float] = []
+    for label_name in label_names:
+        annotation = annotations.get(label_name)
+        if not isinstance(annotation, dict) or not annotation.get("found"):
+            continue
+        bbox = annotation.get("prism_bbox") if annotation.get("prism_found") else None
+        if not bbox:
+            bbox = annotation.get("body_bbox")
+        if not bbox:
+            continue
+        projections.extend(
+            _dot(point, offset_axis) - center_projection
+            for point in _bbox_corners(bbox, localization_result["image"])
+        )
+    if not projections:
+        return None
+    return min(projections), max(projections)
+
+
+def _extend_cpr_offset_interval(
+    localization_result: Dict[str, Any],
+    interval: Tuple[float, float],
+) -> Tuple[float, float]:
+    """用 whole_range 冠状位扩展增加 CPR offset 覆盖范围。"""
+
+    extension = _resolve_cpr_offset_range_extension(localization_result)
+    return (
+        float(interval[0]) - extension.start_mm,
+        float(interval[1]) + extension.end_mm,
+    )
+
+
+def _resolve_cpr_offset_range_extension(
+    localization_result: Dict[str, Any],
+) -> SliceRangeExtension:
+    """CPR 冠状位定位竖线左右范围沿 offset 轴扩展。"""
+
+    return resolve_slice_range_extension(
+        localization_result,
+        "whole_range",
+        PlaneTypeEnum.冠状位,
     )
 
 
@@ -1245,9 +1416,13 @@ def _bbox_offsets_mm(
     if not projections:
         spacing = max(float(slice_spacing), 1e-6)
         projections = [-spacing, 0.0, spacing]
+    interval = _extend_cpr_offset_interval(
+        localization_result,
+        (min(projections), max(projections)),
+    )
     return _offsets_covering_interval(
-        min(projections),
-        max(projections),
+        interval[0],
+        interval[1],
         slice_thickness,
         slice_spacing,
     )

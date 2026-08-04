@@ -94,6 +94,8 @@ class SlicePlan:
     """CPR 左右偏移方向单位向量。"""
     offsets_mm: List[float] | None = None
     """CPR 每张图相对中心曲线的左右偏移。"""
+    cpr_range_mode: str | None = None
+    """CPR offset 覆盖范围来源；full_label 为完整标注，body_prism 为主椎体。"""
     target_start: Point3D | None = None
     target_end: Point3D | None = None
     localizer_reference: Point3D | None = None
@@ -142,4 +144,6 @@ class SlicePlan:
             data["offset_axis"] = self.offset_axis.to_dict()
         if self.offsets_mm is not None:
             data["offsets_mm"] = list(self.offsets_mm)
+        if self.cpr_range_mode is not None:
+            data["cpr_range_mode"] = self.cpr_range_mode
         return data

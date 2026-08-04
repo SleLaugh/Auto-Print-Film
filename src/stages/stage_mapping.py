@@ -1078,7 +1078,7 @@ class MappingStage(BaseStage):
 
     @staticmethod
     def _curved_overview_offsets(plan: Dict[str, Any]) -> list[float]:
-        """返回 CPR 调试总览需要投影的等间距 offset 中心线。"""
+        """返回 CPR 调试总览需要投影的全部 offset 中心线。"""
 
         raw_offsets = plan.get("offsets_mm")
         offsets: list[float] = []

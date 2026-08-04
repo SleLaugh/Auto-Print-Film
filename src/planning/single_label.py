@@ -8,7 +8,7 @@ from typing import Any, Dict
 from src.models.enums import PlaneTypeEnum
 from src.planning.spine_cpr import (
     SPINE_CPR_LABELS,
-    build_spine_sagittal_cpr_plan,
+    build_spine_sagittal_cpr_plans,
     configured_spine_cpr_labels,
     spine_target_bbox,
 )
@@ -42,15 +42,15 @@ class SingleLabelWholeRangePlanner:
             target_region_bbox = None
             source_labels = None
             if spine_labels is not None:
-                cpr_plan, cpr_warnings = build_spine_sagittal_cpr_plan(
+                cpr_plans, cpr_warnings = build_spine_sagittal_cpr_plans(
                     request=request,
                     plane_config=plane_config,
                     localization_result=localization_result,
                     label_names=spine_labels,
                 )
                 warnings.extend(cpr_warnings)
-                if cpr_plan is not None:
-                    plans.append(cpr_plan)
+                if cpr_plans:
+                    plans.extend(cpr_plans)
                     continue
                 if (
                     request.body_part.value == "胸椎"

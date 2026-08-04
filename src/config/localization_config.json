@@ -30,6 +30,9 @@
     },
     "targets": {
         "颈椎": {
+            "spine_cpr": {
+                "full_label": true
+            },
             "whole_range": {
                 "start": "C1",
                 "end": "C7"
@@ -60,6 +63,9 @@
             }
         },
         "胸椎": {
+            "spine_cpr": {
+                "full_label": true
+            },
             "whole_range": {
                 "start": "C7",
                 "end": "L1"
@@ -122,9 +128,18 @@
             }
         },
         "腰椎": {
+            "spine_cpr": {
+                "full_label": true
+            },
             "whole_range": {
                 "start": "L1",
-                "end": "S1"
+                "end": "S1",
+                "slice_range_extension": {
+                    "冠状位": {
+                        "start": 5.0,
+                        "end": 5.0
+                    }
+                }
             },
             "interspace": {
                 "intervals": [

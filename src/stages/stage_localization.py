@@ -62,8 +62,9 @@ class LocalizationStage(BaseStage):
         self.correction_max_label_angle_spread_degrees = float(
             self.config.get('correction_max_label_angle_spread_degrees', 15.0)
         )
-        # 阶段三只写候选回正图和诊断信息，不把候选图切换为阶段四/五输入。
-        # 主流程真正启用回正仍由 enable_experimental_global_correction 单独控制。
+        # 阶段三先写候选回正图和诊断信息；候选 raw/seg 双文件可用时，
+        # 后续定位几何、阶段四和阶段五统一切到候选图像空间。
+        # 旧实验开关仍只服务 `_correct_images_if_needed` 兼容入口。
         self.correction_requested = bool(
             self.config.get('correction_requested', True)
         )
@@ -238,9 +239,9 @@ class LocalizationStage(BaseStage):
             f"status={xy_correction_candidate['correction_status']}"
         )
 
-        # [4] correct_skew: 写出候选回正图，但默认保持原始 raw/seg 给阶段四五。
+        # [4] correct_skew: 写出候选回正图；候选文件可用时提升为本轮主流程输入。
         nifti_path = Path(request.output_dir) / 'nifti'
-        DebugLog("  [4] correct_skew: 写出候选回正图，主流程继续使用原始 raw/seg...")
+        DebugLog("  [4] correct_skew: 写出候选回正图，并选择后续工作输入...")
         correction_result = self._write_xy_correction_candidate_images(
             raw_path=str(raw_path),
             seg_path=str(seg_path),
@@ -248,8 +249,29 @@ class LocalizationStage(BaseStage):
             candidate=xy_correction_candidate,
             correction_center_bbox=correction_scope_bbox,
         )
+        correction_result = self._promote_xy_correction_candidate_if_available(
+            correction_result,
+        )
 
-        DebugLog("    未执行主流程回正，后续阶段继续使用原始 raw/seg")
+        if correction_result['correction_applied']:
+            DebugLog(
+                "    已启用回正候选，阶段三几何和后续阶段使用回正 raw/seg"
+            )
+            image = sitk.ReadImage(str(correction_result['seg_for_reconstruction_path']))
+            seg_array = sitk.GetArrayFromImage(image)
+            label_coordinates = self._extract_label_coordinates(
+                seg_array,
+                label_targets,
+            )
+            self._validate_found_labels(label_coordinates)
+            target_mask = self._build_target_mask(seg_array, label_targets)
+            correction_scope_bbox = self._build_target_bbox(target_mask)
+            DebugLog(
+                "    回正空间目标整体bbox: "
+                f"{correction_scope_bbox.to_dict()}"
+            )
+        else:
+            DebugLog("    未启用主流程回正，后续阶段继续使用原始 raw/seg")
 
         target_mask = self._build_target_mask(seg_array, label_targets)
         label_masks = {
@@ -355,6 +377,9 @@ class LocalizationStage(BaseStage):
             'cut_config': cut_config,
             'cut_configs': cut_configs,
             'resolved_cut_config': resolved_cut_config,
+            'spine_cpr_config': self._resolve_spine_cpr_config(
+                request.body_part.value,
+            ),
             'label_targets': self._label_targets_to_dict(label_targets),
             'dataset_json_path': str(dataset_json_path),
             'localization_result_path': str(localization_result_path),
@@ -422,6 +447,7 @@ class LocalizationStage(BaseStage):
             is_skewed=result['is_skewed'],
             skew_params=result['skew_params'],
             anatomical_geometry=anatomical_geometry,
+            spine_cpr_config=result['spine_cpr_config'],
         )
         
         context.set_stage_result(LocalizationStageResult(payload=result))
@@ -1299,6 +1325,65 @@ class LocalizationStage(BaseStage):
             'correction_params': correction_params,
         }
 
+    @staticmethod
+    def _promote_xy_correction_candidate_if_available(
+        correction_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        候选 raw/seg 均存在时，把候选回正结果提升为本轮定位和重建输入。
+
+        阶段四/五只消费 `raw_for_reconstruction_path`、
+        `seg_for_reconstruction_path` 以及阶段三几何结果。这里集中完成路径
+        提升，后续 CPR、椎间切和重建不需要各自再判断候选文件。
+        """
+
+        result = dict(correction_result)
+        params = dict(result.get('correction_params') or {})
+        candidate_raw_path = str(result.get('candidate_raw_path') or '')
+        candidate_seg_path = str(result.get('candidate_seg_path') or '')
+        candidate_paths = (candidate_raw_path, candidate_seg_path)
+
+        if result.get('correction_applied'):
+            params.setdefault('promoted_candidate_for_reconstruction', False)
+            result['correction_params'] = params
+            return result
+
+        source_status = str(params.get('correction_status') or '')
+        if source_status != 'candidate':
+            params['candidate_promotion_status'] = 'not_candidate'
+            params['promoted_candidate_for_reconstruction'] = False
+            result['correction_params'] = params
+            return result
+
+        if not all(candidate_paths):
+            params['candidate_promotion_status'] = 'not_available'
+            params['promoted_candidate_for_reconstruction'] = False
+            result['correction_params'] = params
+            return result
+
+        if not all(Path(path).exists() for path in candidate_paths):
+            params['candidate_promotion_status'] = 'missing_files'
+            params['promoted_candidate_for_reconstruction'] = False
+            result['correction_params'] = params
+            return result
+
+        result.update({
+            'raw_for_reconstruction_path': candidate_raw_path,
+            'seg_for_reconstruction_path': candidate_seg_path,
+            'corrected_raw_path': candidate_raw_path,
+            'corrected_seg_path': candidate_seg_path,
+            'correction_applied': True,
+        })
+        params.update({
+            'correction_status': 'applied',
+            'source_correction_status': source_status,
+            'candidate_promotion_status': 'promoted',
+            'promoted_candidate_for_reconstruction': True,
+            'correction_applied': True,
+        })
+        result['correction_params'] = params
+        return result
+
     def _write_xy_correction_candidate_images(
         self,
         raw_path: str,
@@ -1307,7 +1392,7 @@ class LocalizationStage(BaseStage):
         candidate: Dict[str, Any],
         correction_center_bbox: VoxelBBox | None,
     ) -> Dict[str, Any]:
-        """写出候选回正 raw/seg，但不切换后续阶段输入。"""
+        """写出候选回正 raw/seg；是否切换主流程由调用方统一决定。"""
 
         raw_path = str(raw_path)
         seg_path = str(seg_path)
@@ -1763,7 +1848,7 @@ class LocalizationStage(BaseStage):
                 else np.empty((0, 3), dtype=int)
             )
             body_indices[label_name] = indices
-            prism_regions[label_name] = (
+            prism_region = (
                 cls._vertebral_body_prism_region(
                     indices,
                     image,
@@ -1772,11 +1857,36 @@ class LocalizationStage(BaseStage):
                 if indices.size
                 else None
             )
+            if vertebra_key == "S1" and body_mask is not None:
+                prism_region = cls._clip_prism_region_to_mask(
+                    prism_region,
+                    body_mask,
+                )
+            prism_regions[label_name] = prism_region
 
         return (
             body_indices,
             cls._resolve_non_overlapping_prism_regions(prism_regions),
         )
+
+    @staticmethod
+    def _clip_prism_region_to_mask(
+        prism_region: tuple[np.ndarray, np.ndarray] | None,
+        mask: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """把局部棱柱限制在给定 mask 内，用于 S1 这类不规则主体。"""
+
+        if prism_region is None:
+            return None
+        minimum, local_prism_mask = prism_region
+        region_slices = tuple(
+            slice(int(start), int(start) + int(size))
+            for start, size in zip(minimum, local_prism_mask.shape)
+        )
+        clipped = local_prism_mask & mask[region_slices]
+        if not np.any(clipped):
+            return None
+        return minimum, clipped
 
     @classmethod
     def _resolve_non_overlapping_prism_regions(
@@ -1866,6 +1976,7 @@ class LocalizationStage(BaseStage):
                 filtered_annotation_centroids[label_name] = {
                     "found": False,
                     "voxel_count": 0,
+                    "body_bbox": None,
                     "centroid_voxel": None,
                     "centroid_physical": None,
                     "local_superior_inferior_axis": None,
@@ -1876,6 +1987,7 @@ class LocalizationStage(BaseStage):
                     "sagittal_body_quadrilateral": None,
                     "prism_found": False,
                     "prism_voxel_count": 0,
+                    "prism_bbox": None,
                     "prism_centroid_voxel": None,
                     "prism_centroid_physical": None,
                 }
@@ -1966,6 +2078,7 @@ class LocalizationStage(BaseStage):
             filtered_annotation_centroids[label_name] = {
                 "found": True,
                 "voxel_count": int(indices.shape[0]),
+                "body_bbox": cls._bbox_from_indices(indices),
                 "centroid_voxel": {
                     "z": float(centroid_z),
                     "y": float(centroid_y),
@@ -2014,6 +2127,11 @@ class LocalizationStage(BaseStage):
                 "sagittal_body_quadrilateral": sagittal_body_quadrilateral,
                 "prism_found": bool(prism_voxel_count),
                 "prism_voxel_count": prism_voxel_count,
+                "prism_bbox": (
+                    cls._bbox_from_region(prism_minimum, local_prism_mask)
+                    if prism_voxel_count and prism_minimum is not None
+                    else None
+                ),
                 "prism_centroid_voxel": (
                     {
                         "z": float(prism_z),
@@ -2046,6 +2164,33 @@ class LocalizationStage(BaseStage):
             "full_label_geometry": "coords",
             "full_label_bbox": "coords.*.bbox",
         }
+
+    @staticmethod
+    def _bbox_from_indices(indices_zyx: np.ndarray) -> dict[str, int]:
+        """把 zyx 体素索引转成统一 bbox 字典。"""
+
+        minimum = indices_zyx.min(axis=0)
+        maximum = indices_zyx.max(axis=0)
+        return {
+            "z_min": int(minimum[0]),
+            "z_max": int(maximum[0]),
+            "y_min": int(minimum[1]),
+            "y_max": int(maximum[1]),
+            "x_min": int(minimum[2]),
+            "x_max": int(maximum[2]),
+        }
+
+    @staticmethod
+    def _bbox_from_region(
+        minimum_zyx: np.ndarray,
+        local_mask: np.ndarray,
+    ) -> dict[str, int] | None:
+        """把局部 mask 区域转成全局 bbox 字典。"""
+
+        local_indices = np.argwhere(local_mask)
+        if len(local_indices) == 0:
+            return None
+        return LocalizationStage._bbox_from_indices(local_indices + minimum_zyx)
 
     @staticmethod
     def _estimate_local_superior_inferior_geometry(
@@ -2671,16 +2816,70 @@ class LocalizationStage(BaseStage):
         if len(indices) < 4:
             return mask
 
-        # S1 的头脚轴和普通腰椎不同，不能用固定的“最前方 y 行”。
-        # 以左右方向的投影支撑度选主体：骶体在多层左右切片中连续出现，
-        # 骶翼/后方附件只在较少的左右位置出现。阈值取 65% 是为了同时
-        # 保留 S1 的前方和尾端主体，避免旧启发式的二次截断。
-        retained = LocalizationStage._retained_sagittal_projection_mask_by_lr_support(
+        body_mask = LocalizationStage._s1_body_mask_from_projection_support(
+            mask,
             indices,
             minimum_support_fraction=0.65,
         )
-        if np.count_nonzero(retained) < 4:
+        if body_mask is None:
             return mask
+
+        raw_voxel_count = int(np.count_nonzero(mask))
+        body_voxel_count = int(np.count_nonzero(body_mask))
+        if raw_voxel_count and body_voxel_count / raw_voxel_count < 0.68:
+            relaxed_body_mask = (
+                LocalizationStage._s1_body_mask_from_projection_support(
+                    mask,
+                    indices,
+                    minimum_support_fraction=0.5,
+                )
+            )
+            if (
+                relaxed_body_mask is not None
+                and int(np.count_nonzero(relaxed_body_mask)) > body_voxel_count
+            ):
+                body_mask = LocalizationStage._clip_s1_relaxed_body_to_strict_ap_extent(
+                    relaxed_body_mask,
+                    body_mask,
+                )
+        return body_mask
+
+    @staticmethod
+    def _clip_s1_relaxed_body_to_strict_ap_extent(
+        relaxed_body_mask: np.ndarray,
+        strict_body_mask: np.ndarray,
+        posterior_margin_voxels: int = 4,
+    ) -> np.ndarray:
+        """限制 S1 fallback 的后方扩张，避免骶翼/后方附件进入主体。"""
+
+        strict_indices = np.argwhere(strict_body_mask)
+        if len(strict_indices) == 0:
+            return relaxed_body_mask
+
+        clipped = relaxed_body_mask.copy()
+        posterior_limit = int(strict_indices[:, 1].max()) + int(posterior_margin_voxels)
+        if posterior_limit + 1 < clipped.shape[1]:
+            clipped[:, posterior_limit + 1:, :] = False
+        return LocalizationStage._retain_largest_3d_component(clipped)
+
+    @staticmethod
+    def _s1_body_mask_from_projection_support(
+        mask: np.ndarray,
+        indices: np.ndarray,
+        minimum_support_fraction: float,
+    ) -> np.ndarray | None:
+        """按左右支撑度提取 S1 主体，并补回相连的短上缘。"""
+
+        # S1 的头脚轴和普通腰椎不同，不能用固定的“最前方 y 行”。
+        # 以左右方向的投影支撑度选主体：骶体在多层左右切片中连续出现，
+        # 骶翼/后方附件只在较少的左右位置出现。调用方先用较严格阈值，
+        # 占比异常偏小时再放宽一次，避免歪斜 S1 回正后主体被过度缩小。
+        retained = LocalizationStage._retained_sagittal_projection_mask_by_lr_support(
+            indices,
+            minimum_support_fraction=minimum_support_fraction,
+        )
+        if np.count_nonzero(retained) < 4:
+            return None
         body_mask = np.zeros_like(mask, dtype=bool)
         retained_indices = indices[retained]
         body_mask[tuple(retained_indices.T)] = True
@@ -3044,6 +3243,7 @@ class LocalizationStage(BaseStage):
         is_skewed: bool,
         skew_params: Dict[str, Any],
         anatomical_geometry: AnatomicalGeometryResult | None = None,
+        spine_cpr_config: Dict[str, Any] | None = None,
     ) -> None:
         """写出定位结果，供后续映射、MPR 和调试使用。"""
         localization_result = LocalizationResult(
@@ -3084,6 +3284,7 @@ class LocalizationStage(BaseStage):
                 debug_xy_correction_crosshair_overlay_path
             ),
             spine_geometry=spine_geometry,
+            spine_cpr_config=spine_cpr_config or {},
             is_skewed=is_skewed,
             skew_params=skew_params,
             anatomical_geometry=anatomical_geometry,
@@ -3137,6 +3338,23 @@ class LocalizationStage(BaseStage):
                 f"未找到切割方式配置: body_part={body_part}, cut_mode={cut_mode}"
             )
         return cut_config
+
+    def _resolve_spine_cpr_config(self, body_part: str) -> Dict[str, Any]:
+        """从当前脊柱部位配置中读取 CPR 配置，非脊柱部位返回空配置。"""
+
+        target_configs = self._localization_config.get('targets', {})
+        target_config = (
+            target_configs.get(body_part, {})
+            if isinstance(target_configs, dict)
+            else {}
+        )
+        if not isinstance(target_config, dict):
+            return {}
+        config = target_config.get('spine_cpr')
+        if not isinstance(config, dict):
+            return {}
+        full_label = config.get('full_label')
+        return {'full_label': full_label if isinstance(full_label, bool) else True}
 
     def _resolve_cut_configs(self, request) -> Dict[str, Dict[str, Any]]:
         """返回当前部位的全部切法配置，并统一校验其中的范围扩展设置。

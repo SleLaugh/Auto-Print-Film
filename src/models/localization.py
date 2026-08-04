@@ -127,16 +127,16 @@ class LocalizationResult:
     resolved_cut_config: Dict[str, Any]  # 已解析 alias 后的切割配置
     label_targets: Dict[str, LabelTarget]  # 本次需要定位的 label 目标
     coords: Dict[str, LabelCoordinate]  # 每个目标 label 的 bbox/centroid 定位结果
-    raw_for_reconstruction_path: str = ""  # 阶段五实际应该读取的 raw 图像；未回正时指向原始 raw_0000
-    seg_for_reconstruction_path: str = ""  # 与 raw 同步的分割图；未回正时指向原始 seg.nii.gz
-    correction_applied: bool = False  # 是否真的把回正图切换为主流程输入；候选阶段固定为 False
+    raw_for_reconstruction_path: str = ""  # 阶段五实际应该读取的 raw 图像；候选可用时指向回正 raw
+    seg_for_reconstruction_path: str = ""  # 与 raw 同步的分割图；候选可用时指向回正 seg
+    correction_applied: bool = False  # 是否已把回正候选切换为本轮定位几何和重建输入
     correction_angle_degrees: float = 0.0  # 横状位 XY 候选角；拒绝或禁用时为 0.0
     correction_scope_bbox: Optional[VoxelBBox] = None  # 本次定位目标的整体 bbox，用作候选回正中心参考
     correction_params: Dict[str, Any] = field(default_factory=dict)  # 回正候选状态、阈值、角度和拒绝原因等诊断参数
     corrected_raw_path: str = ""  # 兼容旧字段；未回正时等于 raw_for_reconstruction_path
     corrected_seg_path: str = ""  # 兼容旧字段；未回正时等于 seg_for_reconstruction_path
-    candidate_raw_path: str = ""  # 横状位 XY 候选回正 raw；第一版不作为主流程输入
-    candidate_seg_path: str = ""  # 横状位 XY 候选回正 seg；第一版不作为主流程输入
+    candidate_raw_path: str = ""  # 横状位 XY 候选回正 raw；成功提升时也作为主流程 raw
+    candidate_seg_path: str = ""  # 横状位 XY 候选回正 seg；成功提升时也作为主流程 seg
     debug_bbox_overlay_path: str = ""  # 研发期 ITK-SNAP bbox 边框 overlay；后续稳定后可删除
     debug_target_mask_overlay_path: str = ""  # 研发期 ITK-SNAP 真实目标 mask overlay；用于避免把外接盒投影视为定位偏移
     debug_label_mask_overlay_path: str = ""  # 研发期 ITK-SNAP 分 label mask overlay；保留各椎体原始 label id
@@ -147,6 +147,7 @@ class LocalizationResult:
     skew_params: Dict[str, Any] = field(default_factory=dict)  # 兼容旧字段；语义等同于 correction_params
     anatomical_geometry: Optional[AnatomicalGeometryResult] = None  # 第三步输出给第四步的统一解剖坐标；未适配部位为空
     spine_geometry: Optional[Dict[str, Any]] = None  # 仅脊柱生成；标注质心供 CPR，原始 coords/bbox 仍代表全量标注
+    spine_cpr_config: Dict[str, Any] = field(default_factory=dict)  # 脊柱 CPR 业务配置，如 offset 范围来源
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化阶段三完整结果，供阶段四规划及调试文件使用。"""
@@ -195,4 +196,6 @@ class LocalizationResult:
             data['anatomical_geometry'] = self.anatomical_geometry.to_dict()
         if self.spine_geometry is not None:
             data['spine_geometry'] = self.spine_geometry
+        if self.spine_cpr_config:
+            data['spine_cpr_config'] = self.spine_cpr_config
         return data

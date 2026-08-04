@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Tuple
 from src.models.enums import PlaneTypeEnum
 from src.planning.base import PlanningResult
 from src.planning.spine_cpr import (
-    build_spine_sagittal_cpr_plan,
+    build_spine_sagittal_cpr_plans,
     configured_spine_cpr_labels,
 )
 from src.planning.spine_common import resolve_spine_interspace_segments
@@ -70,15 +70,15 @@ class LumbarWholeRangePlanner:
             LUMBAR_LABELS,
         )
         for plane_config in request.plane_configs:
-            cpr_plan, cpr_warnings = build_spine_sagittal_cpr_plan(
+            cpr_plans, cpr_warnings = build_spine_sagittal_cpr_plans(
                 request=request,
                 plane_config=plane_config,
                 localization_result=localization_result,
                 label_names=cpr_labels,
             )
             warnings.extend(cpr_warnings)
-            if cpr_plan is not None:
-                plans.append(cpr_plan)
+            if cpr_plans:
+                plans.extend(cpr_plans)
                 continue
             plan = build_whole_range_plan_from_bbox(
                 request=request,

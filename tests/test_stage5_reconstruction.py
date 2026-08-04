@@ -418,6 +418,53 @@ class Stage5ReconstructionTest(unittest.TestCase):
             [10, 18, 26],
         )
 
+    def test_curved_stack_localizer_offsets_follow_planned_offset_axis_on_bends(self):
+        """CPR 弯曲段定位线应按计划 offset_axis 平移，保持与切片一致。"""
+
+        image = sitk.GetImageFromArray(np.zeros((64, 64, 64), dtype=np.int16))
+        plan = {
+            "plane": "冠状位",
+            "geometry_type": "curved_stack",
+            "localizer_plane": "矢状位",
+            "localizer_reference": {"x": 32.0, "y": 32.0, "z": 32.0},
+            "extent_mm": {"width": 20.0, "height": 40.0},
+            "curve_points": [
+                {"x": 32.0, "y": 24.0, "z": 12.0},
+                {"x": 32.0, "y": 24.0, "z": 32.0},
+                {"x": 32.0, "y": 44.0, "z": 42.0},
+            ],
+            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+            "offsets_mm": [-10.0, 10.0],
+            "slice_thickness": 5.0,
+            "slices": [{
+                "index": 1,
+                "center": {"x": 32.0, "y": 32.0, "z": 32.0},
+                "normal": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "row_dir": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+                "offset_mm": 0.0,
+            }],
+        }
+
+        localizer = ReconstructionStage._build_plan_localizer(image, plan)
+        highlighted = np.argwhere(sitk.GetArrayFromImage(localizer) > 0.0)
+
+        self.assertEqual(int(np.ptp(highlighted[:, 0])), 30)
+        self.assertGreaterEqual(len(np.unique(highlighted[:, 1])), 2)
+
+    def test_curved_stack_localizer_draws_every_planned_offset(self):
+        """CPR 定位图必须按实际切片 offset 一张对应一条线。"""
+
+        plan = {
+            "offsets_mm": [float(value) for value in range(-35, 70, 5)],
+        }
+
+        self.assertEqual(
+            ReconstructionStage._curved_localizer_offsets(plan),
+            [float(value) for value in range(-35, 70, 5)],
+        )
+        self.assertEqual(len(plan["offsets_mm"]), 21)
+
     def test_full_xyz_oblique_plan_is_resampled_with_planned_direction(self):
         """第五步应原样执行含 XYZ 三方向倾斜的通用平面计划。"""
 
@@ -885,6 +932,58 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 ReconstructionStage(config={"parallel": False}).execute(context)
 
             self.assertEqual(sampled_geometry_types, ["curved_stack"])
+
+    def test_coronal_cpr_writes_only_localizer_without_sampling_slices(self):
+        """冠状位 CPR 暂时只写定位图，不执行耗时的曲面切片重建。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._make_context_with_one_plan(
+                temp_dir,
+                geometry_type="curved_stack",
+            )
+            plan = context.get_result("mapping")["plans"][0]
+            plan.update({
+                "plan_id": "腰椎_CPR_冠状位",
+                "cut_mode": "cpr",
+                "plane": "冠状位",
+                "group_name": "CPR",
+                "curve_points": [
+                    {"x": 2.0, "y": 2.0, "z": 2.0},
+                    {"x": 2.0, "y": 3.0, "z": 4.0},
+                    {"x": 2.0, "y": 2.0, "z": 6.0},
+                ],
+                "curve_spacing_mm": 1.0,
+                "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "offsets_mm": [0.0],
+                "localizer_plane": "矢状位",
+                "localizer_reference": {"x": 2.0, "y": 2.0, "z": 4.0},
+            })
+            plan["slices"] = [dict(plan["slices"][0], offset_mm=0.0)]
+
+            class FailingCurvedResampler:
+                """冠状位 CPR localizer-only 时不应被调用。"""
+
+                def sample_slice(self, image, current_plan, planned_slice):
+                    raise AssertionError("冠状位 CPR 不应采样实际切片")
+
+            with mock.patch(
+                "src.stages.stage_reconstruction.CurvedStackResampler",
+                return_value=FailingCurvedResampler(),
+            ), mock.patch(
+                "src.stages.stage_reconstruction.write_ct_dicom",
+            ) as write_slice:
+                ReconstructionStage(config={"parallel": False}).execute(context)
+
+            output_dir = Path(context.request.output_dir) / "冠状位" / "骨窗"
+            result = context.get_result("reconstruction")
+
+            write_slice.assert_not_called()
+            self.assertTrue((output_dir / "Localizer.dcm").exists())
+            self.assertFalse((output_dir / "1.dcm").exists())
+            self.assertEqual(result["coronal"]["plan_count"], 1)
+            self.assertEqual(result["coronal"]["slice_count"], 0)
+            self.assertEqual(result["coronal"]["image_count"], 0)
+            self.assertTrue(result["outputs"][0]["localizer_only"])
 
     def test_debug_mode_writes_cpr_localizer_png_in_window_directory(self):
         """CPR 定位图 PNG 应直接写在对应状位和窗位目录下。"""

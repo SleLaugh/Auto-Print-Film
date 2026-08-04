@@ -226,7 +226,7 @@ class LocalizationStage(BaseStage):
         DebugLog(f"    已提取 {len(label_coordinates)} 个Label坐标")
         DebugLog(f"    目标整体bbox: {correction_scope_bbox.to_dict()}")
         
-        # [3] detect_skew: 只估计横状位 XY 回正候选，不让主流程直接使用候选图。
+        # [3] detect_skew: 估计横状位 XY 回正候选。
         DebugLog("  [3] detect_skew: 估计横状位 XY 回正候选...")
         xy_correction_candidate = self._build_xy_correction_candidate(
             seg_array,

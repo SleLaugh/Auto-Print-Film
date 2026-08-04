@@ -133,6 +133,19 @@ class DocumentationConsistencyTests(unittest.TestCase):
         self.assertIn("算术平均", coverage_doc)
         self.assertIn("必须与实际 CPR 重建一致", cpr_doc)
         self.assertIn("复用实际 CPR 的曲线", coverage_doc)
+        self.assertIn("`offset_mm`", coverage_doc)
+        self.assertNotIn("`position_mm`", coverage_doc)
+
+    def test_superseded_localization_design_is_archived(self):
+        """已替代的回正 no-op 设计不能继续作为模块当前规则。"""
+
+        legacy_design = (
+            SUPERPOWERS_ROOT
+            / "modules"
+            / "localization"
+            / "2026-07-08-第三阶段目标横状位校正设计.md"
+        )
+        self.assertFalse(legacy_design.exists())
 
     def test_current_docs_describe_debug_artifact_pruning(self):
         """当前文档应说明阶段三/四默认调试 NIfTI 的保留边界。"""

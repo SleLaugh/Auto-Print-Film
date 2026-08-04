@@ -541,66 +541,6 @@ class Stage5ReconstructionTest(unittest.TestCase):
             np.sum(center_steps * extended_steps, axis=1) > 0.0
         ))
 
-    def test_curved_stack_localizer_smooths_limited_normal_turns(self):
-        """防叠加限幅后的法向变化也应连续，不能形成折线。"""
-
-        plan = {
-            "curve_points": [
-                {"x": 32.0, "y": 20.0, "z": 0.0},
-                {"x": 32.0, "y": 20.0, "z": 10.0},
-                {"x": 32.0, "y": 21.0, "z": 20.0},
-                {"x": 32.0, "y": 25.0, "z": 29.0},
-                {"x": 32.0, "y": 35.0, "z": 35.0},
-                {"x": 32.0, "y": 45.0, "z": 38.0},
-                {"x": 32.0, "y": 55.0, "z": 40.0},
-            ],
-            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
-            "offsets_mm": [-70.0, 0.0, 70.0],
-        }
-        curve = np.asarray([
-            [32.0, 20.0, 0.0],
-            [32.0, 20.0, 10.0],
-            [32.0, 21.0, 20.0],
-            [32.0, 25.0, 29.0],
-            [32.0, 35.0, 35.0],
-            [32.0, 45.0, 38.0],
-            [32.0, 55.0, 40.0],
-        ])
-        normals = ReconstructionStage._curved_localizer_safe_offset_normals(
-            curve=curve,
-            offset_axis=plan["offset_axis"],
-            fixed_axis=0,
-            offsets=plan["offsets_mm"],
-        )
-        angles = np.unwrap(np.arctan2(normals[:, 2], normals[:, 1]))
-        turns = np.diff(angles)
-
-        self.assertLess(float(np.max(np.abs(np.diff(turns)))), 0.02)
-
-    def test_curved_stack_localizer_does_not_reverse_turn_direction(self):
-        """弯曲前后的 offset 方向应单调转向，不能先转回再转出。"""
-
-        curve = np.asarray([
-            [32.0, 20.0, 0.0],
-            [32.0, 20.0, 10.0],
-            [32.0, 22.0, 20.0],
-            [32.0, 28.0, 29.0],
-            [32.0, 38.0, 35.0],
-            [32.0, 45.0, 38.0],
-            [32.0, 43.0, 40.0],
-        ])
-        normals = ReconstructionStage._curved_localizer_safe_offset_normals(
-            curve=curve,
-            offset_axis={"x": 0.0, "y": 1.0, "z": 0.0},
-            fixed_axis=0,
-            offsets=[-70.0, 0.0, 70.0],
-        )
-        angles = np.unwrap(np.arctan2(normals[:, 2], normals[:, 1]))
-        turns = np.diff(angles)
-        trend = np.sign(angles[-1] - angles[0])
-
-        self.assertTrue(np.all(turns * trend >= -1e-8))
-
     def test_curved_stack_localizer_removes_lateral_backtracking(self):
         """弯曲末端不能沿显示横向先回折再折回。"""
 

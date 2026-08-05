@@ -1231,6 +1231,65 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertGreater(int(body_mask[:, 7:10, 20:55].sum()), 0)
         self.assertEqual(int(body_mask[:, 18:23, 20:55].sum()), 0)
 
+    def test_target_label_region_returns_minimum_local_bounding_box(self):
+        """主体算法只需接收完整 label 的最小局部区域和全局起点。"""
+
+        seg_array = np.zeros((12, 16, 20), dtype=np.uint8)
+        seg_array[2:5, 3:7, 4:9] = 7
+        seg_array[3, 5, 6] = 8
+
+        minimum, region = LocalizationStage._target_label_region(
+            seg_array,
+            LabelTarget("vertebrae_L1", [7]),
+        )
+
+        np.testing.assert_array_equal(minimum, np.asarray([2, 3, 4]))
+        self.assertEqual(region.shape, (3, 4, 5))
+        self.assertEqual(int(np.count_nonzero(np.isin(region, [7]))), 59)
+        self.assertTrue(np.shares_memory(seg_array, region))
+
+    def test_si_pillar_heights_use_first_and_last_foreground_voxel(self):
+        """批量柱高保持原先 z_max-z_min+1 定义，内部孔洞仍计入跨度。"""
+
+        mask = np.zeros((7, 3, 4), dtype=bool)
+        mask[1:5, 0, 0] = True
+        mask[[1, 4], 1, 2] = True
+        mask[6, 2, 3] = True
+
+        heights = LocalizationStage._si_pillar_heights(mask)
+
+        expected = np.zeros((3, 4), dtype=np.intp)
+        expected[0, 0] = 4
+        expected[1, 2] = 4
+        expected[2, 3] = 1
+        np.testing.assert_array_equal(heights, expected)
+
+    def test_spine_geometry_builds_sagittal_quadrilateral_once_per_label(self):
+        """棱柱、端面和序列化结果必须复用同一份矢状四边形。"""
+
+        seg_array = np.zeros((12, 16, 20), dtype=np.uint8)
+        seg_array[2:10, 4:12, 5:15] = 7
+        image = sitk.GetImageFromArray(seg_array)
+
+        with patch.object(
+            LocalizationStage,
+            "_sagittal_body_quadrilateral",
+            wraps=LocalizationStage._sagittal_body_quadrilateral,
+        ) as quadrilateral:
+            geometry = LocalizationStage._build_spine_body_geometry(
+                body_part="腰椎",
+                image=image,
+                seg_array=seg_array,
+                label_targets={
+                    "vertebrae_L1": LabelTarget("vertebrae_L1", [7]),
+                },
+            )
+
+        self.assertTrue(
+            geometry["filtered_annotation_centroids"]["vertebrae_L1"]["found"]
+        )
+        self.assertEqual(quadrilateral.call_count, 1)
+
     def test_s1_prism_region_is_clipped_to_body_mask(self):
         """S1 四棱柱不能把主体凹角外的空区域补成多余斜角。"""
 

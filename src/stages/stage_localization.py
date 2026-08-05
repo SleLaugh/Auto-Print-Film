@@ -1818,6 +1818,10 @@ class LocalizationStage(BaseStage):
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
         image: sitk.Image,
+        sagittal_geometries: dict[
+            str,
+            tuple[np.ndarray, np.ndarray, np.ndarray] | None,
+        ] | None = None,
     ) -> tuple[
         dict[str, np.ndarray],
         dict[str, tuple[np.ndarray, np.ndarray] | None],
@@ -1833,29 +1837,49 @@ class LocalizationStage(BaseStage):
             vertebra_key = cls._vertebra_key(label_name)
             if vertebra_key is None or vertebra_key == "C1":
                 continue
+            label_region = cls._target_label_region(seg_array, target)
+            if label_region is None:
+                body_indices[label_name] = np.empty((0, 3), dtype=int)
+                prism_regions[label_name] = None
+                if sagittal_geometries is not None:
+                    sagittal_geometries[label_name] = None
+                continue
+            region_minimum, local_seg_array = label_region
             # S1 的骶骨方向和腰椎不同，不能套用“前方稳定行 + 中央 x 行”
             # 的普通腰椎启发式；改用专用左右支撑筛选和局部上缘补回。
             if vertebra_key == "S1":
                 body_mask = cls._s1_body_candidate_mask(
-                    seg_array,
+                    local_seg_array,
                     target,
                 )
             else:
                 body_mask = cls._vertebral_body_candidate_mask(
-                    seg_array,
+                    local_seg_array,
                     target,
                 )
             indices = (
-                np.argwhere(body_mask)
+                np.argwhere(body_mask) + region_minimum
                 if body_mask is not None
                 else np.empty((0, 3), dtype=int)
             )
             body_indices[label_name] = indices
+            sagittal_geometry = (
+                cls._sagittal_body_quadrilateral(
+                    indices,
+                    image,
+                    retain_all_projection=(vertebra_key == "S1"),
+                )
+                if indices.size
+                else None
+            )
+            if sagittal_geometries is not None:
+                sagittal_geometries[label_name] = sagittal_geometry
             prism_region = (
                 cls._vertebral_body_prism_region(
                     indices,
                     image,
                     retain_all_projection=(vertebra_key == "S1"),
+                    sagittal_geometry=sagittal_geometry,
                 )
                 if indices.size
                 else None
@@ -1864,6 +1888,7 @@ class LocalizationStage(BaseStage):
                 prism_region = cls._clip_prism_region_to_mask(
                     prism_region,
                     body_mask,
+                    mask_minimum_zyx=region_minimum,
                 )
             prism_regions[label_name] = prism_region
 
@@ -1876,15 +1901,28 @@ class LocalizationStage(BaseStage):
     def _clip_prism_region_to_mask(
         prism_region: tuple[np.ndarray, np.ndarray] | None,
         mask: np.ndarray,
+        mask_minimum_zyx: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray] | None:
         """把局部棱柱限制在给定 mask 内，用于 S1 这类不规则主体。"""
 
         if prism_region is None:
             return None
         minimum, local_prism_mask = prism_region
+        mask_minimum = (
+            np.asarray(mask_minimum_zyx, dtype=int)
+            if mask_minimum_zyx is not None
+            else np.zeros(3, dtype=int)
+        )
         region_slices = tuple(
-            slice(int(start), int(start) + int(size))
-            for start, size in zip(minimum, local_prism_mask.shape)
+            slice(
+                int(start - mask_start),
+                int(start - mask_start) + int(size),
+            )
+            for start, mask_start, size in zip(
+                minimum,
+                mask_minimum,
+                local_prism_mask.shape,
+            )
         )
         clipped = local_prism_mask & mask[region_slices]
         if not np.any(clipped):
@@ -1959,10 +1997,15 @@ class LocalizationStage(BaseStage):
         if body_part not in {"颈椎", "胸椎", "腰椎"}:
             return None
 
+        sagittal_geometries: dict[
+            str,
+            tuple[np.ndarray, np.ndarray, np.ndarray] | None,
+        ] = {}
         body_indices, prism_regions = cls._build_spine_body_prism_regions(
             seg_array,
             label_targets,
             image,
+            sagittal_geometries=sagittal_geometries,
         )
 
         filtered_annotation_centroids: Dict[str, Dict[str, Any]] = {}
@@ -2013,12 +2056,9 @@ class LocalizationStage(BaseStage):
                 indices,
                 image,
                 retain_all_projection=(vertebra_key == "S1"),
+                sagittal_geometry=sagittal_geometries.get(label_name),
             )
-            sagittal_geometry = cls._sagittal_body_quadrilateral(
-                indices,
-                image,
-                retain_all_projection=(vertebra_key == "S1"),
-            )
+            sagittal_geometry = sagittal_geometries.get(label_name)
             sagittal_body_quadrilateral = None
             if sagittal_geometry is not None:
                 sagittal_center, sagittal_axes, sagittal_quad = sagittal_geometry
@@ -2476,14 +2516,21 @@ class LocalizationStage(BaseStage):
         indices_zyx: np.ndarray,
         image: sitk.Image,
         retain_all_projection: bool = False,
+        sagittal_geometry: tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+        ] | None = None,
     ) -> list[dict[str, Any]] | None:
         """把过滤椎体主体抽象为矢状投影轮廓上的四个大面。"""
 
-        geometry = LocalizationStage._sagittal_body_quadrilateral(
-            indices_zyx,
-            image,
-            retain_all_projection=retain_all_projection,
-        )
+        geometry = sagittal_geometry
+        if geometry is None:
+            geometry = LocalizationStage._sagittal_body_quadrilateral(
+                indices_zyx,
+                image,
+                retain_all_projection=retain_all_projection,
+            )
         if geometry is None:
             return None
         center, sagittal_axes, quad = geometry
@@ -2598,14 +2645,21 @@ class LocalizationStage(BaseStage):
         body_indices: np.ndarray,
         image: sitk.Image,
         retain_all_projection: bool = False,
+        sagittal_geometry: tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+        ] | None = None,
     ) -> tuple[np.ndarray, np.ndarray] | None:
         """在主体包围盒内栅格化棱柱，返回最小 zyx 索引和局部 mask。"""
 
-        geometry = LocalizationStage._sagittal_body_quadrilateral(
-            body_indices,
-            image,
-            retain_all_projection=retain_all_projection,
-        )
+        geometry = sagittal_geometry
+        if geometry is None:
+            geometry = LocalizationStage._sagittal_body_quadrilateral(
+                body_indices,
+                image,
+                retain_all_projection=retain_all_projection,
+            )
         if geometry is None:
             return None
         center, sagittal_axes, quad = geometry
@@ -2735,6 +2789,25 @@ class LocalizationStage(BaseStage):
                 - y_values * np.roll(x_values, -1)
             )
         )
+
+    @staticmethod
+    def _target_label_region(
+        seg_array: np.ndarray,
+        target: LabelTarget,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """返回目标 label 的全局最小 zyx 起点和局部分割视图。"""
+
+        mask = np.isin(seg_array, target.label_ids)
+        indices = np.argwhere(mask)
+        if indices.size == 0:
+            return None
+        minimum = indices.min(axis=0)
+        maximum = indices.max(axis=0)
+        region_slices = tuple(
+            slice(int(start), int(stop) + 1)
+            for start, stop in zip(minimum, maximum)
+        )
+        return minimum, seg_array[region_slices]
 
     @staticmethod
     def _vertebral_body_candidate_mask(
@@ -2988,6 +3061,23 @@ class LocalizationStage(BaseStage):
         )
 
     @staticmethod
+    def _si_pillar_heights(mask: np.ndarray) -> np.ndarray:
+        """批量计算每个 y/x 柱的前景 z 闭区间高度。"""
+
+        if mask.ndim != 3:
+            raise ValueError("SI 柱高计算要求三维 mask")
+        if mask.shape[0] == 0:
+            return np.zeros(mask.shape[1:], dtype=np.intp)
+
+        occupied = np.any(mask, axis=0)
+        first = np.argmax(mask, axis=0)
+        last = mask.shape[0] - 1 - np.argmax(mask[::-1], axis=0)
+        return np.where(occupied, last - first + 1, 0).astype(
+            np.intp,
+            copy=False,
+        )
+
+    @staticmethod
     def _trim_transverse_edge_by_si_height(
         mask: np.ndarray,
         horizontal_axis: int,
@@ -3003,23 +3093,17 @@ class LocalizationStage(BaseStage):
             return mask
 
         heights = np.zeros(mask.shape[horizontal_axis], dtype=float)
-        other_axis_size = mask.shape[reduce_axis]
+        pillar_heights = LocalizationStage._si_pillar_heights(mask)
         for position in positions:
-            pillar_heights = []
-            for other_index in range(other_axis_size):
-                if horizontal_axis == 1:
-                    column = mask[:, int(position), int(other_index)]
-                else:
-                    column = mask[:, int(other_index), int(position)]
-                z_indices = np.flatnonzero(column)
-                if z_indices.size == 0:
-                    continue
-                pillar_heights.append(
-                    int(z_indices.max() - z_indices.min() + 1)
-                )
-            if not pillar_heights:
+            position_heights = (
+                pillar_heights[int(position), :]
+                if horizontal_axis == 1
+                else pillar_heights[:, int(position)]
+            )
+            position_heights = position_heights[position_heights > 0]
+            if position_heights.size == 0:
                 continue
-            heights[int(position)] = float(np.percentile(pillar_heights, 75))
+            heights[int(position)] = float(np.percentile(position_heights, 75))
 
         supported_heights = heights[positions]
         stable_height = float(np.percentile(supported_heights, 75))

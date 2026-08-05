@@ -6,6 +6,7 @@
 椎体/目标 label 定位、目标 bbox 输出，以及不切换主流程输入的回正候选诊断
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any
 import json
@@ -32,6 +33,14 @@ from src.anatomy.lung import estimate_lung_frame_with_diagnostics
 from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 from src.utils import DebugLog, is_debug_log_file_enabled
+
+
+@dataclass(frozen=True)
+class _LabelVoxelRegion:
+    """同一分割空间内可复用的 label 体素索引和包围盒。"""
+
+    indices_zyx: np.ndarray
+    bbox: VoxelBBox | None
 
 
 class LocalizationStage(BaseStage):
@@ -219,7 +228,12 @@ class LocalizationStage(BaseStage):
         DebugLog("  [2] extract_label_coordinates: 提取目标质心+包围盒...")
         image = sitk.ReadImage(str(seg_path))
         seg_array = sitk.GetArrayFromImage(image)
-        label_coordinates = self._extract_label_coordinates(seg_array, label_targets)
+        label_regions = self._build_label_voxel_regions(seg_array, label_targets)
+        label_coordinates = self._extract_label_coordinates(
+            seg_array,
+            label_targets,
+            label_regions=label_regions,
+        )
         self._validate_found_labels(label_coordinates)
         target_mask = self._build_target_mask(seg_array, label_targets)
         correction_scope_bbox = self._build_target_bbox(target_mask)
@@ -232,6 +246,7 @@ class LocalizationStage(BaseStage):
             seg_array,
             label_targets,
             body_part=request.body_part.value,
+            label_regions=label_regions,
         )
         DebugLog(
             "    横状位 XY 候选角: "
@@ -259,9 +274,14 @@ class LocalizationStage(BaseStage):
             )
             image = sitk.ReadImage(str(correction_result['seg_for_reconstruction_path']))
             seg_array = sitk.GetArrayFromImage(image)
+            label_regions = self._build_label_voxel_regions(
+                seg_array,
+                label_targets,
+            )
             label_coordinates = self._extract_label_coordinates(
                 seg_array,
                 label_targets,
+                label_regions=label_regions,
             )
             self._validate_found_labels(label_coordinates)
             target_mask = self._build_target_mask(seg_array, label_targets)
@@ -273,11 +293,13 @@ class LocalizationStage(BaseStage):
         else:
             DebugLog("    未启用主流程回正，后续阶段继续使用原始 raw/seg")
 
-        target_mask = self._build_target_mask(seg_array, label_targets)
-        label_masks = {
-            label_name: np.isin(seg_array, target.label_ids)
-            for label_name, target in label_targets.items()
-        }
+        label_masks = {}
+        if request.body_part.value in {"颈椎", "胸椎", "髋骨"}:
+            for label_name, region in label_regions.items():
+                label_mask = np.zeros(seg_array.shape, dtype=bool)
+                if region.indices_zyx.size:
+                    label_mask[tuple(region.indices_zyx.T)] = True
+                label_masks[label_name] = label_mask
         start_labels = resolved_cut_config.get('start_labels') or []
         end_labels = resolved_cut_config.get('end_labels') or []
         DebugLog("    [5] build_anatomical_geometry: 开始")
@@ -307,6 +329,7 @@ class LocalizationStage(BaseStage):
             image=image,
             seg_array=seg_array,
             label_targets=label_targets,
+            label_regions=label_regions,
         )
         DebugLog("    [6] build_spine_body_geometry: 完成")
         if spine_geometry is not None:
@@ -757,7 +780,8 @@ class LocalizationStage(BaseStage):
     def _extract_label_coordinates(
         self,
         seg_array: np.ndarray,
-        label_targets: Dict[str, LabelTarget]
+        label_targets: Dict[str, LabelTarget],
+        label_regions: Dict[str, _LabelVoxelRegion] | None = None,
     ) -> Dict[str, LabelCoordinate]:
         """
         从分割体素中提取每个目标 label 的 bbox 和 centroid。
@@ -765,10 +789,16 @@ class LocalizationStage(BaseStage):
         SimpleITK 转 numpy 后数组顺序是 (z, y, x)。这里先输出体素索引
         坐标；物理坐标 mm 需要后续结合 affine/origin/spacing/direction。
         """
+        if label_regions is None:
+            label_regions = self._build_label_voxel_regions(
+                seg_array,
+                label_targets,
+            )
+
         coordinates = {}
         for label_name, target in label_targets.items():
-            mask = np.isin(seg_array, target.label_ids)
-            indices = np.argwhere(mask)
+            region = label_regions[label_name]
+            indices = region.indices_zyx
             if indices.size == 0:
                 coordinates[label_name] = LabelCoordinate(
                     label_name=label_name,
@@ -778,8 +808,6 @@ class LocalizationStage(BaseStage):
                 )
                 continue
 
-            z_min, y_min, x_min = indices.min(axis=0)
-            z_max, y_max, x_max = indices.max(axis=0)
             centroid_z, centroid_y, centroid_x = indices.mean(axis=0)
             coordinates[label_name] = LabelCoordinate(
                 label_name=label_name,
@@ -791,7 +819,25 @@ class LocalizationStage(BaseStage):
                     y=float(centroid_y),
                     x=float(centroid_x),
                 ),
-                bbox=VoxelBBox(
+                bbox=region.bbox,
+            )
+        return coordinates
+
+    @staticmethod
+    def _build_label_voxel_regions(
+        seg_array: np.ndarray,
+        label_targets: Dict[str, LabelTarget],
+    ) -> Dict[str, _LabelVoxelRegion]:
+        """扫描一次各目标 label，保留后续阶段共同需要的稀疏索引。"""
+
+        regions = {}
+        for label_name, target in label_targets.items():
+            indices = np.argwhere(np.isin(seg_array, target.label_ids))
+            bbox = None
+            if indices.size:
+                z_min, y_min, x_min = indices.min(axis=0)
+                z_max, y_max, x_max = indices.max(axis=0)
+                bbox = VoxelBBox(
                     z_min=int(z_min),
                     z_max=int(z_max),
                     y_min=int(y_min),
@@ -799,8 +845,11 @@ class LocalizationStage(BaseStage):
                     x_min=int(x_min),
                     x_max=int(x_max),
                 )
+            regions[label_name] = _LabelVoxelRegion(
+                indices_zyx=indices,
+                bbox=bbox,
             )
-        return coordinates
+        return regions
 
     @staticmethod
     def _build_target_mask(
@@ -853,7 +902,11 @@ class LocalizationStage(BaseStage):
         由于目标天然可能沿 X 轴或 Y 轴更长，最终角度取“相对最近标准轴
         0/90 度的偏离”，避免把一个正着的竖向结构误判为 90 度歪斜。
         """
-        indices = np.argwhere(target_mask)
+        return self._detect_axial_skew_indices(np.argwhere(target_mask))
+
+    def _detect_axial_skew_indices(self, indices: np.ndarray) -> Dict[str, Any]:
+        """从按 z/y/x 排列的目标体素索引估计横状位旋转偏角。"""
+
         point_count = int(indices.shape[0])
         base_info = {
             'method': 'pca_xy_projection',
@@ -902,6 +955,7 @@ class LocalizationStage(BaseStage):
         self,
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
+        label_regions: Dict[str, _LabelVoxelRegion] | None = None,
     ) -> Dict[str, Any]:
         """
         根据目标类型选择横状位角度检测方法。
@@ -914,7 +968,11 @@ class LocalizationStage(BaseStage):
         阶段四/五重建输入。
         """
         if self._is_vertebrae_targets(label_targets):
-            vertebrae_info = self._detect_vertebrae_axial_skew(seg_array, label_targets)
+            vertebrae_info = self._detect_vertebrae_axial_skew(
+                seg_array,
+                label_targets,
+                label_regions=label_regions,
+            )
             if vertebrae_info.get('enough_points'):
                 return vertebrae_info
 
@@ -961,6 +1019,7 @@ class LocalizationStage(BaseStage):
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
         body_part: str | None = None,
+        label_regions: Dict[str, _LabelVoxelRegion] | None = None,
     ) -> Dict[str, Any]:
         """估计横状位 XY 回正候选角，但不执行主流程回正。
 
@@ -1009,7 +1068,11 @@ class LocalizationStage(BaseStage):
                 'body_part': body_part,
                 'reason': reason,
             }
-        skew_info = self._detect_target_axial_skew(seg_array, label_targets)
+        skew_info = self._detect_target_axial_skew(
+            seg_array,
+            label_targets,
+            label_regions=label_regions,
+        )
         abs_angle = float(skew_info.get('abs_angle_degrees', 0.0))
         enough_points = bool(skew_info.get('enough_points'))
         should_correct = bool(skew_info.get('should_correct'))
@@ -1051,6 +1114,7 @@ class LocalizationStage(BaseStage):
         self,
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
+        label_regions: Dict[str, _LabelVoxelRegion] | None = None,
     ) -> Dict[str, Any]:
         """
         对脊柱目标按单椎体角度聚合，避免整块体素 PCA 被椎体形状带偏。
@@ -1063,23 +1127,29 @@ class LocalizationStage(BaseStage):
         label_angles = []
         total_point_count = 0
 
-        for label_name, target in label_targets.items():
+        if label_regions is None:
+            label_regions = self._build_label_voxel_regions(
+                seg_array,
+                label_targets,
+            )
+
+        for label_name in label_targets:
             if self._vertebra_key(label_name) == "C1":
                 skipped_label_names.append(label_name)
                 continue
-            mask = np.isin(seg_array, target.label_ids)
-            indices = np.argwhere(mask)
+            region = label_regions[label_name]
+            indices = region.indices_zyx
             point_count = int(indices.shape[0])
             if point_count < self.correction_min_points:
                 skipped_label_names.append(label_name)
                 continue
 
-            bbox = self._build_target_bbox(mask)
+            bbox = region.bbox
             if self._bbox_touches_array_boundary(bbox, seg_array.shape):
                 skipped_label_names.append(label_name)
                 continue
 
-            label_info = self._detect_axial_skew(mask)
+            label_info = self._detect_axial_skew_indices(indices)
             if not label_info.get('enough_points'):
                 skipped_label_names.append(label_name)
                 continue
@@ -1822,6 +1892,7 @@ class LocalizationStage(BaseStage):
             str,
             tuple[np.ndarray, np.ndarray, np.ndarray] | None,
         ] | None = None,
+        label_regions: Dict[str, _LabelVoxelRegion] | None = None,
     ) -> tuple[
         dict[str, np.ndarray],
         dict[str, tuple[np.ndarray, np.ndarray] | None],
@@ -1837,7 +1908,15 @@ class LocalizationStage(BaseStage):
             vertebra_key = cls._vertebra_key(label_name)
             if vertebra_key is None or vertebra_key == "C1":
                 continue
-            label_region = cls._target_label_region(seg_array, target)
+            label_region = cls._target_label_region(
+                seg_array,
+                target,
+                label_region=(
+                    label_regions.get(label_name)
+                    if label_regions is not None
+                    else None
+                ),
+            )
             if label_region is None:
                 body_indices[label_name] = np.empty((0, 3), dtype=int)
                 prism_regions[label_name] = None
@@ -1985,6 +2064,7 @@ class LocalizationStage(BaseStage):
         image: sitk.Image,
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
+        label_regions: Dict[str, _LabelVoxelRegion] | None = None,
     ) -> Dict[str, Any] | None:
         """
         在阶段三生成脊柱专用过滤标注和标注质心，供阶段四 CPR 使用。
@@ -2006,6 +2086,7 @@ class LocalizationStage(BaseStage):
             label_targets,
             image,
             sagittal_geometries=sagittal_geometries,
+            label_regions=label_regions,
         )
 
         filtered_annotation_centroids: Dict[str, Dict[str, Any]] = {}
@@ -2794,15 +2875,29 @@ class LocalizationStage(BaseStage):
     def _target_label_region(
         seg_array: np.ndarray,
         target: LabelTarget,
+        label_region: _LabelVoxelRegion | None = None,
     ) -> tuple[np.ndarray, np.ndarray] | None:
         """返回目标 label 的全局最小 zyx 起点和局部分割视图。"""
 
-        mask = np.isin(seg_array, target.label_ids)
-        indices = np.argwhere(mask)
-        if indices.size == 0:
-            return None
-        minimum = indices.min(axis=0)
-        maximum = indices.max(axis=0)
+        if label_region is not None:
+            if label_region.bbox is None:
+                return None
+            bbox = label_region.bbox
+            minimum = np.asarray(
+                [bbox.z_min, bbox.y_min, bbox.x_min],
+                dtype=int,
+            )
+            maximum = np.asarray(
+                [bbox.z_max, bbox.y_max, bbox.x_max],
+                dtype=int,
+            )
+        else:
+            mask = np.isin(seg_array, target.label_ids)
+            indices = np.argwhere(mask)
+            if indices.size == 0:
+                return None
+            minimum = indices.min(axis=0)
+            maximum = indices.max(axis=0)
         region_slices = tuple(
             slice(int(start), int(stop) + 1)
             for start, stop in zip(minimum, maximum)

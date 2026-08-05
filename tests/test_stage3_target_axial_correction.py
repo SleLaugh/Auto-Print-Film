@@ -202,6 +202,42 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             "x_max": 8,
         })
 
+    def test_label_voxel_regions_preserve_coordinate_results(self):
+        """复用 label 体素快照时，坐标、bbox 和缺失状态必须与旧路径完全一致。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((6, 12, 14), dtype=np.uint16)
+        seg_array[1:3, 2:5, 4:8] = 5
+        seg_array[4:6, 7:10, 8:12] = 9
+        label_targets = {
+            "vertebrae_L1": LabelTarget("vertebrae_L1", [5]),
+            "vertebrae_L2": LabelTarget("vertebrae_L2", [9, 10]),
+            "vertebrae_L3": LabelTarget("vertebrae_L3", [11]),
+        }
+
+        expected = stage._extract_label_coordinates(seg_array, label_targets)
+        label_regions = stage._build_label_voxel_regions(seg_array, label_targets)
+        actual = stage._extract_label_coordinates(
+            seg_array,
+            label_targets,
+            label_regions=label_regions,
+        )
+
+        self.assertEqual(
+            stage._coordinates_to_dict(actual),
+            stage._coordinates_to_dict(expected),
+        )
+        self.assertEqual(
+            label_regions["vertebrae_L2"].bbox.to_dict(),
+            expected["vertebrae_L2"].bbox.to_dict(),
+        )
+        self.assertEqual(
+            label_regions["vertebrae_L2"].indices_zyx.tolist(),
+            np.argwhere(np.isin(seg_array, [9, 10])).tolist(),
+        )
+        self.assertIsNone(label_regions["vertebrae_L3"].bbox)
+        self.assertEqual(label_regions["vertebrae_L3"].indices_zyx.shape, (0, 3))
+
     def test_detect_axial_skew_uses_xy_projection_angle(self):
         # 横状位歪斜会影响后续矢状位/冠状位切片，所以第一版先检测 XY 投影主方向。
         """验证 `test_detect_axial_skew_uses_xy_projection_angle` 场景符合预期。"""
@@ -233,6 +269,32 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertFalse(skew_info["enough_points"])
         self.assertEqual(skew_info["angle_degrees"], 0.0)
         self.assertFalse(skew_info["should_correct"])
+
+    def test_vertebrae_axial_skew_reuses_label_voxel_regions_without_rescanning(self):
+        """已有体素快照时，逐椎体角度检测不应再扫描整幅分割。"""
+
+        stage = LocalizationStage()
+        seg_array = np.zeros((8, 80, 80), dtype=np.uint8)
+        seg_array[2:5, 18:28, 16:44] = 3
+        seg_array[3:6, 44:54, 24:52] = 4
+        label_targets = {
+            "vertebrae_L1": LabelTarget("vertebrae_L1", [3]),
+            "vertebrae_L2": LabelTarget("vertebrae_L2", [4]),
+        }
+        expected = stage._detect_vertebrae_axial_skew(seg_array, label_targets)
+        label_regions = stage._build_label_voxel_regions(seg_array, label_targets)
+
+        with patch(
+            "src.stages.stage_localization.np.isin",
+            side_effect=AssertionError("不应重复扫描整幅分割"),
+        ):
+            actual = stage._detect_vertebrae_axial_skew(
+                seg_array,
+                label_targets,
+                label_regions=label_regions,
+            )
+
+        self.assertEqual(actual, expected)
 
     def test_xy_correction_candidate_records_angle_without_applying(self):
         """横状位 XY 候选角应写入诊断，但第一版不能启用主流程回正。"""
@@ -2354,10 +2416,32 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
             with patch.object(
                 LocalizationStage,
+                "_build_label_voxel_regions",
+                wraps=stage._build_label_voxel_regions,
+            ) as build_regions, patch.object(
+                LocalizationStage,
+                "_build_anatomical_geometry",
+                wraps=stage._build_anatomical_geometry,
+            ) as build_anatomical_geometry, patch.object(
+                LocalizationStage,
                 "_write_xy_correction_candidate_images",
                 return_value=patched_correction,
             ):
                 stage.execute(context)
+
+            self.assertEqual(build_regions.call_count, 2)
+            self.assertEqual(
+                build_regions.call_args_list[0].args[0].shape,
+                (6, 24, 24),
+            )
+            self.assertEqual(
+                build_regions.call_args_list[1].args[0].shape,
+                (8, 32, 32),
+            )
+            self.assertEqual(
+                build_anatomical_geometry.call_args.kwargs["label_masks"],
+                {},
+            )
 
             result = context.get_result("localization")
             self.assertTrue(result["correction_applied"])

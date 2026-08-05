@@ -189,37 +189,6 @@ class ReconstructionStage(BaseStage):
         for output_dir in output_dirs.values():
             output_dir.mkdir(parents=True, exist_ok=True)
 
-        localizer_only = self._should_write_localizer_only(plan)
-        if localizer_only:
-            DebugLog(
-                "    [1] 跳过实际切片重建: "
-                f"plan={plan.get('plan_id', '')}, reason=coronal_cpr_localizer_only"
-            )
-            sampled_slices: list[tuple[dict[str, Any], sitk.Image]] = []
-            self._write_plan_windows(
-                sampled_slices=sampled_slices,
-                windows=windows,
-                output_dirs=output_dirs,
-                plan=plan,
-                series_uids=series_uids,
-                study_uid=study_uid,
-                source_metadata=source_metadata,
-                localizer_image=localizer_image,
-                localizer_series_uids=localizer_series_uids,
-            )
-            return {
-                "plan_id": plan["plan_id"],
-                "plane": plan["plane"],
-                "group_name": plan.get("group_name", ""),
-                "slice_count": 0,
-                "image_count": 0,
-                "window_outputs": {
-                    name: str(path)
-                    for name, path in output_dirs.items()
-                },
-                "localizer_only": True,
-            }
-
         resampler = self._resampler_for_plan(plan)
 
         # 第一步：只做 MPR 和层厚采样，保留原始 float32 HU 图像。
@@ -345,16 +314,6 @@ class ReconstructionStage(BaseStage):
                     localizer_image=localizer_image,
                         localizer_series_uid=localizer_series_uids[window.name],
                     )
-
-    @staticmethod
-    def _should_write_localizer_only(plan: Dict[str, Any]) -> bool:
-        """临时跳过冠状位 CPR 实际切片，只保留定位图。"""
-
-        return (
-            str(plan.get("plane", "")) == "冠状位"
-            and str(plan.get("geometry_type", "")) == "curved_stack"
-            and str(plan.get("cut_mode", "")).lower() == "cpr"
-        )
 
     @classmethod
     def _build_plan_localizer(

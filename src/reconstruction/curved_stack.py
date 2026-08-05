@@ -185,18 +185,15 @@ class CurvedStackResampler:
         rows = len(curve_samples)
         columns = len(in_plane_offsets)
         accumulated = np.zeros((rows, columns), dtype=np.float32)
+        surface_points = (
+            curve_samples[:, np.newaxis, :]
+            + in_plane_directions[:, np.newaxis, :]
+            * in_plane_offsets[np.newaxis, :, np.newaxis]
+        )
         for slab_offset in slab_offsets:
             offset_mm = base_offset_mm + slab_offset
-            for row in range(rows):
-                in_plane_dir = in_plane_directions[row]
-                row_center = curve_samples[row] + offset_axis * offset_mm
-                for column, in_plane_offset in enumerate(in_plane_offsets):
-                    point = row_center + in_plane_dir * in_plane_offset
-                    accumulated[row, column] += self._sample_linear(
-                        image,
-                        source,
-                        point,
-                    )
+            points = surface_points + offset_axis * offset_mm
+            accumulated += self._sample_linear_grid(image, source, points)
         return accumulated / float(len(slab_offsets))
 
     @staticmethod
@@ -256,6 +253,72 @@ class CurvedStackResampler:
         c0 = c00 * (1.0 - dy) + c10 * dy
         c1 = c01 * (1.0 - dy) + c11 * dy
         return c0 * (1.0 - dz) + c1 * dz
+
+    @staticmethod
+    def _sample_linear_grid(
+        image: sitk.Image,
+        source: np.ndarray,
+        points: np.ndarray,
+    ) -> np.ndarray:
+        """对整张 CPR 曲面执行批量三线性插值，越界点返回空气值。"""
+
+        origin = np.asarray(image.GetOrigin(), dtype=float)
+        spacing = np.asarray(image.GetSpacing(), dtype=float)
+        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+        inverse_direction = np.linalg.inv(direction)
+        continuous = ((points - origin) @ inverse_direction.T) / spacing
+        x = continuous[..., 0]
+        y = continuous[..., 1]
+        z = continuous[..., 2]
+        size_x, size_y, size_z = image.GetSize()
+        # 只吸收矩阵求逆和物理坐标换算的机器尾差，不接纳真实越界坐标。
+        coordinate_scale = max(
+            1.0,
+            float(max(size_x, size_y, size_z)),
+            float(np.max(np.abs(origin / spacing))),
+        )
+        coordinate_tolerance = (
+            np.finfo(np.float64).eps
+            * 64.0
+            * max(1.0, float(np.linalg.cond(direction)))
+            * coordinate_scale
+        )
+        valid = (
+            (x >= -coordinate_tolerance)
+            & (y >= -coordinate_tolerance)
+            & (z >= -coordinate_tolerance)
+            & (x <= size_x - 1 + coordinate_tolerance)
+            & (y <= size_y - 1 + coordinate_tolerance)
+            & (z <= size_z - 1 + coordinate_tolerance)
+        )
+
+        x0 = np.floor(np.clip(x, 0.0, size_x - 1)).astype(np.intp)
+        y0 = np.floor(np.clip(y, 0.0, size_y - 1)).astype(np.intp)
+        z0 = np.floor(np.clip(z, 0.0, size_z - 1)).astype(np.intp)
+        x1 = np.minimum(x0 + 1, size_x - 1)
+        y1 = np.minimum(y0 + 1, size_y - 1)
+        z1 = np.minimum(z0 + 1, size_z - 1)
+        dx = np.clip(x - x0, 0.0, 1.0)
+        dy = np.clip(y - y0, 0.0, 1.0)
+        dz = np.clip(z - z0, 0.0, 1.0)
+
+        c000 = source[z0, y0, x0].astype(np.float32, copy=False)
+        c100 = source[z0, y0, x1].astype(np.float32, copy=False)
+        c010 = source[z0, y1, x0].astype(np.float32, copy=False)
+        c110 = source[z0, y1, x1].astype(np.float32, copy=False)
+        c001 = source[z1, y0, x0].astype(np.float32, copy=False)
+        c101 = source[z1, y0, x1].astype(np.float32, copy=False)
+        c011 = source[z1, y1, x0].astype(np.float32, copy=False)
+        c111 = source[z1, y1, x1].astype(np.float32, copy=False)
+
+        c00 = c000 * (1.0 - dx) + c100 * dx
+        c10 = c010 * (1.0 - dx) + c110 * dx
+        c01 = c001 * (1.0 - dx) + c101 * dx
+        c11 = c011 * (1.0 - dx) + c111 * dx
+        c0 = c00 * (1.0 - dy) + c10 * dy
+        c1 = c01 * (1.0 - dy) + c11 * dy
+        sampled = c0 * (1.0 - dz) + c1 * dz
+        return np.where(valid, sampled, -1024.0).astype(np.float32, copy=False)
 
     @staticmethod
     def _point(value: Dict[str, float]) -> np.ndarray:

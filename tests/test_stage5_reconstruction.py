@@ -1,4 +1,5 @@
 import copy
+import math
 import tempfile
 import threading
 import time
@@ -854,6 +855,187 @@ class Stage5ReconstructionTest(unittest.TestCase):
         output_array = sitk.GetArrayFromImage(output)
         self.assertAlmostEqual(float(output_array[0, 0, 0]), 1050.0)
 
+    def test_curved_stack_resampler_does_not_transform_each_sample_point(self):
+        """CPR 厚层采样不应逐像素调用 SimpleITK 坐标转换。"""
+
+        class CountingImage:
+            """记录慢速连续索引转换调用次数的 SimpleITK 图像代理。"""
+
+            def __init__(self, image):
+                self._image = image
+                self.transform_call_count = 0
+
+            def TransformPhysicalPointToContinuousIndex(self, point):
+                self.transform_call_count += 1
+                return self._image.TransformPhysicalPointToContinuousIndex(point)
+
+            def __getattr__(self, name):
+                return getattr(self._image, name)
+
+        image = self._make_ramp_image(size=(8, 8, 8))
+        counted_image = CountingImage(image)
+        plan = {
+            "plan_id": "腰椎_CPR_矢状位",
+            "geometry_type": "curved_stack",
+            "curve_points": [
+                {"x": 2.0, "y": 3.0, "z": 1.0},
+                {"x": 2.0, "y": 3.0, "z": 5.0},
+            ],
+            "curve_spacing_mm": 1.0,
+            "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+            "offsets_mm": [0.0],
+            "extent_mm": {"width": 4.0, "height": 4.0},
+            "output_spacing_mm": {"x": 1.0, "y": 1.0, "z": 0.0},
+            "slice_thickness": 2.0,
+            "slice_spacing": 1.0,
+            "slices": [{
+                "index": 1,
+                "offset_mm": 0.0,
+                "center": {"x": 2.0, "y": 3.0, "z": 3.0},
+                "normal": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+            }],
+        }
+
+        CurvedStackResampler().sample_slice(
+            counted_image,
+            plan,
+            plan["slices"][0],
+        )
+
+        self.assertEqual(counted_image.transform_call_count, 0)
+
+    def test_curved_stack_vectorized_sampler_matches_sitk_coordinate_transform(self):
+        """批量采样在非默认方向矩阵下应与 SimpleITK 单点转换一致。"""
+
+        image = self._make_ramp_image(size=(8, 8, 8))
+        image.SetDirection((
+            0.0, -1.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0,
+        ))
+        source = sitk.GetArrayViewFromImage(image)
+        index_points = [
+            (2.25, 3.50, 4.75),
+            (1.50, 2.25, 3.00),
+        ]
+        physical_points = np.asarray([
+            image.TransformContinuousIndexToPhysicalPoint(point)
+            for point in index_points
+        ], dtype=float).reshape(1, 2, 3)
+
+        grid_sampled = CurvedStackResampler._sample_linear_grid(
+            image,
+            source,
+            physical_points,
+        )
+        scalar_sampled = [
+            CurvedStackResampler._sample_linear(image, source, point)
+            for point in physical_points.reshape(2, 3)
+        ]
+
+        np.testing.assert_allclose(
+            grid_sampled.reshape(2),
+            scalar_sampled,
+            rtol=1e-6,
+            atol=1e-6,
+        )
+
+    def test_curved_stack_vectorized_sampler_inverts_non_orthogonal_direction(self):
+        """批量坐标换算应支持 SimpleITK 可逆的非正交方向矩阵。"""
+
+        image = self._make_ramp_image(size=(8, 8, 8))
+        image.SetOrigin((10.0, -4.0, 7.0))
+        image.SetSpacing((0.7, 1.1, 1.6))
+        image.SetDirection((
+            1.0, 0.08, 0.0,
+            0.0, 1.0, 0.04,
+            0.0, 0.0, 1.0,
+        ))
+        source = sitk.GetArrayViewFromImage(image)
+        physical_points = np.asarray([
+            image.TransformContinuousIndexToPhysicalPoint(point)
+            for point in (
+                (2.25, 3.50, 4.75),
+                (1.50, 2.25, 3.00),
+            )
+        ], dtype=float).reshape(1, 2, 3)
+
+        grid_sampled = CurvedStackResampler._sample_linear_grid(
+            image,
+            source,
+            physical_points,
+        )
+        scalar_sampled = [
+            CurvedStackResampler._sample_linear(image, source, point)
+            for point in physical_points.reshape(2, 3)
+        ]
+
+        np.testing.assert_allclose(
+            grid_sampled.reshape(2),
+            scalar_sampled,
+            rtol=1e-6,
+            atol=1e-6,
+        )
+
+    def test_curved_stack_vectorized_sampler_keeps_rotated_boundary_voxel(self):
+        """批量坐标换算的浮点尾差不应把边界体素判为越界。"""
+
+        image = self._make_ramp_image(size=(17, 15, 13))
+        image.SetOrigin((31.7, -82.4, 14.2))
+        image.SetSpacing((0.37, 0.81, 1.25))
+        angle_x = math.radians(17.0)
+        angle_z = math.radians(-31.0)
+        rotation_x = np.asarray([
+            [1.0, 0.0, 0.0],
+            [0.0, math.cos(angle_x), -math.sin(angle_x)],
+            [0.0, math.sin(angle_x), math.cos(angle_x)],
+        ])
+        rotation_z = np.asarray([
+            [math.cos(angle_z), -math.sin(angle_z), 0.0],
+            [math.sin(angle_z), math.cos(angle_z), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        image.SetDirection(tuple((rotation_z @ rotation_x).reshape(-1)))
+        source = sitk.GetArrayViewFromImage(image)
+        boundary_point = np.asarray(
+            image.TransformContinuousIndexToPhysicalPoint((16.0, 14.0, 12.0)),
+            dtype=float,
+        ).reshape(1, 1, 3)
+
+        grid_sampled = CurvedStackResampler._sample_linear_grid(
+            image,
+            source,
+            boundary_point,
+        )
+        scalar_sampled = CurvedStackResampler._sample_linear(
+            image,
+            source,
+            boundary_point.reshape(3),
+        )
+
+        self.assertNotEqual(scalar_sampled, -1024.0)
+        self.assertAlmostEqual(float(grid_sampled[0, 0]), scalar_sampled)
+
+    def test_curved_stack_vectorized_sampler_rejects_actual_outside_point(self):
+        """机器精度容差不能把真实越界点吸附到边界体素。"""
+
+        image = self._make_ramp_image(size=(17, 15, 13))
+        source = sitk.GetArrayViewFromImage(image)
+        outside_point = np.asarray(
+            image.TransformContinuousIndexToPhysicalPoint((-1e-9, 7.0, 6.0)),
+            dtype=float,
+        ).reshape(1, 1, 3)
+
+        grid_sampled = CurvedStackResampler._sample_linear_grid(
+            image,
+            source,
+            outside_point,
+        )
+
+        self.assertEqual(float(grid_sampled[0, 0]), -1024.0)
+
     def test_curved_stack_resampler_logs_sampling_perf_summary(self):
         """CPR 重采样应输出性能摘要，便于定位一轮耗时。"""
 
@@ -1079,8 +1261,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
 
             self.assertEqual(sampled_geometry_types, ["curved_stack"])
 
-    def test_coronal_cpr_writes_only_localizer_without_sampling_slices(self):
-        """冠状位 CPR 暂时只写定位图，不执行耗时的曲面切片重建。"""
+    def test_coronal_cpr_writes_images_and_localizer(self):
+        """冠状位 CPR 应同时重建实际切片并写出定位图。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
@@ -1104,32 +1286,40 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 "localizer_plane": "矢状位",
                 "localizer_reference": {"x": 2.0, "y": 2.0, "z": 4.0},
             })
-            plan["slices"] = [dict(plan["slices"][0], offset_mm=0.0)]
+            plan["slices"] = [dict(
+                plan["slices"][0],
+                offset_mm=0.0,
+                center={"x": 2.0, "y": 2.0, "z": 4.0},
+                normal={"x": 1.0, "y": 0.0, "z": 0.0},
+                row_dir={"x": 0.0, "y": 1.0, "z": 0.0},
+                col_dir={"x": 0.0, "y": 0.0, "z": 1.0},
+            )]
 
-            class FailingCurvedResampler:
-                """冠状位 CPR localizer-only 时不应被调用。"""
-
-                def sample_slice(self, image, current_plan, planned_slice):
-                    raise AssertionError("冠状位 CPR 不应采样实际切片")
-
-            with mock.patch(
-                "src.stages.stage_reconstruction.CurvedStackResampler",
-                return_value=FailingCurvedResampler(),
-            ), mock.patch(
-                "src.stages.stage_reconstruction.write_ct_dicom",
-            ) as write_slice:
-                ReconstructionStage(config={"parallel": False}).execute(context)
+            ReconstructionStage(config={"parallel": False}).execute(context)
 
             output_dir = Path(context.request.output_dir) / "冠状位" / "骨窗"
             result = context.get_result("reconstruction")
+            slice_path = output_dir / "1.dcm"
+            localizer_path = output_dir / "Localizer.dcm"
 
-            write_slice.assert_not_called()
-            self.assertTrue((output_dir / "Localizer.dcm").exists())
-            self.assertFalse((output_dir / "1.dcm").exists())
+            self.assertTrue(slice_path.exists())
+            self.assertTrue(localizer_path.exists())
             self.assertEqual(result["coronal"]["plan_count"], 1)
-            self.assertEqual(result["coronal"]["slice_count"], 0)
-            self.assertEqual(result["coronal"]["image_count"], 0)
-            self.assertTrue(result["outputs"][0]["localizer_only"])
+            self.assertEqual(result["coronal"]["slice_count"], 1)
+            self.assertEqual(result["coronal"]["image_count"], 1)
+            self.assertFalse(result["outputs"][0]["localizer_only"])
+
+            dataset = pydicom.dcmread(str(slice_path))
+            self.assertEqual(int(dataset.InstanceNumber), 1)
+            self.assertEqual(float(dataset.SliceThickness), 1.0)
+            self.assertEqual(float(dataset.SpacingBetweenSlices), 2.0)
+            self.assertEqual(
+                [float(value) for value in dataset.ImageOrientationPatient],
+                [0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            )
+            self.assertIn("冠状位-骨窗", dataset.SeriesDescription)
+            localizer = pydicom.dcmread(str(localizer_path))
+            self.assertIn("LOCALIZER", str(localizer.ImageType).upper())
 
     def test_debug_mode_writes_cpr_localizer_png_in_window_directory(self):
         """CPR 定位图 PNG 应直接写在对应状位和窗位目录下。"""

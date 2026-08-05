@@ -280,6 +280,7 @@ class LocalizationStage(BaseStage):
         }
         start_labels = resolved_cut_config.get('start_labels') or []
         end_labels = resolved_cut_config.get('end_labels') or []
+        DebugLog("    [5] build_anatomical_geometry: 开始")
         anatomical_geometry, anatomical_diagnostics = self._build_anatomical_geometry(
             body_part=request.body_part.value,
             target_mask=target_mask,
@@ -300,12 +301,14 @@ class LocalizationStage(BaseStage):
 
         # 脊柱专用几何派生：保留完整 label 的 coords/bbox，同时输出过滤标注
         # 计算出的标注质心。非脊柱部位不生成这份结果。
+        DebugLog("    [6] build_spine_body_geometry: 开始")
         spine_geometry = self._build_spine_body_geometry(
             body_part=request.body_part.value,
             image=image,
             seg_array=seg_array,
             label_targets=label_targets,
         )
+        DebugLog("    [6] build_spine_body_geometry: 完成")
         if spine_geometry is not None:
             DebugLog(
                 "    脊柱过滤标注与标注质心: "

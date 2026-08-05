@@ -8,6 +8,7 @@ SpineMPRProcessor - 主入口
 
 import sys
 import argparse
+import faulthandler
 import json
 from pathlib import Path
 
@@ -128,6 +129,8 @@ def parse_plane_configs(value):
 
 
 def main():
+    # SimpleITK/GDCM 等原生扩展触发 SIGABRT 时，至少保留 Python 调用栈。
+    faulthandler.enable(all_threads=True)
     try:
         args = parse_arguments()
 

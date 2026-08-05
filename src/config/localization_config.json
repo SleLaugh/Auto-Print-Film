@@ -129,7 +129,7 @@
         },
         "腰椎": {
             "spine_cpr": {
-                "full_label": true
+                "full_label": false
             },
             "whole_range": {
                 "start": "L1",

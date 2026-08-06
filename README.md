@@ -151,6 +151,11 @@ python main.py -h
 /home/peng/03_data/demo/Image/result
 ```
 
+批量脚本会显式向 `main.py` 传入 `--plane_configs`，每个病例都会请求
+`横状位`、`矢状位`、`冠状位` 三个状位，并为每个状位输出骨窗、肺窗、
+纵隔窗和软组织窗。直接调用 `main.py` 且不传 `--plane_configs` 时，
+程序仍按兼容默认值只输出横状位。
+
 先只打印命令、检查路径和部位映射，不真正处理影像：
 
 ```bash

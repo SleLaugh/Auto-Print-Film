@@ -7,6 +7,7 @@ DICOM_ROOT="/home/peng/03_data/demo/Image/dicom"
 RESULT_ROOT="/home/peng/03_data/demo/Image/result"
 BATCH_LOG_ROOT="$RESULT_ROOT/_batch_logs"
 PYTHON_BIN=".venv/bin/python"
+PLANE_CONFIGS='[{"plane":"横状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"full_plane"},{"plane":"矢状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"full_plane"},{"plane":"冠状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"full_plane"}]'
 DRY_RUN=0
 STOP_ON_FAILURE=0
 JOBS=1
@@ -134,6 +135,7 @@ for index in "${!CASES[@]}"; do
         "-i" "$input_dir"
         "-o" "$output_dir"
         "--body_part" "$body_part"
+        "--plane_configs" "$PLANE_CONFIGS"
     )
 
     printf '命令:'

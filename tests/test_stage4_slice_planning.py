@@ -21,7 +21,9 @@ from src.planning.single_label import SingleLabelWholeRangePlanner
 from src.planning.spine_cpr import (
     SPINE_CPR_LABELS,
     _build_annotation_centroid_path,
+    _correct_reversing_cpr_centroids,
     _extend_curve_endpoints_to_terminal_raw_labels,
+    _filtered_annotation_offset_interval_mm,
     _get_spine_annotation_centers,
     _offsets_covering_interval,
     _resolve_offsets_mm,
@@ -1285,6 +1287,233 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             for point in plan.curve_points[1:-1]
         ]
         self.assertTrue(all(offset >= -1e-6 for offset in signed_offsets))
+
+    def test_cpr_centroid_reverse_correction_keeps_normal_c_curve(self):
+        """正常单向 C 型残差方向一致时不应移动质心。"""
+
+        points = [
+            Point3D(60.0, y, z)
+            for y, z in (
+                (50.0, 10.0),
+                (51.0, 8.0),
+                (54.0, 6.0),
+                (59.0, 4.0),
+                (66.0, 2.0),
+                (75.0, 0.0),
+            )
+        ]
+
+        corrected = _correct_reversing_cpr_centroids(
+            points,
+            1.0,
+            Point3D(0.0, 0.0, 1.0),
+        )
+
+        self.assertEqual(corrected, points)
+
+    def test_cpr_centroid_reverse_correction_removes_middle_wave(self):
+        """单个中间点与两侧趋势相反时应回正到双邻点预测位置。"""
+
+        points = [
+            Point3D(60.0, y, z)
+            for y, z in (
+                (50.0, 10.0),
+                (50.0, 8.0),
+                (56.0, 6.0),
+                (50.0, 4.0),
+                (50.0, 2.0),
+            )
+        ]
+
+        corrected = _correct_reversing_cpr_centroids(
+            points,
+            1.0,
+            Point3D(0.0, 0.0, 1.0),
+        )
+
+        self.assertEqual(corrected[0], points[0])
+        self.assertEqual(corrected[1], points[1])
+        self.assertEqual(corrected[3], points[3])
+        self.assertEqual(corrected[4], points[4])
+        self.assertEqual(corrected[2], Point3D(60.0, 50.0, 6.0))
+
+    def test_cpr_centroid_reverse_correction_can_adjust_l5_without_moving_s1(self):
+        """L5 与前方腰椎趋势相反时可回正，S1 末端仍保持不动。"""
+
+        points = [
+            Point3D(60.0, y, z)
+            for y, z in (
+                (50.0, 10.0),
+                (51.0, 8.0),
+                (54.0, 6.0),
+                (59.0, 4.0),
+                (52.0, 2.0),
+                (75.0, 0.0),
+            )
+        ]
+
+        corrected = _correct_reversing_cpr_centroids(
+            points,
+            1.0,
+            Point3D(0.0, 0.0, 1.0),
+        )
+
+        self.assertEqual(corrected[3], points[3])
+        self.assertEqual(corrected[-1], points[-1])
+        self.assertEqual(corrected[-2], Point3D(60.0, 67.0, 2.0))
+
+    def test_cpr_centroid_reverse_correction_keeps_real_c4_case_detectable(self):
+        """颈1实测 C4 反向残差应仍能穿过强度门槛被回正。"""
+
+        points = [
+            Point3D(x, y, z)
+            for x, y, z in (
+                (0.0, -123.411, -8.995),
+                (-1.355, -119.567, -33.414),
+                (-4.177, -117.943, -46.599),
+                (-2.531, -110.432, -63.507),
+                (-0.949, -105.716, -78.641),
+                (0.633, -102.110, -95.029),
+            )
+        ]
+
+        corrected = _correct_reversing_cpr_centroids(
+            points,
+            0.31640625,
+            Point3D(0.0, 0.0, 1.0),
+        )
+
+        self.assertEqual(corrected[0], points[0])
+        self.assertEqual(corrected[1], points[1])
+        self.assertEqual(corrected[3], points[3])
+        self.assertEqual(corrected[4], points[4])
+        self.assertEqual(corrected[5], points[5])
+        self.assertAlmostEqual(corrected[2].x, -1.870255, places=6)
+        self.assertAlmostEqual(corrected[2].y, -115.564575, places=6)
+        self.assertAlmostEqual(corrected[2].z, -46.599, places=6)
+
+    def test_cpr_centroid_correction_retracts_lumbar_l3_local_corner(self):
+        """腰3实测 L3 局部折角应缩回，L2/L4/L5/S1 不被推出。"""
+
+        points = [
+            Point3D(x, y, z)
+            for x, y, z in (
+                (33.277, -99.975, -276.978),
+                (33.639, -107.069, -309.942),
+                (34.000, -116.791, -342.365),
+                (31.290, -121.420, -376.356),
+                (29.303, -123.908, -410.553),
+                (28.779, -116.026, -436.052),
+            )
+        ]
+
+        corrected = _correct_reversing_cpr_centroids(
+            points,
+            0.361328125,
+            Point3D(0.0, 0.0, 1.0),
+        )
+
+        self.assertEqual(corrected[0], points[0])
+        self.assertEqual(corrected[1], points[1])
+        self.assertEqual(corrected[3], points[3])
+        self.assertEqual(corrected[4], points[4])
+        self.assertEqual(corrected[5], points[5])
+        self.assertAlmostEqual(corrected[2].x, 32.492229, places=6)
+        self.assertAlmostEqual(corrected[2].y, -114.075090, places=6)
+        self.assertAlmostEqual(corrected[2].z, -342.365, places=6)
+
+    def test_cpr_centroid_correction_keeps_smooth_inflection_peak(self):
+        """合法 S 型峰值是方向拐点，不应按局部折角缩回。"""
+
+        points = [
+            Point3D(60.0, y, z)
+            for y, z in (
+                (0.0, 10.0),
+                (1.0, 8.0),
+                (4.0, 6.0),
+                (2.0, 4.0),
+                (0.0, 2.0),
+                (-1.0, 0.0),
+            )
+        ]
+
+        corrected = _correct_reversing_cpr_centroids(
+            points,
+            1.0,
+            Point3D(0.0, 0.0, 1.0),
+        )
+
+        self.assertEqual(corrected, points)
+
+    def test_cpr_centroid_reverse_correction_falls_back_on_invalid_longitudinal_order(self):
+        """纵向顺序异常时保持原质心链，避免隐藏输入错误。"""
+
+        points = [
+            Point3D(60.0, 50.0, 10.0),
+            Point3D(60.0, 51.0, 8.0),
+            Point3D(60.0, 56.0, 8.0),
+            Point3D(60.0, 50.0, 6.0),
+            Point3D(60.0, 50.0, 2.0),
+        ]
+
+        corrected = _correct_reversing_cpr_centroids(
+            points,
+            1.0,
+            Point3D(0.0, 0.0, 1.0),
+        )
+
+        self.assertEqual(corrected, points)
+
+    def test_spine_cpr_reverse_centroid_correction_removes_anchor_wave(self):
+        """CPR 规划应绕过反向中间质心，而不是让 Localizer 穿过波峰。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"]),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        y_by_label = {
+            "vertebrae_L1": 50.0,
+            "vertebrae_L2": 50.0,
+            "vertebrae_L3": 56.0,
+            "vertebrae_L4": 50.0,
+            "vertebrae_L5": 50.0,
+            "vertebrae_S1": 50.0,
+        }
+        for label_name, centroid_y in y_by_label.items():
+            coord = localization_result["coords"][label_name]
+            center_z = float(coord["centroid"]["z"])
+            localization_result.setdefault("spine_geometry", {}).setdefault(
+                "filtered_annotation_centroids", {}
+            )[label_name] = {
+                "found": True,
+                "centroid_physical": {
+                    "x": 60.0,
+                    "y": centroid_y,
+                    "z": center_z,
+                },
+            }
+
+        plan = LumbarWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertGreater(
+            self._min_distance_to_curve(
+                plan.curve_points,
+                Point3D(60.0, 56.0, 6.0),
+            ),
+            1.0,
+        )
+        self.assertCurveContainsPoint(
+            plan.curve_points,
+            Point3D(60.0, 50.0, 6.0),
+        )
 
     def test_spine_cpr_baseline_ignores_local_segments(self):
         """基准 CPR 不使用椎体局部线段，避免端点造成折返。"""
@@ -2620,6 +2849,127 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.group_name, "CPR_主椎体")
         self.assertEqual(plan.offsets_mm, [-5.0, 0.0, 5.0])
 
+    def test_spine_cpr_body_prism_offsets_use_local_curve_reference(self):
+        """body_prism offset 应相对局部曲线计算，避免胸椎弧度放大范围。"""
+
+        localization_result = self._spine_localization_result(
+            ("C7", "T1", "T2", "T3", "T4"),
+            "胸椎",
+        )
+        curve_points = [
+            Point3D(60.0, y, z)
+            for y, z in (
+                (-150.0, 100.0),
+                (-135.0, 75.0),
+                (-120.0, 50.0),
+                (-105.0, 25.0),
+                (-90.0, 0.0),
+            )
+        ]
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": {}
+        }
+        for label_name, curve_point in zip(
+            (
+                "vertebrae_C7",
+                "vertebrae_T1",
+                "vertebrae_T2",
+                "vertebrae_T3",
+                "vertebrae_T4",
+            ),
+            curve_points,
+        ):
+            center_y = int(round(curve_point.y))
+            center_z = int(round(curve_point.z))
+            localization_result["spine_geometry"][
+                "filtered_annotation_centroids"
+            ][label_name] = {
+                "found": True,
+                "centroid_physical": {
+                    "x": curve_point.x,
+                    "y": curve_point.y,
+                    "z": curve_point.z,
+                },
+                "prism_found": True,
+                "prism_bbox": {
+                    "z_min": center_z - 1,
+                    "z_max": center_z + 1,
+                    "y_min": center_y - 10,
+                    "y_max": center_y + 10,
+                    "x_min": 55,
+                    "x_max": 65,
+                },
+            }
+
+        offsets = _resolve_offsets_mm(
+            localization_result,
+            [
+                "vertebrae_C7",
+                "vertebrae_T1",
+                "vertebrae_T2",
+                "vertebrae_T3",
+                "vertebrae_T4",
+            ],
+            curve_points,
+            Point3D(0.0, 1.0, 0.0),
+            slice_thickness=5.0,
+            slice_spacing=5.0,
+            range_mode="body_prism",
+        )
+
+        self.assertEqual(
+            offsets,
+            [-10.0, -5.0, 0.0, 5.0, 10.0],
+        )
+
+    def test_spine_cpr_body_prism_uses_oriented_prism_vertices(self):
+        """歪斜椎体不能用轴对齐 bbox 角点拼出不存在的 offset。"""
+
+        localization_result = self._spine_localization_result(
+            ("S1",),
+            "腰椎",
+        )
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": {
+                "vertebrae_S1": {
+                    "found": True,
+                    "prism_found": True,
+                    "prism_bbox": {
+                        "z_min": 0,
+                        "z_max": 10,
+                        "y_min": 10,
+                        "y_max": 22,
+                        "x_min": 58,
+                        "x_max": 62,
+                    },
+                    "sagittal_body_quadrilateral": {
+                        "vertices": [
+                            {"x": 60.0, "y": 10.0, "z": 0.0},
+                            {"x": 60.0, "y": 12.0, "z": 0.0},
+                            {"x": 60.0, "y": 20.0, "z": 10.0},
+                            {"x": 60.0, "y": 22.0, "z": 10.0},
+                        ],
+                        "left_right_extent_mm": {
+                            "min": -2.0,
+                            "max": 2.0,
+                        },
+                    },
+                },
+            },
+        }
+        interval = _filtered_annotation_offset_interval_mm(
+            localization_result,
+            ["vertebrae_S1"],
+            [
+                Point3D(60.0, 0.0, 0.0),
+                Point3D(60.0, 10.0, 10.0),
+                Point3D(60.0, 20.0, 20.0),
+            ],
+            Point3D(0.0, 1.0, 0.0),
+        )
+
+        self.assertEqual(interval, (10.0, 12.0))
+
     def test_spine_cpr_full_label_true_keeps_full_extent_and_legacy_identity(self):
         """full_label=true 时，保持整体范围和旧 CPR 输出命名。"""
 
@@ -2704,6 +3054,19 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         for body_part in ("肺部", "头骨", "髋骨"):
             with self.subTest(body_part=body_part):
                 self.assertNotIn("spine_cpr", config["targets"][body_part])
+
+    def test_checked_in_thoracic_cpr_uses_body_prism_range(self):
+        """胸椎 CPR 默认使用主椎体范围，避免 full_label 后方结构拉偏。"""
+
+        config_path = Path("src/config/localization_config.json")
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(
+            config["targets"]["胸椎"]["spine_cpr"]["full_label"],
+        )
+        self.assertFalse(
+            config["targets"]["腰椎"]["spine_cpr"]["full_label"],
+        )
 
     def test_spine_cpr_ignores_legacy_range_mode_without_full_label_bool(self):
         """旧 range_mode 字段不再作为 CPR 范围配置入口。"""

@@ -1027,27 +1027,113 @@ def _filtered_annotation_offset_interval_mm(
     if not isinstance(annotations, dict) or not annotations:
         return None
 
-    center_projection = float(np.median([
-        _dot(point, offset_axis)
+    curve = np.asarray([
+        [point.x, point.y, point.z]
         for point in curve_points
-    ]))
+    ], dtype=float)
+    if len(curve) < 2:
+        return None
+    axis = np.asarray(
+        [offset_axis.x, offset_axis.y, offset_axis.z],
+        dtype=float,
+    )
+    axis_length = float(np.linalg.norm(axis))
+    if axis_length <= 1e-6 or not math.isfinite(axis_length):
+        return None
+    axis = axis / axis_length
+    curve_without_axis = curve - np.outer(curve @ axis, axis)
+
     projections: list[float] = []
     for label_name in label_names:
         annotation = annotations.get(label_name)
         if not isinstance(annotation, dict) or not annotation.get("found"):
             continue
-        bbox = annotation.get("prism_bbox") if annotation.get("prism_found") else None
-        if not bbox:
-            bbox = annotation.get("body_bbox")
-        if not bbox:
+        annotation_points = _filtered_annotation_support_points(
+            localization_result,
+            annotation,
+        )
+        if annotation_points is None:
             continue
+        points_without_axis = annotation_points - np.outer(
+            annotation_points @ axis,
+            axis,
+        )
+        nearest_indices = _nearest_curve_indices(
+            points_without_axis,
+            curve_without_axis,
+        )
         projections.extend(
-            _dot(point, offset_axis) - center_projection
-            for point in _bbox_corners(bbox, localization_result["image"])
+            float(value)
+            for value in np.sum(
+                (annotation_points - curve[nearest_indices]) * axis,
+                axis=1,
+            )
         )
     if not projections:
         return None
     return min(projections), max(projections)
+
+
+def _filtered_annotation_support_points(
+    localization_result: Dict[str, Any],
+    annotation: Dict[str, Any],
+) -> np.ndarray | None:
+    """返回主体四棱柱的有方向支撑点，旧结果缺字段时回退 bbox。"""
+
+    sagittal_geometry = annotation.get("sagittal_body_quadrilateral")
+    vertices = (
+        sagittal_geometry.get("vertices")
+        if isinstance(sagittal_geometry, dict)
+        else None
+    )
+    extent = (
+        sagittal_geometry.get("left_right_extent_mm")
+        if isinstance(sagittal_geometry, dict)
+        else None
+    )
+    if isinstance(vertices, list) and len(vertices) >= 4 and isinstance(extent, dict):
+        try:
+            sagittal_points = np.asarray([
+                [
+                    float(point["x"]),
+                    float(point["y"]),
+                    float(point["z"]),
+                ]
+                for point in vertices
+            ], dtype=float)
+            left_right_min = float(extent["min"])
+            left_right_max = float(extent["max"])
+            direction = np.asarray(
+                localization_result["image"].get("direction"),
+                dtype=float,
+            ).reshape(3, 3)
+            left_right_axis = direction[:, 0]
+            axis_length = float(np.linalg.norm(left_right_axis))
+            if (
+                sagittal_points.shape[1] == 3
+                and np.all(np.isfinite(sagittal_points))
+                and math.isfinite(left_right_min)
+                and math.isfinite(left_right_max)
+                and axis_length > 1e-6
+                and math.isfinite(axis_length)
+            ):
+                left_right_axis /= axis_length
+                return np.vstack([
+                    sagittal_points + left_right_axis * left_right_min,
+                    sagittal_points + left_right_axis * left_right_max,
+                ])
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    bbox = annotation.get("prism_bbox") if annotation.get("prism_found") else None
+    if not bbox:
+        bbox = annotation.get("body_bbox")
+    if not bbox:
+        return None
+    return np.asarray([
+        [point.x, point.y, point.z]
+        for point in _bbox_corners(bbox, localization_result["image"])
+    ], dtype=float)
 
 
 def _extend_cpr_offset_interval(
@@ -1503,6 +1589,195 @@ def _polyline_length(points: List[Point3D]) -> float:
     )
 
 
+def _correct_reversing_cpr_centroids(
+    centroid_points: List[Point3D],
+    spacing_mm: float,
+    longitudinal_axis: Point3D,
+) -> List[Point3D]:
+    """回正与局部曲率趋势相反的 CPR 中间质心。"""
+
+    if len(centroid_points) < 5:
+        return list(centroid_points)
+
+    minimum_residual = max(float(spacing_mm), 1e-6)
+    arrays = np.array([
+        [point.x, point.y, point.z]
+        for point in centroid_points
+    ], dtype=float)
+    axis = np.array([
+        longitudinal_axis.x,
+        longitudinal_axis.y,
+        longitudinal_axis.z,
+    ], dtype=float)
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm <= 1e-6:
+        return list(centroid_points)
+
+    axis /= axis_norm
+    if float((arrays[-1] - arrays[0]) @ axis) < 0.0:
+        axis = -axis
+    longitudinal = arrays @ axis
+    if np.any(np.diff(longitudinal) <= 1e-6):
+        return list(centroid_points)
+
+    expected = arrays.copy()
+    residuals = np.zeros_like(arrays)
+    valid = np.zeros(len(arrays), dtype=bool)
+    for index in range(1, len(arrays) - 1):
+        denominator = longitudinal[index + 1] - longitudinal[index - 1]
+        if denominator <= 1e-6:
+            return list(centroid_points)
+        weight = (longitudinal[index] - longitudinal[index - 1]) / denominator
+        expected[index] = (
+            arrays[index - 1] * (1.0 - weight)
+            + arrays[index + 1] * weight
+        )
+        residuals[index] = arrays[index] - expected[index]
+        residuals[index] -= axis * float(residuals[index] @ axis)
+        valid[index] = (
+            float(np.linalg.norm(residuals[index])) >= minimum_residual
+        )
+
+    corrected = arrays.copy()
+    for index in range(1, len(arrays) - 1):
+        if not valid[index]:
+            continue
+        reference = _neighbor_cpr_residual_trend(residuals, valid, index)
+        if reference is None:
+            if _is_dominant_cpr_local_corner(
+                arrays,
+                residuals,
+                valid,
+                index,
+            ):
+                corrected[index] = expected[index]
+            continue
+        if _residual_is_weaker_than_neighbor_trend(residuals, valid, index):
+            continue
+        if (
+            _has_one_sided_cpr_residual_reference(valid, index)
+            and not _is_terminal_side_cpr_centroid(residuals, index)
+            and _raw_path_reverses_across_residual(arrays, residuals, index)
+        ):
+            continue
+        if float(residuals[index] @ reference) < 0.0:
+            corrected[index] = expected[index]
+
+    return [
+        Point3D(float(point[0]), float(point[1]), float(point[2]))
+        for point in corrected
+    ]
+
+
+def _neighbor_cpr_residual_trend(
+    residuals: np.ndarray,
+    valid: np.ndarray,
+    index: int,
+) -> np.ndarray | None:
+    """返回当前残差可参考的相邻曲率趋势。"""
+
+    neighbors: list[np.ndarray] = []
+    if index - 1 >= 1 and bool(valid[index - 1]):
+        neighbors.append(residuals[index - 1])
+    if index + 1 <= len(residuals) - 2 and bool(valid[index + 1]):
+        neighbors.append(residuals[index + 1])
+    if not neighbors:
+        return None
+    if len(neighbors) == 2 and float(neighbors[0] @ neighbors[1]) <= 0.0:
+        return None
+    reference = np.sum(np.array(neighbors), axis=0)
+    if float(np.linalg.norm(reference)) <= 1e-6:
+        return None
+    return reference
+
+
+def _residual_is_weaker_than_neighbor_trend(
+    residuals: np.ndarray,
+    valid: np.ndarray,
+    index: int,
+) -> bool:
+    """避免被更强的相邻异常残差拖动。"""
+
+    neighbor_norms: list[float] = []
+    if index - 1 >= 1 and bool(valid[index - 1]):
+        neighbor_norms.append(float(np.linalg.norm(residuals[index - 1])))
+    if index + 1 <= len(residuals) - 2 and bool(valid[index + 1]):
+        neighbor_norms.append(float(np.linalg.norm(residuals[index + 1])))
+    if not neighbor_norms:
+        return False
+    return float(np.linalg.norm(residuals[index])) < max(neighbor_norms)
+
+
+def _has_one_sided_cpr_residual_reference(
+    valid: np.ndarray,
+    index: int,
+) -> bool:
+    """判断当前点是否只有一侧残差可作趋势参考。"""
+
+    usable_neighbors = 0
+    if index - 1 >= 1 and bool(valid[index - 1]):
+        usable_neighbors += 1
+    if index + 1 <= len(valid) - 2 and bool(valid[index + 1]):
+        usable_neighbors += 1
+    return usable_neighbors == 1
+
+
+def _is_terminal_side_cpr_centroid(
+    residuals: np.ndarray,
+    index: int,
+) -> bool:
+    """判断当前点是否靠近质心链端部。"""
+
+    return index == 1 or index == len(residuals) - 2
+
+
+def _raw_path_reverses_across_residual(
+    points: np.ndarray,
+    residuals: np.ndarray,
+    index: int,
+) -> bool:
+    """判断原始路径在当前残差方向上是否一进一出。"""
+
+    current = residuals[index]
+    incoming_projection = float((points[index] - points[index - 1]) @ current)
+    outgoing_projection = float((points[index + 1] - points[index]) @ current)
+    return incoming_projection * outgoing_projection <= 0.0
+
+
+def _is_dominant_cpr_local_corner(
+    points: np.ndarray,
+    residuals: np.ndarray,
+    valid: np.ndarray,
+    index: int,
+) -> bool:
+    """判断当前点是否为左右趋势冲突中的局部折角主峰。"""
+
+    if index - 1 < 1 or index + 1 > len(residuals) - 2:
+        return False
+    if not (bool(valid[index - 1]) and bool(valid[index + 1])):
+        return False
+
+    previous = residuals[index - 1]
+    current = residuals[index]
+    following = residuals[index + 1]
+    if float(previous @ following) >= 0.0:
+        return False
+
+    current_norm = float(np.linalg.norm(current))
+    if current_norm <= float(np.linalg.norm(previous)):
+        return False
+    if current_norm <= float(np.linalg.norm(following)):
+        return False
+
+    if _raw_path_reverses_across_residual(points, residuals, index):
+        return False
+
+    return (
+        float(current @ previous) < 0.0
+        or float(current @ following) < 0.0
+    )
+
+
 def _smooth_cpr_anchor_path(
     anchor_points: List[Point3D],
     spacing_mm: float,
@@ -1616,24 +1891,29 @@ def _smooth_cpr_centroid_path_with_straight_endpoints(
 ) -> List[Point3D]:
     """平滑质心链，并把首末端面作为不会过冲的直线端段拼接。"""
 
-    curve_points = _smooth_cpr_anchor_path(
+    corrected_centroid_points = _correct_reversing_cpr_centroids(
         centroid_points,
         spacing_mm,
         longitudinal_axis,
     )
-    if not centroid_points:
+    curve_points = _smooth_cpr_anchor_path(
+        corrected_centroid_points,
+        spacing_mm,
+        longitudinal_axis,
+    )
+    if not corrected_centroid_points:
         return curve_points
 
     terminal_spacing = max(float(spacing_mm) * 0.5, 1e-6)
     if (
         anchor_points
         and vector_length(
-            subtract_points(anchor_points[0], centroid_points[0])
+            subtract_points(anchor_points[0], corrected_centroid_points[0])
         ) > 1e-6
     ):
         prefix = _resample_straight_segment(
             anchor_points[0],
-            centroid_points[0],
+            corrected_centroid_points[0],
             terminal_spacing,
         )
         curve_points = prefix[:-1] + curve_points
@@ -1641,11 +1921,11 @@ def _smooth_cpr_centroid_path_with_straight_endpoints(
     if (
         anchor_points
         and vector_length(
-            subtract_points(anchor_points[-1], centroid_points[-1])
+            subtract_points(anchor_points[-1], corrected_centroid_points[-1])
         ) > 1e-6
     ):
         suffix = _resample_straight_segment(
-            centroid_points[-1],
+            corrected_centroid_points[-1],
             anchor_points[-1],
             terminal_spacing,
         )

@@ -31,7 +31,7 @@
     "targets": {
         "颈椎": {
             "spine_cpr": {
-                "full_label": true
+                "full_label": false
             },
             "whole_range": {
                 "start": "C1",
@@ -64,7 +64,7 @@
         },
         "胸椎": {
             "spine_cpr": {
-                "full_label": true
+                "full_label": false
             },
             "whole_range": {
                 "start": "C7",
@@ -133,13 +133,7 @@
             },
             "whole_range": {
                 "start": "L1",
-                "end": "S1",
-                "slice_range_extension": {
-                    "冠状位": {
-                        "start": 5.0,
-                        "end": 5.0
-                    }
-                }
+                "end": "S1"
             },
             "interspace": {
                 "intervals": [

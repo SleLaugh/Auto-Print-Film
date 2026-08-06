@@ -2016,20 +2016,39 @@ class LocalizationStage(BaseStage):
             tuple[np.ndarray, np.ndarray] | None,
         ],
     ) -> dict[str, tuple[np.ndarray, np.ndarray] | None]:
-        """只比较相交局部包围盒；碰撞涉及的棱柱全部失效。"""
+        """拆分轻微重叠；明显碰撞涉及的棱柱仍全部失效。"""
 
-        resolved_regions = dict(prism_regions)
+        maximum_resolvable_overlap_fraction = 0.05
+        resolved_regions = {
+            label_name: (
+                None
+                if prism_region is None
+                else (
+                    np.asarray(prism_region[0], dtype=int).copy(),
+                    np.asarray(prism_region[1], dtype=bool).copy(),
+                )
+            )
+            for label_name, prism_region in prism_regions.items()
+        }
         valid_labels = [
             label_name
-            for label_name, prism_region in prism_regions.items()
+            for label_name, prism_region in resolved_regions.items()
             if prism_region is not None
         ]
+        voxel_counts: dict[str, int] = {}
+        centroids: dict[str, np.ndarray] = {}
+        for label_name in valid_labels:
+            minimum, mask = resolved_regions[label_name]
+            mask_indices = np.argwhere(mask)
+            voxel_counts[label_name] = len(mask_indices)
+            centroids[label_name] = minimum + mask_indices.mean(axis=0)
+
         collided_labels: set[str] = set()
         for left_index, left_label in enumerate(valid_labels):
-            left_minimum, left_mask = prism_regions[left_label]
+            left_minimum, left_mask = resolved_regions[left_label]
             left_maximum = left_minimum + np.asarray(left_mask.shape)
             for right_label in valid_labels[left_index + 1:]:
-                right_minimum, right_mask = prism_regions[right_label]
+                right_minimum, right_mask = resolved_regions[right_label]
                 right_maximum = right_minimum + np.asarray(right_mask.shape)
                 overlap_minimum = np.maximum(left_minimum, right_minimum)
                 overlap_maximum = np.minimum(left_maximum, right_maximum)
@@ -2049,12 +2068,86 @@ class LocalizationStage(BaseStage):
                     )
                     for axis in range(3)
                 )
-                if np.any(
-                    left_mask[left_slices] & right_mask[right_slices]
+                overlap_voxel_count = int(
+                    np.count_nonzero(
+                        left_mask[left_slices] & right_mask[right_slices]
+                    )
+                )
+                if overlap_voxel_count == 0:
+                    continue
+                left_overlap_fraction = (
+                    overlap_voxel_count / voxel_counts[left_label]
+                )
+                right_overlap_fraction = (
+                    overlap_voxel_count / voxel_counts[right_label]
+                )
+                if max(left_overlap_fraction, right_overlap_fraction) > (
+                    maximum_resolvable_overlap_fraction
                 ):
                     collided_labels.update((left_label, right_label))
         for label_name in collided_labels:
             resolved_regions[label_name] = None
+
+        resolvable_labels = [
+            label_name
+            for label_name in valid_labels
+            if label_name not in collided_labels
+        ]
+        for left_index, left_label in enumerate(resolvable_labels):
+            left_minimum, left_mask = resolved_regions[left_label]
+            left_maximum = left_minimum + np.asarray(left_mask.shape)
+            for right_label in resolvable_labels[left_index + 1:]:
+                right_minimum, right_mask = resolved_regions[right_label]
+                right_maximum = right_minimum + np.asarray(right_mask.shape)
+                overlap_minimum = np.maximum(left_minimum, right_minimum)
+                overlap_maximum = np.minimum(left_maximum, right_maximum)
+                if np.any(overlap_minimum >= overlap_maximum):
+                    continue
+                left_slices = tuple(
+                    slice(
+                        int(overlap_minimum[axis] - left_minimum[axis]),
+                        int(overlap_maximum[axis] - left_minimum[axis]),
+                    )
+                    for axis in range(3)
+                )
+                right_slices = tuple(
+                    slice(
+                        int(overlap_minimum[axis] - right_minimum[axis]),
+                        int(overlap_maximum[axis] - right_minimum[axis]),
+                    )
+                    for axis in range(3)
+                )
+                left_overlap = left_mask[left_slices]
+                right_overlap = right_mask[right_slices]
+                overlap_indices = np.argwhere(left_overlap & right_overlap)
+                if len(overlap_indices) == 0:
+                    continue
+
+                global_overlap_indices = overlap_minimum + overlap_indices
+                left_distances = np.sum(
+                    (global_overlap_indices - centroids[left_label]) ** 2,
+                    axis=1,
+                )
+                right_distances = np.sum(
+                    (global_overlap_indices - centroids[right_label]) ** 2,
+                    axis=1,
+                )
+                assign_to_left = left_distances < right_distances
+                equal_distances = np.isclose(
+                    left_distances,
+                    right_distances,
+                    rtol=1e-12,
+                    atol=1e-12,
+                )
+                assign_to_left[equal_distances] = left_label < right_label
+                remove_from_left = ~assign_to_left
+                remove_from_right = assign_to_left
+                if np.any(remove_from_left):
+                    indices = overlap_indices[remove_from_left]
+                    left_overlap[tuple(indices.T)] = False
+                if np.any(remove_from_right):
+                    indices = overlap_indices[remove_from_right]
+                    right_overlap[tuple(indices.T)] = False
         return resolved_regions
 
     @classmethod
@@ -2499,8 +2592,12 @@ class LocalizationStage(BaseStage):
         if len(indices_zyx) == 0:
             return np.zeros(0, dtype=bool)
 
-        projection_points, inverse, support_counts = np.unique(
+        projection_input = np.ascontiguousarray(
             indices_zyx[:, [0, 1]],
+            dtype=np.intp,
+        )
+        projection_points, inverse, support_counts = np.unique(
+            projection_input,
             axis=0,
             return_inverse=True,
             return_counts=True,

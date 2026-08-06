@@ -1606,6 +1606,91 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertFalse(annotations["vertebrae_L2"]["prism_found"])
             self.assertEqual(int(np.count_nonzero(overlay)), 0)
 
+    def test_small_prism_overlap_is_split_between_adjacent_vertebrae(self):
+        """相邻椎体仅边缘轻微重叠时，应拆分重叠体素并保留两个四棱柱。"""
+
+        left_voxel_count = 44919
+        right_voxel_count = 46596
+        overlap_voxel_count = 1003
+        left_mask = np.ones((left_voxel_count, 1, 1), dtype=bool)
+        right_mask = np.ones((right_voxel_count, 1, 1), dtype=bool)
+        prism_regions = {
+            "vertebrae_C3": (np.array([0, 0, 0]), left_mask),
+            "vertebrae_C4": (
+                np.array([left_voxel_count - overlap_voxel_count, 0, 0]),
+                right_mask,
+            ),
+        }
+
+        resolved = LocalizationStage._resolve_non_overlapping_prism_regions(
+            prism_regions
+        )
+
+        self.assertIsNotNone(resolved["vertebrae_C3"])
+        self.assertIsNotNone(resolved["vertebrae_C4"])
+        left_minimum, resolved_left = resolved["vertebrae_C3"]
+        right_minimum, resolved_right = resolved["vertebrae_C4"]
+        overlap_minimum = np.maximum(left_minimum, right_minimum)
+        overlap_maximum = np.minimum(
+            left_minimum + np.asarray(resolved_left.shape),
+            right_minimum + np.asarray(resolved_right.shape),
+        )
+        left_slices = tuple(
+            slice(
+                int(overlap_minimum[axis] - left_minimum[axis]),
+                int(overlap_maximum[axis] - left_minimum[axis]),
+            )
+            for axis in range(3)
+        )
+        right_slices = tuple(
+            slice(
+                int(overlap_minimum[axis] - right_minimum[axis]),
+                int(overlap_maximum[axis] - right_minimum[axis]),
+            )
+            for axis in range(3)
+        )
+
+        self.assertFalse(
+            np.any(resolved_left[left_slices] & resolved_right[right_slices])
+        )
+        self.assertEqual(
+            int(np.count_nonzero(resolved_left))
+            + int(np.count_nonzero(resolved_right)),
+            left_voxel_count + right_voxel_count - overlap_voxel_count,
+        )
+        self.assertTrue(np.all(left_mask))
+        self.assertTrue(np.all(right_mask))
+
+    def test_small_prism_overlap_resolution_is_independent_of_label_order(self):
+        """一个椎体与上下邻椎相交时，拆分结果不应随字典顺序变化。"""
+
+        regions = {
+            "vertebrae_C2": (
+                np.array([0, 0, 0]),
+                np.ones((30, 1, 1), dtype=bool),
+            ),
+            "vertebrae_C3": (
+                np.array([29, 0, 0]),
+                np.ones((30, 1, 1), dtype=bool),
+            ),
+            "vertebrae_C4": (
+                np.array([58, 0, 0]),
+                np.ones((30, 1, 1), dtype=bool),
+            ),
+        }
+        forward = LocalizationStage._resolve_non_overlapping_prism_regions(
+            regions
+        )
+        reverse = LocalizationStage._resolve_non_overlapping_prism_regions(
+            dict(reversed(regions.items()))
+        )
+
+        for label_name in regions:
+            forward_minimum, forward_mask = forward[label_name]
+            reverse_minimum, reverse_mask = reverse[label_name]
+            np.testing.assert_array_equal(forward_minimum, reverse_minimum)
+            np.testing.assert_array_equal(forward_mask, reverse_mask)
+
     def test_stage3_spine_geometry_uses_filtered_annotation_centroid_and_excludes_c1(self):
         """阶段三应输出标注质心，不能改写全量定位质心，且 C1 不进入 CPR 几何。"""
 
@@ -1821,6 +1906,40 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
 
         self.assertTrue(np.all(retained[:20]))
         self.assertFalse(np.any(retained[20:]))
+
+    def test_stage3_sagittal_support_unique_uses_contiguous_integer_projection(self):
+        """LR 支撑统计传给 np.unique 的投影数组应规整为连续整数内存。"""
+
+        indices = np.asarray(
+            [
+                (0, 0, 0),
+                (0, 0, 1),
+                (0, 1, 0),
+                (0, 1, 1),
+                (1, 0, 0),
+                (1, 0, 1),
+                (1, 1, 0),
+                (1, 1, 1),
+            ],
+            dtype=np.int16,
+        )
+        original_unique = np.unique
+        observed_projection = None
+
+        def observing_unique(values, *args, **kwargs):
+            nonlocal observed_projection
+            if kwargs.get("axis") == 0 and kwargs.get("return_inverse"):
+                observed_projection = values
+            return original_unique(values, *args, **kwargs)
+
+        with patch("src.stages.stage_localization.np.unique", side_effect=observing_unique):
+            LocalizationStage._retained_sagittal_projection_mask_by_lr_support(
+                indices,
+            )
+
+        self.assertIsNotNone(observed_projection)
+        self.assertEqual(observed_projection.dtype, np.dtype(np.intp))
+        self.assertTrue(observed_projection.flags.c_contiguous)
 
     def test_stage3_prism_region_is_limited_to_body_bbox(self):
         """内部棱柱只保留局部包围盒，不能为每个椎体复制整幅 CT。"""

@@ -137,6 +137,59 @@ python main.py -i D:\data\dicom_dir -o D:\data\output_dir --body_part 腰椎 --c
 python main.py -h
 ```
 
+## 批量测试计划
+
+仓库提供了固定病例清单脚本，用于批量执行本机测试影像。脚本读取：
+
+```text
+/home/peng/03_data/demo/Image/dicom
+```
+
+结果输出到：
+
+```text
+/home/peng/03_data/demo/Image/result
+```
+
+先只打印命令、检查路径和部位映射，不真正处理影像：
+
+```bash
+bash scripts/batch_test_plan.sh --dry-run
+```
+
+默认串行执行，每次只跑一个病例：
+
+```bash
+bash scripts/batch_test_plan.sh
+```
+
+需要异步并发时，用 `--jobs N` 控制最多同时运行的病例数：
+
+```bash
+bash scripts/batch_test_plan.sh --jobs 2
+```
+
+也可以使用简写：
+
+```bash
+bash scripts/batch_test_plan.sh -j 2
+```
+
+遇到第一条失败就停止继续启动后续病例：
+
+```bash
+bash scripts/batch_test_plan.sh --jobs 2 --stop-on-failure
+```
+
+并发任务的单例日志写入：
+
+```text
+/home/peng/03_data/demo/Image/result/_batch_logs
+```
+
+单 GPU 环境建议先从 `--jobs 2` 试起；如果 nnUNet 显存不足或出现 OOM，
+降回 `--jobs 1`。
+
 ### 当前能力范围
 
 当前正式注册 CT 的横状位、矢状位和冠状位重建能力：

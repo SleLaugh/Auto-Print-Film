@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+set -u
+
+cd "$(dirname "$0")/.."
+
+DICOM_ROOT="/home/peng/03_data/demo/Image/dicom"
+RESULT_ROOT="/home/peng/03_data/demo/Image/result"
+BATCH_LOG_ROOT="$RESULT_ROOT/_batch_logs"
+PYTHON_BIN=".venv/bin/python"
+DRY_RUN=0
+STOP_ON_FAILURE=0
+JOBS=1
+
+usage() {
+    printf 'Usage: %s [--dry-run] [--stop-on-failure] [--jobs N]\n' "$0"
+}
+
+is_positive_integer() {
+    [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        --stop-on-failure)
+            STOP_ON_FAILURE=1
+            shift
+            ;;
+        --jobs|-j)
+            if [[ $# -lt 2 ]] || ! is_positive_integer "$2"; then
+                usage >&2
+                printf -- '--jobs 必须是正整数\n' >&2
+                exit 2
+            fi
+            JOBS="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            printf '未知参数: %s\n' "$1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    PYTHON_BIN="python"
+fi
+
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    mkdir -p "$BATCH_LOG_ROOT" || exit 1
+fi
+
+# 格式: "dicom目录名|result目录名|部位"
+CASES=(
+    "颈1_1mm|颈1_1mm|颈椎"
+    "颈2_1mm|颈2_1mm|颈椎"
+    "颈3_1mm|颈3_1mm|颈椎"
+    "颈到盆1_1.5mm|颈到盆1_1.5mm_胸椎|胸椎"
+    "颈到盆2_1.5mm|颈到盆2_1.5mm_胸椎|胸椎"
+    "颈到腰1_1.5mm|颈到腰1_1.5mm_胸椎|胸椎"
+    "颈到盆1_1.5mm|颈到盆1_1.5mm_腰椎|腰椎"
+    "颈到盆2_1.5mm|颈到盆2_1.5mm_腰椎|腰椎"
+    "颈到腰1_1.5mm|颈到腰1_1.5mm_腰椎|腰椎"
+    "腰1_1mm|腰1_1mm|腰椎"
+    "腰2_1.5mm_歪|腰2_1.5mm_歪|腰椎"
+    "腰3_1mm|腰3_1mm|腰椎"
+)
+
+failures=()
+pids=()
+pid_labels=()
+pid_logs=()
+
+wait_for_slot() {
+    while [[ "${#pids[@]}" -ge "$JOBS" ]]; do
+        wait_for_one
+    done
+}
+
+wait_for_one() {
+    local pid label log_file
+    pid="${pids[0]}"
+    label="${pid_labels[0]}"
+    log_file="${pid_logs[0]}"
+
+    pids=("${pids[@]:1}")
+    pid_labels=("${pid_labels[@]:1}")
+    pid_logs=("${pid_logs[@]:1}")
+
+    if ! wait "$pid"; then
+        failures+=("$label|run failed|log=$log_file")
+        if [[ "$STOP_ON_FAILURE" -eq 1 ]]; then
+            wait_for_all
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+wait_for_all() {
+    while [[ "${#pids[@]}" -gt 0 ]]; do
+        wait_for_one || return 1
+    done
+}
+
+for index in "${!CASES[@]}"; do
+    IFS='|' read -r dicom_name result_name body_part <<< "${CASES[$index]}"
+    input_dir="$DICOM_ROOT/$dicom_name"
+    output_dir="$RESULT_ROOT/$result_name"
+
+    printf '\n[%02d/%02d] %s -> %s (%s)\n' "$((index + 1))" "${#CASES[@]}" "$input_dir" "$output_dir" "$body_part"
+
+    if [[ ! -d "$input_dir" ]]; then
+        printf '跳过：输入目录不存在: %s\n' "$input_dir" >&2
+        failures+=("$dicom_name|$body_part|missing input")
+        if [[ "$STOP_ON_FAILURE" -eq 1 ]]; then
+            break
+        fi
+        continue
+    fi
+
+    cmd=(
+        "$PYTHON_BIN"
+        "main.py"
+        "-i" "$input_dir"
+        "-o" "$output_dir"
+        "--body_part" "$body_part"
+    )
+
+    printf '命令:'
+    printf ' %q' "${cmd[@]}"
+    printf '\n'
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        continue
+    fi
+
+    wait_for_slot || break
+
+    log_file="$BATCH_LOG_ROOT/$(printf '%02d' "$((index + 1))")_${result_name}_${body_part}.log"
+
+    printf '启动后台任务，日志: %s\n' "$log_file"
+    "${cmd[@]}" >"$log_file" 2>&1 &
+    pids+=("$!")
+    pid_labels+=("$dicom_name|$body_part")
+    pid_logs+=("$log_file")
+
+    if [[ "$STOP_ON_FAILURE" -eq 1 ]] && [[ "${#failures[@]}" -gt 0 ]]; then
+        break
+    fi
+done
+
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    wait_for_all || true
+fi
+
+if [[ "${#failures[@]}" -gt 0 ]]; then
+    printf '\n失败/跳过用例:\n' >&2
+    printf '  %s\n' "${failures[@]}" >&2
+    exit 1
+fi
+
+printf '\n批量测试完成，共 %d 条。\n' "${#CASES[@]}"

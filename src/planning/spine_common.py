@@ -406,6 +406,246 @@ def _closest_convex_polygon_pair_2d(
     return best
 
 
+def _facing_convex_polygon_boundary_pair_2d(
+    upper: Sequence[tuple[float, float]],
+    lower: Sequence[tuple[float, float]],
+    permit_inverted_gap: bool = False,
+) -> Optional[tuple[tuple[float, float], tuple[float, float], float]]:
+    """在两条相向端边的共同覆盖中段构造代表性边界对。"""
+
+    if len(upper) < 3 or len(lower) < 3:
+        return None
+
+    upper_center = (
+        sum(point[0] for point in upper) / len(upper),
+        sum(point[1] for point in upper) / len(upper),
+    )
+    lower_center = (
+        sum(point[0] for point in lower) / len(lower),
+        sum(point[1] for point in lower) / len(lower),
+    )
+    interval_direction = (
+        lower_center[0] - upper_center[0],
+        lower_center[1] - upper_center[1],
+    )
+    direction_length_squared = (
+        interval_direction[0] ** 2 + interval_direction[1] ** 2
+    )
+    if direction_length_squared <= 1e-12:
+        return None
+    direction_length = math.sqrt(direction_length_squared)
+    interval_unit = (
+        interval_direction[0] / direction_length,
+        interval_direction[1] / direction_length,
+    )
+
+    def signed_area(
+        polygon: Sequence[tuple[float, float]],
+    ) -> float:
+        return sum(
+            polygon[index][0] * polygon[(index + 1) % len(polygon)][1]
+            - polygon[(index + 1) % len(polygon)][0] * polygon[index][1]
+            for index in range(len(polygon))
+        ) / 2.0
+
+    def facing_edge(
+        polygon: Sequence[tuple[float, float]],
+        toward: tuple[float, float],
+    ) -> Optional[
+        tuple[
+            tuple[float, float],
+            tuple[float, float],
+            tuple[float, float],
+        ]
+    ]:
+        area = signed_area(polygon)
+        if abs(area) <= 1e-12:
+            return None
+        candidates = []
+        for index in range(len(polygon)):
+            start = polygon[index]
+            end = polygon[(index + 1) % len(polygon)]
+            edge = (end[0] - start[0], end[1] - start[1])
+            edge_length = math.hypot(edge[0], edge[1])
+            if edge_length <= 1e-12:
+                continue
+            if area > 0.0:
+                outward = (edge[1] / edge_length, -edge[0] / edge_length)
+            else:
+                outward = (-edge[1] / edge_length, edge[0] / edge_length)
+            alignment = outward[0] * toward[0] + outward[1] * toward[1]
+            candidates.append((alignment, start, end, outward))
+        if not candidates:
+            return None
+        _, start, end, outward = max(candidates, key=lambda item: item[0])
+        return start, end, outward
+
+    upper_edge = facing_edge(upper, interval_unit)
+    lower_edge = facing_edge(
+        lower,
+        (-interval_unit[0], -interval_unit[1]),
+    )
+    if upper_edge is None or lower_edge is None:
+        return None
+    upper_normal = upper_edge[2]
+    lower_normal = (-lower_edge[2][0], -lower_edge[2][1])
+    normal_sum = (
+        upper_normal[0] + lower_normal[0],
+        upper_normal[1] + lower_normal[1],
+    )
+    normal_length = math.hypot(normal_sum[0], normal_sum[1])
+    if normal_length <= 1e-12:
+        boundary_normal = interval_unit
+    else:
+        boundary_normal = (
+            normal_sum[0] / normal_length,
+            normal_sum[1] / normal_length,
+        )
+    alignment = (
+        boundary_normal[0] * interval_unit[0]
+        + boundary_normal[1] * interval_unit[1]
+    )
+    if alignment < 0.5:
+        boundary_normal = interval_unit
+
+    tangent = (-boundary_normal[1], boundary_normal[0])
+
+    def tangent_range(
+        edge: tuple[
+            tuple[float, float],
+            tuple[float, float],
+            tuple[float, float],
+        ],
+    ) -> tuple[float, float]:
+        values = (
+            edge[0][0] * tangent[0] + edge[0][1] * tangent[1],
+            edge[1][0] * tangent[0] + edge[1][1] * tangent[1],
+        )
+        return min(values), max(values)
+
+    upper_range = tangent_range(upper_edge)
+    lower_range = tangent_range(lower_edge)
+    overlap_minimum = max(upper_range[0], lower_range[0])
+    overlap_maximum = min(upper_range[1], lower_range[1])
+    if overlap_maximum - overlap_minimum <= 1e-8:
+        return None
+
+    def point_at_tangent(
+        edge: tuple[
+            tuple[float, float],
+            tuple[float, float],
+            tuple[float, float],
+        ],
+        coordinate: float,
+    ) -> Optional[tuple[float, float]]:
+        start, end, _ = edge
+        start_coordinate = start[0] * tangent[0] + start[1] * tangent[1]
+        end_coordinate = end[0] * tangent[0] + end[1] * tangent[1]
+        denominator = end_coordinate - start_coordinate
+        if abs(denominator) <= 1e-12:
+            return None
+        parameter = (coordinate - start_coordinate) / denominator
+        return (
+            start[0] + (end[0] - start[0]) * parameter,
+            start[1] + (end[1] - start[1]) * parameter,
+        )
+
+    def boundary_pair_at(
+        coordinate: float,
+    ) -> Optional[
+        tuple[tuple[float, float], tuple[float, float], float]
+    ]:
+        upper_point = point_at_tangent(upper_edge, coordinate)
+        lower_point = point_at_tangent(lower_edge, coordinate)
+        if upper_point is None or lower_point is None:
+            return None
+        gap = (
+            (lower_point[0] - upper_point[0]) * boundary_normal[0]
+            + (lower_point[1] - upper_point[1]) * boundary_normal[1]
+        )
+        return upper_point, lower_point, gap
+
+    minimum_pair = boundary_pair_at(overlap_minimum)
+    maximum_pair = boundary_pair_at(overlap_maximum)
+    if minimum_pair is None or maximum_pair is None:
+        return None
+    minimum_gap = minimum_pair[2]
+    maximum_gap = maximum_pair[2]
+    boundaries = [overlap_minimum, overlap_maximum]
+    if minimum_gap * maximum_gap < 0.0:
+        crossing = overlap_minimum - minimum_gap * (
+            overlap_maximum - overlap_minimum
+        ) / (maximum_gap - minimum_gap)
+        if overlap_minimum < crossing < overlap_maximum:
+            boundaries.append(crossing)
+    boundaries.sort()
+
+    positive_intervals = []
+    for start, end in zip(boundaries, boundaries[1:]):
+        midpoint = (start + end) / 2.0
+        pair = boundary_pair_at(midpoint)
+        if pair is not None and pair[2] > 1e-8:
+            positive_intervals.append((end - start, midpoint, pair))
+    if positive_intervals:
+        _, _, selected_pair = max(
+            positive_intervals,
+            key=lambda item: (item[0], item[2][2]),
+        )
+        upper_boundary, lower_boundary, gap = selected_pair
+        return upper_boundary, lower_boundary, gap * gap
+
+    if not permit_inverted_gap:
+        return None
+    midpoint_coordinate = (overlap_minimum + overlap_maximum) / 2.0
+    pair = boundary_pair_at(midpoint_coordinate)
+    if pair is None or abs(pair[2]) <= 1e-8:
+        return None
+    raw_upper, raw_lower, raw_gap = pair
+    midpoint = (
+        (raw_upper[0] + raw_lower[0]) / 2.0,
+        (raw_upper[1] + raw_lower[1]) / 2.0,
+    )
+    half_distance = abs(raw_gap) / 2.0
+    ordered_upper = (
+        midpoint[0] - boundary_normal[0] * half_distance,
+        midpoint[1] - boundary_normal[1] * half_distance,
+    )
+    ordered_lower = (
+        midpoint[0] + boundary_normal[0] * half_distance,
+        midpoint[1] + boundary_normal[1] * half_distance,
+    )
+    return ordered_upper, ordered_lower, raw_gap * raw_gap
+
+
+def _overlapping_convex_polygon_boundary_pair_2d(
+    upper: Sequence[tuple[float, float]],
+    lower: Sequence[tuple[float, float]],
+) -> Optional[tuple[tuple[float, float], tuple[float, float], float]]:
+    """外包络轻微穿入时用相向端边构造稳定的有向边界对。"""
+
+    if len(upper) < 3 or len(lower) < 3:
+        return None
+    upper_inside = [
+        _point_inside_convex_polygon_2d(point, lower)
+        for point in upper
+    ]
+    lower_inside = [
+        _point_inside_convex_polygon_2d(point, upper)
+        for point in lower
+    ]
+    if not any(upper_inside) and not any(lower_inside):
+        # 顶点互不包含而边界相交是十字穿越，不能伪造椎间间隙。
+        return None
+    if all(upper_inside) or all(lower_inside):
+        # 完整包含不是相邻椎体外包络的轻微穿入。
+        return None
+    return _facing_convex_polygon_boundary_pair_2d(
+        upper,
+        lower,
+        permit_inverted_gap=True,
+    )
+
+
 def _parse_sagittal_prism(
     annotation: Dict[str, Any],
     frame: StraightPlaneFrame,
@@ -489,6 +729,18 @@ def _resolve_interspace_prism_geometry(
     if overlap_minimum >= overlap_maximum:
         return None
     closest = _closest_convex_polygon_pair_2d(upper_polygon, lower_polygon)
+    if closest is not None:
+        representative = _facing_convex_polygon_boundary_pair_2d(
+            upper_polygon,
+            lower_polygon,
+        )
+        if representative is not None:
+            closest = representative
+    else:
+        closest = _overlapping_convex_polygon_boundary_pair_2d(
+            upper_polygon,
+            lower_polygon,
+        )
     if closest is None or closest[2] <= 1e-8:
         return None
     upper_2d, lower_2d, _ = closest

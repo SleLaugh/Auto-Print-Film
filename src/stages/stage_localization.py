@@ -43,6 +43,12 @@ class _LabelVoxelRegion:
     bbox: VoxelBBox | None
 
 
+_TERMINAL_EXTENSION_MINIMUM_COMPONENT_FRACTION = 0.10
+_TERMINAL_EXTENSION_MAXIMUM_SI_GAP = 1
+_TERMINAL_EXTENSION_MINIMUM_TRANSVERSE_OVERLAP_FRACTION = 0.75
+_TERMINAL_EXTENSION_MINIMUM_SI_SPAN = 2
+
+
 class LocalizationStage(BaseStage):
     """定位与回正占位阶段"""
     
@@ -1973,7 +1979,11 @@ class LocalizationStage(BaseStage):
 
         return (
             body_indices,
-            cls._resolve_non_overlapping_prism_regions(prism_regions),
+            cls._resolve_non_overlapping_prism_regions(
+                prism_regions,
+                protected_indices=body_indices,
+                voxel_spacing_zyx=np.asarray(image.GetSpacing())[::-1],
+            ),
         )
 
     @staticmethod
@@ -1992,21 +2002,42 @@ class LocalizationStage(BaseStage):
             if mask_minimum_zyx is not None
             else np.zeros(3, dtype=int)
         )
-        region_slices = tuple(
-            slice(
-                int(start - mask_start),
-                int(start - mask_start) + int(size),
-            )
-            for start, mask_start, size in zip(
+        minimum = np.asarray(minimum, dtype=int)
+        prism_maximum = minimum + np.asarray(local_prism_mask.shape, dtype=int)
+        mask_maximum = mask_minimum + np.asarray(mask.shape, dtype=int)
+        overlap_minimum = np.maximum(minimum, mask_minimum)
+        overlap_maximum = np.minimum(prism_maximum, mask_maximum)
+        if np.any(overlap_minimum >= overlap_maximum):
+            return None
+
+        prism_slices = tuple(
+            slice(int(start - prism_start), int(stop - prism_start))
+            for start, stop, prism_start in zip(
+                overlap_minimum,
+                overlap_maximum,
                 minimum,
-                mask_minimum,
-                local_prism_mask.shape,
             )
         )
-        clipped = local_prism_mask & mask[region_slices]
+        mask_slices = tuple(
+            slice(int(start - mask_start), int(stop - mask_start))
+            for start, stop, mask_start in zip(
+                overlap_minimum,
+                overlap_maximum,
+                mask_minimum,
+            )
+        )
+        clipped = local_prism_mask[prism_slices] & mask[mask_slices]
         if not np.any(clipped):
             return None
-        return minimum, clipped
+
+        occupied = np.argwhere(clipped)
+        crop_minimum = occupied.min(axis=0)
+        crop_maximum = occupied.max(axis=0) + 1
+        crop_slices = tuple(
+            slice(int(start), int(stop))
+            for start, stop in zip(crop_minimum, crop_maximum)
+        )
+        return overlap_minimum + crop_minimum, clipped[crop_slices]
 
     @classmethod
     def _resolve_non_overlapping_prism_regions(
@@ -2015,8 +2046,10 @@ class LocalizationStage(BaseStage):
             str,
             tuple[np.ndarray, np.ndarray] | None,
         ],
+        protected_indices: dict[str, np.ndarray] | None = None,
+        voxel_spacing_zyx: np.ndarray | None = None,
     ) -> dict[str, tuple[np.ndarray, np.ndarray] | None]:
-        """拆分轻微重叠；明显碰撞涉及的棱柱仍全部失效。"""
+        """用单一矢状分隔平面拆分重叠；主体不可分时整体失效。"""
 
         maximum_resolvable_overlap_fraction = 0.05
         resolved_regions = {
@@ -2037,6 +2070,33 @@ class LocalizationStage(BaseStage):
         ]
         voxel_counts: dict[str, int] = {}
         centroids: dict[str, np.ndarray] = {}
+        protected_masks: dict[str, np.ndarray] = {}
+        protected_points: dict[str, np.ndarray] = {}
+        for label_name in valid_labels:
+            minimum, mask = resolved_regions[label_name]
+            protected_mask = np.zeros_like(mask, dtype=bool)
+            indices = (
+                protected_indices.get(label_name)
+                if protected_indices is not None
+                else None
+            )
+            protected_points[label_name] = (
+                np.asarray(indices, dtype=float)
+                if indices is not None and len(indices)
+                else np.empty((0, 3), dtype=float)
+            )
+            if indices is not None and len(indices):
+                local_indices = np.asarray(indices, dtype=int) - minimum
+                valid = np.all(
+                    (local_indices >= 0)
+                    & (local_indices < np.asarray(mask.shape)),
+                    axis=1,
+                )
+                if np.any(valid):
+                    protected_mask[
+                        tuple(local_indices[valid].T)
+                    ] = True
+            protected_masks[label_name] = protected_mask
         for label_name in valid_labels:
             minimum, mask = resolved_regions[label_name]
             mask_indices = np.argwhere(mask)
@@ -2044,6 +2104,10 @@ class LocalizationStage(BaseStage):
             centroids[label_name] = minimum + mask_indices.mean(axis=0)
 
         collided_labels: set[str] = set()
+        separating_planes: dict[
+            tuple[str, str],
+            tuple[np.ndarray, float],
+        ] = {}
         for left_index, left_label in enumerate(valid_labels):
             left_minimum, left_mask = resolved_regions[left_label]
             left_maximum = left_minimum + np.asarray(left_mask.shape)
@@ -2075,6 +2139,20 @@ class LocalizationStage(BaseStage):
                 )
                 if overlap_voxel_count == 0:
                     continue
+                left_points = protected_points[left_label]
+                right_points = protected_points[right_label]
+                if len(left_points) and len(right_points):
+                    separating_plane = cls._sagittal_body_separating_plane(
+                        left_points,
+                        right_points,
+                        voxel_spacing_zyx=voxel_spacing_zyx,
+                    )
+                    if separating_plane is None:
+                        collided_labels.update((left_label, right_label))
+                    else:
+                        separating_planes[(left_label, right_label)] = (
+                            separating_plane
+                        )
                 left_overlap_fraction = (
                     overlap_voxel_count / voxel_counts[left_label]
                 )
@@ -2084,7 +2162,20 @@ class LocalizationStage(BaseStage):
                 if max(left_overlap_fraction, right_overlap_fraction) > (
                     maximum_resolvable_overlap_fraction
                 ):
-                    collided_labels.update((left_label, right_label))
+                    protected_overlap = int(
+                        np.count_nonzero(
+                            protected_masks[left_label][left_slices]
+                            & protected_masks[right_label][right_slices]
+                        )
+                    )
+                    # 外包络变大后，相邻椎体的规则化空间可能大范围相交，
+                    # 只要两者主体本身不相交，就继续拆分外部重叠；只有主体
+                    # 真的相交，或调用方没有主体保护信息时，才按碰撞整体失效。
+                    if (
+                        protected_indices is None
+                        or protected_overlap > 0
+                    ):
+                        collided_labels.update((left_label, right_label))
         for label_name in collided_labels:
             resolved_regions[label_name] = None
 
@@ -2119,29 +2210,62 @@ class LocalizationStage(BaseStage):
                 )
                 left_overlap = left_mask[left_slices]
                 right_overlap = right_mask[right_slices]
+                left_protected = protected_masks[left_label][left_slices]
+                right_protected = protected_masks[right_label][right_slices]
                 overlap_indices = np.argwhere(left_overlap & right_overlap)
                 if len(overlap_indices) == 0:
                     continue
 
                 global_overlap_indices = overlap_minimum + overlap_indices
-                left_distances = np.sum(
-                    (global_overlap_indices - centroids[left_label]) ** 2,
-                    axis=1,
+                separating_plane = separating_planes.get(
+                    (left_label, right_label)
                 )
-                right_distances = np.sum(
-                    (global_overlap_indices - centroids[right_label]) ** 2,
-                    axis=1,
-                )
-                assign_to_left = left_distances < right_distances
-                equal_distances = np.isclose(
-                    left_distances,
-                    right_distances,
-                    rtol=1e-12,
-                    atol=1e-12,
-                )
-                assign_to_left[equal_distances] = left_label < right_label
-                remove_from_left = ~assign_to_left
-                remove_from_right = assign_to_left
+                if separating_plane is not None:
+                    plane_normal, plane_offset = separating_plane
+                    spacing = cls._normalized_voxel_spacing_zyx(
+                        voxel_spacing_zyx,
+                    )
+                    sagittal_points = (
+                        global_overlap_indices[:, :2].astype(float)
+                        * spacing[:2]
+                    )
+                    plane_values = sagittal_points @ plane_normal
+                    assign_to_left = plane_values <= plane_offset
+                else:
+                    left_distances = np.sum(
+                        (global_overlap_indices - centroids[left_label]) ** 2,
+                        axis=1,
+                    )
+                    right_distances = np.sum(
+                        (global_overlap_indices - centroids[right_label]) ** 2,
+                        axis=1,
+                    )
+                    assign_to_left = left_distances < right_distances
+                    equal_distances = np.isclose(
+                        left_distances,
+                        right_distances,
+                        rtol=1e-12,
+                        atol=1e-12,
+                    )
+                    assign_to_left[equal_distances] = left_label < right_label
+                    left_is_protected = left_protected[
+                        tuple(overlap_indices.T)
+                    ]
+                    right_is_protected = right_protected[
+                        tuple(overlap_indices.T)
+                    ]
+                    assign_to_left[
+                        left_is_protected & ~right_is_protected
+                    ] = True
+                    assign_to_left[
+                        ~left_is_protected & right_is_protected
+                    ] = False
+                left_is_protected = left_protected[tuple(overlap_indices.T)]
+                right_is_protected = right_protected[
+                    tuple(overlap_indices.T)
+                ]
+                remove_from_left = ~assign_to_left & ~left_is_protected
+                remove_from_right = assign_to_left & ~right_is_protected
                 if np.any(remove_from_left):
                     indices = overlap_indices[remove_from_left]
                     left_overlap[tuple(indices.T)] = False
@@ -2149,6 +2273,87 @@ class LocalizationStage(BaseStage):
                     indices = overlap_indices[remove_from_right]
                     right_overlap[tuple(indices.T)] = False
         return resolved_regions
+
+    @staticmethod
+    def _normalized_voxel_spacing_zyx(
+        voxel_spacing_zyx: np.ndarray | None,
+    ) -> np.ndarray:
+        """返回可用于索引点物理缩放的 zyx spacing。"""
+
+        if voxel_spacing_zyx is None:
+            return np.ones(3, dtype=float)
+        spacing = np.asarray(voxel_spacing_zyx, dtype=float)
+        if (
+            spacing.shape != (3,)
+            or np.any(~np.isfinite(spacing))
+            or np.any(spacing <= 0.0)
+        ):
+            return np.ones(3, dtype=float)
+        return spacing
+
+    @classmethod
+    def _sagittal_body_separating_plane(
+        cls,
+        left_indices: np.ndarray,
+        right_indices: np.ndarray,
+        voxel_spacing_zyx: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, float] | None:
+        """求完整保留两组主体投影的最大间隔矢状分隔直线。"""
+
+        left = np.asarray(left_indices, dtype=float)
+        right = np.asarray(right_indices, dtype=float)
+        if (
+            left.ndim != 2
+            or right.ndim != 2
+            or left.shape[1] < 2
+            or right.shape[1] < 2
+            or len(left) == 0
+            or len(right) == 0
+        ):
+            return None
+        spacing = cls._normalized_voxel_spacing_zyx(voxel_spacing_zyx)
+        left_points = np.unique(left[:, :2] * spacing[:2], axis=0)
+        right_points = np.unique(right[:, :2] * spacing[:2], axis=0)
+        left_hull = cls._convex_hull_2d(left_points)
+        right_hull = cls._convex_hull_2d(right_points)
+        center_direction = right_points.mean(axis=0) - left_points.mean(axis=0)
+        center_length = float(np.linalg.norm(center_direction))
+        if center_length <= 1e-9:
+            return None
+
+        candidate_normals: list[np.ndarray] = [
+            center_direction / center_length,
+        ]
+        for hull in (left_hull, right_hull):
+            if len(hull) < 2:
+                continue
+            for start, end in zip(hull, np.roll(hull, -1, axis=0)):
+                edge = end - start
+                edge_length = float(np.linalg.norm(edge))
+                if edge_length <= 1e-9:
+                    continue
+                candidate_normals.append(
+                    np.asarray([edge[1], -edge[0]], dtype=float)
+                    / edge_length
+                )
+
+        best: tuple[float, np.ndarray, float] | None = None
+        for candidate in candidate_normals:
+            normal = np.asarray(candidate, dtype=float)
+            if float(normal @ center_direction) < 0.0:
+                normal = -normal
+            left_maximum = float(np.max(left_points @ normal))
+            right_minimum = float(np.min(right_points @ normal))
+            gap = right_minimum - left_maximum
+            if best is None or gap > best[0]:
+                best = (
+                    gap,
+                    normal,
+                    (left_maximum + right_minimum) / 2.0,
+                )
+        if best is None or best[0] <= 1e-6:
+            return None
+        return best[1], best[2]
 
     @classmethod
     def _build_spine_body_geometry(
@@ -2568,6 +2773,7 @@ class LocalizationStage(BaseStage):
             retained_projection_mask = (
                 LocalizationStage._retained_sagittal_projection_mask_by_lr_support(
                     indices_zyx,
+                    retain_aligned_terminal_extensions=True,
                 )
             )
             if np.count_nonzero(retained_projection_mask) >= 4:
@@ -2580,12 +2786,24 @@ class LocalizationStage(BaseStage):
         quad = LocalizationStage._simplify_hull_to_quadrilateral(hull)
         if quad is None:
             return None
+        quad = LocalizationStage._expand_quadrilateral_to_contain_points(
+            quad,
+            sagittal_points,
+        )
+        if quad is None:
+            quad = LocalizationStage._oriented_enclosing_quadrilateral(
+                sagittal_points,
+                reference_quadrilateral=hull,
+            )
+            if quad is None:
+                return None
         return center, sagittal_axes, quad
 
     @staticmethod
     def _retained_sagittal_projection_mask_by_lr_support(
         indices_zyx: np.ndarray,
         minimum_support_fraction: float = 0.35,
+        retain_aligned_terminal_extensions: bool = False,
     ) -> np.ndarray:
         """只让 LR 支撑足够的 Y/Z 投影点参与矢状四边形拟合。"""
 
@@ -2679,12 +2897,55 @@ class LocalizationStage(BaseStage):
         if np.count_nonzero(selected_members) < 4:
             return np.ones(len(indices_zyx), dtype=bool)
 
+        selected_components = {selected_component}
+        if retain_aligned_terminal_extensions:
+            # 只补回紧邻主投影上下端、AP 高度重合且自身左右支撑稳定的块。
+            # 远端附件即使投影面积较大，也不会重新进入四边形拟合。
+            main_points = supported_points[selected_members]
+            main_support = int(np.sum(
+                support_counts[supported_indices[selected_members]],
+            ))
+            main_minimum = main_points.min(axis=0)
+            main_maximum = main_points.max(axis=0)
+            main_point_count = int(len(main_points))
+
+            for component_id in np.unique(component_ids):
+                component_id = int(component_id)
+                if component_id <= 0 or component_id == selected_component:
+                    continue
+                component_members = component_ids == component_id
+                component_points = supported_points[component_members]
+                component_support = int(np.sum(
+                    support_counts[supported_indices[component_members]],
+                ))
+                if (
+                    len(component_points)
+                    < main_point_count
+                    * _TERMINAL_EXTENSION_MINIMUM_COMPONENT_FRACTION
+                    or component_support
+                    < main_support
+                    * _TERMINAL_EXTENSION_MINIMUM_COMPONENT_FRACTION
+                ):
+                    continue
+
+                component_minimum = component_points.min(axis=0)
+                component_maximum = component_points.max(axis=0)
+                if not LocalizationStage._is_aligned_terminal_component_bbox(
+                    main_minimum,
+                    main_maximum,
+                    component_minimum,
+                    component_maximum,
+                    transverse_axes=(1,),
+                ):
+                    continue
+                selected_components.add(component_id)
+
         selected_projection_points = np.zeros(
             len(projection_points),
             dtype=bool,
         )
         selected_projection_points[
-            supported_indices[selected_members]
+            supported_indices[np.isin(component_ids, list(selected_components))]
         ] = True
         retained_mask = selected_projection_points[inverse]
         return retained_mask
@@ -2829,7 +3090,7 @@ class LocalizationStage(BaseStage):
             np.ndarray,
         ] | None = None,
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        """在主体包围盒内栅格化棱柱，返回最小 zyx 索引和局部 mask。"""
+        """在四棱柱自身外接范围内栅格化，返回局部 zyx mask。"""
 
         geometry = sagittal_geometry
         if geometry is None:
@@ -2845,8 +3106,31 @@ class LocalizationStage(BaseStage):
         origin = np.asarray(image.GetOrigin(), dtype=float)
         direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
 
-        minimum = body_indices.min(axis=0)
-        maximum = body_indices.max(axis=0)
+        body_xyz = body_indices[:, [2, 1, 0]].astype(float)
+        body_points = origin + (body_xyz * spacing) @ direction.T
+        left_right_axis = direction[:, 0]
+        body_lr = (body_points - center) @ left_right_axis
+        lr_limits = (float(np.min(body_lr)), float(np.max(body_lr)))
+
+        sagittal_corners = center + np.asarray(quad, dtype=float) @ (
+            np.asarray(sagittal_axes, dtype=float).T
+        )
+        prism_corners = np.asarray([
+            sagittal_corner + left_right_axis * lr_limit
+            for sagittal_corner in sagittal_corners
+            for lr_limit in lr_limits
+        ])
+        continuous_xyz = ((prism_corners - origin) @ direction) / spacing
+        minimum_xyz = np.floor(np.min(continuous_xyz, axis=0)).astype(int)
+        maximum_xyz = np.ceil(np.max(continuous_xyz, axis=0)).astype(int)
+        image_maximum_xyz = np.asarray(image.GetSize(), dtype=int) - 1
+        minimum_xyz = np.maximum(minimum_xyz, 0)
+        maximum_xyz = np.minimum(maximum_xyz, image_maximum_xyz)
+        if np.any(minimum_xyz > maximum_xyz):
+            return None
+        minimum = minimum_xyz[::-1]
+        maximum = maximum_xyz[::-1]
+
         grids = np.meshgrid(
             np.arange(minimum[0], maximum[0] + 1),
             np.arange(minimum[1], maximum[1] + 1),
@@ -2857,10 +3141,6 @@ class LocalizationStage(BaseStage):
         candidates_xyz = candidates_zyx[:, [2, 1, 0]].astype(float)
         candidate_points = origin + (candidates_xyz * spacing) @ direction.T
 
-        body_xyz = body_indices[:, [2, 1, 0]].astype(float)
-        body_points = origin + (body_xyz * spacing) @ direction.T
-        left_right_axis = direction[:, 0]
-        body_lr = (body_points - center) @ left_right_axis
         candidate_relative = candidate_points - center
         candidate_lr = candidate_relative @ left_right_axis
         candidate_sagittal = candidate_relative @ sagittal_axes
@@ -2869,8 +3149,8 @@ class LocalizationStage(BaseStage):
             1e-3,
         )
         selected = (
-            (candidate_lr >= float(np.min(body_lr)) - tolerance)
-            & (candidate_lr <= float(np.max(body_lr)) + tolerance)
+            (candidate_lr >= lr_limits[0] - tolerance)
+            & (candidate_lr <= lr_limits[1] + tolerance)
             & LocalizationStage._points_inside_convex_polygon(
                 candidate_sagittal,
                 quad,
@@ -2890,7 +3170,14 @@ class LocalizationStage(BaseStage):
             selected_local_zyx[:, 1],
             selected_local_zyx[:, 2],
         ] = True
-        return minimum, local_mask
+        occupied = np.argwhere(local_mask)
+        occupied_minimum = occupied.min(axis=0)
+        occupied_maximum = occupied.max(axis=0)
+        occupied_slices = tuple(
+            slice(int(start), int(end) + 1)
+            for start, end in zip(occupied_minimum, occupied_maximum)
+        )
+        return minimum + occupied_minimum, local_mask[occupied_slices]
 
     @staticmethod
     def _convex_hull_2d(points: np.ndarray) -> np.ndarray:
@@ -2952,6 +3239,132 @@ class LocalizationStage(BaseStage):
         if abs(LocalizationStage._signed_area_2d(quad)) <= 1e-6:
             return None
         return quad
+
+    @staticmethod
+    def _expand_quadrilateral_to_contain_points(
+        quadrilateral: np.ndarray,
+        points: np.ndarray,
+        tolerance: float = 1e-6,
+    ) -> np.ndarray | None:
+        """沿四条外法向扩展四边形，保证投影点全部位于其内部。"""
+
+        quad = np.asarray(quadrilateral, dtype=float)
+        points = np.asarray(points, dtype=float)
+        if quad.shape != (4, 2) or points.ndim != 2 or points.shape[1] != 2:
+            return None
+        signed_area = LocalizationStage._signed_area_2d(quad)
+        if abs(signed_area) <= 1e-6 or len(points) == 0:
+            return None
+
+        orientation = 1.0 if signed_area > 0.0 else -1.0
+        shifted_lines: list[tuple[np.ndarray, np.ndarray]] = []
+        for index in range(4):
+            start = quad[index]
+            end = quad[(index + 1) % 4]
+            edge = end - start
+            edge_length = float(np.linalg.norm(edge))
+            if not math.isfinite(edge_length) or edge_length <= 1e-9:
+                return None
+            signed_distances = orientation * (
+                edge[0] * (points[:, 1] - start[1])
+                - edge[1] * (points[:, 0] - start[0])
+            ) / edge_length
+            outward_distance = max(
+                0.0,
+                float(-np.min(signed_distances)) + float(tolerance),
+            )
+            outward_normal = np.asarray(
+                [orientation * edge[1], -orientation * edge[0]],
+                dtype=float,
+            ) / edge_length
+            shifted_lines.append((
+                start + outward_normal * outward_distance,
+                edge,
+            ))
+
+        expanded_vertices: list[np.ndarray] = []
+        for index in range(4):
+            previous_start, previous_direction = shifted_lines[index - 1]
+            current_start, current_direction = shifted_lines[index]
+            denominator = (
+                previous_direction[0] * current_direction[1]
+                - previous_direction[1] * current_direction[0]
+            )
+            if abs(float(denominator)) <= 1e-9:
+                return None
+            delta = current_start - previous_start
+            parameter = (
+                delta[0] * current_direction[1]
+                - delta[1] * current_direction[0]
+            ) / denominator
+            expanded_vertices.append(
+                previous_start + previous_direction * parameter,
+            )
+
+        expanded = np.asarray(expanded_vertices, dtype=float)
+        if np.all(
+            LocalizationStage._points_inside_convex_polygon(
+                points,
+                expanded,
+                tolerance=max(float(tolerance), 1e-6),
+            )
+        ):
+            return expanded
+        return None
+
+    @staticmethod
+    def _oriented_enclosing_quadrilateral(
+        points: np.ndarray,
+        reference_quadrilateral: np.ndarray,
+    ) -> np.ndarray | None:
+        """沿主体主边方向生成紧包络，保留椎体自身倾斜角度。"""
+
+        points = np.asarray(points, dtype=float)
+        reference = np.asarray(reference_quadrilateral, dtype=float)
+        if (
+            points.ndim != 2
+            or points.shape[1] != 2
+            or len(points) == 0
+            or reference.shape != (4, 2)
+        ):
+            return None
+
+        edges = np.roll(reference, -1, axis=0) - reference
+        lengths = np.linalg.norm(edges, axis=1)
+        if np.any(~np.isfinite(lengths)) or np.any(lengths <= 1e-9):
+            return None
+        candidate_indices = sorted(
+            range(len(edges)),
+            key=lambda index: float(lengths[index]),
+            reverse=True,
+        )
+        first_index = candidate_indices[0]
+        for index in candidate_indices:
+            edge = edges[index]
+            if (
+                abs(float(edge[0])) > 1e-6
+                and abs(float(edge[1])) > 1e-6
+                and float(lengths[index]) >= float(lengths[first_index]) * 0.5
+            ):
+                first_index = index
+                break
+        axis = edges[first_index] / float(lengths[first_index])
+        transverse_axis = np.asarray([-axis[1], axis[0]], dtype=float)
+
+        projections = np.column_stack((
+            points @ axis,
+            points @ transverse_axis,
+        ))
+        minimum = np.min(projections, axis=0)
+        maximum = np.max(projections, axis=0)
+        if np.any(maximum - minimum <= 1e-9):
+            return None
+        return np.asarray([
+            axis * minimum[0] + transverse_axis * minimum[1],
+            axis * maximum[0] + transverse_axis * minimum[1],
+            axis * maximum[0] + transverse_axis * maximum[1],
+            axis * minimum[0] + transverse_axis * maximum[1],
+        ], dtype=float)
 
     @staticmethod
     def _signed_area_2d(points: np.ndarray) -> float:
@@ -3017,17 +3430,9 @@ class LocalizationStage(BaseStage):
             return None
 
         center_x = float(np.median(indices[:, 2]))
-        anterior_y_limit = LocalizationStage._estimate_anterior_y_limit(mask)
         body_mask = np.zeros_like(mask, dtype=bool)
         for z_index in np.unique(indices[:, 0]):
             slice_mask = mask[int(z_index), :, :]
-            y_indices = np.flatnonzero(slice_mask.any(axis=1))
-            if (
-                anterior_y_limit is not None
-                and y_indices.size > 0
-                and float(y_indices.min()) > anterior_y_limit
-            ):
-                continue
             row_widths = LocalizationStage._slice_row_widths(slice_mask)
             row_run_counts = LocalizationStage._slice_row_run_counts(slice_mask)
             if not row_widths:
@@ -3066,8 +3471,16 @@ class LocalizationStage(BaseStage):
 
         if not np.any(body_mask):
             return body_mask
-        body_mask = LocalizationStage._retain_largest_3d_component(body_mask)
-        return LocalizationStage._trim_lr_edge_columns_by_si_height(body_mask)
+        body_mask = (
+            LocalizationStage._retain_main_3d_component_with_terminal_extensions(
+                body_mask,
+            )
+        )
+        body_mask = LocalizationStage._trim_thin_terminal_si_slices(body_mask)
+        body_mask = LocalizationStage._trim_lr_edge_columns_by_si_height(body_mask)
+        # 横向断崖裁剪后，末端残留的相对支撑度会重新下降；再做一次端部
+        # 检查，处理“薄片-小回增-薄片”这类分段残留。
+        return LocalizationStage._trim_thin_terminal_si_slices(body_mask)
 
     @staticmethod
     def _s1_body_candidate_mask(
@@ -3215,6 +3628,172 @@ class LocalizationStage(BaseStage):
         return component_array == largest_component
 
     @staticmethod
+    def _is_aligned_terminal_component_bbox(
+        main_minimum: np.ndarray,
+        main_maximum: np.ndarray,
+        component_minimum: np.ndarray,
+        component_maximum: np.ndarray,
+        *,
+        transverse_axes: tuple[int, ...],
+        maximum_si_gap: int = _TERMINAL_EXTENSION_MAXIMUM_SI_GAP,
+        minimum_transverse_overlap_fraction: float = (
+            _TERMINAL_EXTENSION_MINIMUM_TRANSVERSE_OVERLAP_FRACTION
+        ),
+        minimum_si_span: int = _TERMINAL_EXTENSION_MINIMUM_SI_SPAN,
+    ) -> bool:
+        """判断候选包围盒是否为紧邻主体头脚端且横向对齐的延伸段。"""
+
+        main_minimum = np.asarray(main_minimum, dtype=int)
+        main_maximum = np.asarray(main_maximum, dtype=int)
+        component_minimum = np.asarray(component_minimum, dtype=int)
+        component_maximum = np.asarray(component_maximum, dtype=int)
+        if not (
+            main_minimum.shape
+            == main_maximum.shape
+            == component_minimum.shape
+            == component_maximum.shape
+        ):
+            return False
+
+        component_si_span = int(
+            component_maximum[0] - component_minimum[0] + 1
+        )
+        if component_si_span < max(1, int(minimum_si_span)):
+            return False
+        if component_maximum[0] < main_minimum[0]:
+            si_gap = int(main_minimum[0] - component_maximum[0] - 1)
+        elif component_minimum[0] > main_maximum[0]:
+            si_gap = int(component_minimum[0] - main_maximum[0] - 1)
+        else:
+            return False
+        if si_gap > max(0, int(maximum_si_gap)):
+            return False
+
+        minimum_overlap = min(
+            1.0,
+            max(0.0, float(minimum_transverse_overlap_fraction)),
+        )
+        for axis in transverse_axes:
+            if axis <= 0 or axis >= len(main_minimum):
+                return False
+            overlap = max(
+                0,
+                int(
+                    min(main_maximum[axis], component_maximum[axis])
+                    - max(main_minimum[axis], component_minimum[axis])
+                    + 1
+                ),
+            )
+            main_span = int(main_maximum[axis] - main_minimum[axis] + 1)
+            component_span = int(
+                component_maximum[axis] - component_minimum[axis] + 1
+            )
+            if min(main_span, component_span) <= 0:
+                return False
+            if overlap / float(min(main_span, component_span)) < minimum_overlap:
+                return False
+        return bool(transverse_axes)
+
+    @staticmethod
+    def _retain_main_3d_component_with_terminal_extensions(
+        mask: np.ndarray,
+        minimum_component_fraction: float = (
+            _TERMINAL_EXTENSION_MINIMUM_COMPONENT_FRACTION
+        ),
+        maximum_si_gap: int = _TERMINAL_EXTENSION_MAXIMUM_SI_GAP,
+        minimum_transverse_overlap_fraction: float = (
+            _TERMINAL_EXTENSION_MINIMUM_TRANSVERSE_OVERLAP_FRACTION
+        ),
+        minimum_si_span: int = _TERMINAL_EXTENSION_MINIMUM_SI_SPAN,
+    ) -> np.ndarray:
+        """保留主体及可信的头脚端断连段，避免薄断层截短椎体。"""
+
+        component_image = sitk.ConnectedComponent(
+            sitk.GetImageFromArray(mask.astype(np.uint8)),
+            True,
+        )
+        component_array = sitk.GetArrayFromImage(component_image)
+        component_sizes = np.bincount(component_array.ravel())
+        if component_sizes.size <= 1:
+            return mask
+
+        largest_component = int(np.argmax(component_sizes[1:]) + 1)
+        largest_size = int(component_sizes[largest_component])
+        main_indices = np.argwhere(component_array == largest_component)
+        if main_indices.size == 0:
+            return mask
+        main_minimum = main_indices.min(axis=0)
+        main_maximum = main_indices.max(axis=0)
+
+        retained_components = [largest_component]
+        minimum_fraction = max(0.0, float(minimum_component_fraction))
+
+        for component_id in range(1, int(component_sizes.size)):
+            if component_id == largest_component:
+                continue
+            component_size = int(component_sizes[component_id])
+            if component_size < largest_size * minimum_fraction:
+                continue
+
+            component_indices = np.argwhere(component_array == component_id)
+            component_minimum = component_indices.min(axis=0)
+            component_maximum = component_indices.max(axis=0)
+            if not LocalizationStage._is_aligned_terminal_component_bbox(
+                main_minimum,
+                main_maximum,
+                component_minimum,
+                component_maximum,
+                transverse_axes=(1, 2),
+                maximum_si_gap=maximum_si_gap,
+                minimum_transverse_overlap_fraction=(
+                    minimum_transverse_overlap_fraction
+                ),
+                minimum_si_span=minimum_si_span,
+            ):
+                continue
+            retained_components.append(component_id)
+
+        return np.isin(component_array, retained_components)
+
+    @staticmethod
+    def _trim_thin_terminal_si_slices(
+        mask: np.ndarray,
+        minimum_support_fraction: float = 0.10,
+        minimum_terminal_slice_count: int = 2,
+    ) -> np.ndarray:
+        """裁掉轴向两端连续的低支撑薄片，避免撑大主体外包络。"""
+
+        if mask.ndim != 3:
+            return mask
+        occupied = np.flatnonzero(mask.any(axis=(1, 2)))
+        if occupied.size < 4:
+            return mask
+        slice_counts = mask.sum(axis=(1, 2)).astype(float)
+        maximum_support = float(np.max(slice_counts[occupied]))
+        if maximum_support <= 0.0:
+            return mask
+        support_fraction = min(
+            1.0,
+            max(0.0, float(minimum_support_fraction)),
+        )
+        minimum_support = max(
+            2.0,
+            maximum_support * support_fraction,
+        )
+        trimmed = mask.copy()
+        for direction in (1, -1):
+            ordered = occupied if direction == 1 else occupied[::-1]
+            low_support_indices: list[int] = []
+            for z_index in ordered:
+                if slice_counts[int(z_index)] >= minimum_support:
+                    break
+                low_support_indices.append(int(z_index))
+            if len(low_support_indices) < int(minimum_terminal_slice_count):
+                continue
+            trimmed[low_support_indices, :, :] = False
+        return trimmed
+
+    @staticmethod
     def _discard_small_3d_components(
         mask: np.ndarray,
         minimum_largest_fraction: float = 0.2,
@@ -3333,29 +3912,6 @@ class LocalizationStage(BaseStage):
             trimmed[:, :, :trimmed_minimum] = False
             trimmed[:, :, trimmed_maximum + 1:] = False
         return trimmed
-
-    @staticmethod
-    def _estimate_anterior_y_limit(mask: np.ndarray) -> float | None:
-        """从各轴向层最前端位置的明显分簇估计主体层的 AP 上限。"""
-
-        slice_y_minima: list[int] = []
-        for z_index in np.unique(np.argwhere(mask)[:, 0]):
-            y_indices = np.flatnonzero(mask[int(z_index), :, :].any(axis=1))
-            if y_indices.size > 0:
-                slice_y_minima.append(int(y_indices.min()))
-        if len(slice_y_minima) < 4:
-            return None
-
-        sorted_minima = np.sort(np.asarray(slice_y_minima, dtype=int))
-        gaps = np.diff(sorted_minima)
-        if gaps.size == 0:
-            return None
-        split_index = int(np.argmax(gaps))
-        if int(gaps[split_index]) < 4:
-            return None
-        return float(
-            (sorted_minima[split_index] + sorted_minima[split_index + 1]) / 2.0
-        )
 
     @staticmethod
     def _slice_row_widths(slice_mask: np.ndarray) -> dict[int, int]:

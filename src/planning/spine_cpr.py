@@ -88,15 +88,25 @@ def build_spine_sagittal_cpr_plans(
     source_labels = [label_name for label_name, _ in centers]
     annotation_centers = [center for _, center in centers]
     center = _midpoint(annotation_centers)
+    curve_spacing = _minimum_image_spacing(image_info)
+    longitudinal_axis = normalize_vector(
+        image_axis_direction(image_info, 2)
+    )
+    corrected_annotation_centers = _correct_reversing_cpr_centroids(
+        annotation_centers,
+        curve_spacing,
+        longitudinal_axis,
+    )
     anchor_points = _build_annotation_centroid_path(
         localization_result,
-        centers,
+        list(zip(source_labels, corrected_annotation_centers)),
     )
     curve_points = _smooth_cpr_centroid_path_with_straight_endpoints(
         anchor_points,
-        annotation_centers,
-        _minimum_image_spacing(image_info),
-        normalize_vector(image_axis_direction(image_info, 2)),
+        corrected_annotation_centers,
+        curve_spacing,
+        longitudinal_axis,
+        centroids_precorrected=True,
     )
     curve_points = _extend_curve_endpoints_to_terminal_raw_labels(
         localization_result,
@@ -1663,6 +1673,60 @@ def _correct_reversing_cpr_centroids(
         if float(residuals[index] @ reference) < 0.0:
             corrected[index] = expected[index]
 
+    terminal_side_index = len(arrays) - 2
+    previous_index = terminal_side_index - 1
+    previous_previous_index = previous_index - 1
+    if (
+        bool(valid[terminal_side_index])
+        and bool(valid[previous_index])
+        and bool(valid[previous_previous_index])
+        and np.allclose(
+            corrected[terminal_side_index],
+            arrays[terminal_side_index],
+            rtol=0.0,
+            atol=1e-9,
+        )
+        and float(
+            residuals[terminal_side_index] @ residuals[previous_index]
+        ) > 0.0
+        and _raw_path_reverses_across_residual(
+            arrays,
+            residuals,
+            terminal_side_index,
+        )
+    ):
+        residual_norm = float(np.linalg.norm(residuals[terminal_side_index]))
+        previous_norm = float(np.linalg.norm(residuals[previous_index]))
+        previous_previous_norm = float(
+            np.linalg.norm(residuals[previous_previous_index])
+        )
+        maximum_residual = previous_norm * 1.5
+        if (
+            previous_previous_norm <= previous_norm
+            and residual_norm > previous_norm * 2.0
+            and maximum_residual > 1e-6
+        ):
+            candidate = (
+                expected[terminal_side_index]
+                + residuals[terminal_side_index]
+                * (maximum_residual / residual_norm)
+            )
+            adjustment = candidate - arrays[terminal_side_index]
+            adjustment_length = float(np.linalg.norm(adjustment))
+            adjacent_spacing = min(
+                float(np.linalg.norm(
+                    arrays[terminal_side_index]
+                    - arrays[terminal_side_index - 1]
+                )),
+                float(np.linalg.norm(
+                    arrays[terminal_side_index + 1]
+                    - arrays[terminal_side_index]
+                )),
+            )
+            maximum_adjustment = adjacent_spacing * 0.1
+            if adjustment_length <= maximum_adjustment:
+                corrected[terminal_side_index] = candidate
+
     return [
         Point3D(float(point[0]), float(point[1]), float(point[2]))
         for point in corrected
@@ -1782,6 +1846,8 @@ def _smooth_cpr_anchor_path(
     anchor_points: List[Point3D],
     spacing_mm: float,
     longitudinal_axis: Point3D | None = None,
+    start_tangent: Point3D | None = None,
+    end_tangent: Point3D | None = None,
 ) -> List[Point3D]:
     """在所有端面/质心锚点之间生成受控圆滑曲线。
 
@@ -1829,6 +1895,21 @@ def _smooth_cpr_anchor_path(
     for index in range(1, len(arrays) - 1):
         delta = parameters[index + 1] - parameters[index - 1]
         tangents[index] = (arrays[index + 1] - arrays[index - 1]) / max(delta, 1e-6)
+
+    for tangent_index, tangent_override in (
+        (0, start_tangent),
+        (len(arrays) - 1, end_tangent),
+    ):
+        if tangent_override is None:
+            continue
+        override = np.asarray([
+            tangent_override.x,
+            tangent_override.y,
+            tangent_override.z,
+        ], dtype=float)
+        override_length = float(np.linalg.norm(override))
+        if override_length > 1e-6:
+            tangents[tangent_index] = override / override_length
 
     # Keep cubic control points inside the neighboring chord scale. This rounds
     # each corner without pulling a nearby centroid toward a global arc.
@@ -1888,18 +1969,41 @@ def _smooth_cpr_centroid_path_with_straight_endpoints(
     centroid_points: List[Point3D],
     spacing_mm: float,
     longitudinal_axis: Point3D,
+    *,
+    centroids_precorrected: bool = False,
 ) -> List[Point3D]:
     """平滑质心链，并把首末端面作为不会过冲的直线端段拼接。"""
 
-    corrected_centroid_points = _correct_reversing_cpr_centroids(
-        centroid_points,
-        spacing_mm,
-        longitudinal_axis,
+    corrected_centroid_points = (
+        list(centroid_points)
+        if centroids_precorrected
+        else _correct_reversing_cpr_centroids(
+            centroid_points,
+            spacing_mm,
+            longitudinal_axis,
+        )
     )
+    start_tangent = None
+    end_tangent = None
+    if anchor_points and corrected_centroid_points:
+        start_delta = subtract_points(
+            corrected_centroid_points[0],
+            anchor_points[0],
+        )
+        if vector_length(start_delta) > 1e-6:
+            start_tangent = start_delta
+        end_delta = subtract_points(
+            anchor_points[-1],
+            corrected_centroid_points[-1],
+        )
+        if vector_length(end_delta) > 1e-6:
+            end_tangent = end_delta
     curve_points = _smooth_cpr_anchor_path(
         corrected_centroid_points,
         spacing_mm,
         longitudinal_axis,
+        start_tangent=start_tangent,
+        end_tangent=end_tangent,
     )
     if not corrected_centroid_points:
         return curve_points

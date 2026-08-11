@@ -11,7 +11,10 @@ from src.planning.spine_cpr import (
     build_spine_sagittal_cpr_plans,
     configured_spine_cpr_labels,
 )
-from src.planning.spine_common import resolve_spine_interspace_segments
+from src.planning.spine_common import (
+    resolve_spine_interspace_segments,
+    resolve_spine_localizer_reference,
+)
 from src.planning.straight import (
     CutSegment,
     build_straight_slice_plan,
@@ -64,6 +67,10 @@ class LumbarWholeRangePlanner:
 
         plans = []
         warnings = []
+        localizer_reference = resolve_spine_localizer_reference(
+            localization_result,
+            LUMBAR_LABELS,
+        )
         cpr_labels = configured_spine_cpr_labels(
             request.body_part.value,
             localization_result,
@@ -86,8 +93,10 @@ class LumbarWholeRangePlanner:
                 localization_result=localization_result,
             )
             if plane_config.plane == PlaneTypeEnum.矢状位:
-                # 矢状位切片保持旧的直线 MPR，定位线画回冠状位背景。
+                # 矢状位切片保持旧的直线 MPR；定位图单独选择穿过腰椎主体的
+                # 冠状层，不能复用整平面成片为了显示覆盖而移动后的中心。
                 plan.localizer_plane = PlaneTypeEnum.冠状位.value
+                plan.localizer_reference = localizer_reference
             plans.append(plan)
 
         return PlanningResult(
@@ -110,6 +119,10 @@ class LumbarInterspacePlanner:
         """逐个解析椎间区间，并通过通用直线构造器生成横状位计划。"""
 
         plans = []
+        localizer_reference = resolve_spine_localizer_reference(
+            localization_result,
+            LUMBAR_LABELS,
+        )
         segments, warnings = resolve_lumbar_interspace_segments(
             localization_result,
         )
@@ -125,16 +138,18 @@ class LumbarInterspacePlanner:
                     plane_config.plane,
                     localization_result["image"],
                 )
-                plans.append(
-                    build_straight_slice_plan(
-                        request=request,
-                        cut_mode="interspace",
-                        plane_config=plane_config,
-                        localization_result=localization_result,
-                        segment=segment,
-                        frame=frame,
-                    )
+                plan = build_straight_slice_plan(
+                    request=request,
+                    cut_mode="interspace",
+                    plane_config=plane_config,
+                    localization_result=localization_result,
+                    segment=segment,
+                    frame=frame,
                 )
+                # 五个椎间计划只共享定位图固定层，各自的斜切中心和方向不变。
+                plan.localizer_plane = PlaneTypeEnum.矢状位.value
+                plan.localizer_reference = localizer_reference
+                plans.append(plan)
 
         return PlanningResult(
             plans=plans,

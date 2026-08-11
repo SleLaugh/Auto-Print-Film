@@ -325,6 +325,41 @@ class Stage7ReconstructionTest(unittest.TestCase):
         self.assertEqual(localizer.GetSize(), (8, 8))
         self.assertEqual(float(np.median(sitk.GetArrayFromImage(localizer))), 200.0)
 
+    def test_interval_localizers_with_different_slices_share_sagittal_background(self):
+        """不同椎间切面使用同一参考点时，应选中同一张原始矢状底图。"""
+
+        image_array = np.zeros((8, 8, 8), dtype=np.int16)
+        for x_index in range(8):
+            image_array[:, :, x_index] = x_index * 100
+        image = sitk.GetImageFromArray(image_array)
+
+        def plan(center_x, center_z):
+            return {
+                "plane": "横状位",
+                "localizer_plane": "矢状位",
+                "localizer_reference": {"x": 3.0, "y": 4.0, "z": 4.0},
+                "extent_mm": {"width": 6.0, "height": 6.0},
+                "slices": [{
+                    "index": 1,
+                    "center": {"x": center_x, "y": 4.0, "z": center_z},
+                    "normal": {"x": 0.0, "y": 0.0, "z": 1.0},
+                    "row_dir": {"x": 1.0, "y": 0.0, "z": 0.0},
+                    "col_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
+                }],
+            }
+
+        first = ReconstructionStage._build_plan_localizer(image, plan(1.0, 2.0))
+        second = ReconstructionStage._build_plan_localizer(image, plan(6.0, 6.0))
+
+        self.assertEqual(
+            float(np.median(sitk.GetArrayFromImage(first))),
+            300.0,
+        )
+        self.assertEqual(
+            float(np.median(sitk.GetArrayFromImage(second))),
+            300.0,
+        )
+
     def test_oblique_axial_plan_draws_sloped_line_on_localizer(self):
         """斜横状位计划应在定位图上显示与真实切片平面一致的斜线。"""
 

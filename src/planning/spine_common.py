@@ -102,8 +102,8 @@ def _bbox_head_foot_boundary_points(
     return second_point, first_point
 
 
-def _parse_physical_point(value: Any) -> Optional[Point3D]:
-    """解析一个包含 x/y/z 的有限物理点。"""
+def _parse_xyz_point(value: Any) -> Optional[Point3D]:
+    """解析一个包含有限 x/y/z 的点，坐标语义由调用方决定。"""
 
     if not isinstance(value, dict):
         return None
@@ -128,6 +128,145 @@ def _filtered_spine_annotations(localization_result: Dict[str, Any]) -> Dict[str
     return annotations
 
 
+def _parse_voxel_bbox(value: Any) -> Optional[Dict[str, float]]:
+    """解析一个有限且非反向的 x/y/z 体素包围盒。"""
+
+    if not isinstance(value, dict):
+        return None
+    try:
+        bbox = {
+            f"{axis}_{side}": float(value[f"{axis}_{side}"])
+            for axis in ("x", "y", "z")
+            for side in ("min", "max")
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(coordinate) for coordinate in bbox.values()):
+        return None
+    if any(
+        bbox[f"{axis}_min"] > bbox[f"{axis}_max"]
+        for axis in ("x", "y", "z")
+    ):
+        return None
+    return bbox
+
+
+def _voxel_point_or_bbox_center(
+    value: Any,
+    bbox: Dict[str, float],
+) -> Point3D:
+    """读取体素点；字段损坏时使用对应包围盒中心。"""
+
+    point = _parse_xyz_point(value)
+    if point is not None:
+        return point
+    return Point3D(*(
+        (bbox[f"{axis}_min"] + bbox[f"{axis}_max"]) / 2.0
+        for axis in ("x", "y", "z")
+    ))
+
+
+def _spine_label_voxel_geometry(
+    localization_result: Dict[str, Any],
+    label_name: str,
+) -> Optional[Tuple[Dict[str, float], Point3D]]:
+    """按过滤主体、四棱柱、全量标签顺序读取定位图选层几何。"""
+
+    annotation = _filtered_spine_annotations(localization_result).get(label_name)
+    if isinstance(annotation, dict) and annotation.get("found") is not False:
+        body_bbox = _parse_voxel_bbox(annotation.get("body_bbox"))
+        if body_bbox is not None:
+            return body_bbox, _voxel_point_or_bbox_center(
+                annotation.get("centroid_voxel"),
+                body_bbox,
+            )
+        if annotation.get("prism_found"):
+            prism_bbox = _parse_voxel_bbox(annotation.get("prism_bbox"))
+            if prism_bbox is not None:
+                return prism_bbox, _voxel_point_or_bbox_center(
+                    annotation.get("prism_centroid_voxel"),
+                    prism_bbox,
+                )
+
+    coord = localization_result.get("coords", {}).get(label_name)
+    if not isinstance(coord, dict) or not coord.get("found"):
+        return None
+    bbox = _parse_voxel_bbox(coord.get("bbox"))
+    if bbox is None:
+        return None
+    return bbox, _voxel_point_or_bbox_center(coord.get("centroid"), bbox)
+
+
+def _median(values: Sequence[float]) -> float:
+    """返回非空有限序列的中位数。"""
+
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+def _shared_spine_axis_coordinate(
+    geometries: Sequence[Tuple[Dict[str, float], Point3D]],
+    axis: str,
+) -> float:
+    """选择穿过全部椎体，或在无交集时覆盖椎体数最多的轴坐标。"""
+
+    lower = max(bbox[f"{axis}_min"] for bbox, _ in geometries)
+    upper = min(bbox[f"{axis}_max"] for bbox, _ in geometries)
+    if lower <= upper:
+        return (lower + upper) / 2.0
+
+    center = _median([getattr(point, axis) for _, point in geometries])
+    candidates = {center}
+    for bbox, _ in geometries:
+        minimum = bbox[f"{axis}_min"]
+        maximum = bbox[f"{axis}_max"]
+        candidates.update((minimum, maximum, (minimum + maximum) / 2.0))
+
+    def score(candidate: float) -> Tuple[int, float]:
+        coverage = sum(
+            bbox[f"{axis}_min"] <= candidate <= bbox[f"{axis}_max"]
+            for bbox, _ in geometries
+        )
+        return coverage, -abs(candidate - center)
+
+    return max(sorted(candidates), key=score)
+
+
+def resolve_spine_localizer_reference(
+    localization_result: Dict[str, Any],
+    label_names: Sequence[str],
+) -> Optional[Point3D]:
+    """计算一张尽量同时穿过指定椎体主体的统一定位图参考点。
+
+    x、y 分别决定矢状位和冠状位定位图的固定原始层。参考点只供第七阶段
+    选择定位图背景，不参与切片中心、方向、范围或层间距计算。
+    """
+
+    geometries = [
+        geometry
+        for label_name in label_names
+        if (geometry := _spine_label_voxel_geometry(
+            localization_result,
+            label_name,
+        )) is not None
+    ]
+    if not geometries:
+        return None
+
+    voxel_reference = Point3D(
+        _shared_spine_axis_coordinate(geometries, "x"),
+        _shared_spine_axis_coordinate(geometries, "y"),
+        _median([point.z for _, point in geometries]),
+    )
+    return voxel_index_to_physical(
+        voxel_reference,
+        localization_result["image"],
+    )
+
+
 def _annotation_physical_center(
     localization_result: Dict[str, Any],
     label_name: str,
@@ -136,10 +275,10 @@ def _annotation_physical_center(
 
     annotation = _filtered_spine_annotations(localization_result).get(label_name, {})
     if annotation.get("prism_found"):
-        point = _parse_physical_point(annotation.get("prism_centroid_physical"))
+        point = _parse_xyz_point(annotation.get("prism_centroid_physical"))
         if point is not None:
             return point
-    point = _parse_physical_point(annotation.get("centroid_physical"))
+    point = _parse_xyz_point(annotation.get("centroid_physical"))
     if point is not None:
         return point
     return get_label_center(localization_result, label_name)
@@ -159,8 +298,8 @@ def _face_candidates(annotation: Dict[str, Any]) -> List[Dict[str, Any]]:
             or face.get("side") not in {"min", "max"}
         ):
             continue
-        center = _parse_physical_point(face.get("center"))
-        normal = _parse_physical_point(face.get("normal"))
+        center = _parse_xyz_point(face.get("center"))
+        normal = _parse_xyz_point(face.get("normal"))
         if center is None or normal is None or vector_length(normal) == 0.0:
             continue
         try:
@@ -660,11 +799,11 @@ def _parse_sagittal_prism(
     raw_vertices = geometry.get("vertices")
     if not isinstance(raw_vertices, list) or len(raw_vertices) != 4:
         return None
-    vertices = [_parse_physical_point(value) for value in raw_vertices]
+    vertices = [_parse_xyz_point(value) for value in raw_vertices]
     if any(vertex is None for vertex in vertices):
         return None
     typed_vertices = [vertex for vertex in vertices if vertex is not None]
-    center = _parse_physical_point(geometry.get("center"))
+    center = _parse_xyz_point(geometry.get("center"))
     if center is None:
         center = Point3D(
             sum(vertex.x for vertex in typed_vertices) / len(typed_vertices),

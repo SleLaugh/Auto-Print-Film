@@ -4654,6 +4654,44 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
         self.assertEqual(result.warnings, [])
 
+    def test_lumbar_sagittal_localizer_uses_body_center_without_moving_slices(self):
+        """矢状整切定位图应经过椎体，整平面成片仍保持原图中心。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.矢状位,
+                slice_thickness=3.0,
+                slice_spacing=5.0,
+                window_presets=["骨窗"],
+            )],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["image"]["size_xyz"] = [120, 220, 40]
+        self._add_lumbar_localizer_body_geometry(localization_result)
+
+        plan = LumbarWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.localizer_plane, "冠状位")
+        self.assertEqual(plan.localizer_reference.to_dict(), {
+            "x": 61.0,
+            "y": 52.5,
+            "z": 5.0,
+        })
+        self.assertTrue(all(
+            planned_slice.center.y == 109.5
+            for planned_slice in plan.slices
+        ))
+        self.assertNotEqual(
+            plan.slices[0].center.y,
+            plan.localizer_reference.y,
+        )
+
     def test_lumbar_interspace_planner_builds_one_plan_per_available_interval(self):
         """验证 `test_lumbar_interspace_planner_builds_one_plan_per_available_interval` 场景符合预期。"""
 
@@ -4685,6 +4723,93 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             "L5-S1",
         ])
         self.assertTrue(all(plan.slices for plan in result.plans))
+
+    def test_lumbar_interspace_plans_share_one_body_centered_sagittal_localizer(self):
+        """五个椎间计划可有不同切面，但必须共用一张含全部椎体的底图。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.横状位,
+                slice_thickness=2.0,
+                slice_spacing=2.0,
+                window_presets=["骨窗"],
+            )],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["image"]["size_xyz"] = [120, 220, 40]
+        self._add_lumbar_localizer_body_geometry(localization_result)
+
+        plans = LumbarInterspacePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans
+
+        expected_reference = {"x": 61.0, "y": 52.5, "z": 5.0}
+        self.assertTrue(all(
+            plan.localizer_plane == "矢状位"
+            for plan in plans
+        ))
+        self.assertTrue(all(
+            plan.localizer_reference.to_dict() == expected_reference
+            for plan in plans
+        ))
+        self.assertGreater(
+            len({round(plan.slices[0].center.z, 6) for plan in plans}),
+            1,
+        )
+
+    def test_spine_localizer_reference_falls_back_to_maximum_body_coverage(self):
+        """侧弯导致主体无共同层时，应选覆盖数量最多且靠近中位中心的层。"""
+
+        from src.planning.spine_common import resolve_spine_localizer_reference
+
+        localization_result = self._lumbar_localization_result()
+        for label_name in ("vertebrae_L4", "vertebrae_L5", "vertebrae_S1"):
+            localization_result["coords"][label_name]["found"] = False
+        annotations = {}
+        for label_name, x_bounds in (
+            ("vertebrae_L1", (0.0, 2.0)),
+            ("vertebrae_L2", (10.0, 12.0)),
+            ("vertebrae_L3", (11.0, 13.0)),
+        ):
+            coord = localization_result["coords"][label_name]
+            annotations[label_name] = {
+                "found": True,
+                "body_bbox": {
+                    **coord["bbox"],
+                    "x_min": x_bounds[0],
+                    "x_max": x_bounds[1],
+                },
+                "centroid_voxel": {
+                    **coord["centroid"],
+                    "x": sum(x_bounds) / 2.0,
+                },
+                "prism_found": False,
+            }
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": annotations,
+        }
+
+        reference = resolve_spine_localizer_reference(
+            localization_result,
+            [
+                "vertebrae_L1",
+                "vertebrae_L2",
+                "vertebrae_L3",
+                "vertebrae_L4",
+                "vertebrae_L5",
+                "vertebrae_S1",
+            ],
+        )
+
+        self.assertEqual(reference.to_dict(), {
+            "x": 11.0,
+            "y": 50.0,
+            "z": 8.0,
+        })
 
     def test_lumbar_interspace_resolves_five_valid_prism_frames_and_bbox_unions(self):
         """L1–S1 五个四棱柱间隙均应生成有限斜法向并覆盖相邻全量 bbox。"""
@@ -5807,6 +5932,55 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     ],
                 },
             },
+        }
+
+    @staticmethod
+    def _add_lumbar_localizer_body_geometry(localization_result):
+        """注入位置不同但存在共同中心层的 L1-S1 椎体主体几何。"""
+
+        bounds = {
+            "vertebrae_L1": ((50, 68), (40, 60)),
+            "vertebrae_L2": ((52, 70), (42, 62)),
+            "vertebrae_L3": ((54, 72), (44, 64)),
+            "vertebrae_L4": ((53, 69), (43, 61)),
+            "vertebrae_L5": ((55, 71), (45, 63)),
+            "vertebrae_S1": ((51, 67), (41, 60)),
+        }
+        annotations = {}
+        for label_name, (x_bounds, y_bounds) in bounds.items():
+            coord = localization_result["coords"][label_name]
+            body_bbox = {
+                **coord["bbox"],
+                "x_min": x_bounds[0],
+                "x_max": x_bounds[1],
+                "y_min": y_bounds[0],
+                "y_max": y_bounds[1],
+            }
+            body_centroid = {
+                **coord["centroid"],
+                "x": sum(x_bounds) / 2.0,
+                "y": sum(y_bounds) / 2.0,
+            }
+            # 全量标签还包含椎弓等后方结构，故意把它扩到主体之外，验证选层
+            # 始终优先使用第五阶段过滤出的 body_bbox。
+            coord["bbox"].update({
+                "x_min": x_bounds[0] - 4,
+                "x_max": x_bounds[1] + 8,
+                "y_min": y_bounds[0] - 3,
+                "y_max": y_bounds[1] + 70,
+            })
+            coord["centroid"].update({
+                "x": sum(x_bounds) / 2.0 + 2.0,
+                "y": sum(y_bounds) / 2.0 + 20.0,
+            })
+            annotations[label_name] = {
+                "found": True,
+                "body_bbox": body_bbox,
+                "centroid_voxel": body_centroid,
+                "prism_found": False,
+            }
+        localization_result["spine_geometry"] = {
+            "filtered_annotation_centroids": annotations,
         }
 
     @staticmethod

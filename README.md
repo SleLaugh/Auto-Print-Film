@@ -314,11 +314,14 @@ DICOM 的 `SliceThickness` 和 `SpacingBetweenSlices`，确保查看器读取到
 只有 `debug_log_file_enabled=true` 时才生成 `manifest.json`，用于记录任务 ID、阶段状态、
 错误和调试产物清单；非调试模式不生成该文件。
 
-Pipeline 日志会为每个阶段输出“当前序号/总阶段数、稳定阶段名、开始/完成状态和耗时”；
+Pipeline 会在 `RunLog` 中为每个阶段输出“当前序号/总阶段数、稳定阶段名、开始/完成状态
+和耗时”；各阶段的输入路径、几何诊断和性能明细继续写入 `DebugLog`。
 阶段失败时同时记录稳定标识、中文职责、异常类型、错误原因和调用堆栈，并逐项标明因
 fail-fast 被跳过的后续阶段。默认主链中的
 稳定阶段名依次为 `preprocessing`、`segmentation`、`spatial_correction`、`localization`、
 `anatomical_analysis`、`planning`、`reconstruction`、`reporting`。
+只要 `run_log_file_enabled=true`，`ErrorLog` 也会同步写入 `RunLog`，即使 DebugLog 和
+独立 ErrorLog 文件均关闭，运行日志仍会保留失败原因。
 
 ## 配置优先级
 

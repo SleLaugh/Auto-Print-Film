@@ -74,7 +74,7 @@ class PipelineFrameworkTest(unittest.TestCase):
     def setUp(self):
         """隔离框架日志，测试中的 `one/boom` 不得写入真实日志目录。"""
 
-        self.debug_log = self.enterContext(patch("src.core.pipeline.DebugLog"))
+        self.run_log = self.enterContext(patch("src.core.pipeline.RunLog"))
         self.error_log = self.enterContext(patch("src.core.pipeline.ErrorLog"))
 
     def test_default_pipeline_uses_eight_responsibility_stages(self):
@@ -152,7 +152,7 @@ class PipelineFrameworkTest(unittest.TestCase):
             ]).run(make_request(temp_dir))
 
         self.assertTrue(response.success)
-        messages = [call.args[0] for call in self.debug_log.call_args_list]
+        messages = [call.args[0] for call in self.run_log.call_args_list]
         self.assertIn("Pipeline 开始执行，共 2 个阶段", messages)
         self.assertIn(
             "[Pipeline] 阶段 1/2 开始: one（自定义阶段）",

@@ -12,7 +12,7 @@ import time
 from typing import Any, Callable, List, Optional
 
 from src.config import AppConfig, load_app_config
-from src.utils import DebugLog, ErrorLog
+from src.utils import ErrorLog, RunLog
 
 from .artifacts import ArtifactManager, MANIFEST_SCHEMA
 from .base_stage import BaseStage
@@ -116,7 +116,7 @@ class Pipeline:
         按保留策略清理中间产物、写最终 manifest。任一必需阶段失败后执行 fail-fast，
         后续阶段统一标记 skipped。
         """
-        DebugLog(f"Pipeline 开始执行，共 {len(self.stages)} 个阶段")
+        RunLog(f"Pipeline 开始执行，共 {len(self.stages)} 个阶段")
         if self.config.pipeline.run_preflight:
             self.preflight.validate(request, self.config)
 
@@ -149,7 +149,7 @@ class Pipeline:
             stage_label = _STAGE_LOG_LABELS.get(stage.name, "自定义阶段")
             try:
                 record.start()
-                DebugLog(
+                RunLog(
                     f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 开始: "
                     f"{stage.name}（{stage_label}）"
                 )
@@ -158,7 +158,7 @@ class Pipeline:
                 context = stage.execute(context)
                 typed_result = context.stage_results.get(stage.name)
                 record.succeed(getattr(typed_result, "schema_version", None))
-                DebugLog(
+                RunLog(
                     f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 完成: "
                     f"{stage.name}（{stage_label}），"
                     f"耗时 {record.duration_seconds or 0.0:.3f}s"
@@ -182,7 +182,7 @@ class Pipeline:
                             remaining.name,
                             "自定义阶段",
                         )
-                        DebugLog(
+                        RunLog(
                             "[Pipeline] 跳过后续阶段: "
                             f"{remaining.name}（{remaining_label}）"
                         )
@@ -207,7 +207,7 @@ class Pipeline:
             total_time=elapsed,
         )
         self._write_manifest(context, artifacts)
-        DebugLog(f"Pipeline 执行完成: {context.job_status.value}")
+        RunLog(f"Pipeline 执行完成: {context.job_status.value}")
         return response
 
     @staticmethod

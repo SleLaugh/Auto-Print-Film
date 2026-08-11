@@ -11,6 +11,7 @@
           + 如果 debug_log_file_enabled=True，额外写 DebugLog 文件
 - DebugLog: 只写 DebugLog 文件（根据 debug_log_file_enabled 控制）
 - ErrorLog: 写 ErrorLog 文件（根据 error_log_file_enabled 控制）
+            + 如果 run_log_file_enabled=True，额外写 RunLog 文件
             + 如果 debug_log_file_enabled=True，额外写 DebugLog 文件
 - 控制台统一输出（根据 console_enabled 控制）
 """
@@ -184,7 +185,7 @@ class LoggerManager:
         规则：
         - RunLog: 写 RunLog + (如果debug开启则写 DebugLog)
         - DebugLog: 只写 DebugLog
-        - ErrorLog: 写 ErrorLog + (如果debug开启则写 DebugLog)
+        - ErrorLog: 写 ErrorLog + RunLog + DebugLog（分别受各自开关控制）
         """
         # 确定要写入的文件类型列表
         file_types_to_write = []
@@ -206,6 +207,9 @@ class LoggerManager:
             # ErrorLog: 写 ErrorLog
             if self._is_file_enabled(self.LOG_TYPE_ERROR):
                 file_types_to_write.append(self.LOG_TYPE_ERROR)
+            # 运行日志必须能看到任务为什么失败，不能只留下“处理失败”。
+            if self._is_file_enabled(self.LOG_TYPE_RUN):
+                file_types_to_write.append(self.LOG_TYPE_RUN)
             # 如果debug开启，额外写 DebugLog
             if self._is_file_enabled(self.LOG_TYPE_DEBUG):
                 file_types_to_write.append(self.LOG_TYPE_DEBUG)

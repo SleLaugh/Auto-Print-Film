@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.config import AppConfig, LoggingConfig, PipelineConfig
 from src.core.base_stage import BaseStage
@@ -70,6 +71,12 @@ def make_pipeline(stages):
 class PipelineFrameworkTest(unittest.TestCase):
     """汇总 `PipelineFrameworkTest` 相关测试场景。"""
 
+    def setUp(self):
+        """隔离框架日志，测试中的 `one/boom` 不得写入真实日志目录。"""
+
+        self.debug_log = self.enterContext(patch("src.core.pipeline.DebugLog"))
+        self.error_log = self.enterContext(patch("src.core.pipeline.ErrorLog"))
+
     def test_default_pipeline_uses_eight_responsibility_stages(self):
         """默认主链应把旧定位阶段拆成校正、定位和解剖分析。"""
 
@@ -134,6 +141,56 @@ class PipelineFrameworkTest(unittest.TestCase):
                 [item["status"] for item in manifest["stages"]],
                 ["succeeded", "succeeded"],
             )
+
+    def test_pipeline_logs_each_stage_lifecycle(self):
+        """控制台和调试日志应明确记录阶段序号、稳定名称和完成状态。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            response = make_pipeline([
+                SuccessfulStage("one"),
+                SuccessfulStage("two"),
+            ]).run(make_request(temp_dir))
+
+        self.assertTrue(response.success)
+        messages = [call.args[0] for call in self.debug_log.call_args_list]
+        self.assertIn("Pipeline 开始执行，共 2 个阶段", messages)
+        self.assertIn(
+            "[Pipeline] 阶段 1/2 开始: one（自定义阶段）",
+            messages,
+        )
+        self.assertTrue(any(
+            message.startswith(
+                "[Pipeline] 阶段 1/2 完成: one（自定义阶段），耗时 "
+            )
+            for message in messages
+        ))
+        self.assertIn(
+            "[Pipeline] 阶段 2/2 开始: two（自定义阶段）",
+            messages,
+        )
+        self.assertTrue(any(
+            message.startswith(
+                "[Pipeline] 阶段 2/2 完成: two（自定义阶段），耗时 "
+            )
+            for message in messages
+        ))
+
+    def test_failed_stage_log_contains_context(self):
+        """失败日志必须包含序号、阶段标识、职责和错误原因。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            response = make_pipeline([
+                FailingStage("anatomical_analysis"),
+                SuccessfulStage("planning"),
+            ]).run(make_request(temp_dir))
+
+        self.assertFalse(response.success)
+        message, error = self.error_log.call_args.args
+        self.assertIn("阶段 1/2 执行失败", message)
+        self.assertIn("阶段标识: anatomical_analysis", message)
+        self.assertIn("阶段职责: 解剖分析", message)
+        self.assertIn("错误原因: boom", message)
+        self.assertIsInstance(error, RuntimeError)
 
     def test_non_debug_pipeline_does_not_write_manifest(self):
         """验证 `test_non_debug_pipeline_does_not_write_manifest` 场景符合预期。"""

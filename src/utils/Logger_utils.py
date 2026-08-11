@@ -21,6 +21,7 @@ from typing import Optional
 from datetime import datetime
 import sys
 import json
+import traceback
 
 
 class LoggerManager:
@@ -129,11 +130,16 @@ class LoggerManager:
         log_lines.append(message)
         
         if exception is not None:
+            log_lines.append(f"异常类型: {type(exception).__name__}")
             error_msg = str(exception)
             if error_msg:
                 log_lines.append(f"异常信息: {error_msg}")
-            else:
-                log_lines.append(f"异常类型: {type(exception).__name__}")
+            traceback_text = "".join(
+                traceback.format_tb(exception.__traceback__)
+            ).rstrip()
+            if traceback_text:
+                log_lines.append("调用堆栈:")
+                log_lines.append(traceback_text)
         
         log_lines.append("")
         log_content = "\n".join(log_lines)

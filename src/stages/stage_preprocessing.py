@@ -18,7 +18,7 @@ from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.models import DicomMetadata, PreprocessingResult
 from src.reconstruction.dicom import read_source_dicom_metadata
-from src.utils import ErrorLog, is_debug_log_file_enabled
+from src.utils import DebugLog, ErrorLog, is_debug_log_file_enabled
 
 # 设置警告过滤
 # 忽略警告信息（DICOM读取时可能产生大量无关警告）
@@ -90,6 +90,11 @@ class PreprocessingStage(BaseStage):
         output_root = Path(request.output_dir)
         output_file = output_root / 'nifti' / 'raw_0000.nii.gz' # nnUNet 输入必须以 _0000 结尾
         metadata_file = output_root / 'metadata' / 'dicom_metadata.json'
+
+        DebugLog("=" * 60)
+        DebugLog("【第一阶段】预处理 - DICOM转NIfTI")
+        DebugLog(f"  输入DICOM: {input_dir}")
+        DebugLog(f"  输出NIfTI: {output_file}")
         
         
         output_file.parent.mkdir(parents=True, exist_ok=True) # 确保目标路径存在
@@ -117,6 +122,8 @@ class PreprocessingStage(BaseStage):
                     metadata_path=metadata_path,
                     source_dicom_metadata=source_metadata,
                 ))
+                DebugLog("  第一阶段完成")
+                DebugLog("=" * 60)
             else:
                 raise ValueError('读取DICOM失败：未找到有效的DICOM序列')
                 

@@ -115,6 +115,7 @@ class SegmentationStage(BaseStage):
         if not nifti_path:
             raise ValueError("NIfTI文件路径不存在")
         
+        DebugLog("=" * 60)
         DebugLog("【第二阶段】推理分割 - 模型匹配与推理")
         DebugLog(f"  输入NIfTI: {nifti_path}")
         body_part = self._enum_value(request.body_part)
@@ -167,7 +168,8 @@ class SegmentationStage(BaseStage):
         
         context.set_stage_result(SegmentationResult(**result))
         
-        DebugLog(f"  ✅ 分割结果保存至: {output_path}")
+        DebugLog(f"  分割结果保存至: {output_path}")
+        DebugLog("  第二阶段完成")
         DebugLog("=" * 60)
         
         return context

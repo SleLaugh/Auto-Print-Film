@@ -72,7 +72,7 @@ class PreflightTest(unittest.TestCase):
         )
 
     def test_registry_allows_future_planes_for_a_supported_workflow(self):
-        # 状位由阶段四逐步实现；预检不能阻断同一部位/切法下的后续扩展参数。
+        # 状位能力由第六阶段逐步实现；预检不能阻断同一部位/切法的后续扩展参数。
         """验证 `test_registry_allows_future_planes_for_a_supported_workflow` 场景符合预期。"""
 
         request = make_request("腰椎", "whole_range", "矢状位")

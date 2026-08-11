@@ -1,4 +1,4 @@
-"""阶段五窗宽窗位解析。"""
+"""第七阶段窗宽窗位解析。"""
 
 from typing import Iterable, List
 

@@ -13,22 +13,26 @@ _logger_manager.debug_log_file_enabled = True
 
 from src.core.context import ProcessingContext
 from src.models import (
+    AnatomicalAnalysisStageResult,
     LabelCoordinate,
     LabelTarget,
     LocalizationStageResult,
     Request,
+    SpatialCorrectionStageResult,
     VoxelBBox,
     VoxelPoint,
 )
+from src.stages.stage_anatomical_analysis import AnatomicalAnalysisStage
 from src.stages.stage_localization import LocalizationStage
 from src.stages.stage_reconstruction import ReconstructionStage
+from src.stages.stage_spatial_correction import SpatialCorrectionStage
 
 
-class Stage3TargetAxialCorrectionTest(unittest.TestCase):
-    """汇总 `Stage3TargetAxialCorrectionTest` 相关测试场景。"""
+class LocalizationGeometryTest(unittest.TestCase):
+    """覆盖第三阶段校正、第四阶段定位和第五阶段解剖几何。"""
 
     def test_slice_range_extension_config_accepts_optional_endpoints(self):
-        """切片范围扩展允许只配置单端，未配置端由第四步按零处理。"""
+        """切片范围扩展允许只配置单端，未配置端由第三阶段按零处理。"""
 
         LocalizationStage._validate_cut_config("whole_range", {
             "start": "lung",
@@ -76,8 +80,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         )
         self.assertEqual(stage._resolve_spine_cpr_config("肺部"), {})
 
-    def test_lung_builds_typed_anatomical_geometry_for_stage4(self):
-        """验证 `test_lung_builds_typed_anatomical_geometry_for_stage4` 场景符合预期。"""
+    def test_lung_builds_typed_anatomical_geometry_for_planning(self):
+        """肺部解剖分析应生成可供第六阶段规划读取的有类型几何。"""
 
         stage = LocalizationStage()
         mask = np.zeros((32, 24, 48), dtype=bool)
@@ -175,7 +179,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertEqual(diagnostics["right_label"], "hip_right")
 
     def test_target_mask_and_bbox_only_include_requested_labels(self):
-        # 阶段三不能拿整套 volume 判断歪斜，必须先合成“本次任务真正关心的目标 mask”。
+        # 第三阶段不能拿整套 volume 判断歪斜，必须先合成“本次任务真正关心的目标 mask”。
         """验证 `test_target_mask_and_bbox_only_include_requested_labels` 场景符合预期。"""
 
         stage = LocalizationStage()
@@ -1569,7 +1573,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             regular_candidate.assert_not_called()
 
     def test_spine_geometry_serializes_sagittal_quadrilateral_vertices(self):
-        """阶段三必须把四棱柱的矢状轮廓传给阶段四计算最近点。"""
+        """第五阶段必须把四棱柱矢状轮廓传给第六阶段计算代表点。"""
 
         image = sitk.GetImageFromArray(np.ones((12, 16, 20), dtype=np.uint8))
         seg_array = np.zeros((12, 16, 20), dtype=np.uint8)
@@ -1591,7 +1595,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertIn("left_right_extent_mm", quadrilateral)
 
     def test_spine_geometry_serializes_filtered_body_and_prism_bboxes(self):
-        """阶段三应记录过滤主体和四棱柱 bbox，供 CPR offset 避开完整附件。"""
+        """第五阶段应记录过滤主体和四棱柱 bbox，供 CPR offset 避开完整附件。"""
 
         image = sitk.GetImageFromArray(np.ones((12, 16, 20), dtype=np.uint8))
         seg_array = np.zeros((12, 16, 20), dtype=np.uint8)
@@ -1650,7 +1654,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertGreater(int((overlay_array == 21).sum()), 0)
 
     def test_debug_vertebral_body_prism_mask_matches_geometry_centroid(self):
-        """写出的四棱柱体素必须与阶段三记录的质心来自同一规则。"""
+        """写出的四棱柱体素必须与第五阶段记录的质心来自同一规则。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             seg_array = np.zeros((10, 14, 16), dtype=np.uint16)
@@ -1953,8 +1957,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             resolved_upper[upper_slices] & resolved_lower[lower_slices]
         ))
 
-    def test_stage3_spine_geometry_uses_filtered_annotation_centroid_and_excludes_c1(self):
-        """阶段三应输出标注质心，不能改写全量定位质心，且 C1 不进入 CPR 几何。"""
+    def test_stage5_spine_geometry_uses_filtered_annotation_centroid_and_excludes_c1(self):
+        """第五阶段应输出标注质心，不能改写全量定位质心，且 C1 不进入 CPR 几何。"""
 
         stage = LocalizationStage()
         seg_array = np.zeros((8, 14, 18), dtype=np.uint16)
@@ -2032,7 +2036,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             float(prism_indices[:, 2].mean()),
         )
 
-    def test_stage3_face_center_uses_in_plane_midpoint(self):
+    def test_stage5_face_center_uses_in_plane_midpoint(self):
         """端面中心应取端面平面内范围的中点，不能被体素密度拉向角落。"""
 
         stage = LocalizationStage()
@@ -2057,8 +2061,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertAlmostEqual(face_center[1], 4.0, places=5)
         self.assertTrue(face_candidates)
 
-    def test_stage3_face_candidates_cover_both_terminal_regions(self):
-        """阶段三应输出首尾两侧的端面中点候选，供阶段四按角度选择。"""
+    def test_stage5_face_candidates_cover_both_terminal_regions(self):
+        """第五阶段应输出首尾两侧的端面中点候选，供第六阶段按角度选择。"""
 
         stage = LocalizationStage()
         points = [
@@ -2080,7 +2084,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             {"min", "max"},
         )
 
-    def test_stage3_prism_mask_fills_sagittal_quad_with_body_lr_bounds(self):
+    def test_stage5_prism_mask_fills_sagittal_quad_with_body_lr_bounds(self):
         """四棱柱应填满主体四边形，并严格使用主体自身左右范围。"""
 
         body_mask = np.zeros((12, 16, 14), dtype=bool)
@@ -2104,7 +2108,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertFalse(np.any(prism_mask[:, :, :4]))
         self.assertFalse(np.any(prism_mask[:, :, 10:]))
 
-    def test_stage3_prism_region_fills_tilted_quad_beyond_body_bbox(self):
+    def test_stage5_prism_region_fills_tilted_quad_beyond_body_bbox(self):
         """倾斜四边形应按自身四条直边填满，不能再被主体 bbox 截平。"""
 
         image = sitk.Image(8, 20, 20, sitk.sitkUInt8)
@@ -2155,7 +2159,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         residuals = inferior_z - (slope * y_indices + intercept)
         self.assertLessEqual(float(np.max(np.abs(residuals))), 0.75)
 
-    def test_stage3_prism_mask_ignores_low_lr_support_sagittal_spur(self):
+    def test_stage5_prism_mask_ignores_low_lr_support_sagittal_spur(self):
         """低左右支撑的矢状挂渣不应成为四棱柱外轮廓顶点。"""
 
         body_mask = np.zeros((14, 24, 28), dtype=bool)
@@ -2174,8 +2178,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertTrue(prism_mask[6, 11, 14])
         self.assertFalse(np.any(prism_mask[:, 15:20, :]))
 
-    def test_stage3_geometry_prism_ignores_low_support_body_fragment(self):
-        """阶段三主流程也必须先隔离弱支撑碎片，再填满核心四棱柱。"""
+    def test_stage5_geometry_prism_ignores_low_support_body_fragment(self):
+        """第五阶段主流程也必须先隔离弱支撑碎片，再填满核心四棱柱。"""
 
         body_mask = np.zeros((14, 24, 28), dtype=bool)
         body_mask[4:10, 8:14, 10:18] = True
@@ -2206,7 +2210,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertTrue(prism_mask[6, 11, 14])
         self.assertFalse(np.any(prism_mask[:, 15:20, :]))
 
-    def test_stage3_prism_mask_includes_aligned_terminal_body_extension(self):
+    def test_stage5_prism_mask_includes_aligned_terminal_body_extension(self):
         """可信端段补回主体后，也必须进入最终四棱柱的直线外包络。"""
 
         body_mask = np.zeros((12, 24, 12), dtype=bool)
@@ -2223,7 +2227,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertIsNotNone(prism_mask)
         self.assertTrue(prism_mask[8, 8, 5])
 
-    def test_stage3_prism_mask_ignores_separate_high_support_sagittal_debris(
+    def test_stage5_prism_mask_ignores_separate_high_support_sagittal_debris(
         self,
     ):
         """通过细丝连接的高支撑远端碎块也不能进入四边形拟合。"""
@@ -2244,7 +2248,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertTrue(prism_mask[7, 11, 10])
         self.assertFalse(np.any(prism_mask[:, 19:, :]))
 
-    def test_stage3_sagittal_support_tie_prefers_greater_total_support(self):
+    def test_stage5_sagittal_support_tie_prefers_greater_total_support(self):
         """合格块点数相同时，应稳定选择 LR 总支撑更大的主体块。"""
 
         points = []
@@ -2269,7 +2273,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertTrue(np.all(retained[:20]))
         self.assertFalse(np.any(retained[20:]))
 
-    def test_stage3_sagittal_support_unique_uses_contiguous_integer_projection(self):
+    def test_stage5_sagittal_support_unique_uses_contiguous_integer_projection(self):
         """LR 支撑统计传给 np.unique 的投影数组应规整为连续整数内存。"""
 
         indices = np.asarray(
@@ -2303,7 +2307,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertEqual(observed_projection.dtype, np.dtype(np.intp))
         self.assertTrue(observed_projection.flags.c_contiguous)
 
-    def test_stage3_prism_region_is_limited_to_body_bbox(self):
+    def test_stage5_prism_region_is_limited_to_body_bbox(self):
         """内部棱柱只保留局部包围盒，不能为每个椎体复制整幅 CT。"""
 
         body_mask = np.zeros((80, 160, 180), dtype=bool)
@@ -2321,8 +2325,8 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertEqual(local_mask.shape, (8, 12, 14))
         self.assertLess(local_mask.size, body_mask.size // 100)
 
-    def test_stage3_geometry_does_not_materialize_full_prism_per_label(self):
-        """阶段三主流程必须走局部棱柱，不能调用整幅 mask 兼容接口。"""
+    def test_stage5_geometry_does_not_materialize_full_prism_per_label(self):
+        """第五阶段主流程必须走局部棱柱，不能为每个 label 构造整幅 mask。"""
 
         seg_array = np.zeros((30, 60, 70), dtype=np.uint16)
         seg_array[5:13, 12:24, 15:29] = 20
@@ -2349,7 +2353,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertTrue(annotations["vertebrae_L1"]["prism_found"])
         self.assertTrue(annotations["vertebrae_L2"]["prism_found"])
 
-    def test_stage3_prism_mask_rejects_degenerate_body(self):
+    def test_stage5_prism_mask_rejects_degenerate_body(self):
         """不足以形成四边形的主体不能产生伪四棱柱。"""
 
         body_mask = np.zeros((6, 6, 6), dtype=bool)
@@ -2360,7 +2364,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             LocalizationStage._vertebral_body_prism_mask(body_mask, image)
         )
 
-    def test_stage3_prism_mask_keeps_boundary_with_physical_rounding(self):
+    def test_stage5_prism_mask_keeps_boundary_with_physical_rounding(self):
         """非整数物理空间下四边形边界体素也必须完整保留。"""
 
         body_mask = np.zeros((12, 16, 14), dtype=bool)
@@ -2391,7 +2395,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertIsNotNone(prism_mask)
         self.assertTrue(np.all(prism_mask[body_mask]))
 
-    def test_stage3_prism_outer_envelope_contains_all_body_voxels(self):
+    def test_stage5_prism_outer_envelope_contains_all_body_voxels(self):
         """四棱柱外包络必须覆盖楔形主体的全部投影和体素。"""
 
         body_mask = np.zeros((12, 20, 12), dtype=bool)
@@ -2440,7 +2444,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         first_prism_y = np.flatnonzero(prism_mask[first_body_z].any(axis=1))
         self.assertEqual(int(first_prism_y.min()), int(first_body_y.min()))
 
-    def test_stage3_estimates_four_sagittal_body_faces(self):
+    def test_stage5_estimates_four_sagittal_body_faces(self):
         """过滤椎体主体应能抽象为矢状投影上的四个大面。"""
 
         stage = LocalizationStage()
@@ -2465,7 +2469,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             )
             self.assertAlmostEqual(normal_length, 1.0, places=5)
 
-    def test_stage3_sagittal_body_faces_follow_wedge_endplate(self):
+    def test_stage5_sagittal_body_faces_follow_wedge_endplate(self):
         """楔形椎体的端面中心应来自轮廓边，而不是 PCA 外接框角点。"""
 
         stage = LocalizationStage()
@@ -2503,7 +2507,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertAlmostEqual(inferior_face["center"]["y"], 24.5, delta=1.5)
         self.assertAlmostEqual(inferior_face["center"]["z"], 10.5, delta=1.5)
 
-    def test_stage3_spine_geometry_is_not_generated_for_non_spine(self):
+    def test_stage5_spine_geometry_is_not_generated_for_non_spine(self):
         """肺部等非脊柱部位不应生成椎体主体几何。"""
 
         image = sitk.Image(4, 4, 4, sitk.sitkUInt8)
@@ -2542,7 +2546,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertFalse((temp_path / "seg_corrected.nii.gz").exists())
 
     def test_correction_step_is_todo_by_default_even_when_skewed(self):
-        # 阶段三默认保留“回正”流程位置，但算法还是 TODO，不能自动改写体数据。
+        # 第三阶段默认保留“回正”流程位置，但实验 helper 不能自动改写体数据。
         """验证 `test_correction_step_is_todo_by_default_even_when_skewed` 场景符合预期。"""
 
         stage = LocalizationStage({"correction_angle_threshold_degrees": 3.0})
@@ -2653,9 +2657,9 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
         self.assertLess(abs(after_centroid[1] - before_centroid[1]), 1.5)
         self.assertLess(abs(after_centroid[2] - before_centroid[2]), 1.5)
 
-    def test_reconstruction_returns_empty_result_when_mapping_has_no_plans(self):
-        # 第五步只执行第四步 plans；没有计划时不读取旧的 axial_params 占位字段。
-        """验证 `test_reconstruction_returns_empty_result_when_mapping_has_no_plans` 场景符合预期。"""
+    def test_reconstruction_returns_empty_result_when_planning_has_no_plans(self):
+        # 第七阶段只执行第六阶段 plans；没有计划时不读取无关占位字段。
+        """验证 `test_reconstruction_returns_empty_result_when_planning_has_no_plans` 场景符合预期。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             context = ProcessingContext(Request(dicom_dir="/tmp/dicom", output_dir=temp_dir))
@@ -2663,7 +2667,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                 "raw_for_reconstruction_path": "/tmp/new_raw.nii.gz",
                 "corrected_raw_path": "/tmp/old_raw.nii.gz",
             })
-            context.set_result("mapping", {
+            context.set_result("planning", {
                 "plans": [],
             })
             stage = ReconstructionStage({"parallel": False})
@@ -2675,7 +2679,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertEqual(result["slice_count"], 0)
 
     def test_execute_writes_reconstruction_paths_and_metadata(self):
-        # 覆盖完整阶段三主流程：解析 label、定位、判断不回正、写出新旧兼容字段。
+        # 覆盖第三至第五阶段主流程：选定空间、定位 label、生成解剖几何和调试汇总。
         """验证 `test_execute_writes_reconstruction_paths_and_metadata` 场景符合预期。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2722,13 +2726,18 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                 "seg_path": str(seg_path),
                 "model": {"dataset_id": 1},
             })
-            stage = LocalizationStage({"correction_angle_threshold_degrees": 3.0})
-            stage._nnunet_paths = {
+            stage_config = {"correction_angle_threshold_degrees": 3.0}
+            stages = [
+                SpatialCorrectionStage(stage_config),
+                LocalizationStage(stage_config),
+                AnatomicalAnalysisStage(stage_config),
+            ]
+            nnunet_paths = {
                 "nnUNet_results": str(temp_path / "nnUNet_results"),
                 "nnUNet_preprocessed": "",
                 "nnUNet_raw": "",
             }
-            stage._localization_config = {
+            localization_config = {
                 "label_aliases": {
                     "L1": "vertebrae_L1",
                     "S1": "vertebrae_S1",
@@ -2751,15 +2760,34 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                     }
                 },
             }
+            for stage in stages:
+                stage._nnunet_paths = nnunet_paths
+                stage._localization_config = localization_config
 
-            stage.execute(context)
+            for stage in stages:
+                stage.execute(context)
 
-            result = context.get_result("localization")
+            result = {
+                **context.get_result("localization"),
+                **context.get_result("anatomical_analysis"),
+            }
+            self.assertIsInstance(
+                context.require_stage_result(
+                    "spatial_correction", SpatialCorrectionStageResult
+                ),
+                SpatialCorrectionStageResult,
+            )
             self.assertIsInstance(
                 context.require_stage_result(
                     "localization", LocalizationStageResult
                 ),
                 LocalizationStageResult,
+            )
+            self.assertIsInstance(
+                context.require_stage_result(
+                    "anatomical_analysis", AnatomicalAnalysisStageResult
+                ),
+                AnatomicalAnalysisStageResult,
             )
             metadata = json.loads(
                 (temp_path / "metadata" / "localization_result.json").read_text(encoding="utf-8")
@@ -2866,7 +2894,7 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             self.assertIn("spine_geometry", metadata)
 
     def test_execute_promotes_existing_xy_candidate_for_geometry_and_reconstruction(self):
-        """候选回正文件存在时，阶段三几何和后续路径应统一切到候选空间。"""
+        """候选回正文件存在时，第三至第五阶段和后续路径应统一切到候选空间。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -2906,13 +2934,17 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                 "seg_path": str(seg_path),
                 "model": {"dataset_id": 1},
             })
-            stage = LocalizationStage()
-            stage._nnunet_paths = {
+            stages = [
+                SpatialCorrectionStage(),
+                LocalizationStage(),
+                AnatomicalAnalysisStage(),
+            ]
+            nnunet_paths = {
                 "nnUNet_results": str(temp_path / "nnUNet_results"),
                 "nnUNet_preprocessed": "",
                 "nnUNet_raw": "",
             }
-            stage._localization_config = {
+            localization_config = {
                 "label_aliases": {
                     "L1": "vertebrae_L1",
                     "S1": "vertebrae_S1",
@@ -2929,6 +2961,9 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
                     }
                 },
             }
+            for stage in stages:
+                stage._nnunet_paths = nnunet_paths
+                stage._localization_config = localization_config
             patched_correction = {
                 "raw_for_reconstruction_path": str(raw_path),
                 "seg_for_reconstruction_path": str(seg_path),
@@ -2945,19 +2980,20 @@ class Stage3TargetAxialCorrectionTest(unittest.TestCase):
             }
 
             with patch.object(
-                LocalizationStage,
+                SpatialCorrectionStage,
                 "_build_label_voxel_regions",
-                wraps=stage._build_label_voxel_regions,
+                wraps=stages[0]._build_label_voxel_regions,
             ) as build_regions, patch.object(
-                LocalizationStage,
+                AnatomicalAnalysisStage,
                 "_build_anatomical_geometry",
-                wraps=stage._build_anatomical_geometry,
+                wraps=stages[2]._build_anatomical_geometry,
             ) as build_anatomical_geometry, patch.object(
-                LocalizationStage,
+                SpatialCorrectionStage,
                 "_write_xy_correction_candidate_images",
                 return_value=patched_correction,
             ):
-                stage.execute(context)
+                for stage in stages:
+                    stage.execute(context)
 
             self.assertEqual(build_regions.call_count, 2)
             self.assertEqual(

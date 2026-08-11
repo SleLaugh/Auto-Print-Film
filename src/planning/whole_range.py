@@ -116,7 +116,7 @@ def bbox_target_points(
 def bbox_axial_target_points(
     localization_result: Dict[str, Any],
 ) -> tuple[Point3D, Point3D]:
-    """兼容旧调用：返回横状位 bbox 的物理外边界。"""
+    """返回横状位 bbox 的物理外边界。"""
 
     return bbox_target_points(localization_result, PlaneTypeEnum.横状位)
 
@@ -130,8 +130,8 @@ def bbox_range_points(
     """
     在指定堆叠轴上生成首末中心跨过 bbox 边界的切片范围。
 
-    为兼容旧调用，未传层间距时默认令层间距等于层厚；新规划入口会传入
-    实际配置值。只有坐标容差内的零长度目标使用单个中心。
+    未传层间距时按公开接口默认令层间距等于层厚；正式规划入口会传入实际
+    配置值。只有坐标容差内的零长度目标使用单个中心。
     """
 
     target_start, target_end = bbox_target_points(localization_result, plane)
@@ -151,7 +151,7 @@ def bbox_axial_range_points(
     """
     用整体目标 bbox 的最外侧 z 范围生成跨过边界的横状位中心范围。
 
-    未传层间距时按层厚作为默认间距，以兼容原有公开调用方式。
+    未传层间距时按层厚作为公开接口的默认间距。
     """
 
     return bbox_range_points(
@@ -297,7 +297,7 @@ def _apply_localizer_preferences(
 ) -> SlicePlan:
     """把部位中心和明确的原始参考状位写入通用切片计划。
 
-    这些字段只描述第四步已经决定好的展示几何；第五步按字段执行，不需要
+    这些字段只描述第六阶段已经决定好的展示几何；第七阶段按字段执行，不需要
     识别髋骨或其他具体部位。
     """
 
@@ -345,7 +345,7 @@ def _build_whole_range_plan_from_anatomical_frame(
     source_labels: Optional[List[str]],
     target_region_bbox: Optional[Dict[str, float]] = None,
 ) -> SlicePlan:
-    """用第三步给出的中心、方向和投影边界构造居中的平行整切计划。"""
+    """用第五阶段给出的中心、方向和投影边界构造居中的平行整切计划。"""
 
     bounds = (
         _anatomical_bounds_from_bbox(
@@ -362,7 +362,7 @@ def _build_whole_range_plan_from_anatomical_frame(
     plane = plane_config.plane
     # 起止点始终穿过目标的解剖中心，仅在当前状位的法向轴上取两端边界。
     if plane == PlaneTypeEnum.横状位:
-        # 横状位按患者解剖方向从上向下输出。第三步已经把 SI 轴符号统一到
+        # 横状位按患者解剖方向从上向下输出。第五阶段已经把 SI 轴符号统一到
         # DICOM 的 superior 方向，因此起点必须使用最大投影，终点使用最小投影。
         target_start = _physical_point_from_projections(
             anatomical_frame, lr_center, ap_center, bounds.superior_inferior.maximum
@@ -545,10 +545,10 @@ def build_axial_whole_range_plan_from_bbox(
     source_labels: Optional[List[str]] = None,
 ) -> SlicePlan:
     """
-    兼容旧函数名并转发到通用整切构造器。
+    将 axial 便捷入口转发到通用整切构造器。
 
-    旧名称包含 axial，但迁移期允许传入三种状位，避免现有调用方在统一 planner
-    接入完成前出现断裂。新代码应直接调用 build_whole_range_plan_from_bbox。
+    函数允许传入三种状位；新规划代码优先直接调用
+    build_whole_range_plan_from_bbox。
     """
 
     return build_whole_range_plan_from_bbox(

@@ -53,7 +53,7 @@ class LumbarWholeRangePlanner:
     """复用整体 bbox 生成腰椎三状位默认直线整切计划。"""
 
     planner_name = "LumbarWholeRangePlanner"
-    """写入阶段四结果和调试报告的稳定 planner 名称。"""
+    """写入第六阶段结果和调试报告的稳定 planner 名称。"""
 
     def build_plans(
         self,
@@ -120,7 +120,7 @@ class LumbarInterspacePlanner:
                     continue
 
                 # 方向解析必须放在区间循环内部：每个椎间可携带自己的端面斜横切坐标系，
-                # 旧定位结果没有该字段时才回退到零角度横状位。
+                # 定位结果没有该字段时才回退到零角度横状位。
                 frame = segment.frame or default_straight_frame(
                     plane_config.plane,
                     localization_result["image"],

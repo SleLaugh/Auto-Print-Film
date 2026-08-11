@@ -130,7 +130,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
 
         request = Request(dicom_dir="/tmp/dicom", output_dir=str(output_dir))
         context = ProcessingContext(request)
-        context.set_result("mapping", {
+        context.set_result("planning", {
             "planner": "测试 planner",
             "plan_count": 1,
             "plans": [{

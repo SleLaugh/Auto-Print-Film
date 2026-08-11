@@ -20,14 +20,14 @@ class SingleLabelWholeRangePlanner:
     """肺部、头骨等单目标三状位直线整切的兜底规划器。"""
 
     planner_name = "SingleLabelWholeRangePlanner"
-    """写入阶段四结果和调试报告的稳定 planner 名称。"""
+    """写入第六阶段结果和调试报告的稳定 planner 名称。"""
 
     def build_plans(
         self,
         request: Any,
         localization_result: Dict[str, Any],
     ) -> PlanningResult:
-        """根据第三步整体 bbox 为请求中的每个状位生成直线整切计划。"""
+        """根据第四阶段整体 bbox 为请求中的每个状位生成直线整切计划。"""
 
         plans = []
         warnings = []

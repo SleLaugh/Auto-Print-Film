@@ -1,7 +1,7 @@
 #!/src/planning/__init__.py
 # -*- coding: utf-8 -*-
 
-"""阶段四切片规划工具包。"""
+"""第六阶段切片规划工具包。"""
 
 from src.planning.base import PlanningResult, select_planner
 

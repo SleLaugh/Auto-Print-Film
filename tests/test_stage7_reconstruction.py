@@ -30,8 +30,8 @@ from src.stages.stage_reconstruction import ReconstructionStage
 from src.utils.Logger_utils import _logger_manager
 
 
-class Stage5ReconstructionTest(unittest.TestCase):
-    """汇总 `Stage5ReconstructionTest` 相关测试场景。"""
+class Stage7ReconstructionTest(unittest.TestCase):
+    """覆盖第七阶段平面堆栈、CPR、定位图和 DICOM 写出。"""
 
     @staticmethod
     def _max_line_fit_residual(points_zyx: np.ndarray) -> float:
@@ -71,7 +71,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 slice_count=2,
                 window_presets=["骨窗", "脑窗"],
             )
-            plan = context.get_result("mapping")["plans"][0]
+            plan = context.get_result("planning")["plans"][0]
             sampled_indices = []
             first_window_sample_count = []
             active_workers = 0
@@ -134,7 +134,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(temp_dir, slice_count=1)
-            plan = context.get_result("mapping")["plans"][0]
+            plan = context.get_result("planning")["plans"][0]
             planned_slice = plan["slices"][0]
             output_root = Path(temp_dir) / "gdcm-writers"
             start_barrier = threading.Barrier(4)
@@ -257,7 +257,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
             plan = self._make_context_with_one_plan(
                 temp_dir,
                 slice_count=2,
-            ).get_result("mapping")["plans"][0]
+            ).get_result("planning")["plans"][0]
             plan["slice_thickness"] = 5.0
 
             localizer = ReconstructionStage._build_plan_localizer(image, plan)
@@ -613,7 +613,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
         self.assertEqual(len(plan["offsets_mm"]), 21)
 
     def test_full_xyz_oblique_plan_is_resampled_with_planned_direction(self):
-        """第五步应原样执行含 XYZ 三方向倾斜的通用平面计划。"""
+        """第七阶段应原样执行含 XYZ 三方向倾斜的通用平面计划。"""
 
         image = sitk.GetImageFromArray(np.ones((32, 32, 32), dtype=np.int16))
         normal = np.asarray([0.2, 0.3, 0.9327379053], dtype=float)
@@ -674,7 +674,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                         plan = self._make_context_with_one_plan(
                             temp_dir,
                             slice_count=1,
-                        ).get_result("mapping")["plans"][0]
+                        ).get_result("planning")["plans"][0]
                         plan["plane"] = plane
                         plan["extent_mm"] = {"width": 0.0, "height": 0.0}
 
@@ -697,7 +697,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                         self.assertLess(orientation[5], 0.0)
 
     def test_multiple_interval_plans_write_to_independent_group_directories(self):
-        """第五阶段应保留多个区间各自的名称和独立输出目录。"""
+        """第七阶段应保留多个区间各自的名称和独立输出目录。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
@@ -705,7 +705,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 slice_count=1,
                 window_presets=["骨窗"],
             )
-            first_plan = context.get_result("mapping")["plans"][0]
+            first_plan = context.get_result("planning")["plans"][0]
             first_plan.update({
                 "plan_id": "腰椎_interspace_L1-L2_横状位",
                 "cut_mode": "interspace",
@@ -716,7 +716,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 "plan_id": "腰椎_interspace_L2-L3_横状位",
                 "group_name": "L2-L3",
             })
-            context.set_result("mapping", {
+            context.set_result("planning", {
                 "plans": [first_plan, second_plan],
             })
 
@@ -1098,7 +1098,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
         self.assertTrue(np.isfinite(sitk.GetArrayFromImage(output)).all())
 
     def test_plane_stack_resampler_consumes_three_straight_whole_range_plans(self):
-        """第五阶段应直接执行通用构造器生成的横、矢、冠直线计划。"""
+        """第七阶段应直接执行通用构造器生成的横、矢、冠直线计划。"""
 
         image = self._make_ramp_image(size=(12, 12, 12))
         request = Request(
@@ -1198,8 +1198,8 @@ class Stage5ReconstructionTest(unittest.TestCase):
             delta=1e-3,
         )
 
-    def test_reconstruction_consumes_mapping_plans_and_reports_physical_slice_count(self):
-        """验证 `test_reconstruction_consumes_mapping_plans_and_reports_physical_slice_count` 场景符合预期。"""
+    def test_reconstruction_consumes_planning_plans_and_reports_physical_slice_count(self):
+        """验证 `test_reconstruction_consumes_planning_plans_and_reports_physical_slice_count` 场景符合预期。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
@@ -1217,14 +1217,14 @@ class Stage5ReconstructionTest(unittest.TestCase):
             self.assertEqual(result["planes"]["横状位"]["slice_count"], 2)
 
     def test_reconstruction_dispatches_curved_stack_resampler(self):
-        """阶段五应按 geometry_type 把 CPR plan 交给 curved_stack resampler。"""
+        """第七阶段应按 geometry_type 把 CPR plan 交给 curved_stack resampler。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self._make_context_with_one_plan(
                 temp_dir,
                 geometry_type="curved_stack",
             )
-            plan = context.get_result("mapping")["plans"][0]
+            plan = context.get_result("planning")["plans"][0]
             plan.update({
                 "plan_id": "腰椎_CPR_矢状位",
                 "cut_mode": "cpr",
@@ -1243,7 +1243,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
             sampled_geometry_types = []
 
             class RecordingCurvedResampler:
-                """记录阶段五是否选择 CPR 重采样器。"""
+                """记录第七阶段是否选择 CPR 重采样器。"""
 
                 def sample_slice(self, image, current_plan, planned_slice):
                     """返回一张最小 HU 图像，并记录 geometry_type。"""
@@ -1269,7 +1269,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 temp_dir,
                 geometry_type="curved_stack",
             )
-            plan = context.get_result("mapping")["plans"][0]
+            plan = context.get_result("planning")["plans"][0]
             plan.update({
                 "plan_id": "腰椎_CPR_冠状位",
                 "cut_mode": "cpr",
@@ -1332,7 +1332,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                     temp_dir,
                     geometry_type="curved_stack",
                 )
-                plan = context.get_result("mapping")["plans"][0]
+                plan = context.get_result("planning")["plans"][0]
                 plan.update({
                     "plan_id": "腰椎_CPR_矢状位",
                     "cut_mode": "cpr",
@@ -1394,7 +1394,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
             raw_image.SetSpacing((1.0, 1.0, 1.0))
             sitk.WriteImage(raw_image, str(raw_path))
 
-            plan = context.get_result("mapping")["plans"][0]
+            plan = context.get_result("planning")["plans"][0]
             plan["slice_thickness"] = 3.0
             plan["slice_spacing"] = 5.0
             plan["extent_mm"] = {"width": 0.0, "height": 0.0}
@@ -1421,7 +1421,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 slice_count=2,
                 window_presets=["骨窗", "脑窗"],
             )
-            plan = context.get_result("mapping")["plans"][0]
+            plan = context.get_result("planning")["plans"][0]
             plan["slice_thickness"] = 5.0
             plan["slice_spacing"] = 5.0
             plan["range_end"]["z"] = 7.0
@@ -1677,7 +1677,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
                 slice_count=2,
                 dicom_dir=str(source_dir),
             )
-            plan = context.get_result("mapping")["plans"][0]
+            plan = context.get_result("planning")["plans"][0]
             plan["slice_thickness"] = 5.0
             plan["slice_spacing"] = 5.0
             plan["range_end"]["z"] = 7.0
@@ -1827,7 +1827,7 @@ class Stage5ReconstructionTest(unittest.TestCase):
         context.set_result("localization", {
             "raw_for_reconstruction_path": str(raw_path),
         })
-        context.set_result("mapping", {"plans": [plan]})
+        context.set_result("planning", {"plans": [plan]})
         return context
 
     @staticmethod

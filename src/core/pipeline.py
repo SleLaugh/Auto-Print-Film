@@ -1,5 +1,5 @@
 """
-六阶段 Pipeline 编排器。
+八阶段 Pipeline 编排器。
 
 Pipeline 只负责框架职责：预检、阶段顺序、状态转换、错误收集、产物保留和 manifest
 更新。具体医学处理仍由各 Stage 实现，避免编排器逐渐变成业务代码集合。
@@ -42,7 +42,7 @@ class Pipeline:
         初始化流水线及其框架依赖。
 
         Args:
-            stages: 自定义阶段列表；为空时构造正式六阶段主链。
+            stages: 自定义阶段列表；为空时构造正式八阶段主链。
             config: 已由 ConfigLoader 合并完成的应用配置。
             preflight: 可替换的预检器，方便纯框架测试使用假依赖。
             artifact_manager_factory: 产物管理器工厂，方便隔离文件系统测试。
@@ -59,18 +59,20 @@ class Pipeline:
     @staticmethod
     def _default_stages(config: AppConfig) -> List[BaseStage]:
         """
-        构造正式六阶段主链。
+        构造正式八阶段主链。
 
-        nnUNet 配置由统一 AppConfig 注入分割和定位阶段，避免 Pipeline 运行期间各阶段
-        再次读取不同配置文件。其他阶段暂时没有应用级配置依赖。
+        nnUNet 配置由统一 AppConfig 注入分割以及校正/定位/解剖分析三个
+        共享定位配置的阶段，避免运行期间读到不同的模型路径。
         """
         from src.stages import (
+            AnatomicalAnalysisStage,
             LocalizationStage,
-            MappingStage,
+            PlanningStage,
             PreprocessingStage,
             ReconstructionStage,
             ReportingStage,
             SegmentationStage,
+            SpatialCorrectionStage,
         )
 
         nnunet_config = {
@@ -85,8 +87,10 @@ class Pipeline:
         return [
             PreprocessingStage(),
             SegmentationStage(nnunet_config),
+            SpatialCorrectionStage(nnunet_config),
             LocalizationStage(nnunet_config),
-            MappingStage(),
+            AnatomicalAnalysisStage(nnunet_config),
+            PlanningStage(),
             ReconstructionStage(),
             ReportingStage(),
         ]
@@ -236,10 +240,10 @@ class Pipeline:
         artifacts: ArtifactManager,
     ) -> None:
         """
-        迁移期登记旧阶段直接创建的三个中间目录。
+        登记仍由业务阶段直接创建的三个中间目录。
 
-        等各阶段全部改为向 ArtifactManager 申请路径后可以删除该兼容入口；现阶段它让
-        新清理策略接管旧目录，同时不改变业务输出位置。
+        在这些阶段改为向 ArtifactManager 申请路径前，由清理策略统一接管目录，
+        同时保持业务输出位置不变。
         """
         root = Path(request.output_dir)
         for name in ("metadata", "nifti", "segmentation"):
@@ -249,7 +253,7 @@ class Pipeline:
 
     @staticmethod
     def _cleanup_debug_artifacts(request: Any) -> None:
-        """旧测试和旧调用的兼容 helper；新 Pipeline 不调用。"""
+        """直接清理调试中间目录的独立 helper；Pipeline 主流程不调用。"""
 
         root = Path(getattr(request, "output_dir", ""))
         if not root:

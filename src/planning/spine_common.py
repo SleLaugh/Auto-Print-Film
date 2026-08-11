@@ -22,10 +22,10 @@ def voxel_centroid_to_physical(
     image_info: Dict[str, Any],
 ) -> Point3D:
     """
-    把第三步输出的 z/y/x 体素质心转成 x/y/z 物理坐标。
+    把第四阶段输出的 z/y/x 体素质心转成 x/y/z 物理坐标。
 
     这里必须同时使用 spacing、origin 和 direction，避免带方向矩阵的
-    NIfTI 在阶段四生成错误的物理坐标。
+    NIfTI 在第六阶段生成错误的物理坐标。
     """
 
     return voxel_index_to_physical(
@@ -117,7 +117,7 @@ def _parse_physical_point(value: Any) -> Optional[Point3D]:
 
 
 def _filtered_spine_annotations(localization_result: Dict[str, Any]) -> Dict[str, Any]:
-    """安全读取阶段三过滤几何，损坏容器按缺失处理。"""
+    """安全读取第五阶段过滤几何，损坏容器按缺失处理。"""
 
     spine_geometry = localization_result.get("spine_geometry")
     if not isinstance(spine_geometry, dict):
@@ -650,7 +650,7 @@ def _parse_sagittal_prism(
     annotation: Dict[str, Any],
     frame: StraightPlaneFrame,
 ) -> Optional[tuple[list[tuple[float, float]], tuple[float, float]]]:
-    """读取阶段三保存的四棱柱矢状轮廓及左右范围。"""
+    """读取第五阶段保存的四棱柱矢状轮廓及左右范围。"""
 
     geometry = annotation.get("sagittal_body_quadrilateral")
     if not isinstance(geometry, dict):
@@ -797,8 +797,8 @@ def _resolve_interspace_face_geometry(
     lower_annotation = filtered.get(lower_label)
     if not isinstance(upper_annotation, dict) or not isinstance(lower_annotation, dict):
         return None
-    # 新结果会显式标记碰撞等原因造成的四棱柱失效；旧端面只能兼容
-    # 没有该字段的历史结果，不能把已判无效的几何重新复活。
+    # prism_found 会显式标记碰撞等原因造成的四棱柱失效；只有字段缺失时
+    # 才允许尝试端面回退，不能把已判无效的几何重新复活。
     if (
         upper_annotation.get("prism_found") is False
         or lower_annotation.get("prism_found") is False

@@ -33,8 +33,10 @@ from .stage_results import (
     StageResult,
     PreprocessingResult,
     SegmentationResult,
+    SpatialCorrectionStageResult,
     LocalizationStageResult,
-    MappingStageResult,
+    AnatomicalAnalysisStageResult,
+    PlanningStageResult,
     ReconstructionStageResult,
     ReportingStageResult,
 )
@@ -78,8 +80,10 @@ __all__ = [
     'StageResult',
     'PreprocessingResult',
     'SegmentationResult',
+    'SpatialCorrectionStageResult',
     'LocalizationStageResult',
-    'MappingStageResult',
+    'AnatomicalAnalysisStageResult',
+    'PlanningStageResult',
     'ReconstructionStageResult',
     'ReportingStageResult',
 ]

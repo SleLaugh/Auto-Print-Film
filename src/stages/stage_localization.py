@@ -1,10 +1,7 @@
 #!/src/services/stage_localization.py
 # -*- coding: utf-8 -*-
 
-"""
-阶段三：定位与横状位 XY 回正候选
-椎体/目标 label 定位、目标 bbox 输出，以及不切换主流程输入的回正候选诊断
-"""
+"""空间校正、标签定位和解剖分析阶段共用的医学几何算法。"""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,15 +44,21 @@ _TERMINAL_EXTENSION_MINIMUM_COMPONENT_FRACTION = 0.10
 _TERMINAL_EXTENSION_MAXIMUM_SI_GAP = 1
 _TERMINAL_EXTENSION_MINIMUM_TRANSVERSE_OVERLAP_FRACTION = 0.75
 _TERMINAL_EXTENSION_MINIMUM_SI_SPAN = 2
+_LOCALIZATION_WORKSPACE_KEY = "localization_workspace_v1"
 
 
-class LocalizationStage(BaseStage):
-    """定位与回正占位阶段"""
+class LocalizationOperations(BaseStage):
+    """校正、定位和解剖分析共用的已验证算法集合。"""
     
-    def __init__(self, config: Dict[str, Any] = None):
-        """初始化定位配置、实验性回正阈值和 nnUNet 数据集路径。"""
+    def __init__(
+        self,
+        config: Dict[str, Any] = None,
+        *,
+        stage_name: str = "localization_operations",
+    ):
+        """初始化共用定位配置、校正阈值和 nnUNet 数据集路径。"""
 
-        super().__init__(name="localization", config=config)
+        super().__init__(name=stage_name, config=config)
         # 这些阈值暂时只给实验开关使用。默认主流程不会自动回正，但保留
         # 阈值字段，方便后续真正设计回正算法时继续沿用 metadata 结构。
         self.correction_angle_threshold_degrees = float(
@@ -77,9 +80,9 @@ class LocalizationStage(BaseStage):
         self.correction_max_label_angle_spread_degrees = float(
             self.config.get('correction_max_label_angle_spread_degrees', 15.0)
         )
-        # 阶段三先写候选回正图和诊断信息；候选 raw/seg 双文件可用时，
-        # 后续定位几何、阶段四和阶段五统一切到候选图像空间。
-        # 旧实验开关仍只服务 `_correct_images_if_needed` 兼容入口。
+        # 第三阶段先写候选回正图和诊断信息；候选 raw/seg 双文件可用时，
+        # 第四阶段定位和第五阶段解剖分析统一切到候选图像空间。
+        # 实验开关只服务 `_correct_images_if_needed` 的独立验证入口。
         self.correction_requested = bool(
             self.config.get('correction_requested', True)
         )
@@ -91,7 +94,7 @@ class LocalizationStage(BaseStage):
         self._apply_injected_nnunet_config()
 
     def _apply_injected_nnunet_config(self):
-        """用 Pipeline 注入的统一配置覆盖旧的阶段内文件配置。"""
+        """用 Pipeline 注入的统一配置覆盖阶段内读取的本地配置。"""
 
         project_root = Path(__file__).resolve().parents[2]
         for key in ('nnUNet_raw', 'nnUNet_preprocessed', 'nnUNet_results'):
@@ -171,324 +174,6 @@ class LocalizationStage(BaseStage):
             path = project_root / path
         return str(path)
     
-    def execute(self, context: ProcessingContext) -> ProcessingContext:
-        """
-        定位请求目标并生成阶段三结果。
-
-        本阶段解析目标标签、提取质心和包围盒，并为已适配部位计算解剖坐标；
-        当前回正仍为安全占位，阶段四和阶段五默认继续使用原始图像空间。
-        """
-
-        request = context.request
-        prev_result = context.get_result('segmentation')
-        preprocessing_result = context.get_result('preprocessing') or {}
-        
-        if not prev_result:
-            raise ValueError("前置阶段 'segmentation' 结果不存在")
-        
-        seg_path = prev_result.get('seg_path')
-        raw_path = (
-            preprocessing_result.get('nifti_path')
-            or prev_result.get('input_nifti')
-            or str(Path(request.output_dir) / 'nifti' / 'raw_0000.nii.gz')
-        )
-        model_info = prev_result.get('model') or {}
-        if not seg_path:
-            raise ValueError("分割结果路径不存在")
-        
-        DebugLog("=" * 60)
-        DebugLog("【阶段三】定位与回正占位 - 目标Label定位")
-        DebugLog(f"  输入原图: {raw_path}")
-        DebugLog(f"  输入分割: {seg_path}")
-        DebugLog(f"  部位: {request.body_part.value}")
-        cut_mode = self._resolve_request_cut_mode(request)
-        # 同一次请求可能同时包含腰椎横状位区间切和矢/冠整切，因此这里
-        # 保留当前部位的全部切法配置。第三步仍只用 cut_config 定位本轮
-        # 所需标签，第四步则按每个计划自己的 cut_mode 读取 cut_configs。
-        cut_configs = self._resolve_cut_configs(request)
-        cut_config = cut_configs.get(cut_mode)
-        if not cut_config:
-            raise ValueError(
-                f"未找到切割方式配置: body_part={request.body_part.value}, "
-                f"cut_mode={cut_mode}"
-            )
-        resolved_cut_config = self._resolve_label_aliases(cut_config)
-        DebugLog(f"  定位范围模式: {cut_mode}")
-        DebugLog(f"  切割配置: {cut_config}")
-        DebugLog(f"  标签配置: {resolved_cut_config}")
-        DebugLog("=" * 60)
-        
-        output_path = Path(request.output_dir) / 'metadata'
-        if is_debug_log_file_enabled():
-            output_path.mkdir(parents=True, exist_ok=True)
-        
-        # [1] resolve_labels: 获取Label列表
-        DebugLog("  [1] resolve_labels: 获取目标Label列表...")
-        dataset_json_path = self._find_dataset_json(model_info, seg_path=seg_path)
-        label_map = self._load_label_map(dataset_json_path)
-        label_targets = self._resolve_label_targets(resolved_cut_config, label_map)
-        DebugLog(f"    dataset.json: {dataset_json_path}")
-        DebugLog(f"    目标Label: {label_targets}")
-        
-        # [2] extract_label_coordinates: 提取目标坐标
-        DebugLog("  [2] extract_label_coordinates: 提取目标质心+包围盒...")
-        image = sitk.ReadImage(str(seg_path))
-        seg_array = sitk.GetArrayFromImage(image)
-        label_regions = self._build_label_voxel_regions(seg_array, label_targets)
-        label_coordinates = self._extract_label_coordinates(
-            seg_array,
-            label_targets,
-            label_regions=label_regions,
-        )
-        self._validate_found_labels(label_coordinates)
-        target_mask = self._build_target_mask(seg_array, label_targets)
-        correction_scope_bbox = self._build_target_bbox(target_mask)
-        DebugLog(f"    已提取 {len(label_coordinates)} 个Label坐标")
-        DebugLog(f"    目标整体bbox: {correction_scope_bbox.to_dict()}")
-        
-        # [3] detect_skew: 估计横状位 XY 回正候选。
-        DebugLog("  [3] detect_skew: 估计横状位 XY 回正候选...")
-        xy_correction_candidate = self._build_xy_correction_candidate(
-            seg_array,
-            label_targets,
-            body_part=request.body_part.value,
-            label_regions=label_regions,
-        )
-        DebugLog(
-            "    横状位 XY 候选角: "
-            f"{xy_correction_candidate['angle_degrees']:.3f}°, "
-            f"status={xy_correction_candidate['correction_status']}"
-        )
-
-        # [4] correct_skew: 写出候选回正图；候选文件可用时提升为本轮主流程输入。
-        nifti_path = Path(request.output_dir) / 'nifti'
-        DebugLog("  [4] correct_skew: 写出候选回正图，并选择后续工作输入...")
-        correction_result = self._write_xy_correction_candidate_images(
-            raw_path=str(raw_path),
-            seg_path=str(seg_path),
-            output_dir=nifti_path,
-            candidate=xy_correction_candidate,
-            correction_center_bbox=correction_scope_bbox,
-        )
-        correction_result = self._promote_xy_correction_candidate_if_available(
-            correction_result,
-        )
-
-        if correction_result['correction_applied']:
-            DebugLog(
-                "    已启用回正候选，阶段三几何和后续阶段使用回正 raw/seg"
-            )
-            image = sitk.ReadImage(str(correction_result['seg_for_reconstruction_path']))
-            seg_array = sitk.GetArrayFromImage(image)
-            label_regions = self._build_label_voxel_regions(
-                seg_array,
-                label_targets,
-            )
-            label_coordinates = self._extract_label_coordinates(
-                seg_array,
-                label_targets,
-                label_regions=label_regions,
-            )
-            self._validate_found_labels(label_coordinates)
-            target_mask = self._build_target_mask(seg_array, label_targets)
-            correction_scope_bbox = self._build_target_bbox(target_mask)
-            DebugLog(
-                "    回正空间目标整体bbox: "
-                f"{correction_scope_bbox.to_dict()}"
-            )
-        else:
-            DebugLog("    未启用主流程回正，后续阶段继续使用原始 raw/seg")
-
-        label_masks = {}
-        if request.body_part.value in {"颈椎", "胸椎", "髋骨"}:
-            for label_name, region in label_regions.items():
-                label_mask = np.zeros(seg_array.shape, dtype=bool)
-                if region.indices_zyx.size:
-                    label_mask[tuple(region.indices_zyx.T)] = True
-                label_masks[label_name] = label_mask
-        start_labels = resolved_cut_config.get('start_labels') or []
-        end_labels = resolved_cut_config.get('end_labels') or []
-        DebugLog("    [5] build_anatomical_geometry: 开始")
-        anatomical_geometry, anatomical_diagnostics = self._build_anatomical_geometry(
-            body_part=request.body_part.value,
-            target_mask=target_mask,
-            image=image,
-            label_masks=label_masks,
-            start_label=start_labels[0] if start_labels else None,
-            end_label=end_labels[0] if end_labels else None,
-        )
-        if anatomical_geometry is not None:
-            frame = anatomical_geometry.global_frame
-            DebugLog(
-                "    部位解剖坐标: "
-                f"method={frame.method}, confidence={frame.confidence:.3f}, "
-                f"applied={frame.applied}"
-            )
-            for warning in frame.warnings:
-                DebugLog(f"    解剖坐标警告: {warning}")
-
-        # 脊柱专用几何派生：保留完整 label 的 coords/bbox，同时输出过滤标注
-        # 计算出的标注质心。非脊柱部位不生成这份结果。
-        DebugLog("    [6] build_spine_body_geometry: 开始")
-        spine_geometry = self._build_spine_body_geometry(
-            body_part=request.body_part.value,
-            image=image,
-            seg_array=seg_array,
-            label_targets=label_targets,
-            label_regions=label_regions,
-        )
-        DebugLog("    [6] build_spine_body_geometry: 完成")
-        if spine_geometry is not None:
-            DebugLog(
-                "    脊柱过滤标注与标注质心: "
-                f"{len(spine_geometry['filtered_annotation_centroids'])} 个标注质心，"
-                "全量 coords/bbox 保持不变"
-            )
-
-        # 研发期调试输出：定位框和目标二值掩膜信息已可由标签掩膜覆盖，
-        # 为缩短 debug 轮耗时，不再默认写出这两类重复产物。
-        debug_label_mask_overlay_path = output_path / '标签掩膜.nii.gz'
-        if is_debug_log_file_enabled():
-            self._write_debug_label_mask_overlay(
-            reference_image=image,
-            seg_array=seg_array,
-            label_targets=label_targets,
-            output_path=debug_label_mask_overlay_path,
-        )
-            DebugLog(f"    调试分label mask overlay: {debug_label_mask_overlay_path}")
-        debug_vertebral_body_mask_overlay_path = output_path / '椎体主体掩膜.nii.gz'
-        if is_debug_log_file_enabled():
-            self._write_debug_vertebral_body_mask_overlay(
-            reference_image=image,
-            seg_array=seg_array,
-            label_targets=label_targets,
-            output_path=debug_vertebral_body_mask_overlay_path,
-        )
-            DebugLog(f"    调试椎体主体 mask overlay: {debug_vertebral_body_mask_overlay_path}")
-        debug_vertebral_body_prism_mask_overlay_path = (
-            output_path / '椎体四棱柱掩膜.nii.gz'
-        )
-        if is_debug_log_file_enabled():
-            self._write_debug_vertebral_body_prism_mask_overlay(
-                reference_image=image,
-                seg_array=seg_array,
-                label_targets=label_targets,
-                output_path=debug_vertebral_body_prism_mask_overlay_path,
-            )
-            DebugLog(
-                "    调试椎体四棱柱 mask overlay: "
-                f"{debug_vertebral_body_prism_mask_overlay_path}"
-            )
-        debug_xy_correction_crosshair_overlay_path = (
-            output_path / '横状位XY回正十字线.nii.gz'
-        )
-        if is_debug_log_file_enabled():
-            self._write_xy_correction_crosshair_overlay(
-                reference_image=image,
-                output_path=debug_xy_correction_crosshair_overlay_path,
-                correction_center_bbox=correction_scope_bbox,
-                candidate=xy_correction_candidate,
-            )
-            DebugLog(
-                "    调试横状位 XY 回正十字线 overlay: "
-                f"{debug_xy_correction_crosshair_overlay_path}"
-            )
-
-        localization_result_path = output_path / 'localization_result.json'
-        if not is_debug_log_file_enabled():
-            localization_result_path = ""
-        image_info = NiftiImageInfo(
-            size_xyz=list(image.GetSize()),
-            spacing_xyz=list(image.GetSpacing()),
-            origin_xyz=list(image.GetOrigin()),
-            direction=list(image.GetDirection()),
-        ).to_dict()
-        result = {
-            'coords': self._coordinates_to_dict(label_coordinates),
-            'cut_mode': cut_mode,
-            'cut_config': cut_config,
-            'cut_configs': cut_configs,
-            'resolved_cut_config': resolved_cut_config,
-            'spine_cpr_config': self._resolve_spine_cpr_config(
-                request.body_part.value,
-            ),
-            'label_targets': self._label_targets_to_dict(label_targets),
-            'dataset_json_path': str(dataset_json_path),
-            'localization_result_path': str(localization_result_path),
-            # 阶段四需要图像空间信息把第三步的 z/y/x 体素坐标换算成 x/y/z
-            # 物理坐标；这里只写 JSON 文件不够，必须同步放入 context 结果。
-            'image': image_info,
-            'raw_for_reconstruction_path': correction_result['raw_for_reconstruction_path'],
-            'seg_for_reconstruction_path': correction_result['seg_for_reconstruction_path'],
-            'correction_applied': correction_result['correction_applied'],
-            'correction_angle_degrees': xy_correction_candidate['angle_degrees'],
-            'correction_scope_bbox': correction_scope_bbox.to_dict(),
-            'correction_params': correction_result['correction_params'],
-            'corrected_raw_path': correction_result['corrected_raw_path'],
-            'corrected_seg_path': correction_result['corrected_seg_path'],
-            'candidate_raw_path': correction_result['candidate_raw_path'],
-            'candidate_seg_path': correction_result['candidate_seg_path'],
-            'is_skewed': correction_result['correction_applied'],
-            'skew_params': correction_result['correction_params'],
-            'spine_geometry': spine_geometry,
-            'debug_bbox_overlay_path': '',
-            'debug_target_mask_overlay_path': '',
-            'debug_label_mask_overlay_path': str(debug_label_mask_overlay_path) if is_debug_log_file_enabled() else '',
-            'debug_vertebral_body_mask_overlay_path': str(debug_vertebral_body_mask_overlay_path) if is_debug_log_file_enabled() else '',
-            'debug_vertebral_body_prism_mask_overlay_path': str(debug_vertebral_body_prism_mask_overlay_path) if is_debug_log_file_enabled() else '',
-            'debug_xy_correction_crosshair_overlay_path': str(debug_xy_correction_crosshair_overlay_path) if is_debug_log_file_enabled() else '',
-        }
-        if anatomical_geometry is not None:
-            result['anatomical_geometry'] = anatomical_geometry.to_dict()
-            result['anatomical_geometry_diagnostics'] = anatomical_diagnostics
-
-        if is_debug_log_file_enabled():
-            self._write_localization_result(
-            localization_result_path,
-            request=request,
-            model_info=model_info,
-            cut_config=cut_config,
-            cut_configs=cut_configs,
-            resolved_cut_config=resolved_cut_config,
-            label_targets=label_targets,
-            label_coordinates=label_coordinates,
-            dataset_json_path=dataset_json_path,
-            image=image,
-            seg_path=result['seg_for_reconstruction_path'],
-            raw_for_reconstruction_path=result['raw_for_reconstruction_path'],
-            seg_for_reconstruction_path=result['seg_for_reconstruction_path'],
-            correction_applied=result['correction_applied'],
-            correction_angle_degrees=result['correction_angle_degrees'],
-            correction_scope_bbox=correction_scope_bbox,
-            correction_params=result['correction_params'],
-            spine_geometry=result['spine_geometry'],
-            corrected_raw_path=result['corrected_raw_path'],
-            corrected_seg_path=result['corrected_seg_path'],
-            candidate_raw_path=result['candidate_raw_path'],
-            candidate_seg_path=result['candidate_seg_path'],
-            debug_bbox_overlay_path=result['debug_bbox_overlay_path'],
-            debug_target_mask_overlay_path=result['debug_target_mask_overlay_path'],
-            debug_label_mask_overlay_path=result['debug_label_mask_overlay_path'],
-            debug_vertebral_body_mask_overlay_path=result['debug_vertebral_body_mask_overlay_path'],
-            debug_vertebral_body_prism_mask_overlay_path=result[
-                'debug_vertebral_body_prism_mask_overlay_path'
-            ],
-            debug_xy_correction_crosshair_overlay_path=(
-                result['debug_xy_correction_crosshair_overlay_path']
-            ),
-            is_skewed=result['is_skewed'],
-            skew_params=result['skew_params'],
-            anatomical_geometry=anatomical_geometry,
-            spine_cpr_config=result['spine_cpr_config'],
-        )
-        
-        context.set_stage_result(LocalizationStageResult(payload=result))
-        
-        DebugLog("  ✅ 阶段三完成")
-        DebugLog("=" * 60)
-
-        return context
-
     @staticmethod
     def _build_anatomical_geometry(
         body_part: str,
@@ -970,8 +655,7 @@ class LocalizationStage(BaseStage):
         非脊柱目标没有天然的椎体顺序，候选入口会用更高阈值约束整体
         mask PCA，避免小角度形态偏差生成误导性候选。
 
-        默认流程只把这里的角度写入候选诊断和候选 NIfTI，不把它作为
-        阶段四/五重建输入。
+        该方法只估计候选角并生成诊断；是否提升候选空间由第三阶段入口统一决定。
         """
         if self._is_vertebrae_targets(label_targets):
             vertebrae_info = self._detect_vertebrae_axial_skew(
@@ -998,8 +682,8 @@ class LocalizationStage(BaseStage):
         """
         构造“回正逻辑待实现”的诊断信息。
 
-        这里故意不计算候选角度，避免把旧 PCA 角度继续写入结果后被误解为
-        可执行的回正角。阶段三当前只承诺输出定位坐标和目标 bbox。
+        这里故意不计算候选角度，避免把 PCA 诊断误解为可执行回正角。该结果只供
+        未启用全局实验回正的独立 helper 使用，不代表第三阶段主流程输出。
         """
         return {
             'method': 'global_correction_todo',
@@ -1016,7 +700,7 @@ class LocalizationStage(BaseStage):
             'correction_status': 'todo',
             'global_correction_enabled': self.enable_global_correction,
             'correction_todo_reason': (
-                '回正逻辑待实现，阶段三当前只保留定位坐标和目标 bbox'
+                '回正逻辑待实现，实验 helper 不改写 raw/seg'
             ),
         }
 
@@ -1328,7 +1012,7 @@ class LocalizationStage(BaseStage):
         if not self.enable_global_correction:
             correction_params['correction_status'] = 'todo'
             correction_params['correction_todo_reason'] = (
-                '回正逻辑待实现，阶段三当前只输出定位坐标，不改写 raw/seg'
+                '回正逻辑待实现，实验 helper 不改写 raw/seg'
             )
             return {
                 'raw_for_reconstruction_path': raw_path,
@@ -1411,9 +1095,9 @@ class LocalizationStage(BaseStage):
         """
         候选 raw/seg 均存在时，把候选回正结果提升为本轮定位和重建输入。
 
-        阶段四/五只消费 `raw_for_reconstruction_path`、
-        `seg_for_reconstruction_path` 以及阶段三几何结果。这里集中完成路径
-        提升，后续 CPR、椎间切和重建不需要各自再判断候选文件。
+        第四阶段、第五阶段以及后续规划重建只消费稳定的
+        `raw_for_reconstruction_path` 和 `seg_for_reconstruction_path`。这里集中
+        完成路径提升，后续阶段不需要各自判断候选文件。
         """
 
         result = dict(correction_result)
@@ -1662,8 +1346,8 @@ class LocalizationStage(BaseStage):
         """
         计算回正旋转中心的连续体素索引，顺序为 SimpleITK 使用的 x/y/z。
 
-        优先使用本次定位目标的 bbox 中心；没有 bbox 时退回整图中心，兼容
-        单元测试或外部直接调用 helper 的旧方式。
+        优先使用本次定位目标的 bbox 中心；没有 bbox 时退回整图中心，保证独立
+        helper 调用也有确定的旋转中心。
         """
         if correction_center_bbox:
             return [
@@ -2365,11 +2049,11 @@ class LocalizationStage(BaseStage):
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
     ) -> Dict[str, Any] | None:
         """
-        在阶段三生成脊柱专用过滤标注和标注质心，供阶段四 CPR 使用。
+        为第五阶段生成脊柱专用过滤标注和标注质心，供第六阶段 CPR 使用。
 
         这里不修改原始 label 的质心和 bbox。完整 label 负责定位及覆盖范围，
         过滤标注负责计算标注质心；颈椎 C1 保留在完整定位中，但不进入 CPR
-        标注质心。物理坐标直接由当前最终定位图像转换，保证与阶段四一致。
+        标注质心。物理坐标直接由当前工作图像转换，保证与第四阶段定位空间一致。
         """
 
         if body_part not in {"颈椎", "胸椎", "腰椎"}:
@@ -2580,7 +2264,7 @@ class LocalizationStage(BaseStage):
                 "source": "full_nnunet_label",
                 "target": "vertebral_body",
             },
-            "stage": "stage3_localization",
+            "stage": "stage5_anatomical_analysis",
             "filtered_annotation_centroids": filtered_annotation_centroids,
             "excluded_from_annotation_centroids": ["vertebrae_C1"],
             "full_label_geometry": "coords",
@@ -3061,7 +2745,7 @@ class LocalizationStage(BaseStage):
         body_mask: np.ndarray,
         image: sitk.Image,
     ) -> np.ndarray | None:
-        """兼容接口：把局部棱柱还原为与输入同尺寸的布尔 mask。"""
+        """把局部棱柱还原为与输入同尺寸的布尔 mask，供独立检查使用。"""
 
         body_indices = np.argwhere(body_mask)
         prism_region = LocalizationStage._vertebral_body_prism_region(
@@ -4147,7 +3831,7 @@ class LocalizationStage(BaseStage):
 
     @staticmethod
     def _resolve_request_cut_mode(request) -> str:
-        """根据请求部位和全部状位推导阶段三需要加载的定位范围模式。"""
+        """根据请求部位和全部状位推导第三阶段需要加载的定位范围模式。"""
 
         from src.planning.cut_policy import localization_cut_mode
 
@@ -4194,8 +3878,8 @@ class LocalizationStage(BaseStage):
     def _resolve_cut_configs(self, request) -> Dict[str, Dict[str, Any]]:
         """返回当前部位的全部切法配置，并统一校验其中的范围扩展设置。
 
-        阶段三选择标签时仍只使用当前定位模式；完整映射专门提供给第四步，
-        让一次混合状位请求中的整切和区间切都能读取各自配置。
+        第三阶段选择标签时只使用当前定位模式；完整配置由第四阶段写入定位契约，
+        让第六阶段在一次混合状位请求中为整切和区间切读取各自配置。
         """
 
         body_part = getattr(request.body_part, 'value', request.body_part)
@@ -4286,7 +3970,7 @@ class LocalizationStage(BaseStage):
         """校验按状位配置的切片范围扩展距离。
 
         JSON 中 `start`、`end` 的单位固定为毫米。字段可以省略，省略端
-        在第四步按 0mm 处理；显式值必须是非负有限数字，布尔值不视为
+        在第三阶段按 0mm 处理；显式值必须是非负有限数字，布尔值不视为
         数字，避免 JSON 的 true/false 被 Python 当成 1/0。
         """
 
@@ -4326,3 +4010,127 @@ class LocalizationStage(BaseStage):
                         f"slice_range_extension.{plane_name}.{endpoint_name} "
                         "不能小于 0"
                     )
+
+
+class LocalizationStage(LocalizationOperations):
+    """第四阶段：在校正阶段选定的空间中计算 label 质心和 bbox。"""
+
+    def __init__(self, config: Dict[str, Any] = None):
+        super().__init__(config, stage_name="localization")
+
+    def execute(self, context: ProcessingContext) -> ProcessingContext:
+        """生成纯标签定位结果，不在本阶段计算解剖几何。"""
+
+        correction_result = context.get_result("spatial_correction")
+        if not correction_result:
+            raise ValueError("前置阶段 'spatial_correction' 结果不存在")
+
+        DebugLog("=" * 60)
+        DebugLog("【第四阶段】标签定位 - 质心与bbox")
+
+        workspace = context.metadata.get(_LOCALIZATION_WORKSPACE_KEY)
+        working_seg_path = correction_result["seg_for_reconstruction_path"]
+        if not workspace or workspace.get("seg_path") != working_seg_path:
+            label_targets = {
+                name: LabelTarget(
+                    label_name=value["label_name"],
+                    label_ids=[int(item) for item in value["label_ids"]],
+                )
+                for name, value in correction_result["label_targets"].items()
+            }
+            image = sitk.ReadImage(str(working_seg_path))
+            seg_array = sitk.GetArrayFromImage(image)
+            label_regions = self._build_label_voxel_regions(
+                seg_array,
+                label_targets,
+            )
+            label_coordinates = self._extract_label_coordinates(
+                seg_array,
+                label_targets,
+                label_regions=label_regions,
+            )
+            self._validate_found_labels(label_coordinates)
+            target_mask = self._build_target_mask(seg_array, label_targets)
+            correction_scope_bbox = self._build_target_bbox(target_mask)
+            workspace = {
+                "seg_path": working_seg_path,
+                "image": image,
+                "seg_array": seg_array,
+                "label_regions": label_regions,
+                "label_targets": label_targets,
+                "label_coordinates": label_coordinates,
+                "target_mask": target_mask,
+                "correction_scope_bbox": correction_scope_bbox,
+                "dataset_json_path": Path(
+                    correction_result["dataset_json_path"]
+                ),
+                "model_info": correction_result.get("model") or {},
+                "cut_mode": correction_result["cut_mode"],
+                "cut_config": correction_result["cut_config"],
+                "cut_configs": correction_result["cut_configs"],
+                "resolved_cut_config": correction_result[
+                    "resolved_cut_config"
+                ],
+            }
+            context.metadata[_LOCALIZATION_WORKSPACE_KEY] = workspace
+
+        image = workspace["image"]
+        label_coordinates = workspace["label_coordinates"]
+        label_targets = workspace["label_targets"]
+        correction_scope_bbox = workspace["correction_scope_bbox"]
+        result_path = ""
+        if is_debug_log_file_enabled():
+            result_path = str(
+                Path(context.request.output_dir)
+                / "metadata"
+                / "localization_result.json"
+            )
+
+        image_info = NiftiImageInfo(
+            size_xyz=list(image.GetSize()),
+            spacing_xyz=list(image.GetSpacing()),
+            origin_xyz=list(image.GetOrigin()),
+            direction=list(image.GetDirection()),
+        ).to_dict()
+        payload = {
+            "coords": self._coordinates_to_dict(label_coordinates),
+            "cut_mode": correction_result["cut_mode"],
+            "cut_config": correction_result["cut_config"],
+            "cut_configs": correction_result["cut_configs"],
+            "resolved_cut_config": correction_result["resolved_cut_config"],
+            "spine_cpr_config": self._resolve_spine_cpr_config(
+                context.request.body_part.value,
+            ),
+            "label_targets": self._label_targets_to_dict(label_targets),
+            "dataset_json_path": correction_result["dataset_json_path"],
+            "localization_result_path": result_path,
+            "image": image_info,
+            "raw_for_reconstruction_path": correction_result[
+                "raw_for_reconstruction_path"
+            ],
+            "seg_for_reconstruction_path": working_seg_path,
+            "correction_applied": correction_result["correction_applied"],
+            "correction_angle_degrees": correction_result[
+                "correction_angle_degrees"
+            ],
+            "correction_scope_bbox": correction_scope_bbox.to_dict(),
+            "correction_params": correction_result["correction_params"],
+            "corrected_raw_path": correction_result["corrected_raw_path"],
+            "corrected_seg_path": correction_result["corrected_seg_path"],
+            "candidate_raw_path": correction_result["candidate_raw_path"],
+            "candidate_seg_path": correction_result["candidate_seg_path"],
+            "is_skewed": correction_result["is_skewed"],
+            "skew_params": correction_result["skew_params"],
+            "debug_bbox_overlay_path": "",
+            "debug_target_mask_overlay_path": "",
+            "debug_xy_correction_crosshair_overlay_path": correction_result.get(
+                "debug_xy_correction_crosshair_overlay_path",
+                "",
+            ),
+        }
+        context.set_stage_result(LocalizationStageResult(payload=payload))
+
+        DebugLog(f"  已定位 {len(label_coordinates)} 个 label")
+        DebugLog("  第四阶段完成")
+        DebugLog("=" * 60)
+        return context

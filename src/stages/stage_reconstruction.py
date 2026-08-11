@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-阶段五：重建与输出
+第七阶段：重建与输出
 MPR多平面重建与DICOM生成
-按阶段四 SlicePlan 执行直线 plane_stack 重建
+按第六阶段 SlicePlan 执行直线 plane_stack 重建
 
 每个 plan 分成两个明确步骤：先串行完成全部 MPR HU 图像采样，再按窗位并行完成
 灰度映射和输出任务。不同窗位共享同一份 MPR 结果，不会重复重采样；GDCM 原生
@@ -35,7 +35,7 @@ from src.utils import DebugLog, is_debug_log_file_enabled
 
 
 class ReconstructionStage(BaseStage):
-    """执行阶段四计划，并按窗位输出派生 CT DICOM 序列。"""
+    """执行切片计划，并按窗位输出派生 CT DICOM 序列。"""
 
     _LOCALIZER_DRAW_AXES = {
         "横状位": (2, 1, 0),
@@ -67,7 +67,7 @@ class ReconstructionStage(BaseStage):
     
     def execute(self, context: ProcessingContext) -> ProcessingContext:
         """
-        执行阶段四的全部平面切片计划并输出分窗位 DICOM 序列。
+        执行第六阶段的全部平面切片计划并输出分窗位 DICOM 序列。
 
         状位与计划串行执行，同一计划内的不同窗位可并行；每个切割组都会生成
         自己的数字编号切片和 Localizer 定位图。
@@ -76,16 +76,16 @@ class ReconstructionStage(BaseStage):
         request = context.request
         
         loc_result = context.get_result('localization')
-        map_result = context.get_result('mapping')
+        plan_result = context.get_result('planning')
         
         if not loc_result:
             raise ValueError("前置阶段 'localization' 结果不存在")
-        if not map_result:
-            raise ValueError("前置阶段 'mapping' 结果不存在")
+        if not plan_result:
+            raise ValueError("前置阶段 'planning' 结果不存在")
         
-        # 阶段三现在会明确告诉后续阶段“实际该用哪张 raw 图像”。
-        # 未回正时这里是原始 raw_0000.nii.gz；发生回正时才是 raw_corrected.nii.gz。
-        # corrected_raw_path 只作为旧结果兼容字段保留。
+        # 第三阶段明确选定后续使用的 raw 图像，第四阶段把稳定路径转交给重建。
+        # 未回正时是原始 raw_0000.nii.gz；发生回正时才指向校正候选。
+        # corrected_raw_path 是调试 JSON 中保留的同义摘要字段。
         image_path = (
             loc_result.get('raw_for_reconstruction_path')
             or loc_result.get('corrected_raw_path')
@@ -93,14 +93,14 @@ class ReconstructionStage(BaseStage):
         if not image_path:
             raise ValueError("定位结果缺少 raw_for_reconstruction_path/corrected_raw_path")
 
-        plans = map_result.get("plans", [])
+        plans = plan_result.get("plans", [])
         if not isinstance(plans, list):
-            raise ValueError("阶段四输出 plans 必须是列表")
+            raise ValueError("第六阶段输出 plans 必须是列表")
         for plan in plans:
             self._validate_plan(plan)
         
         DebugLog("=" * 60)
-        DebugLog("【阶段五】重建与输出 - MPR重建与DICOM生成")
+        DebugLog("【第七阶段】重建与输出 - MPR重建与DICOM生成")
         DebugLog(f"  输入图像: {image_path}")
         DebugLog(f"  输出目录: {request.output_dir}")
         DebugLog(f"  规划组数: {len(plans)}")
@@ -143,7 +143,7 @@ class ReconstructionStage(BaseStage):
         
         context.set_stage_result(ReconstructionStageResult(payload=result))
         
-        DebugLog("  ✅ 阶段五完成")
+        DebugLog("  第七阶段完成")
         DebugLog("=" * 60)
         
         return context
@@ -167,7 +167,7 @@ class ReconstructionStage(BaseStage):
             localizer_start = time.perf_counter()
             localizer_image = self._build_plan_localizer(image, plan)
             DebugLog(
-                "    [阶段五性能] Localizer生成完成: "
+                "    [重建性能] Localizer生成完成: "
                 f"plan={plan.get('plan_id', '')}, "
                 f"has_localizer={localizer_image is not None}, "
                 f"耗时={time.perf_counter() - localizer_start:.3f}s"
@@ -213,7 +213,7 @@ class ReconstructionStage(BaseStage):
             else 0.0
         )
         DebugLog(
-            "    [阶段五性能] MPR采样完成: "
+            "    [重建性能] MPR采样完成: "
             f"plan={plan.get('plan_id', '')}, "
             f"geometry={plan.get('geometry_type', 'plane_stack')}, "
             f"slices={len(sampled_slices)}, "
@@ -297,7 +297,7 @@ class ReconstructionStage(BaseStage):
                     )
                     for window in windows
                 ]
-                # 显式读取每个 Future，确保线程异常回到阶段五并让 Pipeline 失败。
+                # 显式读取每个 Future，确保线程异常回到重建阶段并让 Pipeline 失败。
                 for future in futures:
                     future.result()
         else:
@@ -353,7 +353,7 @@ class ReconstructionStage(BaseStage):
             ))
             fixed_index = int(round(float(reference_index[fixed_axis])))
         else:
-            # 兼容没有目标参考点的旧计划，继续使用切片中心中位数。
+            # 没有目标参考点时，使用切片中心中位数作为确定性回退。
             fixed_index = int(round(float(np.median([
                 index_xyz[fixed_axis] for index_xyz in center_indices
             ]))))
@@ -684,8 +684,8 @@ class ReconstructionStage(BaseStage):
     ) -> tuple[int, int, int]:
         """按计划显式状位或切片斜率选择原图正交定位面。
 
-        第四步可用 ``localizer_plane`` 明确指定背景状位；缺少该字段的旧计划
-        继续沿用自动选择逻辑，从而保持既有输出兼容性。
+        第六阶段可用 ``localizer_plane`` 明确指定背景状位；缺少该字段时根据
+        当前计划几何自动选择。
         """
 
         stack_axis, _, default_fixed_axis = default_axes
@@ -828,10 +828,10 @@ class ReconstructionStage(BaseStage):
         GDCM 写盘由 ``src.reconstruction.dicom`` 内的统一锁保护。
 
         Args:
-            sampled_slices: `(切片计划, HU 图像)` 列表，顺序与阶段四一致。
+            sampled_slices: `(切片计划, HU 图像)` 列表，顺序与第六阶段一致。
             window: 当前窗宽窗位预设实体。
             output_dir: 当前窗位独占的输出目录。
-            plan: 当前阶段四切片计划。
+            plan: 当前第六阶段切片计划。
             series_uid: 当前窗位 DICOM 序列 UID。
             study_uid: 所有派生序列共同使用的检查 UID。
             source_metadata: 从原始 DICOM 继承的患者和检查级标签。
@@ -880,7 +880,7 @@ class ReconstructionStage(BaseStage):
                     output_path=output_dir / "Localizer.png",
                 )
         DebugLog(
-            "    [阶段五性能] 窗位写出完成: "
+            "    [重建性能] 窗位写出完成: "
             f"plan={plan.get('plan_id', '')}, "
             f"window={getattr(window, 'name', window)}, "
             f"slices={total_slices}, "
@@ -895,7 +895,7 @@ class ReconstructionStage(BaseStage):
         windowed_localizer: sitk.Image,
         output_path: Path,
     ) -> None:
-        """把定位图额外写成 PNG；红色标出阶段五烧录的定位线。"""
+        """把定位图额外写成 PNG；红色标出第七阶段烧录的定位线。"""
 
         background = ReconstructionStage._localizer_array_2d(windowed_localizer)
         source = ReconstructionStage._localizer_array_2d(localizer_image)
@@ -925,7 +925,7 @@ class ReconstructionStage(BaseStage):
 
     @staticmethod
     def _localizer_array_2d(image: sitk.Image) -> np.ndarray:
-        """读取定位图为二维数组，兼容单层三维图像。"""
+        """读取定位图为二维数组，同时支持二维和单层三维图像。"""
 
         array = sitk.GetArrayFromImage(image)
         if array.ndim == 2:
@@ -946,11 +946,11 @@ class ReconstructionStage(BaseStage):
         """
         按状位聚合计划，同时保留状位首次出现和状位内计划的原始顺序。
 
-        阶段四未来可能交错返回多个状位的计划。这里统一分组，保证阶段五始终以
+        第六阶段可能交错返回多个状位的计划。这里统一分组，保证第七阶段始终以
         “状位串行、状位内 plan 串行、plan 内窗位并行”的固定层级执行。
 
         Args:
-            plans: 阶段四生成的全部切片计划。
+            plans: 第六阶段生成的全部切片计划。
 
         Returns:
             以状位名称为键、该状位计划列表为值的有序字典。Python 字典会保留
@@ -978,7 +978,7 @@ class ReconstructionStage(BaseStage):
 
     @staticmethod
     def _validate_plan(plan: Dict[str, Any]) -> None:
-        """校验阶段四计划包含平面重建所需字段及合法的尺寸、间距。"""
+        """校验第六阶段计划包含平面重建所需字段及合法的尺寸、间距。"""
 
         plan_id = plan.get("plan_id", "<unknown>") if isinstance(plan, dict) else "<unknown>"
         if not isinstance(plan, dict):
@@ -989,7 +989,7 @@ class ReconstructionStage(BaseStage):
         if geometry_type not in {"plane_stack", "curved_stack"}:
             raise ValueError(
                 f"plan_id={plan_id} geometry_type={geometry_type} "
-                "当前阶段五仅支持 plane_stack/curved_stack"
+                "当前第七阶段仅支持 plane_stack/curved_stack"
             )
         for field_name in (
             "plane",
@@ -1050,7 +1050,7 @@ class ReconstructionStage(BaseStage):
 
     @staticmethod
     def _resampler_for_plan(plan: Dict[str, Any]) -> Any:
-        """按阶段四几何类型选择专用重采样器。"""
+        """按第六阶段计划的几何类型选择专用重采样器。"""
 
         if plan.get("geometry_type") == "curved_stack":
             return CurvedStackResampler()

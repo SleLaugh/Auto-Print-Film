@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-阶段四几何工具
+第六阶段几何工具
 
 这里不写任何部位业务，只处理点、方向和切片清单展开。
 """
@@ -40,7 +40,7 @@ def image_direction_matrix(image_info: Dict[str, Any]) -> List[List[float]]:
 
     SimpleITK 的 direction 是按行展开的 3x3 矩阵。物理坐标换算不能只用
     origin + index * spacing；真实 CT/NIfTI 常会带方向矩阵，忽略它会让
-    第四步生成的切割线在 ITK-SNAP 中偏到错误层面。
+    第六阶段生成的切割线在 ITK-SNAP 中偏到错误层面。
     """
 
     direction = image_info.get("direction") or [
@@ -129,7 +129,7 @@ def build_plane_stack_slices(
     row_dir: Point3D,
     col_dir: Point3D,
 ) -> List[PlannedSlice]:
-    """把普通平面切割路径展开成第五步可执行的切片清单。"""
+    """把普通平面切割路径展开成第七阶段可执行的切片清单。"""
 
     if len(path_points) < 2:
         raise ValueError("普通平面切割路径至少需要 2 个点")

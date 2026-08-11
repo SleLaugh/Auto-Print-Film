@@ -128,7 +128,7 @@ class Request:
             body_part=BodyPartEnum(data.get('body_part', data.get('target_part', BodyPartEnum.腰椎.value))),
             check_type=CheckTypeEnum(data.get('check_type', CheckTypeEnum.CT.value)),
             scan_thickness=ScanThicknessEnum(data.get('scan_thickness', ScanThicknessEnum.默认.value)),
-            # 未提供 plane_configs 时走默认三平面配置，保证旧调用兼容。
+            # 未提供 plane_configs 时使用默认横状位骨窗配置。
             plane_configs=[
                 PlaneConfig.from_dict(item)
                 for item in data.get('plane_configs', [

@@ -63,7 +63,7 @@ class StageRecord:
     duration_seconds: Optional[float] = None
     """使用单调时钟计算的阶段耗时秒数。"""
     result_schema_version: Optional[str] = None
-    """成功结果的契约版本；旧字典结果允许为空。"""
+    """成功结果的契约版本；没有登记类型结果时允许为空。"""
     warnings: List[Dict[str, Any]] = field(default_factory=list)
     """本阶段产生的非致命警告。"""
     error: Optional[Dict[str, Any]] = None

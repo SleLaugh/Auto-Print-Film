@@ -1,7 +1,7 @@
 #!/src/models/anatomy.py
 # -*- coding: utf-8 -*-
 
-"""第三步输出给第四步使用的统一解剖坐标实体。"""
+"""第五阶段输出给第六阶段使用的统一解剖坐标实体。"""
 
 from dataclasses import dataclass, field
 import math
@@ -173,7 +173,7 @@ class AnatomicalFrame:
 
 @dataclass(frozen=True)
 class AnatomicalGeometryResult:
-    """阶段三统一解剖几何输出；整切使用全局坐标，区间切使用局部坐标。"""
+    """第五阶段统一解剖几何输出；整切使用全局坐标，区间切使用局部坐标。"""
 
     global_frame: AnatomicalFrame
     local_frames: dict[str, AnatomicalFrame] = field(default_factory=dict)
@@ -197,7 +197,7 @@ class AnatomicalGeometryResult:
 
     @classmethod
     def from_dict(cls, value: Dict[str, Any]) -> "AnatomicalGeometryResult":
-        """从第三步输出字典恢复完整解剖几何结果。"""
+        """从第五阶段输出字典恢复完整解剖几何结果。"""
 
         return cls(
             global_frame=AnatomicalFrame.from_dict(value["global_frame"]),

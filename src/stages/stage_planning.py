@@ -1,12 +1,12 @@
-#!/src/services/stage_mapping.py
+#!/src/services/stage_planning.py
 # -*- coding: utf-8 -*-
 
 """
-阶段四：切片规划
+切片规划实现：正式主链中为第六阶段。
 
-本阶段负责回答“要切哪些图”。它会根据第三步定位结果、部位、切割方式和
-状位配置生成 SlicePlan[]，并把每一张待切图的中心点和方向提前展开好。
-第五步后续只负责执行这些计划，不再重新决定切片数量和切片位置。
+本阶段负责回答“要切哪些图”。它会根据第四阶段定位结果、第五阶段解剖几何、部位、
+切割方式和状位配置生成 SlicePlan[]，并把每一张待切图的中心点和方向提前展开好。
+重建阶段只负责执行这些计划，不再重新决定切片数量和切片位置。
 """
 
 import json
@@ -22,7 +22,7 @@ import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
-from src.models import MappingStageResult, Point3D
+from src.models import PlanningStageResult, Point3D
 from src.reconstruction import CurvedStackResampler
 from src.planning.geometry import normalize_vector, subtract_points, vector_length
 from src.planning.straight import CENTER_COVERAGE_TOLERANCE_MM
@@ -60,38 +60,44 @@ _LOCALIZER_OVERVIEW_AXES = {
 """按原始正交定位背景选择总览固定轴。"""
 
 
-class MappingStage(BaseStage):
-    """切片规划阶段"""
-    
-    def __init__(self, config: Dict[str, Any] = None):
-        """初始化阶段四切片规划组件及其调试输出配置。"""
+class PlanningStage(BaseStage):
+    """把定位和解剖几何展开成可直接重建的 SlicePlan。"""
 
-        super().__init__(name="mapping", config=config)
-    
+    def __init__(self, config: Dict[str, Any] = None):
+        """初始化切片规划组件及其调试输出配置。"""
+
+        super().__init__(name="planning", config=config)
+
     def execute(self, context: ProcessingContext) -> ProcessingContext:
         """
-        根据阶段三定位结果生成阶段五可直接执行的切片计划。
+        根据定位和解剖分析结果生成重建阶段可直接执行的切片计划。
 
         请求中的每个状位先按部位策略选择整切或区间切 planner，再统一写出
         `slice_plans.json`；debug 模式下额外生成定位线和原始图像总览。
         """
 
         prev_result = context.get_result('localization')
-        
+
         if not prev_result:
             raise ValueError("前置阶段 'localization' 结果不存在")
-        
+
+        # 纯定位与解剖几何分属两个结果；部位 planner 消费二者的只读展平视图。
+        anatomical_result = context.get_result('anatomical_analysis')
+        if anatomical_result is None:
+            raise ValueError("前置阶段 'anatomical_analysis' 结果不存在")
+        prev_result = {**prev_result, **anatomical_result}
+
         request = context.request
         coords = prev_result.get('coords', {})
-        
+
         DebugLog("=" * 60)
-        DebugLog("【阶段四】切片规划 - 生成第五步执行计划")
+        DebugLog("【第六阶段】切片规划 - 生成重建执行计划")
         DebugLog(f"  部位: {request.body_part.value}")
         DebugLog("  切割方式: 按部位和状位自动推导")
         DebugLog(f"  定位坐标数量: {len(coords)}")
         DebugLog("=" * 60)
-        
-        # 第四步内部拆成 planner + expander。planner 负责找区间和路径；
+
+        # 规划阶段内部拆成 planner + expander。planner 负责找区间和路径；
         # expander 已在 planner 内部调用，把路径展开成每张图的 slices[]。
         DebugLog("  [1] select_planner: 选择部位/切法 planner...")
         grouped_configs: Dict[str, list[Any]] = {}
@@ -112,7 +118,7 @@ class MappingStage(BaseStage):
             planner_start = time.perf_counter()
             partial_result = planner.build_plans(scoped_request, prev_result)
             DebugLog(
-                "    [阶段四性能] build_plans完成: "
+                "    [切片规划性能] build_plans完成: "
                 f"planner={planner.planner_name}, "
                 f"plane_configs={len(plane_configs)}, "
                 f"plans={len(partial_result.plans)}, "
@@ -143,7 +149,7 @@ class MappingStage(BaseStage):
                     plans=debug_plans,
                 )
                 DebugLog(
-                    "    [阶段四性能] write_slice_plan_overlay完成: "
+                    "    [切片规划性能] write_slice_plan_overlay完成: "
                     f"plans={len(debug_plans)}, "
                     f"耗时={time.perf_counter() - overlay_start:.3f}s"
                 )
@@ -154,7 +160,7 @@ class MappingStage(BaseStage):
                     plans=debug_plans,
                 )
                 DebugLog(
-                    "    [阶段四性能] write_center_cross_overlay完成: "
+                    "    [切片规划性能] write_center_cross_overlay完成: "
                     f"plans={len(debug_plans)}, "
                     f"耗时={time.perf_counter() - center_cross_start:.3f}s"
                 )
@@ -168,7 +174,7 @@ class MappingStage(BaseStage):
                     plans=debug_plans,
                 )
                 DebugLog(
-                    "    [阶段四性能] write_slice_plan_overview_overlays完成: "
+                    "    [切片规划性能] write_slice_plan_overview_overlays完成: "
                     f"overview={len(debug_overview_paths)}, "
                     f"native={len(debug_native_overview_paths)}, "
                     f"耗时={time.perf_counter() - overview_start:.3f}s"
@@ -183,7 +189,7 @@ class MappingStage(BaseStage):
                 )
             else:
                 DebugLog(
-                    "    [阶段四性能] write_debug_overlay跳过: "
+                    "    [切片规划性能] write_debug_overlay跳过: "
                     "仅包含横/矢普通整切计划"
                 )
             DebugLog("  [4] write_metadata: 写出 slice_plans.json...")
@@ -202,7 +208,7 @@ class MappingStage(BaseStage):
                 debug_native_overview_paths=debug_native_overview_paths,
             )
             DebugLog(
-                "    [阶段四性能] write_metadata完成: "
+                "    [切片规划性能] write_metadata完成: "
                 f"耗时={time.perf_counter() - metadata_start:.3f}s"
             )
 
@@ -221,9 +227,9 @@ class MappingStage(BaseStage):
             'debug_slice_plan_overview_with_image_paths': debug_overview_paths,
             'debug_slice_plan_native_overview_paths': debug_native_overview_paths,
         }
-        
-        context.set_stage_result(MappingStageResult(payload=result))
-        
+
+        context.set_stage_result(PlanningStageResult(payload=result))
+
         DebugLog(f"    切片计划数量: {len(plans)}")
         for diagnostic in diagnostics:
             DebugLog(
@@ -244,24 +250,24 @@ class MappingStage(BaseStage):
             DebugLog(f"    {plane}原始网格总览 overlay: {path}")
         if all_warnings:
             DebugLog(f"    warnings: {all_warnings}")
-        DebugLog("  ✅ 阶段四完成")
+        DebugLog("  第六阶段完成")
         DebugLog("=" * 60)
-        
+
         return context
 
     @staticmethod
     def _debug_overlay_plans(plans: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
-        """过滤掉耗时且当前不再需要的阶段四调试图计划。"""
+        """过滤掉耗时且当前不再需要的规划调试图计划。"""
 
         return [
             plan
             for plan in plans
-            if not MappingStage._is_skipped_debug_overlay_plan(plan)
+            if not PlanningStage._is_skipped_debug_overlay_plan(plan)
         ]
 
     @staticmethod
     def _is_skipped_debug_overlay_plan(plan: Dict[str, Any]) -> bool:
-        """过滤当前不再默认落盘的阶段四 NIfTI 检查图。"""
+        """过滤当前不再默认落盘的规划 NIfTI 检查图。"""
 
         plane = str(plan.get("plane", ""))
         cut_mode = str(plan.get("cut_mode", ""))
@@ -291,7 +297,7 @@ class MappingStage(BaseStage):
         debug_overview_paths: Dict[str, str],
         debug_native_overview_paths: Dict[str, str],
     ) -> Path:
-        """把阶段四输出写入 metadata/slice_plans.json，方便第五步和人工检查。"""
+        """把规划输出写入 metadata/slice_plans.json，方便重建和人工检查。"""
 
         metadata_dir = Path(context.request.output_dir) / "metadata"
         metadata_dir.mkdir(parents=True, exist_ok=True)
@@ -356,7 +362,7 @@ class MappingStage(BaseStage):
         """
         为每个 plan 生成可读诊断信息。
 
-        这部分不参与第五步执行，只用于排查“到底是计划张数少，还是 overlay
+        这部分不参与第七阶段执行，只用于排查“到底是计划张数少，还是 overlay
         看起来少”。尤其当层间距大于层厚时，输出图之间本来就会有物理空档，
         需要在 JSON 里直观看出来。
         """
@@ -493,7 +499,7 @@ class MappingStage(BaseStage):
                 leading_center_overflow = max(-leading_center_gap, 0.0)
                 trailing_center_overflow = max(-trailing_center_gap, 0.0)
             calculation_note = (
-                "阶段四选择让首末切片中心跨过目标边界的最少切片数，将中心跨度"
+                "第六阶段选择让首末切片中心跨过目标边界的最少切片数，将中心跨度"
                 "的总超出量首尾对称分配，再按固定层间距从 range_start 到 "
                 "range_end 展开每张输出图中心；不追加非等距终点中心。"
             )
@@ -570,16 +576,16 @@ class MappingStage(BaseStage):
         plans: list[Dict[str, Any]],
     ) -> tuple[str, str]:
         """
-        写出第四步切割线调试 overlay。
+        写出第六阶段切割线调试 overlay。
 
-        overlay 与第三步使用同一套 NIfTI 调试思路：参考图来自第三步声明的
+        overlay 与定位调试产物使用同一套 NIfTI 思路：参考图来自第四阶段声明的
         seg_for_reconstruction_path，输出图与参考图同 size/spacing/origin/direction。
         数值约定为：
         - plan_index * 10 + 1：该 plan 的中心路径线。
         - plan_index * 10 + 2：该 plan 已展开切片的中心点。
         - plan_index * 10 + 3：每张切片在该平面内的十字引导线。
 
-        这个文件只用于人工核对“线画得对不对”，不作为第五步执行输入。
+        这个文件只用于人工核对“线画得对不对”，不作为第七阶段执行输入。
         """
 
         reference_path = localization_result.get("seg_for_reconstruction_path")
@@ -641,11 +647,11 @@ class MappingStage(BaseStage):
         plans: list[Dict[str, Any]],
     ) -> str:
         """
-        以阶段三部位中心为唯一交点，把本次状位需要的解剖轴合并绘制。
+        以第五阶段部位中心为唯一交点，把本次状位需要的解剖轴合并绘制。
 
         已适配部位使用 anatomical_geometry 的原点和三轴；其他部位回退到
         correction_scope_bbox 的物理中心和原图方向轴。十字只用于核对部位
-        居中与方向，不使用整面切片的画布中心，也不参与第五步重建。
+        居中与方向，不使用整面切片的画布中心，也不参与第七阶段重建。
         """
 
         reference_path = localization_result.get("seg_for_reconstruction_path")
@@ -860,7 +866,7 @@ class MappingStage(BaseStage):
         paths_by_plane: Dict[str, str],
         plans: list[Dict[str, Any]],
     ) -> str:
-        """返回兼容旧单路径字段的横状位或第一个可用状位文件。"""
+        """返回单路径摘要所需的横状位或第一个可用状位文件。"""
 
         if "横状位" in paths_by_plane:
             return paths_by_plane["横状位"]
@@ -962,9 +968,9 @@ class MappingStage(BaseStage):
         if half_height <= 0:
             return
 
-        # 旧总览按输入索引轴画线，只适用于零角度计划。肺部等斜切计划必须
-        # 直接使用阶段四给出的物理 row_dir/col_dir，否则总览仍会显示成水平线，
-        # 与第五步真正执行的斜切方向不一致。
+        # 输入索引轴只适用于零角度计划。肺部等斜切计划必须直接使用第六阶段
+        # 计算的物理 row_dir/col_dir，否则总览会显示成水平线，与第七阶段真正
+        # 执行的斜切方向不一致。
         first_normal = slices[0].get("normal", {})
         direction = np.asarray(reference_image.GetDirection(), dtype=float).reshape(3, 3)
         expected_normal = direction[:, axes.stack_axis]

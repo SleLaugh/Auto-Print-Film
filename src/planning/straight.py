@@ -1,7 +1,7 @@
 #!/src/planning/straight.py
 # -*- coding: utf-8 -*-
 
-"""第四阶段通用直线切割的方向、范围和计划构造工具。"""
+"""第六阶段通用直线切割的方向、范围和计划构造工具。"""
 
 from dataclasses import dataclass
 from itertools import product
@@ -56,7 +56,7 @@ class ProjectedExtent:
 
 @dataclass(frozen=True)
 class CutSegment:
-    """第四阶段准备交给通用直线构造器的一个待切区间。"""
+    """第六阶段交给通用直线构造器的一个待切区间。"""
 
     group_name: str
     """当前区间的稳定名称，例如 whole_range 或 L1-L2。"""
@@ -98,10 +98,9 @@ def resolve_slice_range_extension(
 ) -> SliceRangeExtension:
     """按当前切法和状位读取可选范围扩展，未配置时返回 0mm。
 
-    新结果优先读取按切法保存的 `cut_configs`。为兼容旧的阶段三结果，
-    当其 `cut_mode` 与当前计划一致时，也允许从单个 `cut_config` 读取。
-    配置已由第三步校验，这里仍做最小数值检查，保证直接调用规划器的
-    测试或旧上下文不会把非法距离带入几何计算。
+    优先读取按切法保存的 `cut_configs`；当 `cut_mode` 与当前计划一致时，也允许
+    从单个 `cut_config` 摘要读取。配置已由第三阶段校验，这里仍做最小数值检查，
+    保证直接调用规划器时不会把非法距离带入几何计算。
     """
 
     cut_config: Dict[str, Any] = {}
@@ -509,7 +508,7 @@ def build_straight_slice_plan(
     segment: CutSegment,
     frame: StraightPlaneFrame,
 ) -> SlicePlan:
-    """把一个待切区间、直线方向和图像范围组装成第五阶段可执行计划。"""
+    """把待切区间、直线方向和图像范围组装成第七阶段可执行计划。"""
 
     projected_extent = resolve_projected_extent(
         plane_config.line_extent_mode,

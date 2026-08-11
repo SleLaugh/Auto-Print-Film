@@ -4,7 +4,7 @@ from src.models import LocalizationResult, NiftiImageInfo
 
 
 class LocalizationModelsTest(unittest.TestCase):
-    """验证阶段三定位实体的序列化和字段契约。"""
+    """验证第三至第五阶段调试汇总实体的序列化和字段契约。"""
 
     def test_localization_result_requires_all_cut_configs(self):
         """最终定位实体必须显式传入当前部位的全部切法配置。"""
@@ -33,7 +33,7 @@ class LocalizationModelsTest(unittest.TestCase):
             )
 
     def test_localization_result_serializes_spine_geometry_separately(self):
-        """标注质心应作为独立阶段三字段序列化，不覆盖全量 coords。"""
+        """第五阶段标注质心应独立序列化，不覆盖第四阶段全量 coords。"""
 
         result = LocalizationResult(
             body_part="腰椎",

@@ -4,8 +4,8 @@
 """
 重建规划模型
 
-这些实体是阶段四输出给阶段五的稳定契约。阶段四负责把切割路径展开成
-具体切片清单；阶段五只按这些切片逐张采样，不再反推切多少张或每张在哪里。
+这些实体是第六阶段输出给第七阶段的稳定契约。第六阶段负责把切割路径展开成
+具体切片清单；第七阶段只按这些切片逐张采样，不再反推切多少张或每张在哪里。
 """
 
 from dataclasses import dataclass, field
@@ -28,7 +28,7 @@ class Point3D:
 
 @dataclass
 class PlannedSlice:
-    """阶段四已经规划好的一张待切图。"""
+    """第六阶段已经规划好的一张待切图。"""
 
     index: int
     center: Point3D
@@ -68,7 +68,7 @@ class ExtentMM:
 
 @dataclass
 class SlicePlan:
-    """一组已经展开好的切片规划，供阶段五直接执行。"""
+    """一组已经展开好的切片规划，供第七阶段直接执行。"""
 
     plan_id: str
     body_part: str
@@ -101,12 +101,12 @@ class SlicePlan:
     localizer_reference: Point3D | None = None
     """定位图选择原始参考层时使用的目标部位物理中心。"""
     localizer_plane: str | None = None
-    """定位图使用的原始正交状位；为空时由第五步按切片几何自动选择。"""
+    """定位图使用的原始正交状位；为空时由第七阶段按切片几何自动选择。"""
     confidence: float = 1.0
     warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        """序列化阶段五可直接执行的一组完整切片计划。"""
+        """序列化第七阶段可直接执行的一组完整切片计划。"""
 
         data = {
             "plan_id": self.plan_id,

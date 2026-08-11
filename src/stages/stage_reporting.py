@@ -2,7 +2,7 @@
 # # -*- coding: utf-8 -*-
 
 """
-阶段六：结果汇总
+第八阶段：校验与结果汇总
 生成报告与输出整理
 """
 
@@ -23,7 +23,7 @@ class ReportingStage(BaseStage):
     """结果汇总阶段"""
     
     def __init__(self, config: Dict[str, Any] = None):
-        """初始化阶段六结果汇总组件。"""
+        """初始化第八阶段校验与结果汇总组件。"""
 
         super().__init__(name="reporting", config=config)
     
@@ -33,7 +33,7 @@ class ReportingStage(BaseStage):
         request = context.request
         
         DebugLog("=" * 60)
-        DebugLog("【阶段六】结果汇总 - 生成报告")
+        DebugLog("【第八阶段】校验与结果汇总 - 生成报告")
         DebugLog(f"  输出目录: {request.output_dir}")
         DebugLog("=" * 60)
         
@@ -53,7 +53,7 @@ class ReportingStage(BaseStage):
                 self._build_debug_report(context, validation),
             ))
         
-        # [3] organize_output: 确认第五步目录保持原样
+        # [3] organize_output: 确认重建阶段目录保持原样
         DebugLog("  [3] organize_output: 确认输出目录结构...")
         self._organize_output(context, report_data)
 
@@ -70,7 +70,7 @@ class ReportingStage(BaseStage):
         
         context.set_stage_result(ReportingStageResult(payload=result))
         
-        DebugLog(f"  ✅ 阶段六完成，总耗时: {context.get_total_time():.2f}s")
+        DebugLog(f"  第八阶段完成，总耗时: {context.get_total_time():.2f}s")
         DebugLog("=" * 60)
         
         return context
@@ -122,7 +122,7 @@ class ReportingStage(BaseStage):
     def _actual_window_names_by_plane(
         reconstruction: Dict[str, Any],
     ) -> Dict[str, set[str]]:
-        """从阶段五实际输出中汇总每个状位已经生成的窗位名称。"""
+        """从第七阶段实际输出中汇总每个状位已经生成的窗位名称。"""
 
         result: Dict[str, set[str]] = {}
         for output in reconstruction.get('outputs', []):
@@ -141,22 +141,22 @@ class ReportingStage(BaseStage):
         """汇总完整阶段结果，供 debug 模式排查问题。"""
 
         output_dir = Path(context.request.output_dir)
-        mapping = context.get_result('mapping') or {}
+        planning = context.get_result('planning') or {}
         reconstruction = context.get_result('reconstruction') or {}
         validation = validation or self._validate_reconstruction(reconstruction)
 
-        mapping_plans = mapping.get('plans', [])
-        mapping_summary = {
-            'planner': mapping.get('planner', ''),
-            'plan_count': mapping.get('plan_count', len(mapping_plans)),
-            'warnings': list(mapping.get('warnings', [])),
-            'diagnostics': list(mapping.get('diagnostics', [])),
-            'metadata_path': mapping.get('metadata_path', ''),
-            'plans': [self._plan_summary(plan) for plan in mapping_plans],
+        planning_plans = planning.get('plans', [])
+        planning_summary = {
+            'planner': planning.get('planner', ''),
+            'plan_count': planning.get('plan_count', len(planning_plans)),
+            'warnings': list(planning.get('warnings', [])),
+            'diagnostics': list(planning.get('diagnostics', [])),
+            'metadata_path': planning.get('metadata_path', ''),
+            'plans': [self._plan_summary(plan) for plan in planning_plans],
         }
         reconstruction_summary = self._reconstruction_summary(reconstruction)
-        warnings = list(mapping_summary['warnings'])
-        for plan in mapping_summary['plans']:
+        warnings = list(planning_summary['warnings'])
+        for plan in planning_summary['plans']:
             warnings.extend(plan['warnings'])
         warnings.extend(validation['warnings'])
 
@@ -173,13 +173,13 @@ class ReportingStage(BaseStage):
                 for e in context.errors
             ],
             'warnings': warnings,
-            'mapping': mapping_summary,
+            'planning': planning_summary,
             'reconstruction': reconstruction_summary,
             'validation': validation,
             'outputs': {
                 'report': str(output_dir / 'report.json'),
                 'nifti': str(output_dir / 'nifti'),
-                'metadata': mapping.get('metadata_path', ''),
+                'metadata': planning.get('metadata_path', ''),
                 'axial': str(output_dir / '横状位'),
                 'sagittal': str(output_dir / '矢状位'),
                 'coronal': str(output_dir / '冠状位'),
@@ -220,7 +220,7 @@ class ReportingStage(BaseStage):
 
     @staticmethod
     def _plan_summary(plan: Dict[str, Any]) -> Dict[str, Any]:
-        """提取单个阶段四计划中适合写入调试报告的摘要字段。"""
+        """提取单个第六阶段计划中适合写入调试报告的摘要字段。"""
 
         return {
             'plan_id': plan.get('plan_id', ''),
@@ -240,7 +240,7 @@ class ReportingStage(BaseStage):
 
     @classmethod
     def _reconstruction_summary(cls, reconstruction: Dict[str, Any]) -> Dict[str, Any]:
-        """整理阶段五的计划、切片、图像及各状位输出统计。"""
+        """整理第七阶段的计划、切片、图像及各状位输出统计。"""
 
         outputs = reconstruction.get('outputs', [])
         return {
@@ -256,7 +256,7 @@ class ReportingStage(BaseStage):
         cls,
         reconstruction: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """逐个窗位检查阶段五声明的输出是否与磁盘 DICOM 序列一致。"""
+        """逐个窗位检查第七阶段声明的输出是否与磁盘 DICOM 序列一致。"""
 
         errors: list[str] = []
         warnings: list[str] = []
@@ -276,7 +276,7 @@ class ReportingStage(BaseStage):
                 warnings.extend(result['warnings'])
 
         if reconstruction.get('slice_count', 0) and not outputs:
-            errors.append('第五步报告了切片数量，但没有实际输出方案')
+            errors.append('第七阶段报告了切片数量，但没有实际输出方案')
 
         return {
             'valid': not errors,
@@ -376,9 +376,9 @@ class ReportingStage(BaseStage):
 
     @staticmethod
     def _organize_output(context: ProcessingContext, report_data: Dict[str, Any]) -> None:
-        """确认第五步目录保持原样；不搬动、不重命名最终 DICOM。"""
+        """确认第七阶段目录保持原样；不搬动、不重命名最终 DICOM。"""
 
         DebugLog(
-            "    输出目录已由阶段五按状位/窗位/切割组创建，"
-            "阶段六仅生成报告和校验清单"
+            "    输出目录已由第七阶段按状位/窗位/切割组创建，"
+            "第八阶段仅生成报告和校验清单"
         )

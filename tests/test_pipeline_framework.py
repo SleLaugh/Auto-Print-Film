@@ -31,7 +31,7 @@ class FailingStage(BaseStage):
 
 
 class DebugArtifactStage(BaseStage):
-    """模拟旧阶段在 metadata 目录写调试文件。"""
+    """模拟业务阶段直接在 metadata 目录写调试文件。"""
 
     def execute(self, context):
         """为测试准备 `execute` 所需的数据或记录行为。"""
@@ -69,6 +69,27 @@ def make_pipeline(stages):
 
 class PipelineFrameworkTest(unittest.TestCase):
     """汇总 `PipelineFrameworkTest` 相关测试场景。"""
+
+    def test_default_pipeline_uses_eight_responsibility_stages(self):
+        """默认主链应把旧定位阶段拆成校正、定位和解剖分析。"""
+
+        pipeline = Pipeline(
+            config=AppConfig(pipeline=PipelineConfig(run_preflight=False))
+        )
+
+        self.assertEqual(
+            [stage.name for stage in pipeline.stages],
+            [
+                "preprocessing",
+                "segmentation",
+                "spatial_correction",
+                "localization",
+                "anatomical_analysis",
+                "planning",
+                "reconstruction",
+                "reporting",
+            ],
+        )
 
     def test_debug_enabled_keeps_intermediate_artifacts_after_success(self):
         """验证 `test_debug_enabled_keeps_intermediate_artifacts_after_success` 场景符合预期。"""

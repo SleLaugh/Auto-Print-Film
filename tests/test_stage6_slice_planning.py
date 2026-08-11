@@ -35,11 +35,38 @@ from src.planning.whole_range import (
     build_whole_range_plan_from_bbox,
     plane_extent_mm,
 )
-from src.stages.stage_mapping import MappingStage
+from src.stages.stage_planning import PlanningStage
 
 
-class Stage4SlicePlanningTest(unittest.TestCase):
-    """汇总 `Stage4SlicePlanningTest` 相关测试场景。"""
+class Stage6SlicePlanningTest(unittest.TestCase):
+    """覆盖第六阶段直线切片、椎间切和 CPR 规划。"""
+
+    _ANATOMICAL_RESULT_KEYS = {
+        "anatomical_geometry",
+        "anatomical_geometry_diagnostics",
+        "spine_geometry",
+    }
+
+    @classmethod
+    def _set_planning_inputs(cls, context, combined_result):
+        """把合成 fixture 按当前定位/解剖契约拆入上下文。"""
+
+        context.set_result(
+            "localization",
+            {
+                key: value
+                for key, value in combined_result.items()
+                if key not in cls._ANATOMICAL_RESULT_KEYS
+            },
+        )
+        context.set_result(
+            "anatomical_analysis",
+            {
+                key: value
+                for key, value in combined_result.items()
+                if key in cls._ANATOMICAL_RESULT_KEYS
+            },
+        )
 
     @staticmethod
     def _max_line_fit_residual(points_zyx: np.ndarray) -> float:
@@ -152,7 +179,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         }
         return localization_result, centers
 
-    def test_mapping_derives_lumbar_axial_interspace_and_sagittal_straight_mpr(self):
+    def test_planning_derives_lumbar_axial_interspace_and_sagittal_straight_mpr(self):
         """腰椎横状位保持区间切基线，矢状位回到普通直线 MPR。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -172,11 +199,14 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 ],
             )
             context = ProcessingContext(request)
-            context.set_result("localization", self._lumbar_localization_result())
+            self._set_planning_inputs(
+                context,
+                self._lumbar_localization_result(),
+            )
 
-            MappingStage().execute(context)
+            PlanningStage().execute(context)
 
-            plans = context.get_result("mapping")["plans"]
+            plans = context.get_result("planning")["plans"]
             self.assertEqual(
                 [
                     (
@@ -225,7 +255,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertIn("CPR 降级", result.warnings[0])
 
     def test_spine_cpr_prefers_prism_centroid(self):
-        """新阶段三结果可用时，CPR 应优先使用四棱柱体素质心。"""
+        """第五阶段几何可用时，CPR 应优先使用四棱柱体素质心。"""
 
         localization_result = {
             "coords": {},
@@ -287,7 +317,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertIn("vertebrae_L1 四棱柱生成失败", warnings[0])
 
     def test_spine_cpr_silently_accepts_legacy_body_centroid(self):
-        """旧结果没有 prism 字段时，应继续使用主体质心且不误报警告。"""
+        """输入缺少 prism 字段时，应使用主体质心且不误报警告。"""
 
         localization_result = {
             "coords": {},
@@ -2107,7 +2137,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         overlay_array[0, 1, 0] = 15
         overlay_array[0, 1, 1] = 14
 
-        result = MappingStage._build_overview_with_image(
+        result = PlanningStage._build_overview_with_image(
             raw_image,
             reference_image,
             overlay_array,
@@ -2129,7 +2159,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         """验证 `test_debug_filename_suffix_uses_short_plane_and_cut_mode_labels` 场景符合预期。"""
 
         self.assertEqual(
-            MappingStage._debug_plan_suffix([
+            PlanningStage._debug_plan_suffix([
                 {"plane": "冠状位", "cut_mode": "interspace"},
             ]),
             "冠_区",
@@ -3381,7 +3411,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
     def test_oblique_plan_overview_draws_the_actual_sloped_guide(self):
         """验证 `test_oblique_plan_overview_draws_the_actual_sloped_guide` 场景符合预期。"""
 
-        from src.stages.stage_mapping import MappingStage, _OVERVIEW_AXES
+        from src.stages.stage_planning import PlanningStage, _OVERVIEW_AXES
 
         image = sitk.Image(64, 64, 64, sitk.sitkUInt8)
         overlay = np.zeros((64, 64, 64), dtype=np.uint16)
@@ -3395,7 +3425,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             }],
         }
 
-        MappingStage()._paint_plan_overview(
+        PlanningStage()._paint_plan_overview(
             reference_image=image,
             overlay_array=overlay,
             plan=plan,
@@ -4151,7 +4181,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         ))
 
     def test_interspace_rejects_quadrilateral_when_prism_was_invalidated(self):
-        """阶段三判定四棱柱碰撞失效后，阶段四不能继续使用残留四边形。"""
+        """第五阶段判定四棱柱碰撞失效后，第六阶段不能继续使用残留四边形。"""
 
         from src.planning.lumbar import resolve_lumbar_interspace_segments
 
@@ -5045,8 +5075,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.slices[0].center.x, 25.0)
         self.assertEqual(plan.slices[0].center.y, 35.0)
 
-    def test_mapping_stage_writes_slice_plans_json(self):
-        """验证 `test_mapping_stage_writes_slice_plans_json` 场景符合预期。"""
+    def test_planning_stage_writes_slice_plans_json(self):
+        """验证 `test_planning_stage_writes_slice_plans_json` 场景符合预期。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = Request(
@@ -5063,11 +5093,14 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 ],
             )
             context = ProcessingContext(request)
-            context.set_result("localization", self._lumbar_localization_result())
+            self._set_planning_inputs(
+                context,
+                self._lumbar_localization_result(),
+            )
 
-            MappingStage().execute(context)
+            PlanningStage().execute(context)
 
-            result = context.get_result("mapping")
+            result = context.get_result("planning")
             metadata_path = Path(result["metadata_path"])
             self.assertTrue(metadata_path.exists())
             data = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -5108,10 +5141,10 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(data["diagnostics"][0]["first_coverage_start"]["z"], 15.0)
             self.assertEqual(data["diagnostics"][0]["last_coverage_end"]["z"], -5.0)
 
-    def test_mapping_diagnostics_ignore_sub_tolerance_center_gaps(self):
+    def test_planning_diagnostics_ignore_sub_tolerance_center_gaps(self):
         """中心越界量在规划容差内时，不应被诊断为首尾缺失。"""
 
-        diagnostics = MappingStage()._build_plan_diagnostics([{
+        diagnostics = PlanningStage()._build_plan_diagnostics([{
             "plan_id": "center_tolerance",
             "plane": "横状位",
             "range_start": {"x": 0.0, "y": 0.0, "z": 0.0005},
@@ -5129,7 +5162,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         self.assertEqual(diagnostics[0]["leading_center_uncovered_mm"], 0.0)
         self.assertEqual(diagnostics[0]["trailing_center_uncovered_mm"], 0.0)
 
-    def test_mapping_stage_skips_whole_range_axial_debug_overlays(self):
+    def test_planning_stage_skips_whole_range_axial_debug_overlays(self):
         """普通横状位整切不再写耗时 debug overlay。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5158,11 +5191,11 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             localization_result["correction_scope_bbox"]["z_max"] = 13
             localization_result["seg_for_reconstruction_path"] = str(seg_path)
             context = ProcessingContext(request)
-            context.set_result("localization", localization_result)
+            self._set_planning_inputs(context, localization_result)
 
-            MappingStage().execute(context)
+            PlanningStage().execute(context)
 
-            result = context.get_result("mapping")
+            result = context.get_result("planning")
             self.assertEqual(result["debug_slice_plan_overlay_path"], "")
             self.assertEqual(result["debug_center_cross_overlay_path"], "")
             self.assertEqual(result["debug_slice_plan_overview_paths"], {})
@@ -5177,8 +5210,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertFalse((metadata_dir / "切片总览含原图_横_整.nii.gz").exists())
             self.assertFalse((metadata_dir / "切片原始网格总览_横_整.nii.gz").exists())
 
-    def test_mapping_stage_skips_cpr_debug_overlays(self):
-        """CPR 冠状位不再写阶段四调试 overlay 和总览。"""
+    def test_planning_stage_skips_cpr_debug_overlays(self):
+        """CPR 冠状位不再写第六阶段调试 overlay 和总览。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -5216,11 +5249,11 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             localization_result["seg_for_reconstruction_path"] = str(seg_path)
             localization_result["raw_for_reconstruction_path"] = str(raw_path)
             context = ProcessingContext(request)
-            context.set_result("localization", localization_result)
+            self._set_planning_inputs(context, localization_result)
 
-            MappingStage().execute(context)
+            PlanningStage().execute(context)
 
-            result = context.get_result("mapping")
+            result = context.get_result("planning")
             center_cross_path = Path(result["debug_center_cross_overlay_path"])
             self.assertEqual(center_cross_path.name, "十字中线_横_区.nii.gz")
             self.assertTrue(center_cross_path.exists())
@@ -5314,7 +5347,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 native_paths,
             )
 
-    def test_mapping_cpr_overview_draws_curve_on_sagittal_background(self):
+    def test_planning_cpr_overview_draws_curve_on_sagittal_background(self):
         """CPR 调试总览应按曲线点画在矢状位背景上。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5360,7 +5393,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 }],
             }
 
-            _, native_paths = MappingStage()._write_slice_plan_overview_overlays(
+            _, native_paths = PlanningStage()._write_slice_plan_overview_overlays(
                 context,
                 localization_result,
                 [plan],
@@ -5371,7 +5404,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertGreater(len(highlighted), 20)
             self.assertGreater(self._max_line_fit_residual(highlighted), 2.0)
 
-    def test_mapping_cpr_overview_draws_equally_spaced_offsets(self):
+    def test_planning_cpr_overview_draws_equally_spaced_offsets(self):
         """CPR 调试总览应只画等间距 offset 中心线。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5418,7 +5451,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 }],
             }
 
-            _, native_paths = MappingStage()._write_slice_plan_overview_overlays(
+            _, native_paths = PlanningStage()._write_slice_plan_overview_overlays(
                 context,
                 localization_result,
                 [plan],
@@ -5431,7 +5464,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 [10, 18, 26],
             )
 
-    def test_mapping_cpr_overview_draws_every_planned_offset(self):
+    def test_planning_cpr_overview_draws_every_planned_offset(self):
         """CPR 调试总览必须按实际切片 offset 一张对应一条线。"""
 
         plan = {
@@ -5439,7 +5472,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
         }
 
         self.assertEqual(
-            MappingStage._curved_overview_offsets(plan),
+            PlanningStage._curved_overview_offsets(plan),
             [float(value) for value in range(-35, 70, 5)],
         )
         self.assertEqual(len(plan["offsets_mm"]), 21)
@@ -5513,7 +5546,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 },
             ]
 
-            output_path = MappingStage()._write_center_cross_overlay(
+            output_path = PlanningStage()._write_center_cross_overlay(
                 context,
                 localization_result,
                 plans,
@@ -5523,7 +5556,7 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             self.assertEqual(int(overlay[80, 20, 30]), 65535)
             self.assertEqual(int(overlay[50, 20, 30]), 0)
 
-    def test_mapping_stage_skips_whole_range_overview_overlay(self):
+    def test_planning_stage_skips_whole_range_overview_overlay(self):
         """普通横状位整切不再写含原图和原始网格总览。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5555,11 +5588,11 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             localization_result["seg_for_reconstruction_path"] = str(seg_path)
             localization_result["raw_for_reconstruction_path"] = str(raw_path)
             context = ProcessingContext(request)
-            context.set_result("localization", localization_result)
+            self._set_planning_inputs(context, localization_result)
 
-            MappingStage().execute(context)
+            PlanningStage().execute(context)
 
-            result = context.get_result("mapping")
+            result = context.get_result("planning")
             self.assertEqual(result["debug_slice_plan_overview_overlay_path"], "")
             self.assertEqual(
                 result["debug_slice_plan_native_overview_overlay_path"],
@@ -5572,8 +5605,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
                 (temp_path / "metadata" / "切片原始网格总览_横_整.nii.gz").exists()
             )
 
-    def test_mapping_stage_overview_uses_minimum_line_width(self):
-        """验证 `test_mapping_stage_overview_uses_minimum_line_width` 场景符合预期。"""
+    def test_planning_stage_overview_uses_minimum_line_width(self):
+        """验证 `test_planning_stage_overview_uses_minimum_line_width` 场景符合预期。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -5604,12 +5637,12 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             localization_result["seg_for_reconstruction_path"] = str(seg_path)
             localization_result["raw_for_reconstruction_path"] = str(raw_path)
             context = ProcessingContext(request)
-            context.set_result("localization", localization_result)
+            self._set_planning_inputs(context, localization_result)
 
-            MappingStage().execute(context)
+            PlanningStage().execute(context)
 
-            result = context.get_result("mapping")
-            overview_paths, _ = MappingStage()._write_slice_plan_overview_overlays(
+            result = context.get_result("planning")
+            overview_paths, _ = PlanningStage()._write_slice_plan_overview_overlays(
                 context=context,
                 localization_result=localization_result,
                 plans=result["plans"],
@@ -5621,8 +5654,8 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             painted_rows = np.unique(np.argwhere(overview_array > 0)[:, 0])
             self.assertEqual(painted_rows.tolist(), [1, 11, 21, 31])
 
-    def test_mapping_stage_overview_overlay_respects_image_direction(self):
-        """验证 `test_mapping_stage_overview_overlay_respects_image_direction` 场景符合预期。"""
+    def test_planning_stage_overview_overlay_respects_image_direction(self):
+        """验证 `test_planning_stage_overview_overlay_respects_image_direction` 场景符合预期。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -5664,12 +5697,12 @@ class Stage4SlicePlanningTest(unittest.TestCase):
             localization_result["seg_for_reconstruction_path"] = str(seg_path)
             localization_result["raw_for_reconstruction_path"] = str(raw_path)
             context = ProcessingContext(request)
-            context.set_result("localization", localization_result)
+            self._set_planning_inputs(context, localization_result)
 
-            MappingStage().execute(context)
+            PlanningStage().execute(context)
 
-            result = context.get_result("mapping")
-            overview_paths, _ = MappingStage()._write_slice_plan_overview_overlays(
+            result = context.get_result("planning")
+            overview_paths, _ = PlanningStage()._write_slice_plan_overview_overlays(
                 context=context,
                 localization_result=localization_result,
                 plans=result["plans"],

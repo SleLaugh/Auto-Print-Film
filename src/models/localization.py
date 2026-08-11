@@ -115,7 +115,7 @@ class NiftiImageInfo:
 
 @dataclass
 class LocalizationResult:
-    """定位阶段最终输出实体，对应 metadata/localization_result.json。"""
+    """第三至第五阶段调试汇总实体，对应 metadata/localization_result.json。"""
     body_part: str  # 请求处理的部位，如 头骨、腰椎、肺部
     cut_mode: str  # 切割方式，如 whole_range 或 interspace
     seg_path: str  # 当前用于定位的分割文件路径
@@ -127,7 +127,7 @@ class LocalizationResult:
     resolved_cut_config: Dict[str, Any]  # 已解析 alias 后的切割配置
     label_targets: Dict[str, LabelTarget]  # 本次需要定位的 label 目标
     coords: Dict[str, LabelCoordinate]  # 每个目标 label 的 bbox/centroid 定位结果
-    raw_for_reconstruction_path: str = ""  # 阶段五实际应该读取的 raw 图像；候选可用时指向回正 raw
+    raw_for_reconstruction_path: str = ""  # 第三阶段选定的工作 raw；候选可用时指向回正 raw
     seg_for_reconstruction_path: str = ""  # 与 raw 同步的分割图；候选可用时指向回正 seg
     correction_applied: bool = False  # 是否已把回正候选切换为本轮定位几何和重建输入
     correction_angle_degrees: float = 0.0  # 横状位 XY 候选角；拒绝或禁用时为 0.0
@@ -145,12 +145,12 @@ class LocalizationResult:
     debug_xy_correction_crosshair_overlay_path: str = ""  # 横状位 XY 候选回正方向线 overlay
     is_skewed: bool = False  # 兼容旧字段；当前语义等同于 correction_applied，不再表示已可靠检测到歪斜
     skew_params: Dict[str, Any] = field(default_factory=dict)  # 兼容旧字段；语义等同于 correction_params
-    anatomical_geometry: Optional[AnatomicalGeometryResult] = None  # 第三步输出给第四步的统一解剖坐标；未适配部位为空
+    anatomical_geometry: Optional[AnatomicalGeometryResult] = None  # 第五阶段统一解剖坐标；未适配部位为空
     spine_geometry: Optional[Dict[str, Any]] = None  # 仅脊柱生成；标注质心供 CPR，原始 coords/bbox 仍代表全量标注
     spine_cpr_config: Dict[str, Any] = field(default_factory=dict)  # 脊柱 CPR 业务配置，如 offset 范围来源
 
     def to_dict(self) -> Dict[str, Any]:
-        """序列化阶段三完整结果，供阶段四规划及调试文件使用。"""
+        """序列化第三至第五阶段的调试汇总结果。"""
 
         data = {
             'body_part': self.body_part,

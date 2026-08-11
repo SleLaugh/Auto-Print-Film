@@ -177,7 +177,7 @@ class ProcessingContext:
         return self.results.get(stage_name)
 
     def set_stage_result(self, result: Any) -> None:
-        """保存有类型结果，并同步旧字典接口供迁移期代码读取。"""
+        """保存有类型结果，并同步阶段业务字典供后续处理读取。"""
 
         stage_name = getattr(result, 'stage_name', '')
         to_dict = getattr(result, 'to_dict', None)
@@ -185,10 +185,10 @@ class ProcessingContext:
             from .errors import StageInputError
             raise StageInputError("阶段结果缺少 stage_name 或 to_dict()")
         self.stage_results[stage_name] = result
-        legacy_data = to_dict()
-        legacy_data.pop('stage_name', None)
-        legacy_data.pop('schema_version', None)
-        self.set_result(stage_name, legacy_data)
+        result_data = to_dict()
+        result_data.pop('stage_name', None)
+        result_data.pop('schema_version', None)
+        self.set_result(stage_name, result_data)
 
     def require_stage_result(self, stage_name: str, expected_type: Any) -> Any:
         """读取指定类型的前置结果；缺失或类型错误时给出标准错误。"""

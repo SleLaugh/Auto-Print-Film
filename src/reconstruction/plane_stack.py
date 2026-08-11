@@ -8,7 +8,7 @@ import SimpleITK as sitk
 
 
 class PlaneStackResampler:
-    """按照阶段四给出的平面中心和方向采样 2D MPR 图像。"""
+    """按照第六阶段给出的平面中心和方向采样 2D MPR 图像。"""
 
     def sample_slice(
         self,

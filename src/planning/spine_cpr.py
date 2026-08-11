@@ -51,7 +51,7 @@ def build_spine_sagittal_cpr_plan(
     localization_result: Dict[str, Any],
     label_names: Iterable[str],
 ) -> Tuple[SlicePlan | None, List[str]]:
-    """兼容旧入口：返回当前配置生成的第一套 CPR plan。"""
+    """返回当前配置生成的第一套 CPR plan。"""
 
     plans, warnings = build_spine_sagittal_cpr_plans(
         request=request,
@@ -210,7 +210,7 @@ def build_spine_sagittal_cpr_plans(
 def _configured_cpr_range_modes(
     localization_result: Dict[str, Any],
 ) -> List[str]:
-    """从阶段三配置解析 CPR 范围模式。"""
+    """从第四阶段定位配置解析 CPR 范围模式。"""
 
     config = localization_result.get("spine_cpr_config")
     if not isinstance(config, dict):
@@ -259,7 +259,7 @@ def configured_spine_cpr_labels(
     localization_result: Dict[str, Any],
     fallback_labels: Iterable[str],
 ) -> List[str]:
-    """按阶段三解析后的整切 start/end 配置生成 CPR 椎体列表。"""
+    """按第四阶段转交的整切 start/end 配置生成 CPR 椎体列表。"""
 
     configured_labels = _configured_whole_range_spine_labels(
         localization_result,
@@ -315,7 +315,7 @@ def _get_spine_annotation_centers(
     localization_result: Dict[str, Any],
     label_names: Iterable[str],
 ) -> Tuple[List[Tuple[str, Point3D]], List[str]]:
-    """读取过滤标注质心；旧结果缺少过滤结果时回退到全量质心。"""
+    """读取过滤标注质心；输入缺少过滤结果时回退到全量质心。"""
 
     filtered_centroids = (
         localization_result.get("spine_geometry", {})
@@ -1027,7 +1027,7 @@ def _filtered_annotation_offset_interval_mm(
     curve_points: List[Point3D],
     offset_axis: Point3D,
 ) -> Tuple[float, float] | None:
-    """用阶段三过滤后的四棱柱/主体 bbox 计算 CPR offset 区间。"""
+    """用第五阶段过滤后的四棱柱/主体 bbox 计算 CPR offset 区间。"""
 
     annotations = (
         localization_result
@@ -1088,7 +1088,7 @@ def _filtered_annotation_support_points(
     localization_result: Dict[str, Any],
     annotation: Dict[str, Any],
 ) -> np.ndarray | None:
-    """返回主体四棱柱的有方向支撑点，旧结果缺字段时回退 bbox。"""
+    """返回主体四棱柱的有方向支撑点，输入缺字段时回退 bbox。"""
 
     sagittal_geometry = annotation.get("sagittal_body_quadrilateral")
     vertices = (
@@ -2042,7 +2042,7 @@ def _resample_straight_segment(
     end: Point3D,
     spacing_mm: float,
 ) -> List[Point3D]:
-    """退化情况下按首末点生成加密直线，保持阶段五采样稳定。"""
+    """退化情况下按首末点生成加密直线，保持第七阶段采样稳定。"""
 
     delta = subtract_points(end, start)
     length = vector_length(delta)

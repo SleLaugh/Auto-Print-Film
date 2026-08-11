@@ -1,8 +1,8 @@
 """
-六阶段之间稳定交接的顶层结果契约。
+流水线各阶段之间稳定交接的顶层结果契约。
 
-旧阶段曾直接传递任意字典。本模块先约束每个阶段结果的顶层协议和核心路径字段，复杂
-医学结构继续保留在 payload 中，便于渐进迁移而不一次性改写算法。
+本模块约束每个阶段结果的顶层协议和核心路径字段。复杂医学结构保留在 payload 中，
+序列化时展平到 ProcessingContext 的阶段结果字典，供后续阶段稳定读取。
 """
 
 from dataclasses import asdict, dataclass, field
@@ -23,7 +23,7 @@ class StageResult:
     stage_name: ClassVar[str] = ""
     """结果所属阶段的固定名称，子类必须覆盖。"""
     schema_version: ClassVar[str] = "stage_result_v1"
-    """阶段结果协议版本，用于 manifest 和兼容迁移。"""
+    """阶段结果协议版本，用于 manifest 和契约校验。"""
 
     def to_dict(self) -> Dict[str, Any]:
         """转换成 JSON 友好的稳定顶层字典。"""
@@ -46,7 +46,7 @@ class PreprocessingResult(StageResult):
     metadata_path: str = ""
     """调试模式下写出的 DICOM 几何元数据路径。"""
     source_dicom_metadata: Dict[str, str] = field(default_factory=dict)
-    """第五阶段生成派生 DICOM 时允许继承的脱敏标签集合。"""
+    """第七阶段生成派生 DICOM 时允许继承的脱敏标签集合。"""
 
 
 @dataclass
@@ -64,16 +64,13 @@ class SegmentationResult(StageResult):
 
 
 @dataclass
-class LocalizationStageResult(StageResult):
-    """定位阶段结果；复杂坐标和回正诊断暂时保留在 payload。"""
-    stage_name: ClassVar[str] = "localization"
-    schema_version: ClassVar[str] = "localization_v1"
-
+class _PayloadStageResult(StageResult):
+    """将复杂业务载荷展平到阶段结果顶层的公共结果基类。"""
     payload: Dict[str, Any] = field(default_factory=dict)
-    """保持现有定位字典字段不变的兼容载荷。"""
+    """阶段的复杂业务字段。"""
 
     def to_dict(self) -> Dict[str, Any]:
-        """把 payload 展平到旧字典顶层，保证下游旧代码继续读取。"""
+        """展平 payload，形成阶段在 ProcessingContext 中的业务结果。"""
         data = super().to_dict()
         payload = data.pop("payload")
         data.update(payload)
@@ -81,21 +78,42 @@ class LocalizationStageResult(StageResult):
 
 
 @dataclass
-class MappingStageResult(LocalizationStageResult):
-    """规划阶段结果，payload 内主要包含 SlicePlan 列表和诊断信息。"""
-    stage_name: ClassVar[str] = "mapping"
-    schema_version: ClassVar[str] = "mapping_v1"
+class SpatialCorrectionStageResult(_PayloadStageResult):
+    """XY 空间校正阶段结果，包含工作图像路径和诊断。"""
+    stage_name: ClassVar[str] = "spatial_correction"
+    schema_version: ClassVar[str] = "spatial_correction_v1"
 
 
 @dataclass
-class ReconstructionStageResult(LocalizationStageResult):
+class LocalizationStageResult(_PayloadStageResult):
+    """定位阶段结果；复杂坐标和回正诊断保留在 payload。"""
+    stage_name: ClassVar[str] = "localization"
+    schema_version: ClassVar[str] = "localization_v1"
+
+
+@dataclass
+class AnatomicalAnalysisStageResult(_PayloadStageResult):
+    """按部位生成解剖坐标系和可选专用几何。"""
+    stage_name: ClassVar[str] = "anatomical_analysis"
+    schema_version: ClassVar[str] = "anatomical_analysis_v1"
+
+
+@dataclass
+class PlanningStageResult(_PayloadStageResult):
+    """切片规划结果，payload 内主要包含 SlicePlan 列表和诊断信息。"""
+    stage_name: ClassVar[str] = "planning"
+    schema_version: ClassVar[str] = "planning_v1"
+
+
+@dataclass
+class ReconstructionStageResult(_PayloadStageResult):
     """重建阶段结果，payload 内包含输出序列、张数和状位汇总。"""
     stage_name: ClassVar[str] = "reconstruction"
     schema_version: ClassVar[str] = "reconstruction_v1"
 
 
 @dataclass
-class ReportingStageResult(LocalizationStageResult):
+class ReportingStageResult(_PayloadStageResult):
     """报告阶段结果，payload 内包含报告路径、校验和图像数量。"""
     stage_name: ClassVar[str] = "reporting"
     schema_version: ClassVar[str] = "reporting_v1"

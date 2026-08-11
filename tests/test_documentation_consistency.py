@@ -148,7 +148,7 @@ class DocumentationConsistencyTests(unittest.TestCase):
         self.assertFalse(legacy_design.exists())
 
     def test_current_docs_describe_debug_artifact_pruning(self):
-        """当前文档应说明阶段三/四默认调试 NIfTI 的保留边界。"""
+        """当前文档应说明定位与规划调试 NIfTI 的保留边界。"""
 
         localization_doc = (
             SUPERPOWERS_ROOT
@@ -167,8 +167,8 @@ class DocumentationConsistencyTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("默认不再写出 `定位框.nii.gz` 和 `目标掩膜.nii.gz`", localization_doc)
-        self.assertIn("阶段四默认不再写出 CPR NIfTI 调试总览", cpr_doc)
-        self.assertIn("脊柱冠状位 CPR 不再默认生成阶段四 NIfTI 调试图", viewer_readme)
+        self.assertIn("第六阶段默认不再写出 CPR NIfTI 调试总览", cpr_doc)
+        self.assertIn("脊柱冠状位 CPR 不再默认生成第六阶段 NIfTI 调试图", viewer_readme)
 
     def test_current_plan_and_spec_directories_only_contain_current_work(self):
         """完成计划必须归档，旧 specs 路径不能继续保存具体规范。"""

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-阶段二：推理分割
+第二阶段：推理分割
 模型匹配与推理
 """
 
@@ -50,7 +50,7 @@ class SegmentationStage(BaseStage):
             # Pipeline 已通过统一 ConfigLoader 形成生效配置，不再重复读取 JSON。
             default_config.update(self.config)
         else:
-            # 保留文件加载只为兼容直接构造 Stage 的旧调用。
+            # 未通过 Pipeline 注入配置时，直接构造 Stage 仍从标准路径加载配置。
             config_paths = [
                 Path.cwd() / "config" / "nnuNet_config.json",
                 Path.cwd() / "nnuNet_config.json",
@@ -115,7 +115,7 @@ class SegmentationStage(BaseStage):
         if not nifti_path:
             raise ValueError("NIfTI文件路径不存在")
         
-        DebugLog("【阶段二】推理分割 - 模型匹配与推理")
+        DebugLog("【第二阶段】推理分割 - 模型匹配与推理")
         DebugLog(f"  输入NIfTI: {nifti_path}")
         body_part = self._enum_value(request.body_part)
         check_type = self._enum_value(request.check_type)

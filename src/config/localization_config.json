@@ -37,30 +37,28 @@
                 "start": "C1",
                 "end": "C7"
             },
-            "interspace": {
-                "intervals": [
-                    {
-                        "start": "C2",
-                        "end": "C3"
-                    },
-                    {
-                        "start": "C3",
-                        "end": "C4"
-                    },
-                    {
-                        "start": "C4",
-                        "end": "C5"
-                    },
-                    {
-                        "start": "C5",
-                        "end": "C6"
-                    },
-                    {
-                        "start": "C6",
-                        "end": "C7"
-                    }
-                ]
-            }
+            "interspace": [
+                {
+                    "start": "C2",
+                    "end": "C3"
+                },
+                {
+                    "start": "C3",
+                    "end": "C4"
+                },
+                {
+                    "start": "C4",
+                    "end": "C5"
+                },
+                {
+                    "start": "C5",
+                    "end": "C6"
+                },
+                {
+                    "start": "C6",
+                    "end": "C7"
+                }
+            ]
         },
         "胸椎": {
             "spine_cpr": {
@@ -70,62 +68,60 @@
                 "start": "C7",
                 "end": "L1"
             },
-            "interspace": {
-                "intervals": [
-                    {
-                        "start": "C7",
-                        "end": "T1"
-                    },
-                    {
-                        "start": "T1",
-                        "end": "T2"
-                    },
-                    {
-                        "start": "T2",
-                        "end": "T3"
-                    },
-                    {
-                        "start": "T3",
-                        "end": "T4"
-                    },
-                    {
-                        "start": "T4",
-                        "end": "T5"
-                    },
-                    {
-                        "start": "T5",
-                        "end": "T6"
-                    },
-                    {
-                        "start": "T6",
-                        "end": "T7"
-                    },
-                    {
-                        "start": "T7",
-                        "end": "T8"
-                    },
-                    {
-                        "start": "T8",
-                        "end": "T9"
-                    },
-                    {
-                        "start": "T9",
-                        "end": "T10"
-                    },
-                    {
-                        "start": "T10",
-                        "end": "T11"
-                    },
-                    {
-                        "start": "T11",
-                        "end": "T12"
-                    },
-                    {
-                        "start": "T12",
-                        "end": "L1"
-                    }
-                ]
-            }
+            "interspace": [
+                {
+                    "start": "C7",
+                    "end": "T1"
+                },
+                {
+                    "start": "T1",
+                    "end": "T2"
+                },
+                {
+                    "start": "T2",
+                    "end": "T3"
+                },
+                {
+                    "start": "T3",
+                    "end": "T4"
+                },
+                {
+                    "start": "T4",
+                    "end": "T5"
+                },
+                {
+                    "start": "T5",
+                    "end": "T6"
+                },
+                {
+                    "start": "T6",
+                    "end": "T7"
+                },
+                {
+                    "start": "T7",
+                    "end": "T8"
+                },
+                {
+                    "start": "T8",
+                    "end": "T9"
+                },
+                {
+                    "start": "T9",
+                    "end": "T10"
+                },
+                {
+                    "start": "T10",
+                    "end": "T11"
+                },
+                {
+                    "start": "T11",
+                    "end": "T12"
+                },
+                {
+                    "start": "T12",
+                    "end": "L1"
+                }
+            ]
         },
         "腰椎": {
             "spine_cpr": {
@@ -135,30 +131,28 @@
                 "start": "L1",
                 "end": "S1"
             },
-            "interspace": {
-                "intervals": [
-                    {
-                        "start": "L1",
-                        "end": "L2"
-                    },
-                    {
-                        "start": "L2",
-                        "end": "L3"
-                    },
-                    {
-                        "start": "L3",
-                        "end": "L4"
-                    },
-                    {
-                        "start": "L4",
-                        "end": "L5"
-                    },
-                    {
-                        "start": "L5",
-                        "end": "S1"
-                    }
-                ]
-            }
+            "interspace": [
+                {
+                    "start": "L1",
+                    "end": "L2"
+                },
+                {
+                    "start": "L2",
+                    "end": "L3"
+                },
+                {
+                    "start": "L3",
+                    "end": "L4"
+                },
+                {
+                    "start": "L4",
+                    "end": "L5"
+                },
+                {
+                    "start": "L5",
+                    "end": "S1"
+                }
+            ]
         },
         "肺部": {
             "whole_range": {

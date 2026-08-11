@@ -2205,6 +2205,23 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     "横状位": {"start": 3.0, "end": 3.0},
                 })
 
+    def test_checked_in_interspace_configs_are_direct_arrays(self):
+        """脊柱椎间配置直接保存区间数组，不再保留 intervals 包装节点。"""
+
+        config = json.loads(
+            Path("src/config/localization_config.json").read_text(encoding="utf-8")
+        )
+        expected_counts = {"颈椎": 5, "胸椎": 13, "腰椎": 5}
+        for body_part, expected_count in expected_counts.items():
+            with self.subTest(body_part=body_part):
+                interspace = config["targets"][body_part]["interspace"]
+                self.assertIsInstance(interspace, list)
+                self.assertEqual(len(interspace), expected_count)
+                self.assertTrue(all(
+                    set(interval) == {"start", "end"}
+                    for interval in interspace
+                ))
+
     def test_single_label_whole_range_planner_builds_axial_plan_from_bbox(self):
         """验证 `test_single_label_whole_range_planner_builds_axial_plan_from_bbox` 场景符合预期。"""
 
@@ -4311,8 +4328,9 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
         localization_result = self._lumbar_localization_result()
         localization_result["cut_configs"] = {
-            "interspace": {
-                "intervals": [{"start": "L1", "end": "L2"}],
+            "whole_range": {
+                "start": "L1",
+                "end": "L2",
                 "slice_range_extension": {
                     "横状位": {"start": 1.0, "end": 3.0},
                 },
@@ -4334,7 +4352,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         plan = build_straight_slice_plan(
             request=request,
-            cut_mode="interspace",
+            cut_mode="whole_range",
             plane_config=request.plane_configs[0],
             localization_result=localization_result,
             segment=segment,

@@ -11,6 +11,9 @@
   `spine_geometry.filtered_annotation_centroids`（沟通简称“标注质心”）。
 - 脊柱整切按配置首尾标签展开完整解剖范围；胸椎默认 `C7 → L1`，腰椎按实际配置，
   不固定裁掉配置首尾椎体。
+- `localization_config.json` 中 `whole_range` 是含 `start/end` 的对象，
+  `interspace` 直接是多个 `start/end` 对象组成的数组，不使用 `intervals` 包装层；
+  `cut_configs` 按原始形态向后传递，alias 解析结果才使用内部 `intervals` 字段。
 - 标注质心只供第六阶段 CPR/区间切几何使用，不覆盖第四阶段的全量 `coords`。
 - 过滤主体进一步规则化为保持椎体倾斜角度的填充四棱柱，CPR 优先使用实际
   四棱柱 Mask 的体素质心；矢状四边形使用 LR 支撑核心，并只补回与主体紧邻、

@@ -98,9 +98,9 @@ def resolve_slice_range_extension(
 ) -> SliceRangeExtension:
     """按当前切法和状位读取可选范围扩展，未配置时返回 0mm。
 
-    优先读取按切法保存的 `cut_configs`；当 `cut_mode` 与当前计划一致时，也允许
-    从单个 `cut_config` 摘要读取。配置已由第三阶段校验，这里仍做最小数值检查，
-    保证直接调用规划器时不会把非法距离带入几何计算。
+    对象形配置可携带按状位配置的扩展距离；当前正式 `interspace` 配置是数组，
+    因而自然按 0mm 处理。配置已由第三阶段校验，这里仍做最小数值检查，保证
+    直接调用规划器时不会把非法距离带入几何计算。
     """
 
     cut_config: Dict[str, Any] = {}

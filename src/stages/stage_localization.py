@@ -17,6 +17,7 @@ from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.models import (
     AnatomicalGeometryResult,
+    CutConfig,
     LabelCoordinate,
     LabelTarget,
     LocalizationResult,
@@ -3734,8 +3735,8 @@ class LocalizationOperations(BaseStage):
         output_path: Path,
         request,
         model_info: Dict[str, Any],
-        cut_config: Dict[str, Any],
-        cut_configs: Dict[str, Dict[str, Any]],
+        cut_config: CutConfig,
+        cut_configs: Dict[str, CutConfig],
         resolved_cut_config: Dict[str, Any],
         label_targets: Dict[str, LabelTarget],
         label_coordinates: Dict[str, LabelCoordinate],
@@ -3840,19 +3841,19 @@ class LocalizationOperations(BaseStage):
             (config.plane for config in request.plane_configs),
         )
 
-    def _resolve_cut_config(self, request, cut_mode: str | None = None) -> Dict[str, Any]:
+    def _resolve_cut_config(self, request, cut_mode: str | None = None) -> CutConfig:
         """
         根据请求部位和自动推导的定位范围模式查找配置。
 
         具体范围统一从 localization_config.json 读取。
-        whole_range 使用 start/end；interspace 的每个 interval 也使用
-        start/end，避免同一配置里混用 labels、数组等多种形态。
+        whole_range 使用带 start/end 的对象；interspace 直接使用由多个
+        start/end 对象组成的数组，不再增加 intervals 包装节点。
         """
         cut_mode = cut_mode or self._resolve_request_cut_mode(request)
         body_part = getattr(request.body_part, 'value', request.body_part)
         cut_configs = self._resolve_cut_configs(request)
         cut_config = cut_configs.get(cut_mode)
-        if not cut_config:
+        if cut_config is None:
             raise ValueError(
                 f"未找到切割方式配置: body_part={body_part}, cut_mode={cut_mode}"
             )
@@ -3875,7 +3876,7 @@ class LocalizationOperations(BaseStage):
         full_label = config.get('full_label')
         return {'full_label': full_label if isinstance(full_label, bool) else True}
 
-    def _resolve_cut_configs(self, request) -> Dict[str, Dict[str, Any]]:
+    def _resolve_cut_configs(self, request) -> Dict[str, CutConfig]:
         """返回当前部位的全部切法配置，并统一校验其中的范围扩展设置。
 
         第三阶段选择标签时只使用当前定位模式；完整配置由第四阶段写入定位契约，
@@ -3888,24 +3889,25 @@ class LocalizationOperations(BaseStage):
         if not target_config:
             raise ValueError(f"未找到部位定位配置: {body_part}")
 
-        cut_configs: Dict[str, Dict[str, Any]] = {}
+        cut_configs: Dict[str, CutConfig] = {}
         for configured_mode in ('whole_range', 'interspace'):
-            cut_config = target_config.get(configured_mode)
-            if not cut_config:
+            if configured_mode not in target_config:
                 continue
+            cut_config = target_config[configured_mode]
             self._validate_cut_config(configured_mode, cut_config)
             cut_configs[configured_mode] = cut_config
         return cut_configs
 
-    def _resolve_label_aliases(self, cut_config: Dict[str, Any]) -> Dict[str, Any]:
+    def _resolve_label_aliases(self, cut_config: CutConfig) -> Dict[str, Any]:
         """
         把业务短名解析成模型/数据集中的标准 label 名。
 
         例如配置中可以写 L1、C7、skull；这里会根据 label_aliases
         转成 vertebrae_L1、vertebrae_C7、skull。后续再用这些标准名
-        去 dataset.json 中查 label id。
+        去 dataset.json 中查 label id。原始 interspace 数组在解析后放入
+        内部 intervals 字段，让后续阶段能与 whole_range 对象明确区分。
         """
-        if 'intervals' in cut_config:
+        if isinstance(cut_config, list):
             return {
                 'intervals': [
                     {
@@ -3914,7 +3916,7 @@ class LocalizationOperations(BaseStage):
                         'start_labels': self._label_alias(interval['start']),
                         'end_labels': self._label_alias(interval['end'])
                     }
-                    for interval in cut_config['intervals']
+                    for interval in cut_config
                 ]
             }
 
@@ -3939,28 +3941,30 @@ class LocalizationOperations(BaseStage):
         return [value]
 
     @staticmethod
-    def _validate_cut_config(cut_mode: str, cut_config: Dict[str, Any]) -> None:
+    def _validate_cut_config(cut_mode: str, cut_config: CutConfig) -> None:
         """
         校验切割配置结构。
 
         配置统一使用 start/end 表达范围：
             whole_range: {"start": "L1", "end": "S1"}
-            interspace: {"intervals": [{"start": "L1", "end": "L2"}]}
+            interspace: [{"start": "L1", "end": "L2"}]
         """
-        LocalizationStage._validate_slice_range_extension(cut_config)
-
         if cut_mode == 'whole_range':
+            if not isinstance(cut_config, dict):
+                raise ValueError(f"whole_range 配置必须是对象: {cut_config}")
+            LocalizationStage._validate_slice_range_extension(cut_config)
             if not cut_config.get('start') or not cut_config.get('end'):
                 raise ValueError(f"whole_range 配置必须包含 start/end: {cut_config}")
             return
 
         if cut_mode == 'interspace':
-            intervals = cut_config.get('intervals')
-            if not intervals:
-                raise ValueError(f"interspace 配置必须包含 intervals: {cut_config}")
-            for interval in intervals:
+            if not isinstance(cut_config, list) or not cut_config:
+                raise ValueError(f"interspace 配置必须是非空数组: {cut_config}")
+            for interval in cut_config:
+                if not isinstance(interval, dict):
+                    raise ValueError(f"interspace 区间必须是对象: {interval}")
                 if not interval.get('start') or not interval.get('end'):
-                    raise ValueError(f"interspace interval 必须包含 start/end: {interval}")
+                    raise ValueError(f"interspace 区间必须包含 start/end: {interval}")
             return
 
         raise ValueError(f"未知切割方式: {cut_mode}")

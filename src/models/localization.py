@@ -14,6 +14,10 @@ from typing import Any, Dict, Optional
 from .anatomy import AnatomicalGeometryResult
 
 
+CutConfig = Dict[str, Any] | list[Dict[str, Any]]
+"""原始定位切法配置：整切为对象，椎间切为 start/end 对象数组。"""
+
+
 @dataclass
 class VoxelPoint:
     """体素索引坐标点，坐标顺序按医学数组习惯记录为 z/y/x。"""
@@ -122,9 +126,9 @@ class LocalizationResult:
     model: Dict[str, Any]  # 分割阶段匹配到的模型信息
     dataset_json_path: str  # 当前模型对应的 dataset.json 路径
     image: NiftiImageInfo  # 分割图像空间信息
-    cut_config: Dict[str, Any]  # 原始切割配置，来自 localization_config.json
-    cut_configs: Dict[str, Dict[str, Any]]  # 当前部位按 whole_range/interspace 保存的全部原始配置
-    resolved_cut_config: Dict[str, Any]  # 已解析 alias 后的切割配置
+    cut_config: CutConfig  # 当前原始配置；whole_range 为对象，interspace 为区间数组
+    cut_configs: Dict[str, CutConfig]  # 当前部位按切法保存的原始对象或数组
+    resolved_cut_config: Dict[str, Any]  # alias 解析后的内部对象；椎间数组放在 intervals
     label_targets: Dict[str, LabelTarget]  # 本次需要定位的 label 目标
     coords: Dict[str, LabelCoordinate]  # 每个目标 label 的 bbox/centroid 定位结果
     raw_for_reconstruction_path: str = ""  # 第三阶段选定的工作 raw；候选可用时指向回正 raw

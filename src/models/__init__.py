@@ -9,6 +9,7 @@
 from .request import Request, PlaneConfig
 from .dicom_metadata import DicomMetadata
 from .localization import (
+    CutConfig,
     VoxelPoint,
     VoxelBBox,
     LabelTarget,
@@ -54,6 +55,7 @@ __all__ = [
     'Request',
     'PlaneConfig',
     'DicomMetadata',
+    'CutConfig',
     'VoxelPoint',
     'VoxelBBox',
     'LabelTarget',

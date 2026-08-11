@@ -63,6 +63,33 @@ class LocalizationGeometryTest(unittest.TestCase):
                         "slice_range_extension": extension,
                     })
 
+    def test_interspace_config_uses_direct_interval_array(self):
+        """椎间配置直接使用数组，旧 intervals 包装不再属于有效契约。"""
+
+        stage = LocalizationStage()
+        stage._localization_config = {
+            "label_aliases": {
+                "L1": "vertebrae_L1",
+                "L2": "vertebrae_L2",
+            },
+        }
+        interspace = [{"start": "L1", "end": "L2"}]
+
+        stage._validate_cut_config("interspace", interspace)
+
+        self.assertEqual(stage._resolve_label_aliases(interspace), {
+            "intervals": [{
+                "start": "L1",
+                "end": "L2",
+                "start_labels": ["vertebrae_L1"],
+                "end_labels": ["vertebrae_L2"],
+            }],
+        })
+        with self.assertRaisesRegex(ValueError, "必须是非空数组"):
+            stage._validate_cut_config("interspace", {
+                "intervals": interspace,
+            })
+
     def test_spine_cpr_config_is_read_from_spine_body_part_only(self):
         """脊柱 CPR 配置只从对应脊柱部位读取，其他部位不返回该配置。"""
 
@@ -2751,12 +2778,7 @@ class LocalizationGeometryTest(unittest.TestCase):
                                 "矢状位": {"start": 2.0},
                             },
                         },
-                        "interspace": {
-                            "intervals": [{"start": "L1", "end": "S1"}],
-                            "slice_range_extension": {
-                                "横状位": {"end": 1.0},
-                            },
-                        },
+                        "interspace": [{"start": "L1", "end": "S1"}],
                     }
                 },
             }
@@ -2818,9 +2840,8 @@ class LocalizationGeometryTest(unittest.TestCase):
                 2.0,
             )
             self.assertEqual(
-                metadata["cut_configs"]["interspace"]
-                ["slice_range_extension"]["横状位"]["end"],
-                1.0,
+                metadata["cut_configs"]["interspace"],
+                [{"start": "L1", "end": "S1"}],
             )
             self.assertEqual(
                 metadata["raw_for_reconstruction_path"],
@@ -2955,9 +2976,7 @@ class LocalizationGeometryTest(unittest.TestCase):
                             "start": "L1",
                             "end": "S1",
                         },
-                        "interspace": {
-                            "intervals": [{"start": "L1", "end": "S1"}],
-                        },
+                        "interspace": [{"start": "L1", "end": "S1"}],
                     }
                 },
             }

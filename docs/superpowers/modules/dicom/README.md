@@ -8,6 +8,9 @@
 - `Localizer.dcm` 放在对应窗位 series 旁边，第八阶段计数时不应把它当作普通切片。
 - `InstanceNumber` 仍表达 DICOM 内部序号，文件名变化不应改变重建几何。
 - GDCM 写盘必须经由串行保护入口，具体跨模块约束读 `../../architecture/2026-07-20-GDCM写盘串行保护设计.md`。
+- 同一计划各窗 Localizer 必须使用主线程冻结的同一份 `ImagePositionPatient` 和
+  `ImageOrientationPatient` 串行写出；窗位只改变灰度和序列标识。
+- Localizer 缺少必要空间标签时必须失败，不能发布带二维默认方向的文件。
 
 ## 推荐阅读
 

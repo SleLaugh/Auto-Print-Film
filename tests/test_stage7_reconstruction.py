@@ -213,6 +213,45 @@ class Stage7ReconstructionTest(unittest.TestCase):
             self.assertTrue(all(path.exists() for path in output_paths))
             self.assertEqual(max_active_writers, 1)
 
+    def test_parallel_window_workers_write_localizers_on_main_thread(self):
+        """多窗正式切片可并行，但共享几何的 Localizer 必须串行写出。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._make_context_with_one_plan(
+                temp_dir,
+                slice_count=1,
+                window_presets=["骨窗", "肺窗", "纵隔窗", "软组织窗"],
+            )
+            localizer_calls = []
+
+            def record_localizer_write(**kwargs):
+                localizer_calls.append({
+                    "thread": threading.current_thread().name,
+                    "geometry": dict(kwargs["geometry_metadata"]),
+                })
+
+            with mock.patch(
+                "src.stages.stage_reconstruction.write_localizer_dicom",
+                side_effect=record_localizer_write,
+            ):
+                ReconstructionStage({
+                    "parallel": True,
+                    "max_window_workers": 4,
+                }).execute(context)
+
+            self.assertEqual(len(localizer_calls), 4)
+            self.assertEqual(
+                {call["thread"] for call in localizer_calls},
+                {threading.main_thread().name},
+            )
+            self.assertEqual(
+                len({
+                    tuple(sorted(call["geometry"].items()))
+                    for call in localizer_calls
+                }),
+                1,
+            )
+
     def test_windowing_bakes_hu_into_fixed_uint16_grayscale(self):
         """验证 `test_windowing_bakes_hu_into_fixed_uint16_grayscale` 场景符合预期。"""
 
@@ -492,8 +531,8 @@ class Stage7ReconstructionTest(unittest.TestCase):
         self.assertGreater(int(np.ptp(highlighted[:, 0])), 30)
         self.assertGreaterEqual(len(np.unique(highlighted[:, 1])), 2)
 
-    def test_curved_stack_localizer_uses_actual_offset_axis_on_bends(self):
-        """CPR 定位线应按实际采样 offset_axis 平移。"""
+    def test_curved_stack_localizer_rotates_offset_direction_on_bends(self):
+        """CPR 定位线应随弯曲段局部法向旋转。"""
 
         curve_points = [
             {"x": 32.0, "y": 24.0, "z": 12.0},
@@ -518,11 +557,12 @@ class Stage7ReconstructionTest(unittest.TestCase):
         upper = np.asarray(projected[10.0][-1], dtype=float)
         self.assertAlmostEqual(float(np.linalg.norm(center - lower)), 10.0)
         self.assertAlmostEqual(float(np.linalg.norm(upper - center)), 10.0)
-        self.assertAlmostEqual(lower[2], center[2])
-        self.assertAlmostEqual(upper[2], center[2])
+        np.testing.assert_allclose(upper - center, center - lower, atol=1e-6)
+        self.assertLess(upper[2], center[2])
+        self.assertGreater(lower[2], center[2])
 
-    def test_curved_stack_localizer_offsets_match_actual_sampling_geometry(self):
-        """每条定位线必须是实际采样曲线的刚体平移。"""
+    def test_curved_stack_localizer_keeps_small_offsets_locally_parallel(self):
+        """安全曲率范围内仍应按同一局部法向等距展开。"""
 
         plan = {
             "curve_points": [
@@ -541,18 +581,52 @@ class Stage7ReconstructionTest(unittest.TestCase):
         center = np.asarray(projected[0.0], dtype=float)
         offset = np.asarray(projected[10.0], dtype=float)
         deltas = offset - center
-        expected_delta = np.asarray([0.0, 10.0, 0.0])
-        expected_deltas = np.tile(expected_delta, (len(center), 1))
-        np.testing.assert_allclose(deltas, expected_deltas, atol=1e-6)
-
-        for lower, upper in [(-10.0, 0.0), (0.0, 10.0), (10.0, 20.0)]:
+        np.testing.assert_allclose(
+            np.linalg.norm(deltas, axis=1),
+            10.0,
+            atol=1e-6,
+        )
+        for lower, upper in [(-10.0, 0.0), (0.0, 10.0)]:
             gap = np.asarray(projected[upper], dtype=float) - np.asarray(
                 projected[lower], dtype=float
             )
-            np.testing.assert_allclose(gap, expected_deltas, atol=1e-6)
+            np.testing.assert_allclose(
+                np.linalg.norm(gap, axis=1),
+                10.0,
+                atol=1e-6,
+            )
 
-    def test_curved_stack_localizer_limits_normal_turn_for_extended_offsets(self):
-        """slice_range_extension 较大时应限制法向旋转，避免内弯相交。"""
+    def test_curved_stack_offset_geometry_is_independent_of_plan_range(self):
+        """增加更远层时不得改变已经存在的 offset 曲线。"""
+
+        base_plan = {
+            "curve_points": [
+                {"x": 32.0, "y": 20.0, "z": 0.0},
+                {"x": 32.0, "y": 20.0, "z": 10.0},
+                {"x": 32.0, "y": 24.0, "z": 20.0},
+                {"x": 32.0, "y": 38.0, "z": 29.0},
+                {"x": 32.0, "y": 50.0, "z": 35.0},
+            ],
+            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+        }
+        body_range = ReconstructionStage._curved_localizer_projected_curves(
+            plan={**base_plan, "offsets_mm": [-20.0, 0.0, 20.0]},
+            fixed_axis=0,
+        )
+        full_range = ReconstructionStage._curved_localizer_projected_curves(
+            plan={**base_plan, "offsets_mm": [-20.0, 0.0, 20.0, 70.0]},
+            fixed_axis=0,
+        )
+
+        for offset_mm in (-20.0, 0.0, 20.0):
+            np.testing.assert_allclose(
+                np.asarray(body_range[offset_mm]),
+                np.asarray(full_range[offset_mm]),
+                atol=1e-6,
+            )
+
+    def test_curved_stack_localizer_keeps_extended_offsets_advancing(self):
+        """共享方向场的大范围 offset 不能沿中心曲线方向回折。"""
 
         plan = {
             "curve_points": [
@@ -578,7 +652,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
         ))
 
     def test_curved_stack_localizer_removes_lateral_backtracking(self):
-        """弯曲末端不能沿显示横向先回折再折回。"""
+        """大 offset 的弯曲末端不能沿中心线方向回折。"""
 
         curve = np.asarray([
             [32.0, 20.0, 0.0],
@@ -603,36 +677,155 @@ class Stage7ReconstructionTest(unittest.TestCase):
         )
         adjusted = np.asarray(projected[70.0])
         center = np.asarray(projected[0.0])
+        center_steps = np.diff(center, axis=0)
+        adjusted_steps = np.diff(adjusted, axis=0)
 
-        np.testing.assert_allclose(adjusted[:, 2], center[:, 2])
+        self.assertTrue(np.all(
+            np.sum(center_steps * adjusted_steps, axis=1) > 0.0
+        ))
         np.testing.assert_allclose(
-            np.diff(adjusted[:, 2]),
-            np.diff(center[:, 2]),
+            np.linalg.norm(adjusted[[0, -1]] - center[[0, -1]], axis=1),
+            70.0,
+            atol=1e-6,
         )
 
-    def test_curved_stack_localizer_shares_longitudinal_samples(self):
-        """所有 offset 线应共用纵向采样，避免弯角处回环。"""
+    def test_curved_stack_extended_offsets_improve_tight_bend_spacing(self):
+        """共享方向场应改善急弯挤叠，并保持配置中心间距。"""
 
-        plan = {
-            "curve_points": [
-                {"x": 32.0, "y": 20.0, "z": 0.0},
-                {"x": 32.0, "y": 20.0, "z": 10.0},
-                {"x": 32.0, "y": 24.0, "z": 20.0},
-                {"x": 32.0, "y": 38.0, "z": 29.0},
-                {"x": 32.0, "y": 50.0, "z": 35.0},
-            ],
-            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
-            "offsets_mm": [-20.0, 0.0, 20.0],
+        control_points = np.asarray([
+            [32.0, 20.0, 0.0],
+            [32.0, 20.0, 10.0],
+            [32.0, 22.0, 20.0],
+            [32.0, 28.0, 29.0],
+            [32.0, 38.0, 35.0],
+            [32.0, 45.0, 38.0],
+            [32.0, 43.0, 40.0],
+        ])
+        curve = CurvedStackResampler._resample_curve(control_points, 121)
+        offsets = [float(value) for value in range(0, 71, 10)]
+        offset_axis = np.asarray([0.0, 1.0, 0.0])
+        adaptive = CurvedStackResampler._offset_curve_samples(
+            curve,
+            offset_axis,
+            offsets,
+        )
+        _, _, raw_normals = CurvedStackResampler._curve_frame(
+            curve,
+            offset_axis,
+        )
+        raw = {
+            offset_mm: curve + raw_normals * offset_mm
+            for offset_mm in offsets
         }
 
-        projected = ReconstructionStage._curved_localizer_projected_curves(
-            plan=plan,
-            fixed_axis=0,
-        )
-        center = np.asarray(projected[0.0])
+        def projected_minimum_gap(curves, lower, upper):
+            lower_points = curves[lower][:, 1:]
+            upper_points = curves[upper][:, 1:]
+            distances = np.linalg.norm(
+                lower_points[:, np.newaxis, :]
+                - upper_points[np.newaxis, :, :],
+                axis=2,
+            )
+            return float(np.min(distances))
 
-        np.testing.assert_allclose(np.asarray(projected[-20.0])[:, 2], center[:, 2])
-        np.testing.assert_allclose(np.asarray(projected[20.0])[:, 2], center[:, 2])
+        raw_outer_gap = min(
+            projected_minimum_gap(raw, lower, lower + 10.0)
+            for lower in (40.0, 50.0, 60.0)
+        )
+        adaptive_outer_gap = min(
+            projected_minimum_gap(adaptive, lower, lower + 10.0)
+            for lower in (40.0, 50.0, 60.0)
+        )
+
+        self.assertLess(raw_outer_gap, 2.0)
+        self.assertGreater(adaptive_outer_gap, 7.0)
+        for lower, upper in zip(offsets[:-1], offsets[1:]):
+            np.testing.assert_allclose(
+                np.linalg.norm(
+                    adaptive[upper] - adaptive[lower],
+                    axis=1,
+                ),
+                upper - lower,
+                atol=1e-6,
+            )
+
+    def test_curved_stack_touching_slabs_do_not_leave_bend_gaps(self):
+        """层厚等于层间距时，急弯相邻 slab 只能相接或重叠。"""
+
+        control_points = np.asarray([
+            [32.0, 20.0, 0.0],
+            [32.0, 20.0, 10.0],
+            [32.0, 22.0, 20.0],
+            [32.0, 28.0, 29.0],
+            [32.0, 38.0, 35.0],
+            [32.0, 45.0, 38.0],
+            [32.0, 43.0, 40.0],
+        ])
+        curve = CurvedStackResampler._resample_curve(control_points, 121)
+        offsets = [float(value) for value in range(0, 71, 5)]
+        curves, preferred_normals = (
+            CurvedStackResampler._offset_curve_geometry(
+                curve,
+                np.asarray([0.0, 1.0, 0.0]),
+                offsets,
+            )
+        )
+
+        maximum_boundary_gap = -math.inf
+        for lower, upper in zip(offsets[:-1], offsets[1:]):
+            lower_normal = CurvedStackResampler._surface_frame(
+                curves[lower],
+                preferred_normals[lower],
+            )[2]
+            upper_normal = CurvedStackResampler._surface_frame(
+                curves[upper],
+                preferred_normals[upper],
+            )[2]
+            average_normal = lower_normal + upper_normal
+            average_normal /= np.linalg.norm(
+                average_normal,
+                axis=1,
+            )[:, np.newaxis]
+            lower_boundary = curves[lower] + 2.5 * lower_normal
+            upper_boundary = curves[upper] - 2.5 * upper_normal
+            signed_gap = np.sum(
+                (upper_boundary - lower_boundary) * average_normal,
+                axis=1,
+            )
+            maximum_boundary_gap = max(
+                maximum_boundary_gap,
+                float(np.max(signed_gap)),
+            )
+
+        self.assertLessEqual(maximum_boundary_gap, 1e-6)
+
+    def test_curved_stack_rejects_nonfinite_offset_geometry(self):
+        """非有限偏移、支撑范围和层厚不能进入 CPR 几何计算。"""
+
+        curve = np.asarray([
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 10.0],
+        ])
+        offset_axis = np.asarray([0.0, 1.0, 0.0])
+
+        with self.assertRaisesRegex(ValueError, "offset_mm"):
+            CurvedStackResampler._offset_curve_samples(
+                curve,
+                offset_axis,
+                [math.nan],
+            )
+        with self.assertRaisesRegex(ValueError, "support_mm"):
+            CurvedStackResampler._offset_curve_samples(
+                curve,
+                offset_axis,
+                [0.0],
+                support_mm=math.inf,
+            )
+        with self.assertRaisesRegex(ValueError, "slice_thickness"):
+            CurvedStackResampler._maximum_offset_extent_mm({
+                "offsets_mm": [0.0],
+                "slice_thickness": math.nan,
+            })
 
     def test_curved_stack_localizer_draws_every_planned_offset(self):
         """CPR 定位图必须按实际切片 offset 一张对应一条线。"""
@@ -889,6 +1082,57 @@ class Stage7ReconstructionTest(unittest.TestCase):
 
         output_array = sitk.GetArrayFromImage(output)
         self.assertAlmostEqual(float(output_array[0, 0, 0]), 1050.0)
+
+    def test_curved_stack_localizer_matches_resampled_surface_center(self):
+        """定位曲线必须与真实 CPR 曲面的逐行中心采样点一致。"""
+
+        class CapturingResampler(CurvedStackResampler):
+            def __init__(self):
+                self.sampled_points = None
+
+            def _sample_linear_grid(self, image, source, points):
+                self.sampled_points = points.copy()
+                return np.zeros(points.shape[:2], dtype=np.float32)
+
+        image = sitk.GetImageFromArray(np.zeros((64, 64, 64), dtype=np.int16))
+        plan = {
+            "plan_id": "腰椎_CPR_冠状位",
+            "geometry_type": "curved_stack",
+            "curve_points": [
+                {"x": 32.0, "y": 20.0, "z": 5.0},
+                {"x": 32.0, "y": 20.0, "z": 25.0},
+                {"x": 32.0, "y": 40.0, "z": 45.0},
+            ],
+            "curve_spacing_mm": 1.0,
+            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+            "offsets_mm": [-10.0, 0.0, 10.0, 70.0],
+            "extent_mm": {"width": 0.0, "height": 48.0},
+            "output_spacing_mm": {"x": 1.0, "y": 1.0, "z": 0.0},
+            "slice_thickness": 0.1,
+            "slice_spacing": 10.0,
+        }
+        planned_slice = {
+            "index": 4,
+            "offset_mm": 70.0,
+            "center": {"x": 32.0, "y": 30.0, "z": 25.0},
+            "normal": {"x": 0.0, "y": 1.0, "z": 0.0},
+            "row_dir": {"x": -1.0, "y": 0.0, "z": 0.0},
+            "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+        }
+
+        resampler = CapturingResampler()
+        resampler.sample_slice(image, plan, planned_slice)
+        projected = ReconstructionStage._curved_localizer_projected_curves(
+            plan=plan,
+            fixed_axis=0,
+        )
+
+        self.assertIsNotNone(resampler.sampled_points)
+        np.testing.assert_allclose(
+            resampler.sampled_points[:, 0, :],
+            np.asarray(projected[70.0]),
+            atol=1e-6,
+        )
 
     def test_curved_stack_resampler_does_not_transform_each_sample_point(self):
         """CPR 厚层采样不应逐像素调用 SimpleITK 坐标转换。"""
@@ -1586,6 +1830,64 @@ class Stage7ReconstructionTest(unittest.TestCase):
                 [float(value) for value in dataset.ImageOrientationPatient],
                 [0.0, 1.0, 0.0, 0.0, 0.0, -1.0],
             )
+
+    def test_parallel_windows_keep_identical_localizer_geometry(self):
+        """同一计划的所有窗位必须写出完全相同的 Localizer 空间几何。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            windows = ["骨窗", "肺窗", "纵隔窗", "软组织窗"]
+            context = self._make_context_with_one_plan(
+                temp_dir,
+                slice_count=1,
+                window_presets=windows,
+            )
+
+            ReconstructionStage({
+                "parallel": True,
+                "max_window_workers": 4,
+            }).execute(context)
+
+            output_root = Path(context.request.output_dir) / "横状位"
+            geometries = []
+            for window in windows:
+                dataset = pydicom.dcmread(
+                    str(output_root / window / "Localizer.dcm"),
+                    stop_before_pixels=True,
+                )
+                geometries.append((
+                    tuple(float(value) for value in dataset.ImagePositionPatient),
+                    tuple(float(value) for value in dataset.ImageOrientationPatient),
+                ))
+
+            self.assertEqual(len(set(geometries)), 1)
+            self.assertEqual(
+                geometries[0][1],
+                (0.0, 1.0, 0.0, 0.0, 0.0, -1.0),
+            )
+
+    def test_localizer_without_geometry_is_rejected_before_write(self):
+        """缺少三维空间标签时不能静默写成 GDCM 的二维默认方向。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "Localizer.dcm"
+            image = sitk.GetImageFromArray(
+                np.zeros((1, 4, 5), dtype=np.uint16),
+            )
+
+            with self.assertRaisesRegex(ValueError, "缺少必要空间标签"):
+                dicom_writer.write_localizer_dicom(
+                    image=image,
+                    output_path=output_path,
+                    window=WindowPreset(
+                        name="骨窗",
+                        window_width=1000.0,
+                        window_center=400.0,
+                    ),
+                    series_uid="1.2.826.0.1.3680043.2.1125.801",
+                    study_uid="1.2.826.0.1.3680043.2.1125.802",
+                )
+
+            self.assertFalse(output_path.exists())
 
     def test_ct_dicom_write_failure_does_not_leave_partial_formal_file(self):
         """标签校正失败时，不应在正式文件名下留下未校正的 DICOM。"""

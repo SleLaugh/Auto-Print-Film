@@ -265,12 +265,20 @@ class ReconstructionStage(BaseStage):
         localizer_series_uids: dict[str, str],
     ) -> None:
         """
-        一个窗位任务负责处理整套已采样切片。
+        并行写正式切片，再按同一份冻结几何串行写各窗 Localizer。
 
         每个任务写独立目录并使用独立序列 UID，因此没有文件名或序列状态冲突；
         底层 GDCM 写盘仍通过 DICOM 模块的进程内锁串行执行，线程池只并行安全的
-        窗位计算和输出准备。
+        窗位计算和正式切片输出准备。Localizer 共享同一张带三维标签的参考图，
+        必须在主线程冻结标签并串行写出，避免 SimpleITK 元数据在多线程复制时
+        偶发退回二维默认方向。
         """
+
+        localizer_geometry_metadata: dict[str, str] | None = None
+        if localizer_image is not None:
+            localizer_geometry_metadata = self._localizer_geometry_metadata(
+                localizer_image,
+            )
 
         if self.parallel and len(windows) > 1:
             worker_count = min(len(windows), self.max_window_workers)
@@ -292,8 +300,6 @@ class ReconstructionStage(BaseStage):
                         series_uid=series_uids[window.name],
                         study_uid=study_uid,
                         source_metadata=source_metadata,
-                        localizer_image=localizer_image,
-                        localizer_series_uid=localizer_series_uids[window.name],
                     )
                     for window in windows
                 ]
@@ -311,9 +317,29 @@ class ReconstructionStage(BaseStage):
                     series_uid=series_uids[window.name],
                     study_uid=study_uid,
                     source_metadata=source_metadata,
-                    localizer_image=localizer_image,
-                        localizer_series_uid=localizer_series_uids[window.name],
-                    )
+                )
+
+        if localizer_image is None or localizer_geometry_metadata is None:
+            return
+
+        DebugLog(
+            "    [3] Localizer冻结几何并串行写出: "
+            f"plan={plan.get('plan_id', '')}, "
+            f"windows={len(windows)}, "
+            f"position={localizer_geometry_metadata['0020|0032']}, "
+            f"orientation={localizer_geometry_metadata['0020|0037']}"
+        )
+        for window in windows:
+            self._write_window_localizer(
+                localizer_image=localizer_image,
+                geometry_metadata=localizer_geometry_metadata,
+                window=window,
+                output_dir=output_dirs[window.name],
+                series_uid=localizer_series_uids[window.name],
+                study_uid=study_uid,
+                source_metadata=source_metadata,
+                plan=plan,
+            )
 
     @classmethod
     def _build_plan_localizer(
@@ -640,10 +666,19 @@ class ReconstructionStage(BaseStage):
         if not np.isfinite(offset_length) or offset_length <= 1e-8:
             return {}
         offset_axis /= offset_length
+        try:
+            offset_curves = CurvedStackResampler._offset_curve_samples(
+                curve,
+                offset_axis,
+                offsets,
+                support_mm=CurvedStackResampler._maximum_offset_extent_mm(plan),
+            )
+        except ValueError:
+            return {}
 
         projected_curves: Dict[float, List[tuple[float, float, float]]] = {}
         for offset_mm in offsets:
-            projected = curve + offset_axis * offset_mm
+            projected = offset_curves[offset_mm]
             projected_curves[offset_mm] = [
                 tuple(float(value) for value in point)
                 for point in projected
@@ -817,8 +852,6 @@ class ReconstructionStage(BaseStage):
         series_uid: str,
         study_uid: str,
         source_metadata: Dict[str, str],
-        localizer_image: sitk.Image | None,
-        localizer_series_uid: str,
     ) -> None:
         """
         把一套已完成 MPR 的 HU 图像处理成一个窗位 DICOM 序列。
@@ -854,37 +887,74 @@ class ReconstructionStage(BaseStage):
                 total_slices=total_slices,
                 source_metadata=source_metadata,
             )
-        if localizer_image is not None:
-            windowed_localizer = apply_window_to_image(
-                sitk.Image(localizer_image),
-                window,
-            )
-            for geometry_tag in ("0020|0032", "0020|0037"):
-                if localizer_image.HasMetaDataKey(geometry_tag):
-                    windowed_localizer.SetMetaData(
-                        geometry_tag,
-                        localizer_image.GetMetaData(geometry_tag),
-                    )
-            write_localizer_dicom(
-                image=windowed_localizer,
-                output_path=output_dir / "Localizer.dcm",
-                window=window,
-                series_uid=localizer_series_uid,
-                study_uid=study_uid,
-                source_metadata=source_metadata,
-            )
-            if is_debug_log_file_enabled():
-                ReconstructionStage._write_debug_localizer_png(
-                    localizer_image=localizer_image,
-                    windowed_localizer=windowed_localizer,
-                    output_path=output_dir / "Localizer.png",
-                )
         DebugLog(
-            "    [重建性能] 窗位写出完成: "
+            "    [重建性能] 窗位切片写出完成: "
             f"plan={plan.get('plan_id', '')}, "
             f"window={getattr(window, 'name', window)}, "
             f"slices={total_slices}, "
-            f"has_localizer={localizer_image is not None}, "
+            f"耗时={time.perf_counter() - write_start:.3f}s"
+        )
+
+    @staticmethod
+    def _localizer_geometry_metadata(image: sitk.Image) -> dict[str, str]:
+        """在进入窗位线程前冻结定位图三维位置和行列方向。"""
+
+        required_tags = ("0020|0032", "0020|0037")
+        missing_tags = [
+            tag
+            for tag in required_tags
+            if not image.HasMetaDataKey(tag)
+            or not image.GetMetaData(tag).strip()
+        ]
+        if missing_tags:
+            raise ValueError(
+                "Localizer 缺少必要空间标签: " + ", ".join(missing_tags)
+            )
+        return {
+            tag: image.GetMetaData(tag)
+            for tag in required_tags
+        }
+
+    @staticmethod
+    def _write_window_localizer(
+        *,
+        localizer_image: sitk.Image,
+        geometry_metadata: dict[str, str],
+        window: Any,
+        output_dir: Path,
+        series_uid: str,
+        study_uid: str,
+        source_metadata: Dict[str, str],
+        plan: Dict[str, Any],
+    ) -> None:
+        """用冻结的共享几何写出一个窗位的定位图。"""
+
+        write_start = time.perf_counter()
+        windowed_localizer = apply_window_to_image(
+            sitk.Image(localizer_image),
+            window,
+        )
+        for tag, value in geometry_metadata.items():
+            windowed_localizer.SetMetaData(tag, value)
+        write_localizer_dicom(
+            image=windowed_localizer,
+            output_path=output_dir / "Localizer.dcm",
+            window=window,
+            series_uid=series_uid,
+            study_uid=study_uid,
+            source_metadata=source_metadata,
+            geometry_metadata=geometry_metadata,
+        )
+        if is_debug_log_file_enabled():
+            ReconstructionStage._write_debug_localizer_png(
+                localizer_image=localizer_image,
+                windowed_localizer=windowed_localizer,
+                output_path=output_dir / "Localizer.png",
+            )
+        DebugLog(
+            "    [重建性能] Localizer写出完成: "
+            f"plan={plan.get('plan_id', '')}, "
+            f"window={getattr(window, 'name', window)}, "
             f"耗时={time.perf_counter() - write_start:.3f}s"
         )
 

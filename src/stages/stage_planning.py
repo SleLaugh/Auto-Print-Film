@@ -1123,10 +1123,19 @@ class PlanningStage(BaseStage):
         if not np.isfinite(offset_length) or offset_length <= 1e-8:
             return {}
         offset_axis /= offset_length
+        try:
+            offset_curves = CurvedStackResampler._offset_curve_samples(
+                curve,
+                offset_axis,
+                offsets,
+                support_mm=CurvedStackResampler._maximum_offset_extent_mm(plan),
+            )
+        except ValueError:
+            return {}
 
         projected_curves: Dict[float, list[Dict[str, float]]] = {}
         for offset_mm in offsets:
-            projected = curve + offset_axis * offset_mm
+            projected = offset_curves[offset_mm]
             projected_curves[offset_mm] = [
                 {
                     "x": float(point[0]),

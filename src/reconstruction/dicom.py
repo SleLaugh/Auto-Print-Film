@@ -289,15 +289,29 @@ def write_localizer_dicom(
     series_uid: str,
     study_uid: str,
     source_metadata: Dict[str, str] | None = None,
+    geometry_metadata: Dict[str, str] | None = None,
 ) -> None:
     """写出不参与正式切片编号的定位图 DICOM。"""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    geometry_metadata = {
-        tag: image.GetMetaData(tag)
+    if geometry_metadata is None:
+        geometry_metadata = {
+            tag: image.GetMetaData(tag)
+            for tag in ("0020|0032", "0020|0037")
+            if image.HasMetaDataKey(tag)
+        }
+    else:
+        geometry_metadata = dict(geometry_metadata)
+    missing_geometry_tags = [
+        tag
         for tag in ("0020|0032", "0020|0037")
-        if image.HasMetaDataKey(tag)
-    }
+        if not str(geometry_metadata.get(tag, "")).strip()
+    ]
+    if missing_geometry_tags:
+        raise ValueError(
+            "Localizer 缺少必要空间标签: "
+            + ", ".join(missing_geometry_tags)
+        )
     image_2d = _extract_singleton_axis(image)
     inherited_metadata = source_metadata or {}
     specific_character_set = str(inherited_metadata.get("0008|0005", ""))

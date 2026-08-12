@@ -5620,6 +5620,43 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
         self.assertEqual(len(plan["offsets_mm"]), 21)
 
+    def test_planning_cpr_overview_keeps_bent_offsets_equally_spaced(self):
+        """第六阶段总览也应复用弯曲段等距 offset 几何。"""
+
+        projected = PlanningStage._curved_overview_projected_curves(
+            plan={
+                "curve_points": [
+                    {"x": 32.0, "y": 24.0, "z": 12.0},
+                    {"x": 32.0, "y": 24.0, "z": 32.0},
+                    {"x": 32.0, "y": 44.0, "z": 42.0},
+                ],
+                "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+                "offsets_mm": [-10.0, 0.0, 10.0],
+                "slice_thickness": 5.0,
+            },
+            fixed_axis=0,
+        )
+        lower = np.asarray([
+            [point[axis] for axis in ("x", "y", "z")]
+            for point in projected[-10.0]
+        ])
+        center = np.asarray([
+            [point[axis] for axis in ("x", "y", "z")]
+            for point in projected[0.0]
+        ])
+        upper = np.asarray([
+            [point[axis] for axis in ("x", "y", "z")]
+            for point in projected[10.0]
+        ])
+
+        np.testing.assert_allclose((lower + upper) / 2.0, center, atol=1e-6)
+        np.testing.assert_allclose(
+            np.linalg.norm(upper - center, axis=1),
+            10.0,
+            atol=1e-6,
+        )
+        self.assertFalse(np.allclose(upper[:, 2], center[:, 2]))
+
     def test_center_cross_uses_lung_anatomical_origin_in_long_scan(self):
         """颈到盆长扫描的十字中线应落在肺中心，而不是整幅图像中心。"""
 

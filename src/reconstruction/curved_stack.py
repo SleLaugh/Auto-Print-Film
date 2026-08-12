@@ -17,6 +17,13 @@ class CurvedStackResampler:
     _MAX_DIRECTION_CHANGE_RATIO = 0.9
     _DIRECTION_SMOOTHING_SEARCH_STEPS = 24
 
+    def __init__(self) -> None:
+        """初始化单计划几何缓存；一个重采样器只服务一个切片计划。"""
+
+        self._prepared_geometry_key: tuple[Any, ...] | None = None
+        self._prepared_offset_curves: Dict[float, np.ndarray] = {}
+        self._prepared_normals: Dict[float, np.ndarray] = {}
+
     def sample_slice(
         self,
         image: sitk.Image,
@@ -26,7 +33,6 @@ class CurvedStackResampler:
         """采样一张 CPR HU 图，返回 size=(cols, rows, 1) 的图像。"""
 
         perf_start = time.perf_counter()
-        curve_points = self._curve_points(plan)
         curve_spacing = float(plan["curve_spacing_mm"])
         if curve_spacing <= 0:
             raise ValueError("curve_spacing_mm 必须大于 0")
@@ -40,7 +46,6 @@ class CurvedStackResampler:
 
         columns = max(1, int(round(float(extent["width"]) / spacing_x)) + 1)
         rows = max(1, int(round(float(extent["height"]) / spacing_y)) + 1)
-        curve_samples = self._resample_curve(curve_points, rows)
         offset_axis = self._normalize(self._point(plan["offset_axis"]))
         offset_mm = float(planned_slice.get("offset_mm", 0.0))
         if not math.isfinite(offset_mm):
@@ -52,10 +57,11 @@ class CurvedStackResampler:
             self._maximum_offset_extent_mm(plan),
             abs(offset_mm) + slice_thickness / 2.0,
         )
-        offset_curves, preferred_normals = self._offset_curve_geometry(
-            curve_samples,
-            offset_axis,
-            [offset_mm],
+        offset_curves, preferred_normals = self._prepared_plan_geometry(
+            plan,
+            rows=rows,
+            offset_axis=offset_axis,
+            required_offset_mm=offset_mm,
             support_mm=maximum_offset_mm,
         )
         offset_curve = offset_curves[offset_mm]
@@ -106,6 +112,76 @@ class CurvedStackResampler:
             f"耗时={time.perf_counter() - perf_start:.3f}s"
         )
         return output
+
+    def _prepared_plan_geometry(
+        self,
+        plan: Dict[str, Any],
+        *,
+        rows: int,
+        offset_axis: np.ndarray,
+        required_offset_mm: float,
+        support_mm: float,
+    ) -> tuple[Dict[float, np.ndarray], Dict[float, np.ndarray]]:
+        """为同一 CPR 计划只计算一次共享等距偏移方向场。"""
+
+        raw_offsets = list(plan.get("offsets_mm") or [])
+        raw_offsets.extend(
+            planned_slice.get("offset_mm", 0.0)
+            for planned_slice in plan.get("slices", [])
+        )
+        raw_offsets.append(required_offset_mm)
+        normalized_offsets: list[float] = []
+        for raw_value in raw_offsets:
+            offset_mm = float(raw_value)
+            if not math.isfinite(offset_mm):
+                raise ValueError("offset_mm 必须是有限数值")
+            normalized_offsets.append(offset_mm)
+        offsets = tuple(dict.fromkeys(normalized_offsets))
+        effective_support_mm = max(
+            float(support_mm),
+            max((abs(value) for value in offsets), default=0.0)
+            + float(plan.get("slice_thickness", 0.0)) / 2.0,
+        )
+        curve_key = tuple(
+            (
+                float(point["x"]),
+                float(point["y"]),
+                float(point["z"]),
+            )
+            for point in plan.get("curve_points", [])
+        )
+        cache_key = (
+            curve_key,
+            int(rows),
+            float(plan["curve_spacing_mm"]),
+            tuple(float(value) for value in offset_axis),
+            offsets,
+            effective_support_mm,
+        )
+        if getattr(self, "_prepared_geometry_key", None) != cache_key:
+            prepare_start = time.perf_counter()
+            curve_samples = self._resample_curve(
+                self._curve_points(plan),
+                rows,
+            )
+            (
+                self._prepared_offset_curves,
+                self._prepared_normals,
+            ) = self._offset_curve_geometry(
+                curve_samples,
+                offset_axis,
+                list(offsets),
+                support_mm=effective_support_mm,
+            )
+            self._prepared_geometry_key = cache_key
+            DebugLog(
+                "    [CPR几何准备] "
+                f"plan={plan.get('plan_id', '')}, "
+                f"rows={rows}, offsets={len(offsets)}, "
+                f"support={effective_support_mm:.3f}mm, "
+                f"耗时={time.perf_counter() - prepare_start:.3f}s"
+            )
+        return self._prepared_offset_curves, self._prepared_normals
 
     @staticmethod
     def _curve_points(plan: Dict[str, Any]) -> np.ndarray:
@@ -435,7 +511,12 @@ class CurvedStackResampler:
         """返回全部层中心和半层厚占用的最大绝对偏移。"""
 
         offsets: list[float] = []
-        for raw_value in plan.get("offsets_mm") or []:
+        raw_offsets = list(plan.get("offsets_mm") or [])
+        raw_offsets.extend(
+            planned_slice.get("offset_mm", 0.0)
+            for planned_slice in plan.get("slices", [])
+        )
+        for raw_value in raw_offsets:
             try:
                 value = float(raw_value)
             except (TypeError, ValueError):

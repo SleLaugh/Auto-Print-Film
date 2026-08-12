@@ -1083,6 +1083,80 @@ class Stage7ReconstructionTest(unittest.TestCase):
         output_array = sitk.GetArrayFromImage(output)
         self.assertAlmostEqual(float(output_array[0, 0, 0]), 1050.0)
 
+    def test_curved_stack_resampler_reuses_geometry_without_changing_output(self):
+        """同一计划只求一次方向场，且缓存前后图像与空间几何完全一致。"""
+
+        class UncachedCurvedStackResampler(CurvedStackResampler):
+            """按优化前的逐切片方式生成基准结果。"""
+
+            def _prepared_plan_geometry(
+                self,
+                plan,
+                *,
+                rows,
+                offset_axis,
+                required_offset_mm,
+                support_mm,
+            ):
+                curve_samples = self._resample_curve(
+                    self._curve_points(plan),
+                    rows,
+                )
+                return self._offset_curve_geometry(
+                    curve_samples,
+                    offset_axis,
+                    [required_offset_mm],
+                    support_mm=support_mm,
+                )
+
+        image = self._make_ramp_image(size=(16, 16, 16))
+        plan = {
+            "plan_id": "腰椎_CPR_冠状位",
+            "geometry_type": "curved_stack",
+            "curve_points": [
+                {"x": 7.0, "y": 5.0, "z": 2.0},
+                {"x": 7.0, "y": 5.0, "z": 8.0},
+                {"x": 7.0, "y": 7.0, "z": 13.0},
+            ],
+            "curve_spacing_mm": 1.0,
+            "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
+            "offsets_mm": [-2.0, 0.0, 2.0],
+            "extent_mm": {"width": 4.0, "height": 12.0},
+            "output_spacing_mm": {"x": 1.0, "y": 1.0, "z": 0.0},
+            "slice_thickness": 1.0,
+            "slice_spacing": 2.0,
+            "slices": [
+                {"index": index, "offset_mm": offset}
+                for index, offset in enumerate((-2.0, 0.0, 2.0), 1)
+            ],
+        }
+        baseline_resampler = UncachedCurvedStackResampler()
+        baseline = [
+            baseline_resampler.sample_slice(image, plan, planned_slice)
+            for planned_slice in plan["slices"]
+        ]
+        cached_resampler = CurvedStackResampler()
+
+        with mock.patch.object(
+            cached_resampler,
+            "_offset_curve_geometry",
+            wraps=cached_resampler._offset_curve_geometry,
+        ) as offset_geometry:
+            cached = [
+                cached_resampler.sample_slice(image, plan, planned_slice)
+                for planned_slice in plan["slices"]
+            ]
+
+        self.assertEqual(offset_geometry.call_count, 1)
+        for baseline_image, cached_image in zip(baseline, cached):
+            np.testing.assert_array_equal(
+                sitk.GetArrayFromImage(cached_image),
+                sitk.GetArrayFromImage(baseline_image),
+            )
+            self.assertEqual(cached_image.GetOrigin(), baseline_image.GetOrigin())
+            self.assertEqual(cached_image.GetSpacing(), baseline_image.GetSpacing())
+            self.assertEqual(cached_image.GetDirection(), baseline_image.GetDirection())
+
     def test_curved_stack_localizer_matches_resampled_surface_center(self):
         """定位曲线必须与真实 CPR 曲面的逐行中心采样点一致。"""
 
@@ -1347,6 +1421,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
             CurvedStackResampler().sample_slice(image, plan, plan["slices"][0])
 
         messages = [call.args[0] for call in debug_log.call_args_list]
+        self.assertTrue(any("[CPR几何准备]" in message for message in messages))
         self.assertTrue(any("[CPR采样性能]" in message for message in messages))
         self.assertTrue(any("slab_count=" in message for message in messages))
 

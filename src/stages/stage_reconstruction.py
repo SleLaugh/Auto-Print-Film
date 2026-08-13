@@ -14,6 +14,7 @@ MPR多平面重建与DICOM生成
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
 
@@ -34,6 +35,15 @@ from src.reconstruction.windowing import apply_window_to_image, unique_window_pr
 from src.utils import DebugLog, is_debug_file_enabled
 
 
+@dataclass(frozen=True)
+class _LocalizerRender:
+    """保存定位图原始背景及与其逐像素对齐的线条覆盖率。"""
+
+    background_image: sitk.Image
+    line_alpha: np.ndarray
+    legacy_line_value: float
+
+
 class ReconstructionStage(BaseStage):
     """执行切片计划，并按窗位输出派生 CT DICOM 序列。"""
 
@@ -47,6 +57,7 @@ class ReconstructionStage(BaseStage):
         "冠状位": 1,
         "横状位": 2,
     }
+    _LOCALIZER_SUBPIXEL_SAMPLES_PER_PIXEL = 4
     
     def __init__(self, config: Dict[str, Any] = None):
         """
@@ -163,14 +174,28 @@ class ReconstructionStage(BaseStage):
         第一步把计划中的所有位置采样成 HU 图像；第二步再按窗位处理整套采样结果。
         先完整采样能保证窗位线程不触碰重采样器，也符合“先采集、后显示处理”的流程。
         """
+        localizer_render: _LocalizerRender | None = None
         if localizer_image is None and isinstance(image, sitk.Image):
             localizer_start = time.perf_counter()
-            localizer_image = self._build_plan_localizer(image, plan)
+            localizer_render = self._build_plan_localizer_render(image, plan)
             DebugLog(
                 "    [重建性能] Localizer生成完成: "
                 f"plan={plan.get('plan_id', '')}, "
-                f"has_localizer={localizer_image is not None}, "
+                f"has_localizer={localizer_render is not None}, "
                 f"耗时={time.perf_counter() - localizer_start:.3f}s"
+            )
+        elif localizer_image is not None:
+            # 保留内部测试或调用方传入预构建定位图的兼容入口。该图可能已经烧录
+            # 线条，因此这里只把它作为无额外覆盖掩膜的完整背景继续写出。
+            localizer_render = _LocalizerRender(
+                background_image=localizer_image,
+                line_alpha=np.zeros(
+                    self._localizer_array_2d(localizer_image).shape,
+                    dtype=np.float32,
+                ),
+                legacy_line_value=float(np.max(
+                    self._localizer_array_2d(localizer_image)
+                )),
             )
 
         windows = unique_window_presets(plan["window_presets"])
@@ -234,7 +259,7 @@ class ReconstructionStage(BaseStage):
             series_uids=series_uids,
             study_uid=study_uid,
             source_metadata=source_metadata,
-            localizer_image=localizer_image,
+            localizer_render=localizer_render,
             localizer_series_uids=localizer_series_uids,
         )
 
@@ -264,7 +289,7 @@ class ReconstructionStage(BaseStage):
         series_uids: dict[str, str],
         study_uid: str,
         source_metadata: Dict[str, str],
-        localizer_image: sitk.Image | None,
+        localizer_render: _LocalizerRender | None,
         localizer_series_uids: dict[str, str],
     ) -> None:
         """
@@ -278,9 +303,9 @@ class ReconstructionStage(BaseStage):
         """
 
         localizer_geometry_metadata: dict[str, str] | None = None
-        if localizer_image is not None:
+        if localizer_render is not None:
             localizer_geometry_metadata = self._localizer_geometry_metadata(
-                localizer_image,
+                localizer_render.background_image,
             )
 
         if self.parallel and len(windows) > 1:
@@ -322,7 +347,7 @@ class ReconstructionStage(BaseStage):
                     source_metadata=source_metadata,
                 )
 
-        if localizer_image is None or localizer_geometry_metadata is None:
+        if localizer_render is None or localizer_geometry_metadata is None:
             return
 
         DebugLog(
@@ -334,7 +359,7 @@ class ReconstructionStage(BaseStage):
         )
         for window in windows:
             self._write_window_localizer(
-                localizer_image=localizer_image,
+                localizer_render=localizer_render,
                 geometry_metadata=localizer_geometry_metadata,
                 window=window,
                 output_dir=output_dirs[window.name],
@@ -350,10 +375,32 @@ class ReconstructionStage(BaseStage):
         image: sitk.Image,
         plan: Dict[str, Any],
     ) -> sitk.Image | None:
-        """从代表性原 CT 正交层烧录每张计划切片与定位面的真实交线。"""
+        """返回兼容既有检查入口的、已烧录定位线的 HU 图像。"""
+
+        render = cls._build_plan_localizer_render(image, plan)
+        if render is None:
+            return None
+        return cls._compose_legacy_localizer_image(render)
+
+    @classmethod
+    def _build_plan_localizer_render(
+        cls,
+        image: sitk.Image,
+        plan: Dict[str, Any],
+    ) -> _LocalizerRender | None:
+        """生成定位图背景与亚像素线掩膜，不参与正式切片重建。"""
 
         if plan.get("geometry_type") == "curved_stack":
-            return cls._build_curved_plan_localizer(image, plan)
+            return cls._build_curved_plan_localizer_render(image, plan)
+        return cls._build_plane_plan_localizer_render(image, plan)
+
+    @classmethod
+    def _build_plane_plan_localizer_render(
+        cls,
+        image: sitk.Image,
+        plan: Dict[str, Any],
+    ) -> _LocalizerRender | None:
+        """生成直线切片平面在原始正交背景上的抗锯齿交线。"""
 
         axes = cls._LOCALIZER_DRAW_AXES.get(str(plan.get("plane", "")))
         if axes is None:
@@ -393,39 +440,15 @@ class ReconstructionStage(BaseStage):
         roi_size[fixed_axis] = 1
         representative_slice = sitk.RegionOfInterest(image, roi_size, roi_index)
         representative_slice = sitk.Cast(representative_slice, sitk.sitkFloat32)
-        localizer_array = sitk.GetArrayFromImage(representative_slice)
+        line_alpha_array = np.zeros(
+            sitk.GetArrayViewFromImage(representative_slice).shape,
+            dtype=np.float32,
+        )
         source_array = sitk.GetArrayViewFromImage(image)
         source_min = float(np.min(source_array))
         source_max = float(np.max(source_array))
         intensity_span = max(source_max - source_min, 1.0)
-        center_value = source_max + intensity_span
-        size_xyz = representative_slice.GetSize()
-
-        def paint(start_xyz: np.ndarray, end_xyz: np.ndarray, value: float) -> None:
-            """把物理交线两端转换后的连续索引烧录到代表性定位层。"""
-
-            difference = end_xyz - start_xyz
-            steps = max(
-                int(np.ceil(abs(difference[stack_axis]))),
-                int(np.ceil(abs(difference[line_axis]))),
-                1,
-            )
-            for step in range(steps + 1):
-                index = start_xyz + difference * step / steps
-                index_xyz = [0, 0, 0]
-                index_xyz[stack_axis] = int(round(float(index[stack_axis])))
-                index_xyz[line_axis] = int(round(float(index[line_axis])))
-                index_xyz[fixed_axis] = 0
-                if not all(
-                    0 <= index_xyz[axis] < size_xyz[axis]
-                    for axis in range(3)
-                ):
-                    continue
-                localizer_array[
-                    index_xyz[2],
-                    index_xyz[1],
-                    index_xyz[0],
-                ] = value
+        line_value = source_max + intensity_span
 
         fixed_plane_index = [0, 0, 0]
         fixed_plane_index[fixed_axis] = fixed_index
@@ -455,41 +478,20 @@ class ReconstructionStage(BaseStage):
                 image.TransformPhysicalPointToContinuousIndex(tuple(end_point)),
                 dtype=float,
             )
-            paint(start_xyz, end_xyz, center_value)
-
-        painted_slice = sitk.GetImageFromArray(localizer_array)
-        painted_slice.CopyInformation(representative_slice)
-        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
-        if float(direction[2, 2]) > 0.0:
-            # Localizer 降为二维 DICOM 后不能再依赖三维 z 轴
-            # 来决定头脚显示顺序。当原图 +z 指向物理头侧时，
-            # 把高 z 放到像素顶部；-z 指向头侧时则保持原序。
-            painted_slice = sitk.Flip(
-                painted_slice,
-                [False, False, True],
-                flipAboutOrigin=False,
+            cls._paint_antialiased_polyline(
+                line_alpha_array,
+                np.stack([start_xyz, end_xyz]),
+                display_axes=(stack_axis, line_axis),
+                fixed_axis=fixed_axis,
             )
-        localizer = cls._extract_projection_axis(painted_slice, fixed_axis)
-        remaining_axes = [axis for axis in range(3) if axis != fixed_axis]
-        localizer_direction = np.asarray(
-            painted_slice.GetDirection(),
-            dtype=float,
-        ).reshape(3, 3)
-        row_direction = localizer_direction[:, remaining_axes[0]]
-        column_direction = localizer_direction[:, remaining_axes[1]]
-        first_pixel = painted_slice.TransformIndexToPhysicalPoint((0, 0, 0))
-        localizer.SetMetaData(
-            "0020|0037",
-            "\\".join(
-                f"{float(value):.12g}"
-                for value in (*row_direction, *column_direction)
-            ),
+
+        return cls._finalize_localizer_render(
+            image=image,
+            representative_slice=representative_slice,
+            line_alpha_array=line_alpha_array,
+            fixed_axis=fixed_axis,
+            legacy_line_value=line_value,
         )
-        localizer.SetMetaData(
-            "0020|0032",
-            "\\".join(f"{float(value):.12g}" for value in first_pixel),
-        )
-        return localizer
 
     @classmethod
     def _build_curved_plan_localizer(
@@ -497,7 +499,20 @@ class ReconstructionStage(BaseStage):
         image: sitk.Image,
         plan: Dict[str, Any],
     ) -> sitk.Image | None:
-        """CPR 定位图直接投影中心曲线，避免把曲面误画成平面交线。"""
+        """返回兼容既有检查入口的、已烧录 CPR 定位线的 HU 图像。"""
+
+        render = cls._build_curved_plan_localizer_render(image, plan)
+        if render is None:
+            return None
+        return cls._compose_legacy_localizer_image(render)
+
+    @classmethod
+    def _build_curved_plan_localizer_render(
+        cls,
+        image: sitk.Image,
+        plan: Dict[str, Any],
+    ) -> _LocalizerRender | None:
+        """投影实际 CPR 中心曲线，并生成亚像素覆盖掩膜。"""
 
         curve_points = plan.get("curve_points") or []
         if len(curve_points) < 2:
@@ -516,36 +531,14 @@ class ReconstructionStage(BaseStage):
         roi_size[fixed_axis] = 1
         representative_slice = sitk.RegionOfInterest(image, roi_size, roi_index)
         representative_slice = sitk.Cast(representative_slice, sitk.sitkFloat32)
-        localizer_array = sitk.GetArrayFromImage(representative_slice)
+        line_alpha_array = np.zeros(
+            sitk.GetArrayViewFromImage(representative_slice).shape,
+            dtype=np.float32,
+        )
         source_array = sitk.GetArrayViewFromImage(image)
         source_min = float(np.min(source_array))
         source_max = float(np.max(source_array))
-        center_value = source_max + max(source_max - source_min, 1.0)
-        size_xyz = representative_slice.GetSize()
-
-        def paint(start_xyz: np.ndarray, end_xyz: np.ndarray) -> None:
-            difference = end_xyz - start_xyz
-            steps = max(
-                int(np.ceil(abs(difference[display_axes[0]]))),
-                int(np.ceil(abs(difference[display_axes[1]]))),
-                1,
-            )
-            for step in range(steps + 1):
-                index = start_xyz + difference * step / steps
-                index_xyz = [0, 0, 0]
-                index_xyz[display_axes[0]] = int(round(float(index[display_axes[0]])))
-                index_xyz[display_axes[1]] = int(round(float(index[display_axes[1]])))
-                index_xyz[fixed_axis] = 0
-                if not all(
-                    0 <= index_xyz[axis] < size_xyz[axis]
-                    for axis in range(3)
-                ):
-                    continue
-                localizer_array[
-                    index_xyz[2],
-                    index_xyz[1],
-                    index_xyz[0],
-                ] = center_value
+        line_value = source_max + max(source_max - source_min, 1.0)
 
         projected_curves = cls._curved_localizer_projected_curves(
             plan=plan,
@@ -557,38 +550,173 @@ class ReconstructionStage(BaseStage):
                 image,
                 projected_points,
             )
-            for start_xyz, end_xyz in zip(
+            if len(projected_indices) < 2:
+                # 定位线属于显示附属物；退化投影保留干净背景即可，不能让它
+                # 阻断正式 CPR 切片的重采样和写出。
+                continue
+            cls._paint_antialiased_polyline(
+                line_alpha_array,
                 projected_indices,
-                projected_indices[1:],
-            ):
-                paint(start_xyz, end_xyz)
+                display_axes=(display_axes[0], display_axes[1]),
+                fixed_axis=fixed_axis,
+            )
         DebugLog(
             "    [CPR定位图性能] "
             f"plan={plan.get('plan_id', '')}, "
             f"curves={len(projected_curves)}, "
             f"points={sum(len(points) for points in projected_curves.values())}, "
             "coordinate_transform=batch_affine, "
+            "rasterizer=subpixel_bilinear, "
             f"耗时={time.perf_counter() - coordinate_transform_start:.3f}s"
         )
 
-        painted_slice = sitk.GetImageFromArray(localizer_array)
-        painted_slice.CopyInformation(representative_slice)
+        return cls._finalize_localizer_render(
+            image=image,
+            representative_slice=representative_slice,
+            line_alpha_array=line_alpha_array,
+            fixed_axis=fixed_axis,
+            legacy_line_value=line_value,
+        )
+
+    @classmethod
+    def _paint_antialiased_segment(
+        cls,
+        line_alpha_array: np.ndarray,
+        start_xyz: np.ndarray,
+        end_xyz: np.ndarray,
+        *,
+        display_axes: tuple[int, int],
+        fixed_axis: int,
+    ) -> None:
+        """绘制单段抗锯齿线；主要供独立几何测试和短交线使用。"""
+
+        cls._paint_antialiased_polyline(
+            line_alpha_array,
+            np.stack([start_xyz, end_xyz]),
+            display_axes=display_axes,
+            fixed_axis=fixed_axis,
+        )
+
+    @classmethod
+    def _paint_antialiased_polyline(
+        cls,
+        line_alpha_array: np.ndarray,
+        points_xyz: np.ndarray,
+        *,
+        display_axes: tuple[int, int],
+        fixed_axis: int,
+    ) -> None:
+        """整条曲线一次批量生成亚像素采样，再按双线性覆盖率落点。"""
+
+        points = np.asarray(points_xyz, dtype=float)
+        if points.ndim != 2 or points.shape[1] != 3 or len(points) < 2:
+            raise ValueError("定位线必须至少包含两个三维连续索引")
+        if not np.all(np.isfinite(points)):
+            raise ValueError("定位线索引必须是有限数值")
+
+        first_axis, second_axis = display_axes
+        sampled_segments: list[np.ndarray] = []
+        for start, end in zip(points, points[1:]):
+            difference = end - start
+            displayed_length = max(
+                abs(float(difference[first_axis])),
+                abs(float(difference[second_axis])),
+            )
+            intervals = max(
+                1,
+                int(math.ceil(
+                    displayed_length
+                    * cls._LOCALIZER_SUBPIXEL_SAMPLES_PER_PIXEL
+                )),
+            )
+            # 每段不重复加入终点；曲线最终端点在循环后统一补入。
+            ratios = np.arange(intervals, dtype=float) / intervals
+            sampled_segments.append(
+                start[np.newaxis, :] + ratios[:, np.newaxis] * difference
+            )
+        sampled_segments.append(points[-1:])
+        samples = np.concatenate(sampled_segments, axis=0)
+        first_values = samples[:, first_axis]
+        second_values = samples[:, second_axis]
+        first_floor = np.floor(first_values).astype(np.int64)
+        second_floor = np.floor(second_values).astype(np.int64)
+        first_fraction = first_values - first_floor
+        second_fraction = second_values - second_floor
+        size_xyz = np.asarray(line_alpha_array.shape[::-1], dtype=np.int64)
+
+        for first_offset, first_weight in (
+            (0, 1.0 - first_fraction),
+            (1, first_fraction),
+        ):
+            for second_offset, second_weight in (
+                (0, 1.0 - second_fraction),
+                (1, second_fraction),
+            ):
+                coverage = first_weight * second_weight
+                indices_xyz = np.zeros((len(samples), 3), dtype=np.int64)
+                indices_xyz[:, first_axis] = first_floor + first_offset
+                indices_xyz[:, second_axis] = second_floor + second_offset
+                indices_xyz[:, fixed_axis] = 0
+                valid = (
+                    (coverage > 0.0)
+                    & np.all(indices_xyz >= 0, axis=1)
+                    & np.all(indices_xyz < size_xyz, axis=1)
+                )
+                if not np.any(valid):
+                    continue
+                valid_indices = indices_xyz[valid]
+                np.maximum.at(
+                    line_alpha_array,
+                    (
+                        valid_indices[:, 2],
+                        valid_indices[:, 1],
+                        valid_indices[:, 0],
+                    ),
+                    coverage[valid].astype(np.float32, copy=False),
+                )
+
+    @classmethod
+    def _finalize_localizer_render(
+        cls,
+        *,
+        image: sitk.Image,
+        representative_slice: sitk.Image,
+        line_alpha_array: np.ndarray,
+        fixed_axis: int,
+        legacy_line_value: float,
+    ) -> _LocalizerRender:
+        """统一定位图头脚翻转、二维提取和患者空间标签。"""
+
+        line_alpha_slice = sitk.GetImageFromArray(line_alpha_array)
+        line_alpha_slice.CopyInformation(representative_slice)
+        background_slice = representative_slice
         direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
         if float(direction[2, 2]) > 0.0:
-            painted_slice = sitk.Flip(
-                painted_slice,
+            # Localizer 降为二维后不能再依赖三维 z 轴确定头脚顺序，背景和
+            # 覆盖掩膜必须执行完全相同的翻转，防止显示线条错位。
+            background_slice = sitk.Flip(
+                background_slice,
                 [False, False, True],
                 flipAboutOrigin=False,
             )
-        localizer = cls._extract_projection_axis(painted_slice, fixed_axis)
+            line_alpha_slice = sitk.Flip(
+                line_alpha_slice,
+                [False, False, True],
+                flipAboutOrigin=False,
+            )
+        localizer = cls._extract_projection_axis(background_slice, fixed_axis)
+        line_alpha_image = cls._extract_projection_axis(
+            line_alpha_slice,
+            fixed_axis,
+        )
         remaining_axes = [axis for axis in range(3) if axis != fixed_axis]
         localizer_direction = np.asarray(
-            painted_slice.GetDirection(),
+            background_slice.GetDirection(),
             dtype=float,
         ).reshape(3, 3)
         row_direction = localizer_direction[:, remaining_axes[0]]
         column_direction = localizer_direction[:, remaining_axes[1]]
-        first_pixel = painted_slice.TransformIndexToPhysicalPoint((0, 0, 0))
+        first_pixel = background_slice.TransformIndexToPhysicalPoint((0, 0, 0))
         localizer.SetMetaData(
             "0020|0037",
             "\\".join(
@@ -600,7 +728,34 @@ class ReconstructionStage(BaseStage):
             "0020|0032",
             "\\".join(f"{float(value):.12g}" for value in first_pixel),
         )
-        return localizer
+        line_alpha = np.clip(
+            sitk.GetArrayFromImage(line_alpha_image).astype(np.float32),
+            0.0,
+            1.0,
+        )
+        return _LocalizerRender(
+            background_image=localizer,
+            line_alpha=line_alpha,
+            legacy_line_value=float(legacy_line_value),
+        )
+
+    @classmethod
+    def _compose_legacy_localizer_image(
+        cls,
+        render: _LocalizerRender,
+    ) -> sitk.Image:
+        """为既有内部检查生成带线 HU 图，不用于分窗 DICOM 显示。"""
+
+        background = cls._localizer_array_2d(render.background_image).astype(
+            np.float32,
+        )
+        composed = background + render.line_alpha * (
+            render.legacy_line_value - background
+        )
+        return cls._image_from_array_like(
+            render.background_image,
+            composed.astype(np.float32, copy=False),
+        )
 
     @staticmethod
     def _physical_points_to_continuous_indices(
@@ -749,7 +904,9 @@ class ReconstructionStage(BaseStage):
             return fallback
         if not math.isfinite(height) or not math.isfinite(spacing_y) or spacing_y <= 0.0:
             return fallback
-        return max(1, int(round(height / spacing_y)) + 1)
+        # 定位线至少保留首尾两个采样点；即使测试计划或极短范围只有一行
+        # 正式切片，也不能让纯显示用的曲线退化后阻断重建流程。
+        return max(2, int(round(height / spacing_y)) + 1)
 
     @staticmethod
     def _point_array(point: Dict[str, Any]) -> np.ndarray:
@@ -969,7 +1126,7 @@ class ReconstructionStage(BaseStage):
     @staticmethod
     def _write_window_localizer(
         *,
-        localizer_image: sitk.Image,
+        localizer_render: _LocalizerRender,
         geometry_metadata: dict[str, str],
         window: Any,
         output_dir: Path,
@@ -978,12 +1135,16 @@ class ReconstructionStage(BaseStage):
         source_metadata: Dict[str, str],
         plan: Dict[str, Any],
     ) -> None:
-        """用冻结的共享几何写出一个窗位的定位图。"""
+        """窗位化原始背景，再叠加共享的亚像素定位线并写出。"""
 
         write_start = time.perf_counter()
-        windowed_localizer = apply_window_to_image(
-            sitk.Image(localizer_image),
+        windowed_background = apply_window_to_image(
+            sitk.Image(localizer_render.background_image),
             window,
+        )
+        windowed_localizer = ReconstructionStage._blend_localizer_line(
+            windowed_background,
+            localizer_render.line_alpha,
         )
         for tag, value in geometry_metadata.items():
             windowed_localizer.SetMetaData(tag, value)
@@ -998,8 +1159,8 @@ class ReconstructionStage(BaseStage):
         )
         if is_debug_file_enabled():
             ReconstructionStage._write_debug_localizer_png(
-                localizer_image=localizer_image,
-                windowed_localizer=windowed_localizer,
+                windowed_background=windowed_background,
+                line_alpha=localizer_render.line_alpha,
                 output_path=output_dir / "Localizer.png",
             )
         DebugLog(
@@ -1009,35 +1170,52 @@ class ReconstructionStage(BaseStage):
             f"耗时={time.perf_counter() - write_start:.3f}s"
         )
 
-    @staticmethod
+    @classmethod
+    def _blend_localizer_line(
+        cls,
+        windowed_background: sitk.Image,
+        line_alpha: np.ndarray,
+    ) -> sitk.Image:
+        """按覆盖率把白色抗锯齿线叠加到 uint16 窗位背景。"""
+
+        background = cls._localizer_array_2d(windowed_background).astype(
+            np.float32,
+        )
+        alpha = cls._validated_localizer_line_alpha(line_alpha, background.shape)
+        blended = np.rint(
+            background + alpha * (65535.0 - background)
+        ).astype(np.uint16)
+        return cls._image_from_array_like(windowed_background, blended)
+
+    @classmethod
     def _write_debug_localizer_png(
+        cls,
         *,
-        localizer_image: sitk.Image,
-        windowed_localizer: sitk.Image,
+        windowed_background: sitk.Image,
+        line_alpha: np.ndarray,
         output_path: Path,
     ) -> None:
-        """把定位图额外写成 PNG；红色标出第七阶段烧录的定位线。"""
+        """把相同覆盖掩膜以红色抗锯齿线叠加到调试 PNG。"""
 
-        background = ReconstructionStage._localizer_array_2d(windowed_localizer)
-        source = ReconstructionStage._localizer_array_2d(localizer_image)
+        background = cls._localizer_array_2d(windowed_background)
         background_u8 = np.clip(
             background.astype(np.float32) / 65535.0 * 180.0,
             0.0,
             180.0,
-        ).astype(np.uint8)
-        line_mask = np.isclose(
-            source.astype(np.float32),
-            float(np.max(source)),
-            rtol=0.0,
-            atol=1e-4,
         )
-        red = background_u8.copy()
-        green = background_u8.copy()
-        blue = background_u8.copy()
-        red[line_mask] = 255
-        green[line_mask] = 0
-        blue[line_mask] = 0
-        rgb = np.stack([red, green, blue], axis=-1)
+        alpha = cls._validated_localizer_line_alpha(
+            line_alpha,
+            background_u8.shape,
+        )
+        inverse_alpha = 1.0 - alpha
+        red = np.rint(background_u8 * inverse_alpha + 255.0 * alpha)
+        green = np.rint(background_u8 * inverse_alpha)
+        blue = np.rint(background_u8 * inverse_alpha)
+        rgb = np.clip(
+            np.stack([red, green, blue], axis=-1),
+            0.0,
+            255.0,
+        ).astype(np.uint8)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         sitk.WriteImage(
             sitk.GetImageFromArray(rgb, isVector=True),
@@ -1059,6 +1237,36 @@ class ReconstructionStage(BaseStage):
         if array.ndim == 3 and singleton_axes:
             return np.squeeze(array, axis=singleton_axes[0])
         raise ValueError("定位图 PNG 只支持二维或单层三维图像")
+
+    @staticmethod
+    def _validated_localizer_line_alpha(
+        line_alpha: np.ndarray,
+        expected_shape: tuple[int, ...],
+    ) -> np.ndarray:
+        """校验并限制定位线覆盖率，避免背景与线条发生错位。"""
+
+        alpha = np.asarray(line_alpha, dtype=np.float32)
+        if alpha.shape != expected_shape:
+            raise ValueError(
+                "定位线掩膜尺寸与定位图背景不一致: "
+                f"alpha={alpha.shape}, background={expected_shape}"
+            )
+        if not np.all(np.isfinite(alpha)):
+            raise ValueError("定位线掩膜包含非有限数值")
+        return np.clip(alpha, 0.0, 1.0)
+
+    @staticmethod
+    def _image_from_array_like(
+        reference: sitk.Image,
+        array: np.ndarray,
+    ) -> sitk.Image:
+        """以新像素数组创建图像，同时完整保留参考图像的几何和元数据。"""
+
+        output = sitk.GetImageFromArray(array)
+        output.CopyInformation(reference)
+        for key in reference.GetMetaDataKeys():
+            output.SetMetaData(key, reference.GetMetaData(key))
+        return output
 
     @staticmethod
     def _group_plans_by_plane(

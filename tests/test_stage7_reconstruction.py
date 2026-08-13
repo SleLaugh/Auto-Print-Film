@@ -422,6 +422,86 @@ class Stage7ReconstructionTest(unittest.TestCase):
         self.assertGreater(int(np.ptp(highlighted[:, 0])), 2)
         self.assertGreater(int(np.ptp(highlighted[:, 1])), 2)
 
+    def test_localizer_oblique_line_uses_continuous_subpixel_coverage(self):
+        """直斜线应以连续覆盖率跨越像素，不能按整数坐标形成台阶折线。"""
+
+        line_alpha = np.zeros((24, 1, 48), dtype=np.float32)
+        ReconstructionStage._paint_antialiased_segment(
+            line_alpha,
+            np.asarray([2.2, 0.0, 3.15]),
+            np.asarray([44.4, 0.0, 16.65]),
+            display_axes=(0, 2),
+            fixed_axis=1,
+        )
+        coverage = line_alpha[:, 0, :]
+
+        # 斜线经过的每一列都必须连续有覆盖，且包含真正的部分覆盖像素。
+        active_columns = np.arange(3, 44)
+        self.assertTrue(np.all(np.max(coverage[:, active_columns], axis=0) > 0.0))
+        self.assertGreater(np.count_nonzero(
+            (coverage > 0.0) & (coverage < 1.0)
+        ), 20)
+
+        # 覆盖重心按亚像素斜率连续移动；旧 round() 画法会整行跳变 1 像素。
+        row_indices = np.arange(coverage.shape[0], dtype=float)
+        row_centroids = np.asarray([
+            float(np.sum(coverage[:, column] * row_indices))
+            / float(np.sum(coverage[:, column]))
+            for column in active_columns
+        ])
+        self.assertLess(float(np.max(np.abs(np.diff(row_centroids)))), 0.5)
+
+    def test_localizer_dicom_and_png_blend_the_same_antialiased_mask(self):
+        """DICOM 白线和 PNG 红线应复用同一覆盖率且保留部分透明边缘。"""
+
+        line_alpha = np.zeros((24, 1, 48), dtype=np.float32)
+        ReconstructionStage._paint_antialiased_segment(
+            line_alpha,
+            np.asarray([2.2, 0.0, 3.15]),
+            np.asarray([44.4, 0.0, 16.65]),
+            display_axes=(0, 2),
+            fixed_axis=1,
+        )
+        line_alpha_2d = line_alpha[:, 0, :]
+        background_array = np.full((24, 48), 10000, dtype=np.uint16)
+        background = sitk.GetImageFromArray(background_array)
+
+        blended = ReconstructionStage._blend_localizer_line(
+            background,
+            line_alpha_2d,
+        )
+        blended_array = sitk.GetArrayFromImage(blended)
+        np.testing.assert_array_equal(
+            sitk.GetArrayFromImage(background),
+            background_array,
+        )
+        self.assertTrue(np.all(
+            blended_array[line_alpha_2d == 0.0] == 10000
+        ))
+
+        partial_positions = np.argwhere(
+            (line_alpha_2d > 0.45) & (line_alpha_2d < 0.55)
+        )
+        self.assertGreater(len(partial_positions), 0)
+        row, column = partial_positions[0]
+        self.assertGreater(int(blended_array[row, column]), 10000)
+        self.assertLess(int(blended_array[row, column]), 65535)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            png_path = Path(temp_dir) / "Localizer.png"
+            ReconstructionStage._write_debug_localizer_png(
+                windowed_background=background,
+                line_alpha=line_alpha_2d,
+                output_path=png_path,
+            )
+            png_array = sitk.GetArrayFromImage(sitk.ReadImage(str(png_path)))
+
+        red, green, blue = [int(value) for value in png_array[row, column]]
+        self.assertGreater(red, green)
+        self.assertEqual(green, blue)
+        self.assertGreater(green, 0)
+        self.assertLess(red, 255)
+
     def test_curved_stack_localizer_draws_curve_on_sagittal_background(self):
         """CPR 定位图应按曲线点绘制，不应退化成首尾斜直线。"""
 

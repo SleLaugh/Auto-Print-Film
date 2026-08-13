@@ -10,6 +10,9 @@
 - GDCM 写盘必须经由串行保护入口，具体跨模块约束读 `../../architecture/2026-07-20-GDCM写盘串行保护设计.md`。
 - 同一计划各窗 Localizer 必须使用主线程冻结的同一份 `ImagePositionPatient` 和
   `ImageOrientationPatient` 串行写出；窗位只改变灰度和序列标识。
+- Localizer 定位线使用独立亚像素覆盖率掩膜，并在背景完成窗位映射后叠加；正式
+  DICOM 使用白线，debug PNG 使用同一掩膜的红线。该显示处理不得进入正式切片
+  重采样，也不得改变切片几何、层厚或层间距。
 - Localizer 缺少必要空间标签时必须失败，不能发布带二维默认方向的文件。
 - 第八阶段是最终输出硬门禁：先校验正式切片、Localizer、UID、层厚层间距和
   同计划跨窗几何，再生成 `report.json`；任一硬错误必须使任务失败。

@@ -5,7 +5,6 @@ cd "$(dirname "$0")/.."
 
 DICOM_ROOT="/home/peng/03_data/demo/Image/dicom"
 RESULT_ROOT="/home/peng/03_data/demo/Image/result"
-BATCH_LOG_ROOT="$RESULT_ROOT/_batch_logs"
 PYTHON_BIN=".venv/bin/python"
 PLANE_CONFIGS='[{"plane":"横状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"full_plane"},{"plane":"矢状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"full_plane"},{"plane":"冠状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"full_plane"}]'
 DRY_RUN=0
@@ -53,10 +52,6 @@ done
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
     PYTHON_BIN="python"
-fi
-
-if [[ "$DRY_RUN" -eq 0 ]]; then
-    mkdir -p "$BATCH_LOG_ROOT" || exit 1
 fi
 
 # 格式: "dicom目录名|result目录名|部位"
@@ -148,7 +143,15 @@ for index in "${!CASES[@]}"; do
 
     wait_for_slot || break
 
-    log_file="$BATCH_LOG_ROOT/$(printf '%02d' "$((index + 1))")_${result_name}_${body_part}.log"
+    log_dir="$output_dir/log"
+    if ! mkdir -p "$log_dir"; then
+        failures+=("$dicom_name|$body_part|cannot create log directory")
+        if [[ "$STOP_ON_FAILURE" -eq 1 ]]; then
+            break
+        fi
+        continue
+    fi
+    log_file="$log_dir/BatchLog.txt"
 
     printf '启动后台任务，日志: %s\n' "$log_file"
     "${cmd[@]}" >"$log_file" 2>&1 &

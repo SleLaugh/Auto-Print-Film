@@ -1,4 +1,5 @@
 {
+    "debug_file_enabled": true,
     "console_enabled": true,
     "run_log_file_enabled": false,
     "debug_log_file_enabled": true,

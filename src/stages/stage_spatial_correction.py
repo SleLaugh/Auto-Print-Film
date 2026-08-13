@@ -1,5 +1,6 @@
 """第三阶段：为后续定位与重建选定统一图像空间。"""
 
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -7,7 +8,7 @@ import SimpleITK as sitk
 
 from src.core.context import ProcessingContext
 from src.models import SpatialCorrectionStageResult
-from src.utils import DebugLog, is_debug_log_file_enabled
+from src.utils import DebugLog, is_debug_file_enabled
 
 from .stage_localization import (
     LocalizationOperations,
@@ -123,15 +124,21 @@ class SpatialCorrectionStage(LocalizationOperations):
             DebugLog("  未启用校正，后续阶段使用原始空间")
 
         debug_crosshair_path = ""
-        if is_debug_log_file_enabled():
+        if is_debug_file_enabled():
             metadata_dir = Path(request.output_dir) / "metadata"
             metadata_dir.mkdir(parents=True, exist_ok=True)
             crosshair_path = metadata_dir / "横状位XY回正十字线.nii.gz"
+            debug_file_start = time.perf_counter()
             self._write_xy_correction_crosshair_overlay(
                 reference_image=image,
                 output_path=crosshair_path,
                 correction_center_bbox=correction_scope_bbox,
                 candidate=candidate,
+            )
+            DebugLog(
+                "  [调试文件性能] 已生成: "
+                f"{crosshair_path}, "
+                f"耗时={time.perf_counter() - debug_file_start:.3f}s"
             )
             debug_crosshair_path = str(crosshair_path)
 

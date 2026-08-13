@@ -19,7 +19,7 @@ from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.core.errors import OutputValidationError
 from src.models import ReportingStageResult
-from src.utils import DebugLog, is_debug_log_file_enabled
+from src.utils import DebugLog, is_debug_file_enabled
 
 
 class ReportingStage(BaseStage):
@@ -46,7 +46,7 @@ class ReportingStage(BaseStage):
             context.get_result('reconstruction') or {}
         )
         debug_report_path = ""
-        if is_debug_log_file_enabled():
+        if is_debug_file_enabled():
             DebugLog("  [2] generate_debug_report: 生成调试报告...")
             debug_report_path = str(self._write_debug_report(
                 context,

@@ -30,7 +30,7 @@ from src.models.enums import PlaneTypeEnum
 from src.anatomy.lung import estimate_lung_frame_with_diagnostics
 from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 from src.anatomy.spine import estimate_spine_frame_with_diagnostics
-from src.utils import DebugLog, is_debug_log_file_enabled
+from src.utils import DebugLog, is_debug_file_enabled
 
 
 @dataclass(frozen=True)
@@ -4320,7 +4320,7 @@ class LocalizationStage(LocalizationOperations):
         label_targets = workspace["label_targets"]
         correction_scope_bbox = workspace["correction_scope_bbox"]
         result_path = ""
-        if is_debug_log_file_enabled():
+        if is_debug_file_enabled():
             result_path = str(
                 Path(context.request.output_dir)
                 / "metadata"

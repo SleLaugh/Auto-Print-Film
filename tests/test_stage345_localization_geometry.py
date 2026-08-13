@@ -10,7 +10,7 @@ import numpy as np
 import SimpleITK as sitk
 
 from src.utils.Logger_utils import _logger_manager
-_logger_manager.debug_log_file_enabled = True
+_logger_manager.debug_file_enabled = True
 
 from src.core.context import ProcessingContext
 from src.models import (
@@ -3016,8 +3016,19 @@ class LocalizationGeometryTest(unittest.TestCase):
                 stage._nnunet_paths = nnunet_paths
                 stage._localization_config = localization_config
 
+            anatomical_debug_messages = []
             for stage_index, stage in enumerate(stages):
-                stage.execute(context)
+                if isinstance(stage, AnatomicalAnalysisStage):
+                    with patch(
+                        "src.stages.stage_anatomical_analysis.DebugLog"
+                    ) as debug_log:
+                        stage.execute(context)
+                    anatomical_debug_messages = [
+                        call.args[0]
+                        for call in debug_log.call_args_list
+                    ]
+                else:
+                    stage.execute(context)
                 if stage_index < 2:
                     self.assertIn(
                         _LOCALIZATION_WORKSPACE_KEY,
@@ -3111,6 +3122,9 @@ class LocalizationGeometryTest(unittest.TestCase):
             )
             self.assertIn("correction_scope_bbox", metadata)
             label_overlay_path = temp_path / "metadata" / "标签掩膜.nii.gz"
+            body_overlay_path = (
+                temp_path / "metadata" / "椎体主体掩膜.nii.gz"
+            )
             xy_crosshair_path = (
                 temp_path / "metadata" / "横状位XY回正十字线.nii.gz"
             )
@@ -3142,8 +3156,21 @@ class LocalizationGeometryTest(unittest.TestCase):
             self.assertFalse((temp_path / "metadata" / "定位框.nii.gz").exists())
             self.assertFalse((temp_path / "metadata" / "目标掩膜.nii.gz").exists())
             self.assertTrue(label_overlay_path.exists())
+            self.assertTrue(body_overlay_path.exists())
             self.assertTrue(xy_crosshair_path.exists())
             self.assertTrue(prism_overlay_path.exists())
+            for debug_path in (
+                label_overlay_path,
+                body_overlay_path,
+                prism_overlay_path,
+            ):
+                with self.subTest(debug_timing_path=debug_path.name):
+                    self.assertTrue(any(
+                        "[调试文件性能] 已生成:" in message
+                        and str(debug_path) in message
+                        and "耗时=" in message
+                        for message in anatomical_debug_messages
+                    ))
             self.assertEqual(
                 result["spine_geometry"]["filtered_annotation"]["method"],
                 "vertebral_body_candidate_v1",

@@ -18,7 +18,7 @@ from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.models import DicomMetadata, PreprocessingResult
 from src.reconstruction.dicom import read_source_dicom_metadata
-from src.utils import DebugLog, ErrorLog, is_debug_log_file_enabled
+from src.utils import DebugLog, ErrorLog, is_debug_file_enabled
 
 # 设置警告过滤
 # 忽略警告信息（DICOM读取时可能产生大量无关警告）
@@ -98,7 +98,7 @@ class PreprocessingStage(BaseStage):
         
         
         output_file.parent.mkdir(parents=True, exist_ok=True) # 确保目标路径存在
-        if is_debug_log_file_enabled():
+        if is_debug_file_enabled():
             metadata_file.parent.mkdir(parents=True, exist_ok=True)
         try:
             read_result = self._read_dicom_series(str(input_dir)) # 读取dicom序列
@@ -111,7 +111,7 @@ class PreprocessingStage(BaseStage):
                     read_result['series_file_names'][0]
                 )
                 metadata_path = ""
-                if is_debug_log_file_enabled():
+                if is_debug_file_enabled():
                     metadata = self._build_metadata(image, read_result['series_file_names'])
                     with open(metadata_file, 'w', encoding='utf-8') as f:
                         json.dump(metadata.to_dict(), f, ensure_ascii=False, indent=2)

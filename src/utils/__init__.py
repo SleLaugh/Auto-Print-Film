@@ -11,6 +11,7 @@ from .Logger_utils import (
     ErrorLog,
     DebugLog,
     configure_logging,
+    is_debug_file_enabled,
     is_debug_log_file_enabled,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     'ErrorLog',
     'DebugLog',
     'configure_logging',
+    'is_debug_file_enabled',
     'is_debug_log_file_enabled',
 ]

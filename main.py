@@ -135,7 +135,7 @@ def main():
         args = parse_arguments()
 
         app_config = load_app_config()
-        configure_logging(app_config.logging)
+        configure_logging(app_config.logging, output_dir=args.output)
         RunLog("SpineMPRProcessor v1.0.0 启动")
 
         plane_configs = parse_plane_configs(args.plane_configs)

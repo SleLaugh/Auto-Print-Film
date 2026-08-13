@@ -100,7 +100,10 @@ class ConfigLoaderTest(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "logger_config.json").write_text(
-                json.dumps({"debug_log_file_enabled": True}),
+                json.dumps({
+                    "debug_file_enabled": True,
+                    "debug_log_file_enabled": False,
+                }),
                 encoding="utf-8",
             )
 
@@ -110,7 +113,8 @@ class ConfigLoaderTest(unittest.TestCase):
             )
 
             self.assertEqual(config.nnunet.fold, "4")
-            self.assertTrue(config.logging.debug_log_file_enabled)
+            self.assertTrue(config.logging.debug_file_enabled)
+            self.assertFalse(config.logging.debug_log_file_enabled)
 
 
 if __name__ == "__main__":

@@ -13,10 +13,17 @@ class ArtifactManagerTest(unittest.TestCase):
             root = Path(temp_dir)
             marker = root / "user-file.txt"
             marker.write_text("keep", encoding="utf-8")
+            log_marker = root / "log" / "DebugLog.txt"
+            log_marker.parent.mkdir(parents=True)
+            log_marker.write_text("startup", encoding="utf-8")
 
             ArtifactManager(root).prepare()
 
             self.assertFalse(marker.exists())
+            self.assertEqual(
+                log_marker.read_text(encoding="utf-8"),
+                "startup",
+            )
             self.assertTrue(root.is_dir())
             self.assertFalse((root / "final").exists())
             self.assertFalse((root / "debug").exists())

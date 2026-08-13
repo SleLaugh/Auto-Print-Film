@@ -193,10 +193,20 @@ bash scripts/batch_test_plan.sh -j 2
 bash scripts/batch_test_plan.sh --jobs 2 --stop-on-failure
 ```
 
-并发任务的单例日志写入：
+并发任务的单例日志写入各病例输出目录下与 `report.json` 同级的 `log/`：
 
 ```text
-/home/peng/03_data/demo/Image/result/_batch_logs
+/home/peng/03_data/demo/Image/result/<病例输出目录>/log
+```
+
+程序自身的 `RunLog`、`DebugLog`、`ErrorLog` 也统一保存在该目录中，原有日志正文、
+分类和写入规则保持不变。每个病例直接使用固定文件名，不再按日期和小时增加子目录：
+
+```text
+log/RunLog.txt
+log/DebugLog.txt
+log/ErrorLog.txt
+log/BatchLog.txt
 ```
 
 单 GPU 环境建议先从 `--jobs 2` 试起；如果 nnUNet 显存不足或出现 OOM，
@@ -309,10 +319,14 @@ DICOM 的 `SliceThickness` 和 `SpacingBetweenSlices`，确保查看器读取到
 
 ### 输出目录安全
 
-请求和环境预检通过后，程序会先删除整个输出目录，再创建全新的任务目录并执行阶段，
-避免混入上一次运行留下的结果。请确保 `-o/--output` 指向本次任务专用目录。
-只有 `debug_log_file_enabled=true` 时才生成 `manifest.json`，用于记录任务 ID、阶段状态、
-错误和调试产物清单；非调试模式不生成该文件。
+请求和环境预检通过后，程序会清理输出目录中的旧业务结果，再执行本次任务，避免混入
+上一次运行留下的结果。与 `report.json` 同级的 `log/` 会被保留，以免任务启动时已经
+打开的日志被删除；请确保 `-o/--output` 指向本次任务专用目录。
+只有 `debug_file_enabled=true` 时才生成并保留 `manifest.json`、调试 NIfTI、调试元数据、
+`Localizer.png` 以及成功任务的中间现场；关闭后不生成这些额外文件，并按原策略清理
+`metadata/`、`nifti/` 和 `segmentation/`。`debug_log_file_enabled` 只控制
+`log/DebugLog.txt`，不再影响任何调试文件。第五阶段三张掩膜和第六阶段规划 NIfTI
+写出时，会在 DebugLog 中逐文件记录完整路径和生成耗时。
 
 Pipeline 会在 `RunLog` 中为每个阶段输出“当前序号/总阶段数、稳定阶段名、开始/完成状态
 和耗时”；各阶段的输入路径、几何诊断和性能明细继续写入 `DebugLog`。

@@ -124,9 +124,9 @@ class Pipeline:
             request.output_dir,
             keep_intermediate_on_success=(
                 self.config.pipeline.keep_intermediate_on_success
-                # debug 开启时，metadata、NIfTI 和 segmentation 都是排查所需
+                # 调试文件开启时，metadata、NIfTI 和 segmentation 都是排查所需
                 # 现场，成功任务也不能按普通生产策略清理。
-                or self.config.logging.debug_log_file_enabled
+                or self.config.logging.debug_file_enabled
             ),
             keep_intermediate_on_failure=(
                 self.config.pipeline.keep_intermediate_on_failure
@@ -267,7 +267,7 @@ class Pipeline:
         manifest 记录完整阶段状态和诊断信息，只用于开发排查；正常交付模式不创建，
         避免在业务输出目录中增加调用方不需要的框架文件。
         """
-        if not self.config.logging.debug_log_file_enabled:
+        if not self.config.logging.debug_file_enabled:
             return
         artifacts.write_manifest(self._manifest_data(context))
 

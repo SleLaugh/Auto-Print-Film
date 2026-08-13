@@ -1,5 +1,6 @@
 """第五阶段：按部位生成解剖坐标系和专用几何。"""
 
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -11,7 +12,7 @@ from src.models import (
     AnatomicalAnalysisStageResult,
     LabelTarget,
 )
-from src.utils import DebugLog, is_debug_log_file_enabled
+from src.utils import DebugLog, is_debug_file_enabled
 
 from .stage_localization import (
     LocalizationOperations,
@@ -136,34 +137,52 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         debug_label_path = ""
         debug_body_path = ""
         debug_prism_path = ""
-        if is_debug_log_file_enabled():
+        if is_debug_file_enabled():
             metadata_dir = Path(context.request.output_dir) / "metadata"
             metadata_dir.mkdir(parents=True, exist_ok=True)
 
             label_path = metadata_dir / "标签掩膜.nii.gz"
+            debug_file_start = time.perf_counter()
             self._write_debug_label_mask_overlay(
                 reference_image=image,
                 seg_array=seg_array,
                 label_targets=label_targets,
                 output_path=label_path,
             )
+            DebugLog(
+                "  [调试文件性能] 已生成: "
+                f"{label_path}, "
+                f"耗时={time.perf_counter() - debug_file_start:.3f}s"
+            )
             debug_label_path = str(label_path)
 
             body_path = metadata_dir / "椎体主体掩膜.nii.gz"
+            debug_file_start = time.perf_counter()
             self._write_debug_vertebral_body_mask_overlay(
                 reference_image=image,
                 seg_array=seg_array,
                 label_targets=label_targets,
                 output_path=body_path,
             )
+            DebugLog(
+                "  [调试文件性能] 已生成: "
+                f"{body_path}, "
+                f"耗时={time.perf_counter() - debug_file_start:.3f}s"
+            )
             debug_body_path = str(body_path)
 
             prism_path = metadata_dir / "椎体四棱柱掩膜.nii.gz"
+            debug_file_start = time.perf_counter()
             self._write_debug_vertebral_body_prism_mask_overlay(
                 reference_image=image,
                 seg_array=seg_array,
                 label_targets=label_targets,
                 output_path=prism_path,
+            )
+            DebugLog(
+                "  [调试文件性能] 已生成: "
+                f"{prism_path}, "
+                f"耗时={time.perf_counter() - debug_file_start:.3f}s"
             )
             debug_prism_path = str(prism_path)
 

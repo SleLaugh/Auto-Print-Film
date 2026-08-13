@@ -94,7 +94,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             )
 
             with patch(
-                "src.stages.stage_reporting.is_debug_log_file_enabled",
+                "src.stages.stage_reporting.is_debug_file_enabled",
                 return_value=True,
             ):
                 with self.assertRaises(OutputValidationError) as raised:
@@ -121,7 +121,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             context = self._make_context(output_dir, dcm_dir, slice_count=1)
 
             with patch(
-                "src.stages.stage_reporting.is_debug_log_file_enabled",
+                "src.stages.stage_reporting.is_debug_file_enabled",
                 return_value=False,
             ):
                 ReportingStage().execute(context)
@@ -143,7 +143,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             context = self._make_context(output_dir, dcm_dir, slice_count=1)
 
             with patch(
-                "src.stages.stage_reporting.is_debug_log_file_enabled",
+                "src.stages.stage_reporting.is_debug_file_enabled",
                 return_value=False,
             ):
                 with self.assertRaises(OutputValidationError) as raised:

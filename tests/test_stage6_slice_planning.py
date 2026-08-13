@@ -9,7 +9,7 @@ import SimpleITK as sitk
 import numpy as np
 
 from src.utils.Logger_utils import _logger_manager
-_logger_manager.debug_log_file_enabled = True
+_logger_manager.debug_file_enabled = True
 
 from src.core.context import ProcessingContext
 from src.models import PlaneConfig, Point3D, Request

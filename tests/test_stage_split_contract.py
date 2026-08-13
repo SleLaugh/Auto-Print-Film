@@ -48,7 +48,7 @@ class StageSplitContractTest(unittest.TestCase):
             "src.stages.stage_planning.select_planner",
             return_value=planner,
         ), patch(
-            "src.stages.stage_planning.is_debug_log_file_enabled",
+            "src.stages.stage_planning.is_debug_file_enabled",
             return_value=False,
         ):
             PlanningStage().execute(context)

@@ -6,7 +6,11 @@ from src.core.pipeline import Pipeline
 from src.models import Request
 from src.utils.Logger_utils import _logger_manager
 from src.config import LoggingConfig
-from src.utils import configure_logging
+from src.utils import (
+    configure_logging,
+    is_debug_file_enabled,
+    is_debug_log_file_enabled,
+)
 
 
 class DebugArtifactRetentionTest(unittest.TestCase):
@@ -27,25 +31,35 @@ class DebugArtifactRetentionTest(unittest.TestCase):
             self.assertTrue((root / "横状位").exists())
 
     def test_debug_file_switch_is_read_from_logger_manager(self):
-        original = _logger_manager.debug_log_file_enabled
+        original = _logger_manager.debug_file_enabled
         try:
-            _logger_manager.debug_log_file_enabled = False
-            from src.utils import is_debug_log_file_enabled
+            _logger_manager.debug_file_enabled = False
+            self.assertFalse(is_debug_file_enabled())
+            _logger_manager.debug_file_enabled = True
+            self.assertTrue(is_debug_file_enabled())
+        finally:
+            _logger_manager.debug_file_enabled = original
+
+    def test_debug_file_and_debug_log_switches_are_independent(self):
+        original_file = _logger_manager.debug_file_enabled
+        original_log = _logger_manager.debug_log_file_enabled
+        try:
+            configure_logging(LoggingConfig(
+                debug_file_enabled=True,
+                debug_log_file_enabled=False,
+            ))
+            self.assertTrue(is_debug_file_enabled())
             self.assertFalse(is_debug_log_file_enabled())
-            _logger_manager.debug_log_file_enabled = True
+
+            configure_logging(LoggingConfig(
+                debug_file_enabled=False,
+                debug_log_file_enabled=True,
+            ))
+            self.assertFalse(is_debug_file_enabled())
             self.assertTrue(is_debug_log_file_enabled())
         finally:
-            _logger_manager.debug_log_file_enabled = original
-
-    def test_loaded_logging_config_can_be_applied_once(self):
-        original = _logger_manager.debug_log_file_enabled
-        try:
-            configure_logging(LoggingConfig(debug_log_file_enabled=False))
-            self.assertFalse(_logger_manager.debug_log_file_enabled)
-            configure_logging(LoggingConfig(debug_log_file_enabled=True))
-            self.assertTrue(_logger_manager.debug_log_file_enabled)
-        finally:
-            _logger_manager.debug_log_file_enabled = original
+            _logger_manager.debug_file_enabled = original_file
+            _logger_manager.debug_log_file_enabled = original_log
 
 
 if __name__ == "__main__":

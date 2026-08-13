@@ -17,6 +17,9 @@ from .errors import ArtifactError
 MANIFEST_SCHEMA = "job_manifest_v1"
 """当前任务清单协议版本，同时也是输出目录所有权标记。"""
 
+LOG_DIRECTORY_NAME = "log"
+"""与 ``report.json`` 同级且跨任务目录重建保留的日志目录。"""
+
 
 @dataclass(frozen=True)
 class StageArtifact:
@@ -70,16 +73,28 @@ class ArtifactManager:
 
     def prepare(self) -> None:
         """
-        删除并重新创建本次任务输出目录。
+        清理并重新创建本次任务输出目录，同时保留日志目录。
 
         该方法只会在 Pipeline 预检成功后调用，因此依赖或请求错误不会误删旧结果。
+        日志在 Pipeline 进入预检前已经开始写入，必须保留 ``log/``，其余旧结果仍
+        全部删除，避免混入本次任务。
         """
         if self.root.exists():
             if self.root.is_dir():
-                shutil.rmtree(self.root)
+                for child in self.root.iterdir():
+                    if (
+                        child.name == LOG_DIRECTORY_NAME
+                        and child.is_dir()
+                        and not child.is_symlink()
+                    ):
+                        continue
+                    if child.is_dir() and not child.is_symlink():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
             else:
                 self.root.unlink()
-        self.root.mkdir(parents=True)
+        self.root.mkdir(parents=True, exist_ok=True)
 
     def register(
         self,

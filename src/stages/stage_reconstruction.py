@@ -31,7 +31,7 @@ from src.reconstruction.dicom import (
     write_localizer_dicom,
 )
 from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
-from src.utils import DebugLog, is_debug_log_file_enabled
+from src.utils import DebugLog, is_debug_file_enabled
 
 
 class ReconstructionStage(BaseStage):
@@ -996,7 +996,7 @@ class ReconstructionStage(BaseStage):
             source_metadata=source_metadata,
             geometry_metadata=geometry_metadata,
         )
-        if is_debug_log_file_enabled():
+        if is_debug_file_enabled():
             ReconstructionStage._write_debug_localizer_png(
                 localizer_image=localizer_image,
                 windowed_localizer=windowed_localizer,

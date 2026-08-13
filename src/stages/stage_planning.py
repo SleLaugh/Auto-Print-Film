@@ -28,7 +28,7 @@ from src.planning.geometry import normalize_vector, subtract_points, vector_leng
 from src.planning.straight import CENTER_COVERAGE_TOLERANCE_MM
 from src.planning import select_planner
 from src.planning.cut_policy import cut_mode_for_plane
-from src.utils import DebugLog, is_debug_log_file_enabled
+from src.utils import DebugLog, is_debug_file_enabled
 
 
 @dataclass(frozen=True)
@@ -138,7 +138,7 @@ class PlanningStage(BaseStage):
         debug_overview_paths: Dict[str, str] = {}
         debug_native_overview_paths: Dict[str, str] = {}
         metadata_path = ""
-        if is_debug_log_file_enabled():
+        if is_debug_file_enabled():
             DebugLog("  [3] write_debug_overlay: 写出切割线和含原图总览...")
             debug_plans = self._debug_overlay_plans(plans)
             if debug_plans:
@@ -148,22 +148,26 @@ class PlanningStage(BaseStage):
                     localization_result=prev_result,
                     plans=debug_plans,
                 )
-                DebugLog(
-                    "    [切片规划性能] write_slice_plan_overlay完成: "
-                    f"plans={len(debug_plans)}, "
-                    f"耗时={time.perf_counter() - overlay_start:.3f}s"
-                )
+                if debug_overlay_path:
+                    DebugLog(
+                        "    [调试文件性能] 已生成: "
+                        f"{debug_overlay_path}, "
+                        f"plans={len(debug_plans)}, "
+                        f"耗时={time.perf_counter() - overlay_start:.3f}s"
+                    )
                 center_cross_start = time.perf_counter()
                 debug_center_cross_overlay_path = self._write_center_cross_overlay(
                     context=context,
                     localization_result=prev_result,
                     plans=debug_plans,
                 )
-                DebugLog(
-                    "    [切片规划性能] write_center_cross_overlay完成: "
-                    f"plans={len(debug_plans)}, "
-                    f"耗时={time.perf_counter() - center_cross_start:.3f}s"
-                )
+                if debug_center_cross_overlay_path:
+                    DebugLog(
+                        "    [调试文件性能] 已生成: "
+                        f"{debug_center_cross_overlay_path}, "
+                        f"plans={len(debug_plans)}, "
+                        f"耗时={time.perf_counter() - center_cross_start:.3f}s"
+                    )
                 overview_start = time.perf_counter()
                 (
                     debug_overview_paths,
@@ -830,16 +834,28 @@ class PlanningStage(BaseStage):
                 / f"切片原始网格总览_{debug_suffix}.nii.gz"
             )
             if raw_image is not None:
+                debug_file_start = time.perf_counter()
                 overview_image = self._build_overview_with_image(
                     raw_image,
                     uniform_reference,
                     uniform_overlay_array,
                 )
                 sitk.WriteImage(overview_image, str(output_path))
+                DebugLog(
+                    "    [调试文件性能] 已生成: "
+                    f"{output_path}, "
+                    f"耗时={time.perf_counter() - debug_file_start:.3f}s"
+                )
                 overview_paths[plane] = str(output_path)
+            debug_file_start = time.perf_counter()
             native_overlay_image = sitk.GetImageFromArray(native_overlay_array)
             native_overlay_image.CopyInformation(reference_image)
             sitk.WriteImage(native_overlay_image, str(native_output_path))
+            DebugLog(
+                "    [调试文件性能] 已生成: "
+                f"{native_output_path}, "
+                f"耗时={time.perf_counter() - debug_file_start:.3f}s"
+            )
             native_overview_paths[plane] = str(native_output_path)
 
         return overview_paths, native_overview_paths

@@ -26,18 +26,20 @@ class NnUNetConfig:
 
 @dataclass(frozen=True)
 class LoggingConfig:
-    """控制控制台日志、三类文件日志和日志根目录。"""
+    """控制调试产物、控制台日志、三类文件日志和日志根目录。"""
 
+    debug_file_enabled: bool = False
+    """是否生成并保留 manifest、调试影像和调试元数据。"""
     console_enabled: bool = True
     """是否向当前终端输出运行信息。"""
     run_log_file_enabled: bool = False
     """是否写入普通运行日志文件。"""
     debug_log_file_enabled: bool = False
-    """是否写调试日志并保留调试影像产物。"""
+    """是否写入 DebugLog.txt；不控制任何调试影像或元数据。"""
     error_log_file_enabled: bool = True
     """是否把错误信息写入独立错误日志。"""
     base_dir: str = "Log"
-    """日志根目录，可使用相对项目工作目录的路径。"""
+    """未绑定任务输出目录时使用的日志兜底路径。"""
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,7 @@ class AppConfig:
             },
             "logging": {
                 # manifest 只记录开关，不记录日志绝对路径。
+                "debug_file_enabled": self.logging.debug_file_enabled,
                 "debug_log_file_enabled": self.logging.debug_log_file_enabled,
             },
         }

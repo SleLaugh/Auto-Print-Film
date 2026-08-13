@@ -99,13 +99,13 @@ class PipelineFrameworkTest(unittest.TestCase):
         )
 
     def test_debug_enabled_keeps_intermediate_artifacts_after_success(self):
-        """验证 `test_debug_enabled_keeps_intermediate_artifacts_after_success` 场景符合预期。"""
+        """调试文件开关应保留成功任务的中间诊断产物。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             pipeline = Pipeline(
                 stages=[DebugArtifactStage("debug_stage")],
                 config=AppConfig(
-                    logging=LoggingConfig(debug_log_file_enabled=True),
+                    logging=LoggingConfig(debug_file_enabled=True),
                     pipeline=PipelineConfig(run_preflight=False),
                 ),
             )
@@ -117,6 +117,27 @@ class PipelineFrameworkTest(unittest.TestCase):
                 (Path(temp_dir) / "metadata" / "调试文件.txt").exists()
             )
 
+    def test_debug_log_alone_does_not_keep_debug_artifacts_or_manifest(self):
+        """只开启 DebugLog.txt 时不得生成或保留调试产物。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pipeline = Pipeline(
+                stages=[DebugArtifactStage("debug_stage")],
+                config=AppConfig(
+                    logging=LoggingConfig(
+                        debug_file_enabled=False,
+                        debug_log_file_enabled=True,
+                    ),
+                    pipeline=PipelineConfig(run_preflight=False),
+                ),
+            )
+
+            response = pipeline.run(make_request(temp_dir))
+
+            self.assertTrue(response.success)
+            self.assertFalse((Path(temp_dir) / "metadata").exists())
+            self.assertFalse((Path(temp_dir) / "manifest.json").exists())
+
     def test_successful_pipeline_writes_succeeded_manifest(self):
         """验证 `test_successful_pipeline_writes_succeeded_manifest` 场景符合预期。"""
 
@@ -124,7 +145,7 @@ class PipelineFrameworkTest(unittest.TestCase):
             pipeline = Pipeline(
                 stages=[SuccessfulStage("one"), SuccessfulStage("two")],
                 config=AppConfig(
-                    logging=LoggingConfig(debug_log_file_enabled=True),
+                    logging=LoggingConfig(debug_file_enabled=True),
                     pipeline=PipelineConfig(run_preflight=False),
                 ),
             )

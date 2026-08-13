@@ -1761,8 +1761,8 @@ class Stage7ReconstructionTest(unittest.TestCase):
     def test_debug_mode_writes_cpr_localizer_png_in_window_directory(self):
         """CPR 定位图 PNG 应直接写在对应状位和窗位目录下。"""
 
-        original_debug = _logger_manager.debug_log_file_enabled
-        _logger_manager.debug_log_file_enabled = True
+        original_debug = _logger_manager.debug_file_enabled
+        _logger_manager.debug_file_enabled = True
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 context = self._make_context_with_one_plan(
@@ -1799,7 +1799,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
                 self.assertTrue((output_dir / "Localizer.png").exists())
                 self.assertFalse((output_dir / "CPR").exists())
         finally:
-            _logger_manager.debug_log_file_enabled = original_debug
+            _logger_manager.debug_file_enabled = original_debug
 
     def test_reconstruction_rejects_unsupported_geometry_type_with_plan_id(self):
         """未知 geometry_type 应明确报出 plan_id。"""
@@ -2097,8 +2097,8 @@ class Stage7ReconstructionTest(unittest.TestCase):
     def test_debug_mode_writes_localizer_png_next_to_localizer_dicom(self):
         """debug 模式下每个窗位目录应同时写出定位图 PNG。"""
 
-        original_debug = _logger_manager.debug_log_file_enabled
-        _logger_manager.debug_log_file_enabled = True
+        original_debug = _logger_manager.debug_file_enabled
+        _logger_manager.debug_file_enabled = True
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 context = self._make_context_with_one_plan(
@@ -2115,13 +2115,13 @@ class Stage7ReconstructionTest(unittest.TestCase):
                 png_image = sitk.ReadImage(str(png_path))
                 self.assertEqual(png_image.GetSize(), (8, 8))
         finally:
-            _logger_manager.debug_log_file_enabled = original_debug
+            _logger_manager.debug_file_enabled = original_debug
 
     def test_non_debug_mode_does_not_write_localizer_png(self):
         """非 debug 模式不应把定位图 PNG 放进正式窗位目录。"""
 
-        original_debug = _logger_manager.debug_log_file_enabled
-        _logger_manager.debug_log_file_enabled = False
+        original_debug = _logger_manager.debug_file_enabled
+        _logger_manager.debug_file_enabled = False
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 context = self._make_context_with_one_plan(
@@ -2136,7 +2136,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
                 self.assertTrue((output_dir / "Localizer.dcm").exists())
                 self.assertFalse((output_dir / "Localizer.png").exists())
         finally:
-            _logger_manager.debug_log_file_enabled = original_debug
+            _logger_manager.debug_file_enabled = original_debug
 
     def test_derived_dicom_inherits_source_study_and_patient_metadata(self):
         """验证 `test_derived_dicom_inherits_source_study_and_patient_metadata` 场景符合预期。"""

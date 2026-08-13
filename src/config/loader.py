@@ -84,6 +84,7 @@ def load_app_config(
     logging = LoggingConfig(**{
         key: explicit_logging.get(key, default_logging.get(key, default))
         for key, default in {
+            "debug_file_enabled": False,
             "console_enabled": True,
             "run_log_file_enabled": False,
             "debug_log_file_enabled": False,

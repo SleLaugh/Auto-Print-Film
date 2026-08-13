@@ -3,8 +3,9 @@
 
 """
 日志工具模块
-提供统一的日志管理功能，支持按日期和小时分类存储
+提供统一的日志管理功能，每个任务在输出目录下使用固定日志文件
 支持运行日志、调试日志和错误日志三种类型
+`debug_file_enabled` 独立控制调试产物，不参与三类日志的写入判断
 
 日志写入规则：
 - RunLog: 写 RunLog 文件（根据 run_log_file_enabled 控制）
@@ -28,7 +29,7 @@ import traceback
 class LoggerManager:
     """
     日志管理器类（单例模式）
-    负责创建和管理日志记录器，支持按日期和小时分类存储
+    负责创建和管理日志记录器
     """
     
     # 单例模式
@@ -68,6 +69,7 @@ class LoggerManager:
             'console_enabled': True,
             
             # 文件写入开关（各自独立控制）
+            'debug_file_enabled': False,
             'run_log_file_enabled': True,
             'debug_log_file_enabled': True,
             'error_log_file_enabled': True,
@@ -101,6 +103,7 @@ class LoggerManager:
         
         # 应用配置
         self.console_enabled = default_config.get('console_enabled', True)
+        self.debug_file_enabled = default_config.get('debug_file_enabled', False)
         self.run_log_file_enabled = default_config.get('run_log_file_enabled', True)
         self.debug_log_file_enabled = default_config.get('debug_log_file_enabled', True)
         self.error_log_file_enabled = default_config.get('error_log_file_enabled', True)
@@ -250,13 +253,24 @@ class LoggerManager:
         self._file_loggers[logger_name] = logger
         return logger
 
+    def set_base_dir(self, base_dir: Path | str) -> None:
+        """切换文件日志根目录，并关闭仍指向旧目录的文件处理器。"""
+
+        target = Path(base_dir)
+        if target == self.base_dir:
+            return
+
+        for logger in self._file_loggers.values():
+            for handler in list(logger.handlers):
+                handler.flush()
+                handler.close()
+                logger.removeHandler(handler)
+        self._file_loggers.clear()
+        self.base_dir = target
+
     def _get_log_file_path(self, log_type: str) -> Path:
         """根据日志类型获取日志文件路径"""
-        now = datetime.now()
-        date_dir = now.strftime("%Y%m%d")
-        log_filename = now.strftime("%Y%m%d%H") + ".txt"
-        log_path = self.base_dir / log_type / date_dir / log_filename
-        return log_path
+        return self.base_dir / f"{log_type}.txt"
     
     def _is_file_enabled(self, log_type: str) -> bool:
         """
@@ -297,25 +311,38 @@ def ErrorLog(message: str, exception: Optional[Exception] = None):
 
 
 def is_debug_log_file_enabled() -> bool:
-    """返回是否保留调试文件产物。"""
+    """返回是否写入 DebugLog.txt。"""
 
     return bool(_logger_manager.debug_log_file_enabled)
 
 
-def configure_logging(config) -> None:
-    """应用统一加载后的日志配置，供入口在任务开始前调用。"""
+def is_debug_file_enabled() -> bool:
+    """返回是否生成并保留调试影像、元数据和 manifest。"""
 
+    return bool(_logger_manager.debug_file_enabled)
+
+
+def configure_logging(config, output_dir: Path | str | None = None) -> None:
+    """应用日志配置，并把文件日志绑定到本次任务的 ``output/log``。"""
+
+    _logger_manager.debug_file_enabled = bool(config.debug_file_enabled)
     _logger_manager.console_enabled = bool(config.console_enabled)
     _logger_manager.run_log_file_enabled = bool(config.run_log_file_enabled)
     _logger_manager.debug_log_file_enabled = bool(config.debug_log_file_enabled)
     _logger_manager.error_log_file_enabled = bool(config.error_log_file_enabled)
-    _logger_manager.base_dir = Path(config.base_dir)
+    target_base = (
+        Path(output_dir) / "log"
+        if output_dir is not None
+        else Path(config.base_dir)
+    )
+    _logger_manager.set_base_dir(target_base)
 
 
 __all__ = [
     'RunLog',
     'DebugLog',
     'ErrorLog',
+    'is_debug_file_enabled',
     'is_debug_log_file_enabled',
     'configure_logging',
 ]

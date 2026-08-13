@@ -22,6 +22,13 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("--jobs N", result.stdout)
 
+    def test_each_case_log_is_written_beside_report(self):
+        script_text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('log_dir="$output_dir/log"', script_text)
+        self.assertIn('log_file="$log_dir/BatchLog.txt"', script_text)
+        self.assertNotIn("_batch_logs", script_text)
+
     def test_jobs_must_be_positive_integer(self):
         result = subprocess.run(
             ["bash", str(SCRIPT), "--jobs", "0", "--dry-run"],

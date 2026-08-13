@@ -456,6 +456,86 @@ class Stage7ReconstructionTest(unittest.TestCase):
         self.assertGreater(len(highlighted), 20)
         self.assertGreater(self._max_line_fit_residual(highlighted), 2.0)
 
+    def test_curved_localizer_batch_coordinate_transform_matches_simpleitk(self):
+        """批量物理坐标转换必须与 SimpleITK 的逐点结果一致。"""
+
+        image = sitk.Image([40, 36, 32], sitk.sitkInt16)
+        image.SetOrigin((12.5, -31.0, 8.25))
+        image.SetSpacing((0.7, 1.3, 2.2))
+        angle = math.radians(23.0)
+        cosine = math.cos(angle)
+        sine = math.sin(angle)
+        image.SetDirection((
+            cosine, -sine, 0.0,
+            sine, cosine, 0.0,
+            0.0, 0.0, -1.0,
+        ))
+        physical_points = [
+            image.TransformContinuousIndexToPhysicalPoint(index)
+            for index in (
+                (0.0, 0.0, 0.0),
+                (4.25, 7.5, 2.75),
+                (19.125, 12.875, 21.5),
+            )
+        ]
+        expected = np.asarray([
+            image.TransformPhysicalPointToContinuousIndex(point)
+            for point in physical_points
+        ])
+
+        actual = ReconstructionStage._physical_points_to_continuous_indices(
+            image,
+            physical_points,
+        )
+
+        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-12)
+
+    def test_curved_localizer_does_not_transform_each_projected_point(self):
+        """CPR 定位曲线不得退回 SimpleITK 原生逐点坐标转换。"""
+
+        image = sitk.GetImageFromArray(np.zeros((24, 24, 24), dtype=np.int16))
+        plan = {
+            "plan_id": "胸椎_CPR_冠状位",
+            "plane": "冠状位",
+            "geometry_type": "curved_stack",
+            "localizer_plane": "矢状位",
+            "extent_mm": {"width": 20.0, "height": 18.0},
+            "output_spacing_mm": {"x": 1.0, "y": 1.0, "z": 0.0},
+            "curve_points": [
+                {"x": 12.0, "y": 8.0, "z": 3.0},
+                {"x": 12.0, "y": 9.0, "z": 12.0},
+                {"x": 12.0, "y": 14.0, "z": 21.0},
+            ],
+            "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
+            "offsets_mm": [-2.0, 0.0, 2.0],
+            "slice_thickness": 2.0,
+            "slices": [],
+        }
+
+        with mock.patch.object(
+            ReconstructionStage,
+            "_curved_localizer_fixed_index",
+            return_value=12,
+        ), mock.patch.object(
+            image,
+            "TransformPhysicalPointToContinuousIndex",
+            side_effect=AssertionError("不应逐点调用 SimpleITK 坐标转换"),
+        ), mock.patch(
+            "src.stages.stage_reconstruction.DebugLog",
+        ) as debug_log:
+            localizer = ReconstructionStage._build_curved_plan_localizer(
+                image,
+                plan,
+            )
+
+        self.assertIsNotNone(localizer)
+        messages = [call.args[0] for call in debug_log.call_args_list]
+        self.assertTrue(any(
+            "[CPR定位图性能]" in message
+            and "coordinate_transform=batch_affine" in message
+            for message in messages
+        ))
+
     def test_curved_stack_localizer_draws_equally_spaced_offsets(self):
         """CPR 定位图应只画等间距 offset 中心线。"""
 
@@ -1569,6 +1649,9 @@ class Stage7ReconstructionTest(unittest.TestCase):
             self.assertEqual(result["slice_count"], 2)
             self.assertEqual(result["image_count"], 2)
             self.assertEqual(result["planes"]["横状位"]["slice_count"], 2)
+            self.assertEqual(result["outputs"][0]["geometry_type"], "plane_stack")
+            self.assertEqual(result["outputs"][0]["slice_thickness"], 1.0)
+            self.assertEqual(result["outputs"][0]["slice_spacing"], 2.0)
 
     def test_reconstruction_dispatches_curved_stack_resampler(self):
         """第七阶段应按 geometry_type 把 CPR plan 交给 curved_stack resampler。"""

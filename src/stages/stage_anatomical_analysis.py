@@ -218,6 +218,8 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             "  脊柱专用几何: "
             f"{'applied' if spine_geometry is not None else 'skipped'}"
         )
+        if spine_geometry is not None:
+            DebugLog("  矢状投影去重: 一维整数键（稳定路径）")
         DebugLog("  第五阶段完成")
         DebugLog("=" * 60)
         return context

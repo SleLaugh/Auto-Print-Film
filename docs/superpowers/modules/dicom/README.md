@@ -11,6 +11,10 @@
 - 同一计划各窗 Localizer 必须使用主线程冻结的同一份 `ImagePositionPatient` 和
   `ImageOrientationPatient` 串行写出；窗位只改变灰度和序列标识。
 - Localizer 缺少必要空间标签时必须失败，不能发布带二维默认方向的文件。
+- 第八阶段是最终输出硬门禁：先校验正式切片、Localizer、UID、层厚层间距和
+  同计划跨窗几何，再生成 `report.json`；任一硬错误必须使任务失败。
+- 输出校验失败时抛出 `OUTPUT_VALIDATION_ERROR`，日志写明计划、窗位、文件和字段；
+  debug 开启时保留 `metadata/处理报告_调试.json`，但不能留下交付 `report.json`。
 
 ## 推荐阅读
 

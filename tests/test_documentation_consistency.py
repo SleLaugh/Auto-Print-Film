@@ -112,6 +112,40 @@ class DocumentationConsistencyTests(unittest.TestCase):
         self.assertIn("脊柱冠状位 CPR", reconstruction_readme)
         self.assertIn("脊柱矢状位保持既有直线 MPR", reconstruction_readme)
 
+    def test_current_docs_describe_prism_intrusion_fallback(self):
+        """相邻棱柱文档必须保留小侵入容差和三维主体冲突边界。"""
+
+        localization_readme = (
+            SUPERPOWERS_ROOT / "modules/localization/README.md"
+        ).read_text(encoding="utf-8")
+        prism_doc = (
+            SUPERPOWERS_ROOT
+            / "modules"
+            / "localization"
+            / "2026-08-06-椎体主体外包络四棱柱设计.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("各不超过 `5%`", localization_readme)
+        self.assertIn("占用同一体素", prism_doc)
+        self.assertIn("结果不能随字典遍历", prism_doc)
+
+    def test_current_docs_describe_stage8_hard_output_gate(self):
+        """DICOM 文档必须说明第八阶段先校验后发布的失败契约。"""
+
+        dicom_readme = (
+            SUPERPOWERS_ROOT / "modules/dicom/README.md"
+        ).read_text(encoding="utf-8")
+        dicom_design = (
+            SUPERPOWERS_ROOT
+            / "modules"
+            / "dicom"
+            / "2026-07-14-DICOM数字命名与定位图设计.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("最终输出硬门禁", dicom_readme)
+        self.assertIn("OUTPUT_VALIDATION_ERROR", dicom_design)
+        self.assertIn("校验通过后才写 `report.json`", dicom_design)
+
     def test_current_cpr_docs_describe_thick_slab_support(self):
         """当前 CPR 文档应说明层厚参与 offset 覆盖和厚层平均。"""
 

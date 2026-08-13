@@ -1904,6 +1904,152 @@ class LocalizationGeometryTest(unittest.TestCase):
         self.assertTrue(resolved_left[100 - left_minimum[0], 0, 0])
         self.assertTrue(resolved_right[1400 - right_minimum[0], 0, 0])
 
+    def test_prism_separator_tolerates_small_sagittal_projection_intrusion(self):
+        """少量主体投影越界时仍应得到单一直线，不能把两个棱柱清空。"""
+
+        upper_body = np.asarray([
+            (z_index, y_index, 0)
+            for z_index in range(10)
+            for y_index in range(10)
+        ] + [(13, 5, 0)], dtype=int)
+        lower_body = np.asarray([
+            (z_index, y_index, 1)
+            for z_index in range(12, 22)
+            for y_index in range(10)
+        ] + [(8, 5, 1)], dtype=int)
+
+        separating_plane = LocalizationStage._sagittal_body_separating_plane(
+            upper_body,
+            lower_body,
+        )
+
+        self.assertIsNotNone(separating_plane)
+        normal, offset = separating_plane
+        upper_projection = upper_body[:, :2] @ normal
+        lower_projection = lower_body[:, :2] @ normal
+        self.assertLessEqual(
+            np.count_nonzero(upper_projection > offset) / len(upper_body),
+            0.05,
+        )
+        self.assertLessEqual(
+            np.count_nonzero(lower_projection < offset) / len(lower_body),
+            0.05,
+        )
+
+    def test_prism_separator_rejects_large_sagittal_projection_crossing(self):
+        """两侧大范围投影交叉时不能用小侵入回退强行拆分。"""
+
+        upper_body = np.asarray([
+            (z_index, y_index, 0)
+            for z_index in range(10)
+            for y_index in range(10)
+        ] + [
+            (z_index, y_index, 0)
+            for z_index in range(14, 18)
+            for y_index in range(10)
+        ], dtype=int)
+        lower_body = np.asarray([
+            (z_index, y_index, 1)
+            for z_index in range(12, 22)
+            for y_index in range(10)
+        ] + [
+            (z_index, y_index, 1)
+            for z_index in range(4, 8)
+            for y_index in range(10)
+        ], dtype=int)
+
+        separating_plane = LocalizationStage._sagittal_body_separating_plane(
+            upper_body,
+            lower_body,
+        )
+
+        self.assertIsNone(separating_plane)
+
+    def test_prism_overlap_with_small_projection_intrusion_keeps_both_regions(self):
+        """主体三维不重叠时，轻微矢状投影交叉不得令相邻棱柱一起失效。"""
+
+        upper_body = np.asarray([
+            (z_index, y_index, 0)
+            for z_index in range(2, 10)
+            for y_index in range(10)
+        ] + [(12, 5, 0)], dtype=int)
+        lower_body = np.asarray([
+            (z_index, y_index, 1)
+            for z_index in range(14, 22)
+            for y_index in range(10)
+        ] + [(8, 5, 1)], dtype=int)
+        upper_minimum = np.asarray([0, 0, 0], dtype=int)
+        lower_minimum = np.asarray([6, 0, 0], dtype=int)
+        upper_mask = np.ones((15, 10, 2), dtype=bool)
+        lower_mask = np.ones((18, 10, 2), dtype=bool)
+
+        resolved = LocalizationStage._resolve_non_overlapping_prism_regions(
+            {
+                "vertebrae_C3": (upper_minimum, upper_mask),
+                "vertebrae_C4": (lower_minimum, lower_mask),
+            },
+            protected_indices={
+                "vertebrae_C3": upper_body,
+                "vertebrae_C4": lower_body,
+            },
+        )
+
+        self.assertIsNotNone(resolved["vertebrae_C3"])
+        self.assertIsNotNone(resolved["vertebrae_C4"])
+        upper_minimum, resolved_upper = resolved["vertebrae_C3"]
+        lower_minimum, resolved_lower = resolved["vertebrae_C4"]
+        self.assertTrue(np.all(resolved_upper[
+            tuple((upper_body - upper_minimum).T)
+        ]))
+        self.assertTrue(np.all(resolved_lower[
+            tuple((lower_body - lower_minimum).T)
+        ]))
+        overlap_minimum = np.maximum(upper_minimum, lower_minimum)
+        overlap_maximum = np.minimum(
+            upper_minimum + np.asarray(resolved_upper.shape),
+            lower_minimum + np.asarray(resolved_lower.shape),
+        )
+        upper_slices = tuple(
+            slice(int(start - minimum), int(stop - minimum))
+            for start, stop, minimum in zip(
+                overlap_minimum,
+                overlap_maximum,
+                upper_minimum,
+            )
+        )
+        lower_slices = tuple(
+            slice(int(start - minimum), int(stop - minimum))
+            for start, stop, minimum in zip(
+                overlap_minimum,
+                overlap_maximum,
+                lower_minimum,
+            )
+        )
+        self.assertFalse(np.any(
+            resolved_upper[upper_slices] & resolved_lower[lower_slices]
+        ))
+
+        reverse = LocalizationStage._resolve_non_overlapping_prism_regions(
+            {
+                "vertebrae_C4": (
+                    np.asarray([6, 0, 0], dtype=int),
+                    np.ones((18, 10, 2), dtype=bool),
+                ),
+                "vertebrae_C3": (
+                    np.asarray([0, 0, 0], dtype=int),
+                    np.ones((15, 10, 2), dtype=bool),
+                ),
+            },
+            protected_indices={
+                "vertebrae_C3": upper_body,
+                "vertebrae_C4": lower_body,
+            },
+        )
+        for label_name, (minimum, mask) in resolved.items():
+            reverse_minimum, reverse_mask = reverse[label_name]
+            np.testing.assert_array_equal(minimum, reverse_minimum)
+            np.testing.assert_array_equal(mask, reverse_mask)
+
     def test_prism_overlap_uses_one_plane_while_preserving_both_bodies(self):
         """相邻棱柱的重叠归属应是一条直线，不能被主体保护顶出凹口。"""
 
@@ -2300,39 +2446,119 @@ class LocalizationGeometryTest(unittest.TestCase):
         self.assertTrue(np.all(retained[:20]))
         self.assertFalse(np.any(retained[20:]))
 
-    def test_stage5_sagittal_support_unique_uses_contiguous_integer_projection(self):
-        """LR 支撑统计传给 np.unique 的投影数组应规整为连续整数内存。"""
+    def test_stage5_packed_integer_row_unique_matches_numpy_contract(self):
+        """一维整数键去重必须保持原二维 unique 的排序和反查语义。"""
 
-        indices = np.asarray(
-            [
-                (0, 0, 0),
-                (0, 0, 1),
-                (0, 1, 0),
-                (0, 1, 1),
-                (1, 0, 0),
-                (1, 0, 1),
-                (1, 1, 0),
-                (1, 1, 1),
-            ],
-            dtype=np.int16,
+        rows = np.asarray([
+            (4, -2),
+            (1, 7),
+            (4, -2),
+            (-3, 7),
+            (1, 5),
+            (-3, 7),
+        ], dtype=np.intp)
+        expected_rows, expected_inverse, expected_counts = np.unique(
+            rows,
+            axis=0,
+            return_inverse=True,
+            return_counts=True,
         )
+
+        actual_rows, actual_inverse, actual_counts = (
+            LocalizationStage._unique_packed_integer_rows_2d(
+                rows,
+                return_inverse=True,
+                return_counts=True,
+            )
+        )
+
+        np.testing.assert_array_equal(actual_rows, expected_rows)
+        np.testing.assert_array_equal(actual_inverse, expected_inverse)
+        np.testing.assert_array_equal(actual_counts, expected_counts)
+        np.testing.assert_array_equal(actual_rows[actual_inverse], rows)
+
+    def test_stage5_packed_integer_row_unique_handles_key_overflow(self):
+        """坐标跨度无法安全打包时应走确定性回退，不能发生整数碰撞。"""
+
+        minimum = np.iinfo(np.int64).min
+        maximum = np.iinfo(np.int64).max
+        rows = np.asarray([
+            (maximum, minimum),
+            (minimum, maximum),
+            (maximum, minimum),
+        ], dtype=np.int64)
+
+        unique_rows, inverse, counts = (
+            LocalizationStage._unique_packed_integer_rows_2d(
+                rows,
+                return_inverse=True,
+                return_counts=True,
+            )
+        )
+
+        np.testing.assert_array_equal(
+            unique_rows,
+            np.asarray([
+                (minimum, maximum),
+                (maximum, minimum),
+            ], dtype=np.int64),
+        )
+        np.testing.assert_array_equal(inverse, [1, 0, 1])
+        np.testing.assert_array_equal(counts, [1, 2])
+
+    def test_stage5_large_packed_integer_row_unique_is_deterministic(self):
+        """接近真实规模的重复投影在乱序后仍应得到相同结果。"""
+
+        grid = np.stack(
+            np.meshgrid(
+                np.arange(-50, 70, dtype=np.intp),
+                np.arange(80, 180, dtype=np.intp),
+                indexing="ij",
+            ),
+            axis=-1,
+        ).reshape(-1, 2)
+        rows = np.repeat(grid, 25, axis=0)
+        expected_counts = np.full(len(grid), 25, dtype=np.intp)
+        rng = np.random.default_rng(20260812)
+
+        for _ in range(4):
+            shuffled = rows[rng.permutation(len(rows))]
+            unique_rows, inverse, counts = (
+                LocalizationStage._unique_packed_integer_rows_2d(
+                    shuffled,
+                    return_inverse=True,
+                    return_counts=True,
+                )
+            )
+            np.testing.assert_array_equal(unique_rows, grid)
+            np.testing.assert_array_equal(counts, expected_counts)
+            np.testing.assert_array_equal(unique_rows[inverse], shuffled)
+
+    def test_stage5_sagittal_projection_avoids_structured_row_unique(self):
+        """主体投影和四边形拟合只能调用一维 unique，避开结构化行排序。"""
+
+        body_mask = np.zeros((12, 16, 14), dtype=bool)
+        body_mask[3:9, 4:11, 3:10] = True
+        indices = np.argwhere(body_mask).astype(np.int16)
+        image = sitk.GetImageFromArray(body_mask.astype(np.uint8))
         original_unique = np.unique
-        observed_projection = None
+        observed_inputs = []
 
         def observing_unique(values, *args, **kwargs):
-            nonlocal observed_projection
-            if kwargs.get("axis") == 0 and kwargs.get("return_inverse"):
-                observed_projection = values
+            observed_inputs.append((np.asarray(values), kwargs.get("axis")))
             return original_unique(values, *args, **kwargs)
 
         with patch("src.stages.stage_localization.np.unique", side_effect=observing_unique):
-            LocalizationStage._retained_sagittal_projection_mask_by_lr_support(
+            geometry = LocalizationStage._sagittal_body_quadrilateral(
                 indices,
+                image,
             )
 
-        self.assertIsNotNone(observed_projection)
-        self.assertEqual(observed_projection.dtype, np.dtype(np.intp))
-        self.assertTrue(observed_projection.flags.c_contiguous)
+        self.assertIsNotNone(geometry)
+        self.assertTrue(observed_inputs)
+        for values, axis in observed_inputs:
+            self.assertIsNone(axis)
+            self.assertEqual(values.ndim, 1)
 
     def test_stage5_prism_region_is_limited_to_body_bbox(self):
         """内部棱柱只保留局部包围盒，不能为每个椎体复制整幅 CT。"""

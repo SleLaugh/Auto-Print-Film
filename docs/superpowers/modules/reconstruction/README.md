@@ -29,8 +29,13 @@
 - 第七阶段为每个 CPR 计划只准备一次共享偏移方向场和全部 offset 曲线；计划内
   各切片复用该几何，不能逐张重复平滑和搜索方向场。该复用不得改变像素、
   `Origin`、`Spacing` 或 `Direction`，日志以 `[CPR几何准备]` 标记一次性耗时。
+- CPR Localizer 对投影曲线使用与 SimpleITK 等价的 NumPy 批量仿射坐标换算，
+  不逐线段重复进入 SimpleITK 原生单点转换；日志以 `[CPR定位图性能]`
+  记录曲线数、点数与转换方式，正式切片几何和采样不受影响。
 - 同一计划的正式切片可按窗并行写出；各窗 Localizer 必须复用主线程冻结的三维
   位置和行列方向并串行写出，不能因窗位线程不同而退回二维默认方向。
+- 第七阶段输出摘要必须随每个计划透传 `geometry_type`、`slice_thickness` 和
+  `slice_spacing`，供第八阶段把最终 DICOM 标签与实际计划做硬校验。
 - 第六阶段默认只把 CPR 几何写入 `slice_plans.json`，不再额外生成 CPR NIfTI
   切片线、原始网格总览、含原图总览或十字中线调试图；定位核对看第七阶段
   `Localizer.dcm`/`Localizer.png`。

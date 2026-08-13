@@ -242,6 +242,9 @@ class ReconstructionStage(BaseStage):
             "plan_id": plan["plan_id"],
             "plane": plan["plane"],
             "group_name": plan.get("group_name", ""),
+            "geometry_type": plan.get("geometry_type", "plane_stack"),
+            "slice_thickness": float(plan["slice_thickness"]),
+            "slice_spacing": float(plan["slice_spacing"]),
             "slice_count": len(plan["slices"]),
             "image_count": len(plan["slices"]) * len(windows),
             "window_outputs": {
@@ -548,17 +551,25 @@ class ReconstructionStage(BaseStage):
             plan=plan,
             fixed_axis=fixed_axis,
         )
+        coordinate_transform_start = time.perf_counter()
         for projected_points in projected_curves.values():
-            for start_point, end_point in zip(projected_points, projected_points[1:]):
-                start_xyz = np.asarray(
-                    image.TransformPhysicalPointToContinuousIndex(start_point),
-                    dtype=float,
-                )
-                end_xyz = np.asarray(
-                    image.TransformPhysicalPointToContinuousIndex(end_point),
-                    dtype=float,
-                )
+            projected_indices = cls._physical_points_to_continuous_indices(
+                image,
+                projected_points,
+            )
+            for start_xyz, end_xyz in zip(
+                projected_indices,
+                projected_indices[1:],
+            ):
                 paint(start_xyz, end_xyz)
+        DebugLog(
+            "    [CPR定位图性能] "
+            f"plan={plan.get('plan_id', '')}, "
+            f"curves={len(projected_curves)}, "
+            f"points={sum(len(points) for points in projected_curves.values())}, "
+            "coordinate_transform=batch_affine, "
+            f"耗时={time.perf_counter() - coordinate_transform_start:.3f}s"
+        )
 
         painted_slice = sitk.GetImageFromArray(localizer_array)
         painted_slice.CopyInformation(representative_slice)
@@ -590,6 +601,46 @@ class ReconstructionStage(BaseStage):
             "\\".join(f"{float(value):.12g}" for value in first_pixel),
         )
         return localizer
+
+    @staticmethod
+    def _physical_points_to_continuous_indices(
+        image: sitk.Image,
+        physical_points: Any,
+    ) -> np.ndarray:
+        """按图像仿射几何批量把物理点转换为连续索引。"""
+
+        points = np.asarray(physical_points, dtype=float)
+        dimension = int(image.GetDimension())
+        if points.size == 0:
+            return np.empty((0, dimension), dtype=float)
+        if points.ndim != 2 or points.shape[1] != dimension:
+            raise ValueError(
+                "physical_points 必须是形状为 (N, image_dimension) 的二维数组"
+            )
+        if not np.all(np.isfinite(points)):
+            raise ValueError("physical_points 必须是有限数值")
+
+        origin = np.asarray(image.GetOrigin(), dtype=float)
+        spacing = np.asarray(image.GetSpacing(), dtype=float)
+        direction = np.asarray(image.GetDirection(), dtype=float).reshape(
+            dimension,
+            dimension,
+        )
+        if (
+            np.any(~np.isfinite(origin))
+            or np.any(~np.isfinite(spacing))
+            or np.any(spacing <= 0.0)
+            or np.any(~np.isfinite(direction))
+        ):
+            raise ValueError("图像空间几何必须是有限且有效的")
+
+        # SimpleITK 的物理坐标关系为 p = origin + D @ (index * spacing)。
+        # 一次批量求解可避免长 CPR 定位曲线逐点跨 Python/C++ 边界。
+        scaled_indices = np.linalg.solve(
+            direction,
+            (points - origin).T,
+        ).T
+        return scaled_indices / spacing
 
     @classmethod
     def _curved_localizer_fixed_index(

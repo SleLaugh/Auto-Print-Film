@@ -45,6 +45,7 @@ _TERMINAL_EXTENSION_MINIMUM_COMPONENT_FRACTION = 0.10
 _TERMINAL_EXTENSION_MAXIMUM_SI_GAP = 1
 _TERMINAL_EXTENSION_MINIMUM_TRANSVERSE_OVERLAP_FRACTION = 0.75
 _TERMINAL_EXTENSION_MINIMUM_SI_SPAN = 2
+_PRISM_SEPARATOR_MAXIMUM_PROJECTION_INTRUSION_FRACTION = 0.05
 _LOCALIZATION_WORKSPACE_KEY = "localization_workspace_v1"
 
 
@@ -1826,6 +1827,17 @@ class LocalizationOperations(BaseStage):
                     continue
                 left_points = protected_points[left_label]
                 right_points = protected_points[right_label]
+                protected_overlap = int(
+                    np.count_nonzero(
+                        protected_masks[left_label][left_slices]
+                        & protected_masks[right_label][right_slices]
+                    )
+                )
+                # 主体真实占用同一体素时不存在无损直线拆分，不能使用二维
+                # 投影容错掩盖三维碰撞。
+                if protected_overlap > 0:
+                    collided_labels.update((left_label, right_label))
+                    continue
                 if len(left_points) and len(right_points):
                     separating_plane = cls._sagittal_body_separating_plane(
                         left_points,
@@ -1847,12 +1859,6 @@ class LocalizationOperations(BaseStage):
                 if max(left_overlap_fraction, right_overlap_fraction) > (
                     maximum_resolvable_overlap_fraction
                 ):
-                    protected_overlap = int(
-                        np.count_nonzero(
-                            protected_masks[left_label][left_slices]
-                            & protected_masks[right_label][right_slices]
-                        )
-                    )
                     # 外包络变大后，相邻椎体的规则化空间可能大范围相交，
                     # 只要两者主体本身不相交，就继续拆分外部重叠；只有主体
                     # 真的相交，或调用方没有主体保护信息时，才按碰撞整体失效。
@@ -1915,7 +1921,14 @@ class LocalizationOperations(BaseStage):
                         * spacing[:2]
                     )
                     plane_values = sagittal_points @ plane_normal
-                    assign_to_left = plane_values <= plane_offset
+                    assign_to_left = plane_values < plane_offset
+                    on_separator = np.isclose(
+                        plane_values,
+                        plane_offset,
+                        rtol=1e-12,
+                        atol=1e-12,
+                    )
+                    assign_to_left[on_separator] = left_label < right_label
                 else:
                     left_distances = np.sum(
                         (global_overlap_indices - centroids[left_label]) ** 2,
@@ -1933,22 +1946,18 @@ class LocalizationOperations(BaseStage):
                         atol=1e-12,
                     )
                     assign_to_left[equal_distances] = left_label < right_label
-                    left_is_protected = left_protected[
-                        tuple(overlap_indices.T)
-                    ]
-                    right_is_protected = right_protected[
-                        tuple(overlap_indices.T)
-                    ]
-                    assign_to_left[
-                        left_is_protected & ~right_is_protected
-                    ] = True
-                    assign_to_left[
-                        ~left_is_protected & right_is_protected
-                    ] = False
                 left_is_protected = left_protected[tuple(overlap_indices.T)]
                 right_is_protected = right_protected[
                     tuple(overlap_indices.T)
                 ]
+                # 容差直线允许极少数投影点越线；逐 LR 体素的主体保护
+                # 仍优先于直线归属，确保主体体素不会被误删。
+                assign_to_left[
+                    left_is_protected & ~right_is_protected
+                ] = True
+                assign_to_left[
+                    ~left_is_protected & right_is_protected
+                ] = False
                 remove_from_left = ~assign_to_left & ~left_is_protected
                 remove_from_right = assign_to_left & ~right_is_protected
                 if np.any(remove_from_left):
@@ -1976,6 +1985,116 @@ class LocalizationOperations(BaseStage):
             return np.ones(3, dtype=float)
         return spacing
 
+    @staticmethod
+    def _unique_packed_integer_rows_2d(
+        values: np.ndarray,
+        *,
+        return_inverse: bool = False,
+        return_counts: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+        """用一维整数键稳定去重二维整数坐标。"""
+
+        rows = np.asarray(values)
+        if rows.ndim != 2 or rows.shape[1] != 2:
+            raise ValueError("二维坐标去重输入必须是 N x 2 数组")
+        if not np.issubdtype(rows.dtype, np.integer):
+            raise TypeError("二维坐标去重输入必须是整数数组")
+
+        if rows.size == 0:
+            inverse = (
+                np.empty(0, dtype=np.intp)
+                if return_inverse
+                else None
+            )
+            counts = (
+                np.empty(0, dtype=np.intp)
+                if return_counts
+                else None
+            )
+            return np.empty((0, 2), dtype=np.int64), inverse, counts
+
+        if np.issubdtype(rows.dtype, np.unsignedinteger):
+            maximum = int(np.max(rows))
+            if maximum > np.iinfo(np.int64).max:
+                raise ValueError("二维坐标超出 int64 可表示范围")
+        rows = np.ascontiguousarray(rows, dtype=np.int64)
+        first_minimum = int(np.min(rows[:, 0]))
+        first_maximum = int(np.max(rows[:, 0]))
+        second_minimum = int(np.min(rows[:, 1]))
+        second_maximum = int(np.max(rows[:, 1]))
+        first_span = first_maximum - first_minimum + 1
+        second_span = second_maximum - second_minimum + 1
+        maximum_key = first_span * second_span - 1
+
+        if (
+            second_span <= np.iinfo(np.int64).max
+            and maximum_key <= np.iinfo(np.int64).max
+        ):
+            first_shifted = rows[:, 0] - first_minimum
+            second_shifted = rows[:, 1] - second_minimum
+            packed_keys = np.ascontiguousarray(
+                first_shifted * second_span + second_shifted,
+                dtype=np.int64,
+            )
+            unique_result = np.unique(
+                packed_keys,
+                return_inverse=return_inverse,
+                return_counts=return_counts,
+            )
+            if return_inverse or return_counts:
+                unique_keys = unique_result[0]
+                result_index = 1
+                inverse = (
+                    unique_result[result_index]
+                    if return_inverse
+                    else None
+                )
+                result_index += int(return_inverse)
+                counts = (
+                    unique_result[result_index]
+                    if return_counts
+                    else None
+                )
+            else:
+                unique_keys = unique_result
+                inverse = None
+                counts = None
+            unique_rows = np.column_stack((
+                unique_keys // second_span + first_minimum,
+                unique_keys % second_span + second_minimum,
+            )).astype(np.int64, copy=False)
+            return unique_rows, inverse, counts
+
+        # 医学图像索引不会触发该分支；保留 Python 整数回退，避免极端
+        # 坐标跨度在打包乘法中溢出后悄悄合并不同坐标。
+        row_tuples = [
+            (int(first), int(second))
+            for first, second in rows
+        ]
+        unique_tuples = sorted(set(row_tuples))
+        unique_rows = np.asarray(unique_tuples, dtype=np.int64)
+        row_to_index = {
+            row: index
+            for index, row in enumerate(unique_tuples)
+        }
+        inverse_for_counts = None
+        if return_inverse or return_counts:
+            inverse_for_counts = np.fromiter(
+                (row_to_index[row] for row in row_tuples),
+                dtype=np.intp,
+                count=len(row_tuples),
+            )
+        inverse = inverse_for_counts if return_inverse else None
+        counts = (
+            np.bincount(
+                inverse_for_counts,
+                minlength=len(unique_tuples),
+            ).astype(np.intp, copy=False)
+            if return_counts
+            else None
+        )
+        return unique_rows, inverse, counts
+
     @classmethod
     def _sagittal_body_separating_plane(
         cls,
@@ -1983,7 +2102,7 @@ class LocalizationOperations(BaseStage):
         right_indices: np.ndarray,
         voxel_spacing_zyx: np.ndarray | None = None,
     ) -> tuple[np.ndarray, float] | None:
-        """求完整保留两组主体投影的最大间隔矢状分隔直线。"""
+        """求严格分隔直线；仅对不超过 5% 的投影侵入启用稳健回退。"""
 
         left = np.asarray(left_indices, dtype=float)
         right = np.asarray(right_indices, dtype=float)
@@ -1997,8 +2116,26 @@ class LocalizationOperations(BaseStage):
         ):
             return None
         spacing = cls._normalized_voxel_spacing_zyx(voxel_spacing_zyx)
-        left_points = np.unique(left[:, :2] * spacing[:2], axis=0)
-        right_points = np.unique(right[:, :2] * spacing[:2], axis=0)
+        if (
+            np.any(~np.isfinite(left[:, :2]))
+            or np.any(~np.isfinite(right[:, :2]))
+        ):
+            return None
+        left_projection_indices = np.rint(left[:, :2]).astype(np.int64)
+        right_projection_indices = np.rint(right[:, :2]).astype(np.int64)
+        if (
+            not np.allclose(left[:, :2], left_projection_indices)
+            or not np.allclose(right[:, :2], right_projection_indices)
+        ):
+            return None
+        left_unique_indices, _, _ = cls._unique_packed_integer_rows_2d(
+            left_projection_indices,
+        )
+        right_unique_indices, _, _ = cls._unique_packed_integer_rows_2d(
+            right_projection_indices,
+        )
+        left_points = left_unique_indices.astype(float) * spacing[:2]
+        right_points = right_unique_indices.astype(float) * spacing[:2]
         left_hull = cls._convex_hull_2d(left_points)
         right_hull = cls._convex_hull_2d(right_points)
         center_direction = right_points.mean(axis=0) - left_points.mean(axis=0)
@@ -2027,8 +2164,10 @@ class LocalizationOperations(BaseStage):
             normal = np.asarray(candidate, dtype=float)
             if float(normal @ center_direction) < 0.0:
                 normal = -normal
-            left_maximum = float(np.max(left_points @ normal))
-            right_minimum = float(np.min(right_points @ normal))
+            left_projection = left_points @ normal
+            right_projection = right_points @ normal
+            left_maximum = float(np.max(left_projection))
+            right_minimum = float(np.min(right_projection))
             gap = right_minimum - left_maximum
             if best is None or gap > best[0]:
                 best = (
@@ -2036,9 +2175,95 @@ class LocalizationOperations(BaseStage):
                     normal,
                     (left_maximum + right_minimum) / 2.0,
                 )
-        if best is None or best[0] <= 1e-6:
+        if best is not None and best[0] > 1e-6:
+            return best[1], best[2]
+
+        maximum_intrusion_fraction = (
+            _PRISM_SEPARATOR_MAXIMUM_PROJECTION_INTRUSION_FRACTION
+        )
+        robust_best: tuple[
+            tuple[float, float, float, float, float, float, float],
+            np.ndarray,
+            float,
+        ] | None = None
+        # 仅在严格分隔失败后逐候选投影，避免同时保存“候选数 × 点数”
+        # 的临时数组，也保证容错不会改变原有严格分隔结果。
+        for candidate in candidate_normals:
+            normal = np.asarray(candidate, dtype=float)
+            if float(normal @ center_direction) < 0.0:
+                normal = -normal
+            left_projection = left_points @ normal
+            right_projection = right_points @ normal
+            left_sorted = np.sort(left_projection)
+            right_sorted = np.sort(right_projection)
+            thresholds = np.unique(np.concatenate((
+                left_sorted,
+                right_sorted,
+                np.asarray([
+                    (
+                        float(np.median(left_sorted))
+                        + float(np.median(right_sorted))
+                    ) / 2.0,
+                ]),
+            )))
+            left_wrong = (
+                len(left_sorted)
+                - np.searchsorted(left_sorted, thresholds, side="right")
+            ) / len(left_sorted)
+            right_wrong = np.searchsorted(
+                right_sorted,
+                thresholds,
+                side="left",
+            ) / len(right_sorted)
+            maximum_wrong = np.maximum(left_wrong, right_wrong)
+            valid = maximum_wrong <= maximum_intrusion_fraction + 1e-12
+            if not np.any(valid):
+                continue
+
+            candidate_indices = np.flatnonzero(valid)
+            center_threshold = (
+                float(np.median(left_sorted))
+                + float(np.median(right_sorted))
+            ) / 2.0
+            selected_index = min(
+                candidate_indices,
+                key=lambda index: (
+                    float(maximum_wrong[index]),
+                    float(left_wrong[index] + right_wrong[index]),
+                    abs(float(left_wrong[index] - right_wrong[index])),
+                    abs(float(thresholds[index]) - center_threshold),
+                    int(index),
+                ),
+            )
+            threshold = float(thresholds[selected_index])
+            canonical_normal = np.asarray(normal, dtype=float).copy()
+            canonical_threshold = threshold
+            first_nonzero = next(
+                (
+                    float(value)
+                    for value in canonical_normal
+                    if abs(float(value)) > 1e-12
+                ),
+                0.0,
+            )
+            if first_nonzero < 0.0:
+                canonical_normal = -canonical_normal
+                canonical_threshold = -canonical_threshold
+            score = (
+                float(maximum_wrong[selected_index]),
+                float(left_wrong[selected_index] + right_wrong[selected_index]),
+                abs(float(left_wrong[selected_index] - right_wrong[selected_index])),
+                abs(threshold - center_threshold),
+                float(canonical_normal[0]),
+                float(canonical_normal[1]),
+                float(canonical_threshold),
+            )
+            if robust_best is None or score < robust_best[0]:
+                robust_best = (score, normal, threshold)
+
+        if robust_best is None:
             return None
-        return best[1], best[2]
+        return robust_best[1], robust_best[2]
 
     @classmethod
     def _build_spine_body_geometry(
@@ -2466,7 +2691,18 @@ class LocalizationOperations(BaseStage):
         center = physical_points.mean(axis=0)
         sagittal_axes = direction[:, [1, 2]]
         sagittal_points = (physical_points - center) @ sagittal_axes
-        unique_points = np.unique(np.round(sagittal_points, 3), axis=0)
+        rounded_points = np.round(sagittal_points, 3)
+        if np.any(~np.isfinite(rounded_points)):
+            return None
+        scaled_points = np.rint(rounded_points * 1000.0)
+        if np.any(np.abs(scaled_points) > np.iinfo(np.int64).max):
+            return None
+        unique_scaled_points, _, _ = (
+            LocalizationStage._unique_packed_integer_rows_2d(
+                scaled_points.astype(np.int64),
+            )
+        )
+        unique_points = unique_scaled_points.astype(float) / 1000.0
         hull = LocalizationStage._convex_hull_2d(unique_points)
         quad = LocalizationStage._simplify_hull_to_quadrilateral(hull)
         if quad is None:
@@ -2499,11 +2735,12 @@ class LocalizationOperations(BaseStage):
             indices_zyx[:, [0, 1]],
             dtype=np.intp,
         )
-        projection_points, inverse, support_counts = np.unique(
-            projection_input,
-            axis=0,
-            return_inverse=True,
-            return_counts=True,
+        projection_points, inverse, support_counts = (
+            LocalizationStage._unique_packed_integer_rows_2d(
+                projection_input,
+                return_inverse=True,
+                return_counts=True,
+            )
         )
         if support_counts.size == 0:
             return np.ones(len(indices_zyx), dtype=bool)

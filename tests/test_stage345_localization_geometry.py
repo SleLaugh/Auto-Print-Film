@@ -2,6 +2,7 @@ import json
 import math
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,7 +24,10 @@ from src.models import (
     VoxelPoint,
 )
 from src.stages.stage_anatomical_analysis import AnatomicalAnalysisStage
-from src.stages.stage_localization import LocalizationStage
+from src.stages.stage_localization import (
+    LocalizationStage,
+    _LOCALIZATION_WORKSPACE_KEY,
+)
 from src.stages.stage_reconstruction import ReconstructionStage
 from src.stages.stage_spatial_correction import SpatialCorrectionStage
 
@@ -3012,8 +3016,18 @@ class LocalizationGeometryTest(unittest.TestCase):
                 stage._nnunet_paths = nnunet_paths
                 stage._localization_config = localization_config
 
-            for stage in stages:
+            for stage_index, stage in enumerate(stages):
                 stage.execute(context)
+                if stage_index < 2:
+                    self.assertIn(
+                        _LOCALIZATION_WORKSPACE_KEY,
+                        context.metadata,
+                    )
+                else:
+                    self.assertNotIn(
+                        _LOCALIZATION_WORKSPACE_KEY,
+                        context.metadata,
+                    )
 
             result = {
                 **context.get_result("localization"),
@@ -3139,6 +3153,31 @@ class LocalizationGeometryTest(unittest.TestCase):
                 result["spine_geometry"]["filtered_annotation_centroids"],
             )
             self.assertIn("spine_geometry", metadata)
+
+    def test_anatomical_analysis_releases_workspace_when_execution_fails(self):
+        """第五阶段异常时也必须释放完整分割快照，避免失败任务滞留大对象。"""
+
+        context = ProcessingContext(
+            Request(dicom_dir="/tmp/dicom", output_dir="/tmp/output")
+        )
+        seg_array = np.zeros((2, 2, 2), dtype=np.uint8)
+        seg_array_reference = weakref.ref(seg_array)
+        context.metadata[_LOCALIZATION_WORKSPACE_KEY] = {
+            "seg_array": seg_array,
+        }
+        del seg_array
+        stage = AnatomicalAnalysisStage()
+
+        with patch.object(
+            stage,
+            "_execute_with_workspace",
+            side_effect=RuntimeError("test failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "test failure"):
+                stage.execute(context)
+
+        self.assertNotIn(_LOCALIZATION_WORKSPACE_KEY, context.metadata)
+        self.assertIsNone(seg_array_reference())
 
     def test_execute_promotes_existing_xy_candidate_for_geometry_and_reconstruction(self):
         """候选回正文件存在时，第三至第五阶段和后续路径应统一切到候选空间。"""

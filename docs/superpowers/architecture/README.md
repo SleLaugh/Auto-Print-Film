@@ -8,6 +8,8 @@
   标签定位、解剖分析、切片规划、图像重建、校验与报告。
 - 原第三阶段已拆为 `SpatialCorrectionStage` / `LocalizationStage` /
   `AnatomicalAnalysisStage`；三者共享进程内 label 快照，但分别登记阶段结果。
+- label 快照的生命周期止于第五阶段；第五阶段无论成功或异常都必须释放完整分割、
+  逐标签体素索引和目标 mask，第六至八阶段不得依赖该快照。
 - 切片规划统一使用 `PlanningStage` 和 `planning` 结果键，不保留
   `MappingStage` 或 `mapping` 别名。
 - 框架能力围绕配置、预检、任务状态、产物管理、标准错误和 manifest 收口。

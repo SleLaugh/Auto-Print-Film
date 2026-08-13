@@ -26,7 +26,21 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         super().__init__(config, stage_name="anatomical_analysis")
 
     def execute(self, context: ProcessingContext) -> ProcessingContext:
-        """消费纯定位结果，不在本阶段决定切片数量或方向。"""
+        """消费纯定位结果，并在第五阶段结束时释放运行时快照。"""
+
+        try:
+            return self._execute_with_workspace(context)
+        finally:
+            # 第六阶段只消费已序列化的定位和解剖结果。无论本阶段成功
+            # 还是失败，都不应让完整分割、逐标签体素和 mask 继续驻留。
+            if context.metadata.pop(_LOCALIZATION_WORKSPACE_KEY, None) is not None:
+                DebugLog("  已释放第三至第五阶段运行时 label 快照")
+
+    def _execute_with_workspace(
+        self,
+        context: ProcessingContext,
+    ) -> ProcessingContext:
+        """复用或重建运行时快照，完成解剖坐标和专用几何计算。"""
 
         localization_result = context.get_result("localization")
         if not localization_result:

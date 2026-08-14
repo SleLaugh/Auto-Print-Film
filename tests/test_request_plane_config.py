@@ -1,7 +1,11 @@
 import unittest
 
 from src.models import PlaneConfig, Request
-from src.models.enums import BodyPartEnum, PlaneTypeEnum
+from src.models.enums import (
+    BodyPartEnum,
+    CutLineExtentModeEnum,
+    PlaneTypeEnum,
+)
 
 
 class PlaneConfigRequestTest(unittest.TestCase):
@@ -50,21 +54,43 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self.assertIs(config.plane, PlaneTypeEnum.冠状位)
         self.assertEqual(config.slice_thickness, 5.0)
         self.assertEqual(config.slice_spacing, 10.0)
-        self.assertEqual(config.line_extent_mode.value, "full_plane")
+        self.assertIs(
+            config.line_extent_mode,
+            CutLineExtentModeEnum.整平面,
+        )
+        self.assertEqual(config.line_extent_mode.value, "整平面")
         self.assertEqual(config.window_presets, ["骨窗", "肺窗", "纵隔窗"])
 
-    def test_plane_config_parses_target_bbox_line_extent_mode(self):
-        """验证 `test_plane_config_parses_target_bbox_line_extent_mode` 场景符合预期。"""
+    def test_plane_config_parses_chinese_target_line_extent_mode(self):
+        """外部请求应直接使用中文部位范围协议值。"""
 
         config = PlaneConfig.from_dict({
             "plane": "横状位",
             "slice_thickness": 3,
             "slice_spacing": 5,
             "window_presets": ["骨窗"],
-            "line_extent_mode": "target_bbox",
+            "line_extent_mode": "部位范围",
         })
 
-        self.assertEqual(config.line_extent_mode.value, "target_bbox")
+        self.assertIs(
+            config.line_extent_mode,
+            CutLineExtentModeEnum.部位范围,
+        )
+        self.assertEqual(config.line_extent_mode.value, "部位范围")
+
+    def test_plane_config_rejects_removed_english_line_extent_mode(self):
+        """一次性迁移后不再接受旧英文范围协议值。"""
+
+        for removed_value in ("full_plane", "target_bbox"):
+            with self.subTest(removed_value=removed_value):
+                with self.assertRaises(ValueError):
+                    PlaneConfig.from_dict({
+                        "plane": "横状位",
+                        "slice_thickness": 3,
+                        "slice_spacing": 5,
+                        "window_presets": ["骨窗"],
+                        "line_extent_mode": removed_value,
+                    })
 
     def test_request_from_dict_parses_plane_configs_and_to_dict_serializes_values(self):
         # from_dict 负责把外部请求转成强约束对象；to_dict 再转回报告可写的结构。
@@ -91,7 +117,7 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 "slice_thickness": 5.0,
                 "slice_spacing": 10.0,
                 "window_presets": ["骨窗", "肺窗"],
-                "line_extent_mode": "full_plane",
+                "line_extent_mode": "整平面",
             }
         ])
         self.assertNotIn("cut_mode", request.to_dict())
@@ -110,7 +136,7 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 "slice_thickness": 1.0,
                 "slice_spacing": 1.0,
                 "window_presets": ["骨窗"],
-                "line_extent_mode": "full_plane",
+                "line_extent_mode": "整平面",
             },
         ])
 

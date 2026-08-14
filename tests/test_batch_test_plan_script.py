@@ -1,6 +1,8 @@
 import ast
 import json
+import os
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -16,6 +18,7 @@ class BatchTestPlanScriptTest(unittest.TestCase):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
 
@@ -35,6 +38,7 @@ class BatchTestPlanScriptTest(unittest.TestCase):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
 
@@ -47,6 +51,7 @@ class BatchTestPlanScriptTest(unittest.TestCase):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
 
@@ -55,6 +60,8 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         self.assertIn("横状位", result.stdout)
         self.assertIn("矢状位", result.stdout)
         self.assertIn("冠状位", result.stdout)
+        self.assertIn("整平面", result.stdout)
+        self.assertNotIn("full_plane", result.stdout)
 
     def test_plane_configs_value_is_valid_json(self):
         assignment = next(
@@ -76,6 +83,50 @@ class BatchTestPlanScriptTest(unittest.TestCase):
                 config["window_presets"],
                 ["骨窗", "肺窗", "纵隔窗", "软组织窗"],
             )
+            self.assertEqual(config["line_extent_mode"], "整平面")
+
+    def test_chinese_extent_mode_parses_under_c_locale_with_utf8_mode(self):
+        """精简 Linux 的 C locale 下，显式 UTF-8 模式仍应正确解析中文请求。"""
+
+        payload = json.dumps({
+            "plane": "横状位",
+            "slice_thickness": 5,
+            "slice_spacing": 5,
+            "window_presets": ["骨窗"],
+            "line_extent_mode": "整平面",
+        }, ensure_ascii=False)
+        environment = dict(os.environ)
+        environment.update({
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PYTHONUTF8": "1",
+        })
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json, sys; "
+                    "from src.models import PlaneConfig; "
+                    "print(PlaneConfig.from_dict(json.loads(sys.argv[1]))"
+                    ".line_extent_mode.value)"
+                ),
+                payload,
+            ],
+            cwd=PROJECT_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "整平面")
+        self.assertIn(
+            "export PYTHONUTF8=1",
+            SCRIPT.read_text(encoding="utf-8"),
+        )
 
 
 if __name__ == "__main__":

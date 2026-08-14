@@ -6,7 +6,9 @@ cd "$(dirname "$0")/.."
 DICOM_ROOT="/home/peng/03_data/demo/Image/dicom"
 RESULT_ROOT="/home/peng/03_data/demo/Image/result"
 PYTHON_BIN=".venv/bin/python"
-PLANE_CONFIGS='[{"plane":"横状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"full_plane"},{"plane":"矢状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"full_plane"},{"plane":"冠状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"full_plane"}]'
+PLANE_CONFIGS='[{"plane":"横状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"整平面"},{"plane":"矢状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"整平面"},{"plane":"冠状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"整平面"}]'
+# 中文请求值依赖 UTF-8 argv；显式开启可避免精简 Linux 环境使用 C/ASCII locale。
+export PYTHONUTF8=1
 DRY_RUN=0
 STOP_ON_FAILURE=0
 JOBS=1

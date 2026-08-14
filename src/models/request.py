@@ -53,7 +53,7 @@ class PlaneConfig:
         输出 JSON 友好的结构，用于报告和调试。
 
         枚举在内存里方便代码判断，但 JSON 报告和外部接口只能稳定消费字符串，
-        所以这里统一转回中文枚举值。
+        所以这里统一转回中文协议值。
         """
         return {
             'plane': self.plane.value,

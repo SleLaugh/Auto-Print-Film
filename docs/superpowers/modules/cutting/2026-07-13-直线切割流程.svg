@@ -28,7 +28,7 @@
   <rect x="210" y="120" width="680" height="120" rx="20" fill="#eaf4ff" stroke="#6d9dcb" stroke-width="2"/>
   <text x="550" y="160" text-anchor="middle" class="step-title">① 接收切割请求</text>
   <text x="550" y="196" text-anchor="middle" class="code">cut_mode + plane + line_extent_mode + 层厚 + 层间距</text>
-  <text x="550" y="224" text-anchor="middle" class="small">line_extent_mode 默认是 full_plane</text>
+  <text x="550" y="224" text-anchor="middle" class="small">line_extent_mode 默认是整平面</text>
   <path d="M550 240 L550 285" class="line"/>
 
   <!-- 步骤 2：定位目标。 -->
@@ -58,9 +58,9 @@
   <text x="550" y="940" text-anchor="middle" class="code">line_extent_mode</text>
 
   <path d="M370 920 L205 920 L205 1000" class="line"/>
-  <text x="250" y="900" text-anchor="middle" class="code">full_plane</text>
+  <text x="250" y="900" text-anchor="middle" class="code">整平面</text>
   <path d="M730 920 L895 920 L895 1000" class="line"/>
-  <text x="850" y="900" text-anchor="middle" class="code">target_bbox</text>
+  <text x="850" y="900" text-anchor="middle" class="code">部位范围</text>
 
   <rect x="45" y="1010" width="390" height="115" rx="18" fill="#eaf4ff" stroke="#6d9dcb" stroke-width="2"/>
   <text x="240" y="1050" text-anchor="middle" class="step-title">整面切</text>

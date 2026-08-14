@@ -52,8 +52,8 @@ class PlaneTypeEnum(Enum):
 
 class CutLineExtentModeEnum(Enum):
     """切割线在每张平面内的横向范围。"""
-    整平面 = "full_plane"
-    部位范围 = "target_bbox"
+    整平面 = "整平面"
+    部位范围 = "部位范围"
 
 
 class ProcessingStatusEnum(Enum):

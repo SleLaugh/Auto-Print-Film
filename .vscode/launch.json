@@ -14,10 +14,11 @@
                 "--body_part", "胸椎",
                 "--check_type", "CT",
                 "--scan_thickness", "default",
-                "--plane_configs", "[{\"plane\":\"横状位\",\"slice_thickness\":5,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"full_plane\"},{\"plane\":\"矢状位\",\"slice_thickness\":5,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"full_plane\"},{\"plane\":\"冠状位\",\"slice_thickness\":5,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"full_plane\"}]"
+                "--plane_configs", "[{\"plane\":\"横状位\",\"slice_thickness\":5,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\"},{\"plane\":\"矢状位\",\"slice_thickness\":5,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\"},{\"plane\":\"冠状位\",\"slice_thickness\":5,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\"}]"
             ],
             "env": {
-                "PYTHONPATH": "${workspaceFolder}"
+                "PYTHONPATH": "${workspaceFolder}",
+                "PYTHONUTF8": "1"
             }
         }
     ]

@@ -49,7 +49,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
                     "plane": "冠状位",
                     "slice_thickness": 5.0,
                     "slice_spacing": 10.0,
-                    "line_extent_mode": "full_plane",
+                    "line_extent_mode": "整平面",
                     "image_count": 0,
                     "window_presets": [
                         {"name": "骨窗", "path": ""},

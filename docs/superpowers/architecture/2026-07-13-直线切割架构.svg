@@ -41,9 +41,9 @@
   <rect x="959" y="125" width="385" height="190" rx="20" fill="#fff5e8" stroke="#d19a4a" stroke-width="2"/>
   <text x="1151" y="165" text-anchor="middle" class="box-title">③ 每张图切多大</text>
   <text x="989" y="205" class="code">line_extent_mode</text>
-  <text x="989" y="240" class="body">full_plane：选择整个原图范围</text>
-  <text x="989" y="275" class="body">target_bbox：选择当前区间目标范围</text>
-  <text x="989" y="302" class="small">默认仍为 full_plane</text>
+  <text x="989" y="240" class="body">整平面：选择整个原图范围</text>
+  <text x="989" y="275" class="body">部位范围：选择当前区间目标范围</text>
+  <text x="989" y="302" class="small">默认仍为整平面</text>
 
   <path d="M247 315 L247 358 L560 390" class="arrow"/>
   <path d="M699 315 L699 378" class="arrow"/>
@@ -76,11 +76,11 @@
   <!-- 底部：两张参考照片对应的组合。 -->
   <rect x="55" y="755" width="620" height="105" rx="18" fill="#f4f8fd" stroke="#89a8c5" stroke-width="2"/>
   <text x="80" y="790" class="box-title">第一张照片：整面带角度</text>
-  <text x="80" y="826" class="code">whole_range + 带角度直线 + full_plane</text>
+  <text x="80" y="826" class="code">whole_range + 带角度直线 + 整平面</text>
   <text x="80" y="850" class="small">平行切片带角度，每张图覆盖整个原图平面</text>
 
   <rect x="725" y="755" width="620" height="105" rx="18" fill="#fff8ee" stroke="#c9a36e" stroke-width="2"/>
   <text x="750" y="790" class="box-title">第二张照片：范围带角度</text>
-  <text x="750" y="826" class="code">whole_range + 带角度直线 + target_bbox</text>
+  <text x="750" y="826" class="code">whole_range + 带角度直线 + 部位范围</text>
   <text x="750" y="850" class="small">切片方向相同，但每张图只覆盖颈椎附近范围</text>
 </svg>

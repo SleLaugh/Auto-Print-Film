@@ -6,6 +6,8 @@
 
 - 整切和区间切只在“生成多少个待切区间”上不同。
 - 后续方向、图像范围、层厚、层间距和切片展开复用通用直线流程。
+- `line_extent_mode` 的外部请求、报告和内部枚举值统一使用中文协议值
+  `整平面`、`部位范围`，不再接受旧英文值。
 - 部位 planner 负责解析目标区间；第七阶段只消费 `SlicePlan`，不重新规划。
 - 腰椎区间切优先使用第五阶段 `spine_geometry.filtered_annotation_centroids` 的
   `sagittal_body_quadrilateral` 识别两条相向端边，在共同切向覆盖区间内选择有正

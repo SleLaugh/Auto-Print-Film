@@ -82,15 +82,21 @@ class ReportingStage(BaseStage):
         DebugLog("  [4] organize_output: 确认输出目录结构...")
         self._organize_output(context, report_data)
 
+        reconstruction = context.get_result('reconstruction') or {}
+        image_count = reconstruction.get('image_count')
+        if image_count is None:
+            image_count = sum(
+                int(output.get('slice_count', 0))
+                * len(output.get('window_outputs') or {})
+                for output in reconstruction.get('outputs', [])
+            )
+
         result = {
             'report_path': str(report_path),
             'debug_report_path': debug_report_path,
             'total_time': context.get_total_time(),
             'validation': validation,
-            'image_count': sum(
-                int(config['image_count'])
-                for config in report_data['plane_configs']
-            ),
+            'image_count': int(image_count),
         }
         
         context.set_stage_result(ReportingStageResult(payload=result))
@@ -106,58 +112,179 @@ class ReportingStage(BaseStage):
         return self._write_report(context, self._build_delivery_report(context))
 
     def _build_delivery_report(self, context: ProcessingContext) -> Dict[str, Any]:
-        """只保留调用方交付时需要的部位、检查类型和各状位结果。"""
+        """按状位配置、窗位和重建区域汇总请求值及实际输出。"""
 
         request_data = context.request.to_dict()
         reconstruction = context.get_result('reconstruction') or {}
-        plane_summaries = reconstruction.get('planes', {})
-        actual_windows = self._actual_window_names_by_plane(reconstruction)
-        output_root = Path(context.request.output_dir)
+        outputs = list(reconstruction.get('outputs', []))
 
-        plane_configs = []
-        for config in request_data.get('plane_configs', []):
+        plane_list = []
+        plane_ordinals: dict[str, int] = {}
+        for ordinal, plane_config in enumerate(
+            context.request.plane_configs,
+            start=1,
+        ):
+            config = plane_config.to_dict()
             plane = str(config['Plane'])
-            summary = plane_summaries.get(plane, {})
-            image_count = int(summary.get('slice_count', 0))
-            window_presets = []
-            for window_name in config.get('WindowPresets', []):
-                has_output = window_name in actual_windows.get(plane, set())
-                window_presets.append({
-                    'name': window_name,
-                    'path': str(output_root / plane / window_name) if has_output else '',
-                })
-
-            plane_configs.append({
-                'Plane': plane,
-                'SliceType': config['SliceType'],
-                'SliceThickness': float(config['SliceThickness']),
-                'SliceSpacing': float(config['SliceSpacing']),
+            plane_ordinal = plane_ordinals.get(plane, 0)
+            output_plane = (
+                plane_config.output_plane
+                or (plane if plane_ordinal == 0 else f'{plane}{plane_ordinal}')
+            )
+            plane_ordinals[plane] = plane_ordinal + 1
+            config_id = (
+                plane_config.config_id
+                or f"配置{ordinal:02d}"
+            )
+            matching_outputs = [
+                output
+                for output in outputs
+                if self._output_matches_config(
+                    output,
+                    config_id=config_id,
+                    plane=plane,
+                    output_plane=output_plane,
+                    slice_type=str(config['SliceType']),
+                )
+            ]
+            actual_slice_types = {
+                str(output['slice_type'])
+                for output in matching_outputs
+                if output.get('slice_type')
+            }
+            item = {
+                'ConfigId': config_id,
+                'Plane': output_plane,
+                'SliceType': self._single_actual_or_requested_value(
+                    actual_slice_types,
+                    config['SliceType'],
+                ),
                 'line_extent_mode': config['line_extent_mode'],
-                # 表示实际切片张数；多个窗位共享同一批切片，不重复累计。
-                'image_count': image_count,
-                'WindowPresets': window_presets,
-            })
+                'SliceThickness': self._optional_float(
+                    plane_config.requested_slice_thickness,
+                ),
+                'SliceSpacing': self._optional_float(
+                    plane_config.requested_slice_spacing,
+                ),
+                'SliceImageCount': self._optional_int(
+                    plane_config.requested_slice_image_count,
+                ),
+                'WindowPresetList': self._delivery_windows(
+                    config['WindowPresets'],
+                    matching_outputs,
+                ),
+            }
+            plane_list.append(item)
 
         return {
             'StudyPart': request_data['StudyPart'],
             'StudyType': request_data['StudyType'],
-            'plane_configs': plane_configs,
+            'ScanThickness': float(request_data['ScanThickness']),
+            'PlaneList': plane_list,
         }
 
     @staticmethod
-    def _actual_window_names_by_plane(
-        reconstruction: Dict[str, Any],
-    ) -> Dict[str, set[str]]:
-        """从第七阶段实际输出中汇总每个状位已经生成的窗位名称。"""
+    def _output_matches_config(
+        output: Dict[str, Any],
+        *,
+        config_id: str,
+        plane: str,
+        output_plane: str,
+        slice_type: str,
+    ) -> bool:
+        """优先按配置标识匹配；无标识时按状位和切割方式匹配。"""
 
-        result: Dict[str, set[str]] = {}
-        for output in reconstruction.get('outputs', []):
-            plane = str(output.get('plane', ''))
-            result.setdefault(plane, set()).update(
-                str(name)
-                for name in (output.get('window_outputs') or {})
+        output_config_id = str(output.get('config_id', ''))
+        if output_config_id:
+            return output_config_id == config_id
+        output_source_plane = str(
+            output.get('source_plane')
+            or output.get('plane', '')
+        )
+        return (
+            output_source_plane in {plane, output_plane}
+            and str(output.get('slice_type', '')) == slice_type
+        )
+
+    @classmethod
+    def _delivery_windows(
+        cls,
+        requested_windows: list[str],
+        outputs: list[Dict[str, Any]],
+    ) -> list[Dict[str, Any]]:
+        """按实际目录层级整理窗位及其重建区域。"""
+
+        return [
+            {
+                'Name': window_name,
+                'RegionList': [
+                    cls._delivery_region(output, window_name)
+                    for output in outputs
+                    if window_name in (output.get('window_outputs') or {})
+                ],
+            }
+            for window_name in dict.fromkeys(
+                str(name) for name in requested_windows
             )
-        return result
+        ]
+
+    @staticmethod
+    def _delivery_region(
+        output: Dict[str, Any],
+        window_name: str,
+    ) -> Dict[str, Any]:
+        """整理一个窗位下实际重建区域的参数、数量和目录。"""
+
+        region = ReportingStage._resolve_region(output)
+        window_outputs = output.get('window_outputs') or {}
+        return {
+            'Region': region,
+            'ActualSliceThickness': float(
+                output.get('slice_thickness', 0.0)
+            ),
+            'ActualSliceSpacing': float(output.get('slice_spacing', 0.0)),
+            'ActualSliceImageCount': int(output.get('slice_count', 0)),
+            'Path': str(window_outputs[window_name]),
+        }
+
+    @staticmethod
+    def _resolve_region(output: Dict[str, Any]) -> str:
+        """返回稳定区域名称，整切为 default，椎间隙使用下划线。"""
+
+        group_name = str(output.get('group_name') or '').strip()
+        if group_name in {'', 'whole_range', '整切', 'CPR'}:
+            return 'default'
+        return (
+            group_name
+            .replace('-', '_')
+            .replace('/', '_')
+            .replace('\\', '_')
+        )
+
+    @staticmethod
+    def _single_actual_or_requested_value(
+        actual_values: set[Any],
+        requested_value: Any,
+    ) -> Any:
+        """优先返回唯一实际值；没有输出时回退请求值。"""
+
+        if len(actual_values) == 1:
+            return next(iter(actual_values))
+        if not actual_values:
+            return requested_value
+        raise ValueError(f"同一配置产生了多个实际切割方式: {actual_values}")
+
+    @staticmethod
+    def _optional_float(value: Any) -> float | None:
+        """把可选请求值转换成稳定 JSON 小数。"""
+
+        return None if value is None else float(value)
+
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        """把可选请求数量转换成稳定 JSON 整数。"""
+
+        return None if value is None else int(value)
 
     def _build_debug_report(
         self,
@@ -946,6 +1073,6 @@ class ReportingStage(BaseStage):
         """确认第七阶段目录保持原样；不搬动、不重命名最终 DICOM。"""
 
         DebugLog(
-            "    输出目录已由第七阶段按状位/窗位/切割组创建，"
+            "    输出目录已由第七阶段按状位/窗位/重建区域创建，"
             "第八阶段已完成硬性校验并生成交付报告"
         )

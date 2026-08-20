@@ -128,13 +128,29 @@ def build_plane_stack_slices(
     normal: Point3D,
     row_dir: Point3D,
     col_dir: Point3D,
+    slice_image_count: int | None = None,
 ) -> List[PlannedSlice]:
     """把普通平面切割路径展开成第七阶段可执行的切片清单。"""
 
     if len(path_points) < 2:
         raise ValueError("普通平面切割路径至少需要 2 个点")
 
-    centers = interpolate_points(path_points[0], path_points[-1], slice_spacing)
+    if slice_image_count is None:
+        centers = interpolate_points(path_points[0], path_points[-1], slice_spacing)
+    elif slice_image_count <= 0:
+        raise ValueError("数量必须是大于 0 的整数")
+    elif slice_image_count == 1:
+        centers = [path_points[0]]
+    else:
+        direction = normalize_vector(subtract_points(path_points[-1], path_points[0]))
+        centers = [
+            Point3D(
+                path_points[0].x + direction.x * slice_spacing * index,
+                path_points[0].y + direction.y * slice_spacing * index,
+                path_points[0].z + direction.z * slice_spacing * index,
+            )
+            for index in range(slice_image_count)
+        ]
     normalized_normal = normalize_vector(normal)
     normalized_row = normalize_vector(row_dir)
     normalized_col = normalize_vector(col_dir)

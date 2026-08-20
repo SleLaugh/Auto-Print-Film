@@ -33,11 +33,11 @@ LUMBAR_LABELS = [
 ]
 
 LUMBAR_INTERVALS: List[Tuple[str, str, str]] = [
-    ("L1-L2", "vertebrae_L1", "vertebrae_L2"),
-    ("L2-L3", "vertebrae_L2", "vertebrae_L3"),
-    ("L3-L4", "vertebrae_L3", "vertebrae_L4"),
-    ("L4-L5", "vertebrae_L4", "vertebrae_L5"),
-    ("L5-S1", "vertebrae_L5", "vertebrae_S1"),
+    ("L1_L2", "vertebrae_L1", "vertebrae_L2"),
+    ("L2_L3", "vertebrae_L2", "vertebrae_L3"),
+    ("L3_L4", "vertebrae_L3", "vertebrae_L4"),
+    ("L4_L5", "vertebrae_L4", "vertebrae_L5"),
+    ("L5_S1", "vertebrae_L5", "vertebrae_S1"),
 ]
 
 

@@ -80,7 +80,7 @@ class ReconstructionStage(BaseStage):
         """
         执行第六阶段的全部平面切片计划并输出分窗位 DICOM 序列。
 
-        状位与计划串行执行，同一计划内的不同窗位可并行；每个切割组都会生成
+        状位与计划串行执行，同一计划内的不同窗位可并行；每个重建区域都会生成
         自己的数字编号切片和 Localizer 定位图。
         """
 
@@ -201,14 +201,15 @@ class ReconstructionStage(BaseStage):
         windows = unique_window_presets(plan["window_presets"])
         series_uids = {window.name: new_uid() for window in windows}
         localizer_series_uids = {window.name: new_uid() for window in windows}
-        group_name = self._plan_group_name(plan)
+        region_name = self._plan_region_name(plan)
+        output_plane = str(plan.get("output_plane") or plan["plane"])
         output_dirs = {
             window.name: output_root
-            / str(plan["plane"])
+            / output_plane
             / window.name
-            / group_name
-            if group_name
-            else output_root / str(plan["plane"]) / window.name
+            / region_name
+            if region_name
+            else output_root / output_plane / window.name
             for window in windows
         }
         for output_dir in output_dirs.values():
@@ -241,9 +242,9 @@ class ReconstructionStage(BaseStage):
             "    [重建性能] MPR采样完成: "
             f"plan={plan.get('plan_id', '')}, "
             f"geometry={plan.get('geometry_type', 'plane_stack')}, "
-            f"slices={len(sampled_slices)}, "
-            f"slice_thickness={float(plan.get('slice_thickness', 0.0)):.3f}mm, "
-            f"slice_spacing={float(plan.get('slice_spacing', 0.0)):.3f}mm, "
+            f"数量={len(sampled_slices)}, "
+            f"层厚={float(plan.get('slice_thickness', 0.0)):.3f}mm, "
+            f"层间距={float(plan.get('slice_spacing', 0.0)):.3f}mm, "
             f"总耗时={sampling_elapsed:.3f}s, "
             f"平均={average_elapsed:.3f}s/张, "
             f"最慢slice={slowest_slice_index}, "
@@ -265,13 +266,17 @@ class ReconstructionStage(BaseStage):
 
         return {
             "plan_id": plan["plan_id"],
-            "plane": plan["plane"],
+            "config_id": plan.get("config_id", ""),
+            "plane": output_plane,
+            "source_plane": plan["plane"],
             "slice_type": plan["slice_type"],
             "group_name": plan.get("group_name", ""),
             "geometry_type": plan.get("geometry_type", "plane_stack"),
             "slice_thickness": float(plan["slice_thickness"]),
             "slice_spacing": float(plan["slice_spacing"]),
             "slice_count": len(plan["slices"]),
+            "slice_image_count": len(plan["slices"]),
+            "sampling_details": dict(plan.get("sampling_details") or {}),
             "image_count": len(plan["slices"]) * len(windows),
             "window_outputs": {
                 name: str(path)
@@ -1288,12 +1293,13 @@ class ReconstructionStage(BaseStage):
         """
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for plan in plans:
-            grouped.setdefault(str(plan["plane"]), []).append(plan)
+            output_plane = str(plan.get("output_plane") or plan["plane"])
+            grouped.setdefault(output_plane, []).append(plan)
         return grouped
 
     @staticmethod
-    def _plan_group_name(plan: Dict[str, Any]) -> str:
-        """返回用于输出目录的安全切割组名称；整切直接位于窗位目录。"""
+    def _plan_region_name(plan: Dict[str, Any]) -> str:
+        """返回用于输出目录的安全重建区域名称；整切位于窗位目录。"""
 
         if plan.get("geometry_type") == "curved_stack":
             return ""
@@ -1301,10 +1307,15 @@ class ReconstructionStage(BaseStage):
             return ""
         group_name = str(plan.get("group_name", ""))
         if group_name in {"", "whole_range"}:
-            return "区间切"
+            group_name = "区间切"
         if group_name in {"interspace", "区间切"}:
-            return "区间切"
-        return group_name.replace("/", "_").replace("\\", "_")
+            group_name = "区间切"
+        return (
+            group_name
+            .replace("-", "_")
+            .replace("/", "_")
+            .replace("\\", "_")
+        )
 
     @staticmethod
     def _validate_plan(plan: Dict[str, Any]) -> None:
@@ -1348,6 +1359,12 @@ class ReconstructionStage(BaseStage):
             raise ValueError(f"plan_id={plan_id} slices 必须是列表")
         if not plan["slices"]:
             raise ValueError(f"plan_id={plan_id} slices 不能为空")
+        declared_count = plan.get("slice_image_count")
+        if declared_count is not None and declared_count != len(plan["slices"]):
+            raise ValueError(
+                f"plan_id={plan_id} 数量={declared_count} 与实际计划数量="
+                f"{len(plan['slices'])} 不一致"
+            )
         if not isinstance(plan["extent_mm"], dict):
             raise ValueError(f"plan_id={plan_id} extent_mm 必须是对象")
         if not isinstance(plan["output_spacing_mm"], dict):

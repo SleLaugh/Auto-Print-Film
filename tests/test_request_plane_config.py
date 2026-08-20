@@ -246,11 +246,14 @@ class PlaneConfigRequestTest(unittest.TestCase):
 
         self._assert_invalid([], "plane_configs 不能为空")
 
-    def test_request_validate_rejects_duplicate_planes(self):
-        """验证 `test_request_validate_rejects_duplicate_planes` 场景符合预期。"""
+    def test_request_allows_same_plane_with_different_sampling_configs(self):
+        """同一状位允许配置不同的层厚、层间距或数量。"""
 
-        self._assert_invalid(
-            [
+        request = Request.from_dict({
+            "dicom_dir": "/tmp/dicom",
+            "output_dir": "/tmp/output",
+            "ScanThickness": 1.0,
+            "plane_configs": [
                 {
                     "Plane": "横状位",
                     "SliceThickness": 1,
@@ -260,42 +263,168 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 {
                     "Plane": "横状位",
                     "SliceThickness": 1,
-                    "SliceSpacing": 1,
+                    "SliceImageCount": 20,
                     "WindowPresets": ["骨窗"],
                 },
             ],
-            "plane_configs 中存在重复状位",
+        })
+
+        is_valid, error_message = request.validate()
+
+        self.assertTrue(is_valid, error_message)
+
+    def test_request_accepts_each_sampling_parameter_pair(self):
+        """层厚、层间距、数量允许任意选择两个。"""
+
+        sampling_pairs = (
+            {"SliceThickness": 5, "SliceSpacing": 5},
+            {"SliceThickness": 5, "SliceImageCount": 20},
+            {"SliceSpacing": 5, "SliceImageCount": 20},
         )
+        for sampling in sampling_pairs:
+            with self.subTest(sampling=sampling):
+                request = Request.from_dict({
+                    "dicom_dir": "/tmp/dicom",
+                    "output_dir": "/tmp/output",
+                    "ScanThickness": 1.0,
+                    "plane_configs": [{
+                        "Plane": "横状位",
+                        "WindowPresets": ["骨窗"],
+                        **sampling,
+                    }],
+                })
+                self.assertEqual(request.validate(), (True, None))
 
-    def test_request_validate_rejects_non_positive_slice_thickness(self):
-        """验证 `test_request_validate_rejects_non_positive_slice_thickness` 场景符合预期。"""
-
-        self._assert_invalid(
-            [
-                {
-                    "Plane": "横状位",
-                    "SliceThickness": 0,
-                    "SliceSpacing": 1,
-                    "WindowPresets": ["骨窗"],
-                }
-            ],
-            "层厚必须大于 0",
-        )
-
-    def test_request_validate_rejects_non_positive_slice_spacing(self):
-        """验证 `test_request_validate_rejects_non_positive_slice_spacing` 场景符合预期。"""
+    def test_request_rejects_only_one_sampling_parameter(self):
+        """只传层厚、层间距、数量中的一个时请求无效。"""
 
         self._assert_invalid(
             [
                 {
                     "Plane": "横状位",
                     "SliceThickness": 1,
-                    "SliceSpacing": 0,
+                    "WindowPresets": ["骨窗"],
+                },
+            ],
+            "必须传入其中两个或三个",
+        )
+
+    def test_zero_sampling_parameter_is_treated_as_not_configured(self):
+        """层厚、层间距或数量为 0 时，应由其余两个参数计算。"""
+
+        cases = (
+            (
+                "SliceThickness",
+                "slice_thickness",
+                "requested_slice_thickness",
+            ),
+            (
+                "SliceSpacing",
+                "slice_spacing",
+                "requested_slice_spacing",
+            ),
+            (
+                "SliceImageCount",
+                "slice_image_count",
+                "requested_slice_image_count",
+            ),
+        )
+        for field_name, attribute_name, requested_attribute_name in cases:
+            with self.subTest(field_name=field_name):
+                config = {
+                    "Plane": "横状位",
+                    "SliceThickness": 5,
+                    "SliceSpacing": 5,
+                    "SliceImageCount": 20,
                     "WindowPresets": ["骨窗"],
                 }
-            ],
-            "层间距必须大于 0",
+                config[field_name] = 0
+                request = Request.from_dict({
+                    "dicom_dir": "/tmp/dicom",
+                    "output_dir": "/tmp/output",
+                    "ScanThickness": 1.0,
+                    "plane_configs": [config],
+                })
+
+                plane_config = request.plane_configs[0]
+                self.assertIsNone(getattr(plane_config, attribute_name))
+                self.assertEqual(
+                    getattr(plane_config, requested_attribute_name),
+                    0,
+                )
+                self.assertNotIn(field_name, plane_config.to_dict())
+                self.assertEqual(request.validate(), (True, None))
+
+    def test_direct_plane_config_construction_normalizes_zero(self):
+        """内部代码直接构造 PlaneConfig 时同样把 0 作为未配置。"""
+
+        config = PlaneConfig(
+            PlaneTypeEnum.横状位,
+            0,
+            5,
+            ["骨窗"],
+            slice_image_count=20,
         )
+
+        self.assertIsNone(config.slice_thickness)
+        self.assertEqual(config.requested_slice_thickness, 0)
+
+    def test_two_zero_sampling_parameters_leave_too_few_values(self):
+        """两个参数为 0 时只剩一个有效参数，请求应被拒绝。"""
+
+        self._assert_invalid(
+            [{
+                "Plane": "横状位",
+                "SliceThickness": 0,
+                "SliceSpacing": 0,
+                "SliceImageCount": 20,
+                "WindowPresets": ["骨窗"],
+            }],
+            "必须传入其中两个或三个",
+        )
+
+    def test_negative_sampling_parameters_are_rejected(self):
+        """0 表示未配置，但负数仍然是非法输入。"""
+
+        cases = (
+            ("SliceThickness", -1, "层厚"),
+            ("SliceSpacing", -1, "层间距"),
+            ("SliceImageCount", -1, "数量"),
+        )
+        for field_name, value, expected_message in cases:
+            with self.subTest(field_name=field_name):
+                config = {
+                    "Plane": "横状位",
+                    "SliceThickness": 5,
+                    "SliceSpacing": 5,
+                    "SliceImageCount": 20,
+                    "WindowPresets": ["骨窗"],
+                }
+                config[field_name] = value
+                with self.assertRaisesRegex(ValueError, expected_message):
+                    Request.from_dict({
+                        "dicom_dir": "/tmp/dicom",
+                        "output_dir": "/tmp/output",
+                        "ScanThickness": 1.0,
+                        "plane_configs": [config],
+                    })
+
+    def test_boolean_sampling_parameters_are_rejected(self):
+        """布尔值不能借用数值 0 和 1 的语义。"""
+
+        with self.assertRaisesRegex(ValueError, "层间距"):
+            Request.from_dict({
+                "dicom_dir": "/tmp/dicom",
+                "output_dir": "/tmp/output",
+                "ScanThickness": 1.0,
+                "plane_configs": [{
+                    "Plane": "横状位",
+                    "SliceThickness": 1,
+                    "SliceSpacing": False,
+                    "SliceImageCount": 20,
+                    "WindowPresets": ["骨窗"],
+                }],
+            })
 
     def test_request_validate_rejects_empty_window_presets(self):
         """验证 `test_request_validate_rejects_empty_window_presets` 场景符合预期。"""

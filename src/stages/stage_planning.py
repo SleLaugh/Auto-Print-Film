@@ -10,8 +10,8 @@
 """
 
 import json
-import math
 import time
+from collections import Counter
 from copy import copy
 from pathlib import Path
 from typing import Dict, Any
@@ -53,6 +53,7 @@ class PlanningStage(BaseStage):
         prev_result = {**prev_result, **anatomical_result}
 
         request = context.request
+        self._assign_plane_config_ids(request.plane_configs)
         coords = prev_result.get('coords', {})
 
         DebugLog("=" * 60)
@@ -97,6 +98,9 @@ class PlanningStage(BaseStage):
             )
             all_plans.extend(partial_result.plans)
             all_warnings.extend(partial_result.warnings)
+        for plan in all_plans:
+            if plan.output_plane and plan.output_plane != plan.plane:
+                plan.plan_id = f"{plan.plan_id}_{plan.config_id}"
         planner_name = "+".join(planner_names)
         plans = [plan.to_dict() for plan in all_plans]
         diagnostics = self._build_plan_diagnostics(plans)
@@ -133,10 +137,11 @@ class PlanningStage(BaseStage):
             DebugLog(
                 "    "
                 f"{diagnostic['plan_id']}: "
-                f"{diagnostic['slice_count']} 张, "
-                f"区间 {diagnostic['range_length_mm']}mm, "
+                f"数量 {diagnostic['slice_count']} 张, "
                 f"层厚 {diagnostic['slice_thickness']}mm, "
-                f"层间距 {diagnostic['slice_spacing']}mm"
+                f"层间距 {diagnostic['slice_spacing']}mm, "
+                f"有效范围 {diagnostic['effective_range_mm']}mm, "
+                f"总范围 {diagnostic['total_range_mm']}mm"
             )
         if all_warnings:
             DebugLog(f"    warnings: {all_warnings}")
@@ -144,6 +149,22 @@ class PlanningStage(BaseStage):
         DebugLog("=" * 60)
 
         return context
+
+    @staticmethod
+    def _assign_plane_config_ids(plane_configs: list[Any]) -> None:
+        """生成配置标识，并按状位出现顺序分配唯一输出名称。"""
+
+        plane_ordinals: Counter[str] = Counter()
+        for ordinal, config in enumerate(plane_configs, start=1):
+            plane = config.plane.value
+            plane_ordinal = plane_ordinals[plane]
+            config.config_id = f"配置{ordinal:02d}"
+            config.output_plane = (
+                plane
+                if plane_ordinal == 0
+                else f"{plane}{plane_ordinal}"
+            )
+            plane_ordinals[plane] += 1
 
     def _write_slice_plans(
         self,
@@ -185,6 +206,7 @@ class PlanningStage(BaseStage):
             range_end = plan.get("range_end", {})
             slice_spacing = float(plan.get("slice_spacing", 0.0))
             slice_thickness = float(plan.get("slice_thickness", 0.0))
+            sampling_details = plan.get("sampling_details") or {}
             range_length = 0.0
             if range_start and range_end:
                 range_length = vector_length(subtract_points(
@@ -209,11 +231,7 @@ class PlanningStage(BaseStage):
                 for actual_spacing in actual_spacings
             )
             spacing_minus_thickness = slice_spacing - slice_thickness
-            regular_center_count = (
-                int(math.floor((range_length + 1e-6) / slice_spacing)) + 1
-                if slice_spacing > 0
-                else 0
-            )
+            regular_center_count = slice_count
             has_extra_endpoint_slice = False
             leading_uncovered = 0.0
             trailing_uncovered = 0.0
@@ -296,8 +314,8 @@ class PlanningStage(BaseStage):
                     leading_gap = 0.0
                 if abs(trailing_gap) < 1e-6:
                     trailing_gap = 0.0
-                # 中心覆盖诊断与直线计划共用同一物理坐标容差，
-                # 避免已被计划吸收的数微米误差又被报成首尾缺失。
+                # 覆盖诊断与直线计划共用同一物理坐标容差，避免已被
+                # 计划吸收的数微米误差又被报成首尾缺失。
                 if abs(leading_center_gap) <= CENTER_COVERAGE_TOLERANCE_MM:
                     leading_center_gap = 0.0
                 if abs(trailing_center_gap) <= CENTER_COVERAGE_TOLERANCE_MM:
@@ -310,16 +328,29 @@ class PlanningStage(BaseStage):
                 trailing_center_uncovered = max(trailing_center_gap, 0.0)
                 leading_center_overflow = max(-leading_center_gap, 0.0)
                 trailing_center_overflow = max(-trailing_center_gap, 0.0)
-            calculation_note = (
-                "第六阶段选择让首末切片中心跨过目标边界的最少切片数，将中心跨度"
-                "的总超出量首尾对称分配，再按固定层间距从 range_start 到 "
-                "range_end 展开每张输出图中心；不追加非等距终点中心。"
+            effective_range = float(
+                sampling_details.get("effective_range_mm", target_length)
             )
+            total_range = float(
+                sampling_details.get(
+                    "total_range_mm",
+                    slice_thickness + max(0, slice_count - 1) * slice_spacing,
+                )
+            )
+            calculation_note = (
+                "第六阶段根据层厚、层间距、数量中的两个或三个参数计算实际采样，"
+                "总范围超过有效范围的部分在开始和结束方向均等外扩。"
+            )
+            adjustment_reason = str(
+                sampling_details.get("adjustment_reason", "")
+            )
+            if adjustment_reason:
+                calculation_note += f" {adjustment_reason}。"
             if spacing_minus_thickness > 0:
                 calculation_note += (
                     f" 当前层间距比层厚大 {spacing_minus_thickness:.3f}mm，"
                     "首尾仍完整覆盖，但厚层图之间会保留配置产生的空档；"
-                    "需要更多输出图时应减小 slice_spacing。"
+                    "需要更多输出图时应减小层间距。"
                 )
 
             diagnostics.append({
@@ -327,6 +358,13 @@ class PlanningStage(BaseStage):
                 "plane": plan.get("plane", ""),
                 "range_length_mm": round(range_length, 3),
                 "slice_count": slice_count,
+                "slice_image_count": slice_count,
+                "effective_range_mm": round(effective_range, 3),
+                "total_range_mm": round(total_range, 3),
+                "sampling_adjusted": bool(
+                    sampling_details.get("adjusted", False)
+                ),
+                "sampling_adjustment_reason": adjustment_reason,
                 "regular_center_count": regular_center_count,
                 "has_extra_endpoint_slice": has_extra_endpoint_slice,
                 "actual_spacing_min_mm": round(actual_spacing_min, 3),

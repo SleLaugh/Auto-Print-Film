@@ -26,8 +26,7 @@ from src.planning.spine_cpr import (
     _extend_curve_endpoints_to_terminal_raw_labels,
     _filtered_annotation_offset_interval_mm,
     _get_spine_annotation_centers,
-    _offsets_covering_interval,
-    _resolve_offsets_mm,
+    _resolve_sampling_offsets_mm,
     _resolve_endpoint_face_center,
     _smooth_cpr_centroid_path_with_straight_endpoints,
 )
@@ -2240,10 +2239,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
         self.assertEqual(plan.plan_id, "肺部_MPR_横状位")
-        self.assertEqual(len(plan.slices), 4)
+        self.assertEqual(len(plan.slices), 3)
         self.assertEqual(
             [planned_slice.center.z for planned_slice in plan.slices],
-            [12.5, 7.5, 2.5, -2.5],
+            [10.0, 5.0, 0.0],
         )
         self.assertEqual(plan.window_presets, ["肺窗"])
 
@@ -2343,27 +2342,34 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             + configured_start_extension
             + configured_end_extension
         )
-        expected_step_count = int(np.ceil(extended_length / 5.0))
-        expected_center_overflow = (
-            expected_step_count * 5.0 - extended_length
-        )
+        expected_count = int(np.ceil((extended_length - 5.0) / 5.0)) + 1
+        expected_total_range = 5.0 + (expected_count - 1) * 5.0
+        expected_range_overflow = expected_total_range - extended_length
         expected_min_index = (
             mask_min_z
             - configured_end_extension
-            - expected_center_overflow / 2.0
+            - expected_range_overflow / 2.0
+            + 2.5
             - origin_z
         ) / spacing_z
         expected_max_index = (
             mask_max_z
             + configured_start_extension
-            + expected_center_overflow / 2.0
+            + expected_range_overflow / 2.0
+            - 2.5
             - origin_z
         ) / spacing_z
 
         self.assertEqual(plan.source_labels, ["anatomical_geometry.global_frame"])
-        self.assertEqual(len(center_indices), expected_step_count + 1)
-        self.assertLessEqual(min(center_indices), mask_min_index)
-        self.assertGreaterEqual(max(center_indices), mask_max_index)
+        self.assertEqual(len(center_indices), expected_count)
+        self.assertLessEqual(
+            min(center_indices) * spacing_z - 2.5,
+            mask_min_index * spacing_z,
+        )
+        self.assertGreaterEqual(
+            max(center_indices) * spacing_z + 2.5,
+            mask_max_index * spacing_z,
+        )
         self.assertAlmostEqual(min(center_indices), expected_min_index, places=6)
         self.assertAlmostEqual(max(center_indices), expected_max_index, places=6)
         for previous, current in zip(center_indices, center_indices[1:]):
@@ -2914,11 +2920,11 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
             self.assertEqual(
                 plan.offsets_mm,
-                [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0],
+                [-7.0, -2.0, 3.0, 8.0, 13.0],
             )
             self.assertEqual(
                 [planned.index for planned in plan.slices],
-                [1, 2, 3, 4, 5, 6],
+                [1, 2, 3, 4, 5],
             )
             self.assertEqual(
                 [planned.offset_mm for planned in plan.slices],
@@ -2965,7 +2971,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     },
                 }
 
-            offsets = _resolve_offsets_mm(
+            offsets, sampling = _resolve_sampling_offsets_mm(
                 localization_result,
                 ["vertebrae_L1", "vertebrae_L2", "vertebrae_L3"],
                 [
@@ -2976,12 +2982,14 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 Point3D(0.0, 1.0, 0.0),
                 slice_thickness=4.0,
                 slice_spacing=5.0,
+                slice_image_count=None,
             )
 
         self.assertEqual(
             offsets,
             [float(value) for value in range(-40, 55, 5)],
         )
+        self.assertEqual(sampling.slice_image_count, 19)
 
     def test_spine_cpr_full_label_false_uses_filtered_prism_extent(self):
         """full_label=false 时，CPR offset 应按四棱柱/主体范围生成。"""
@@ -3089,7 +3097,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 },
             }
 
-        offsets = _resolve_offsets_mm(
+        offsets, sampling = _resolve_sampling_offsets_mm(
             localization_result,
             [
                 "vertebrae_C7",
@@ -3102,13 +3110,15 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             Point3D(0.0, 1.0, 0.0),
             slice_thickness=5.0,
             slice_spacing=5.0,
+            slice_image_count=None,
             range_mode="body_prism",
         )
 
         self.assertEqual(
             offsets,
-            [-10.0, -5.0, 0.0, 5.0, 10.0],
+            [-7.5, -2.5, 2.5, 7.5],
         )
+        self.assertEqual(sampling.slice_image_count, 4)
 
     def test_spine_cpr_body_prism_uses_oriented_prism_vertices(self):
         """歪斜椎体不能用轴对齐 bbox 角点拼出不存在的 offset。"""
@@ -3319,30 +3329,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         ).plans[0]
 
         self.assertEqual(plan.geometry_type, "curved_stack")
-        self.assertEqual(plan.offsets_mm, [-10.0, -5.0, 0.0, 5.0, 10.0])
+        self.assertEqual(plan.offsets_mm, [-9.0, -4.0, 1.0, 6.0, 11.0])
         self.assertAlmostEqual(plan.extent_mm.width, 10.0)
-
-    def test_cpr_offsets_covering_interval_keeps_zero_and_adds_last_slab(self):
-        """最后厚层只差几毫米时，应补到不少包原始体素。"""
-
-        self.assertEqual(
-            _offsets_covering_interval(
-                d_min=-12.1,
-                d_max=18.1,
-                slice_thickness=6.0,
-                slice_spacing=5.0,
-            ),
-            [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0, 20.0],
-        )
-        self.assertEqual(
-            _offsets_covering_interval(
-                d_min=-1.0,
-                d_max=1.0,
-                slice_thickness=6.0,
-                slice_spacing=5.0,
-            ),
-            [0.0],
-        )
 
     def test_lumbar_coronal_cpr_uses_configured_whole_range_subset(self):
         """腰椎 CPR 应按配置范围取椎体，不应固定使用 L1 到 S1。"""
@@ -3753,7 +3741,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(plan.slices[0].center.x, 49.5)
         self.assertEqual(plan.slices[0].center.y, 59.5)
-        self.assertEqual(plan.slices[0].center.z, 12.5)
+        self.assertEqual(plan.slices[0].center.z, 10.0)
         self.assertEqual(plan.extent_mm.to_dict(), {
             "width": 99.0,
             "height": 119.0,
@@ -3787,7 +3775,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result["image"],
         )
         segment = CutSegment(
-            group_name="L1-L2",
+            group_name="L1_L2",
             target_start=Point3D(20.0, 30.0, 20.0),
             target_end=Point3D(20.0, 30.0, 18.0),
             target_region_bbox=localization_result["correction_scope_bbox"],
@@ -3857,9 +3845,9 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(
             [segment.group_name for segment in segments],
-            ["L1-L2"],
+            ["L1_L2"],
         )
-        self.assertFalse(any("L1-L2" in warning for warning in warnings))
+        self.assertFalse(any("L1_L2" in warning for warning in warnings))
         segment = segments[0]
         self.assertFalse(segment.recenter_target_in_plane)
         vector = Point3D(
@@ -3885,11 +3873,11 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
         self.assertEqual(
             [item.group_name for item in reflected_segments],
-            ["L1-L2"],
+            ["L1_L2"],
         )
         self.assertIsNotNone(reflected_segments[0].frame)
         self.assertFalse(any(
-            "L1-L2" in warning
+            "L1_L2" in warning
             for warning in reflected_warnings
         ))
 
@@ -3956,8 +3944,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result,
         )
 
-        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
-        self.assertFalse(any("L1-L2" in warning for warning in warnings))
+        self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
+        self.assertFalse(any("L1_L2" in warning for warning in warnings))
         self.assertFalse(segments[0].recenter_target_in_plane)
         self.assertIsNotNone(segments[0].frame)
         normal = segments[0].frame.normal
@@ -4013,8 +4001,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result,
         )
 
-        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
-        self.assertFalse(any("L1-L2" in warning for warning in warnings))
+        self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
+        self.assertFalse(any("L1_L2" in warning for warning in warnings))
         segment = segments[0]
         midpoint_y = (segment.target_start.y + segment.target_end.y) / 2.0
         gap_length = math.sqrt(
@@ -4026,7 +4014,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertLess(segment.frame.normal.z, -0.9)
 
     def test_lumbar3_l5_s1_overlapping_prisms_keep_si_dominant_normal(self):
-        """腰3_1mm 的 L5-S1 外包络相交时不能把短横差放大为切面主方向。"""
+        """腰3_1mm 的 L5_S1 外包络相交时不能把短横差放大为切面主方向。"""
 
         from src.planning.lumbar import resolve_lumbar_interspace_segments
 
@@ -4092,9 +4080,9 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(
             [segment.group_name for segment in segments],
-            ["L5-S1"],
+            ["L5_S1"],
         )
-        self.assertFalse(any("L5-S1" in warning for warning in warnings))
+        self.assertFalse(any("L5_S1" in warning for warning in warnings))
         normal = segments[0].frame.normal
         center_direction = np.asarray([
             centers["vertebrae_S1"][0] - centers["vertebrae_L5"][0],
@@ -4180,10 +4168,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result,
         )
 
-        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
         self.assertIsNone(segments[0].frame)
         self.assertTrue(segments[0].recenter_target_in_plane)
-        self.assertTrue(any("L1-L2" in warning for warning in warnings))
+        self.assertTrue(any("L1_L2" in warning for warning in warnings))
 
     def test_interspace_prism_rejects_nonfinite_frame_and_concave_polygon(self):
         """非有限图像方向或非凸四边形必须被拒绝，不能产生 NaN 坐标系。"""
@@ -4291,10 +4279,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result,
         )
 
-        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
         self.assertIsNone(segments[0].frame)
         self.assertTrue(segments[0].recenter_target_in_plane)
-        self.assertTrue(any("L1-L2" in warning for warning in warnings))
+        self.assertTrue(any("L1_L2" in warning for warning in warnings))
 
     def test_interspace_missing_label_bbox_recenters_centroid_fallback(self):
         """四棱柱有效但 label bbox 缺失时，质心回退不能保留 prism 定位标记。"""
@@ -4341,10 +4329,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result,
         )
 
-        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
         self.assertIsNone(segments[0].frame)
         self.assertTrue(segments[0].recenter_target_in_plane)
-        self.assertTrue(any("L1-L2" in warning for warning in warnings))
+        self.assertTrue(any("L1_L2" in warning for warning in warnings))
 
     def test_straight_plan_covers_target_along_final_tilted_normal(self):
         """倾斜区间也应沿最终法向等距展开并完整覆盖首尾。"""
@@ -4385,7 +4373,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             normal=Point3D(0.0, inverse_sqrt_two, inverse_sqrt_two),
         )
         segment = CutSegment(
-            group_name="L1-L2",
+            group_name="L1_L2",
             target_start=Point3D(5.0, 5.0, 10.0),
             target_end=Point3D(5.0, 5.0, 0.0),
             target_region_bbox=localization_result["correction_scope_bbox"],
@@ -4402,17 +4390,18 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
 
         target_projection_length = 10.0 * inverse_sqrt_two
-        planned_projection_length = (
+        center_projection_length = (
             (plan.range_start.x - plan.range_end.x) * frame.normal.x
             + (plan.range_start.y - plan.range_end.y) * frame.normal.y
             + (plan.range_start.z - plan.range_end.z) * frame.normal.z
         )
+        planned_projection_length = center_projection_length + plan.slice_thickness
         self.assertAlmostEqual(planned_projection_length, 12.0)
         self.assertGreaterEqual(
             planned_projection_length,
             target_projection_length,
         )
-        self.assertEqual(len(plan.slices), 7)
+        self.assertEqual(len(plan.slices), 6)
         start_extra = (
             (plan.range_start.x - plan.target_start.x) ** 2
             + (plan.range_start.y - plan.target_start.y) ** 2
@@ -4455,7 +4444,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(plan.slices[0].center.x, 49.5)
         self.assertEqual(plan.slices[0].center.y, 59.5)
-        self.assertEqual(plan.slices[0].center.z, 12.5)
+        self.assertEqual(plan.slices[0].center.z, 10.0)
 
     def test_axial_whole_range_defaults_to_full_plane_extent(self):
         """验证 `test_axial_whole_range_defaults_to_full_plane_extent` 场景符合预期。"""
@@ -4542,17 +4531,16 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         plan = result.plans[0]
         self.assertEqual(plan.target_start.z, 10.5)
         self.assertEqual(plan.target_end.z, -0.5)
-        self.assertEqual(plan.range_start.z, 12.5)
-        self.assertEqual(plan.range_end.z, -2.5)
+        self.assertEqual(plan.range_start.z, 10.0)
+        self.assertEqual(plan.range_end.z, 0.0)
         self.assertEqual([planned_slice.center.z for planned_slice in plan.slices], [
-            12.5,
-            7.5,
-            2.5,
-            -2.5,
+            10.0,
+            5.0,
+            0.0,
         ])
 
-    def test_axial_whole_range_short_nonzero_target_uses_two_outer_centers(self):
-        """短于层厚和间距的非零 bbox 仍应由首末中心跨过两端。"""
+    def test_axial_whole_range_short_nonzero_target_uses_one_thick_slice(self):
+        """短于层厚的非零有效范围使用一张厚层切片完整覆盖。"""
 
         request = Request(
             dicom_dir="/tmp/dicom",
@@ -4576,11 +4564,11 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result,
         ).plans[0]
 
-        self.assertEqual(plan.range_start.z, 7.5)
-        self.assertEqual(plan.range_end.z, 2.5)
+        self.assertEqual(plan.range_start.z, 5.0)
+        self.assertEqual(plan.range_end.z, 5.0)
         self.assertEqual(
             [planned_slice.center.z for planned_slice in plan.slices],
-            [7.5, 2.5],
+            [5.0],
         )
 
     def test_lumbar_whole_range_planner_expands_slices_from_l1_to_s1(self):
@@ -4609,9 +4597,9 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
         self.assertEqual(plan.plan_id, "腰椎_MPR_横状位")
-        self.assertEqual(len(plan.slices), 4)
-        self.assertEqual(plan.slices[0].center.z, 12.5)
-        self.assertEqual(plan.slices[-1].center.z, -2.5)
+        self.assertEqual(len(plan.slices), 3)
+        self.assertEqual(plan.slices[0].center.z, 10.0)
+        self.assertEqual(plan.slices[-1].center.z, 0.0)
 
     def test_lumbar_whole_range_axial_uses_outer_bbox_z_range(self):
         """验证 `test_lumbar_whole_range_axial_uses_outer_bbox_z_range` 场景符合预期。"""
@@ -4641,13 +4629,12 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
 
         plan = result.plans[0]
-        self.assertEqual(plan.range_start.z, 12.5)
-        self.assertEqual(plan.range_end.z, -2.5)
+        self.assertEqual(plan.range_start.z, 10.0)
+        self.assertEqual(plan.range_end.z, 0.0)
         self.assertEqual([planned_slice.center.z for planned_slice in plan.slices], [
-            12.5,
-            7.5,
-            2.5,
-            -2.5,
+            10.0,
+            5.0,
+            0.0,
         ])
 
     def test_lumbar_whole_range_axial_uses_bbox_even_without_endpoint_centroids(self):
@@ -4677,8 +4664,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertEqual(result.warnings, [])
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
-        self.assertEqual(plan.range_start.z, 12.5)
-        self.assertEqual(plan.range_end.z, -2.5)
+        self.assertEqual(plan.range_start.z, 10.0)
+        self.assertEqual(plan.range_end.z, 0.0)
         self.assertEqual(plan.source_labels, ["correction_scope_bbox"])
 
     def test_lumbar_whole_range_planner_builds_three_straight_planes(self):
@@ -4776,13 +4763,159 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
 
         self.assertEqual([plan.group_name for plan in result.plans], [
-            "L1-L2",
-            "L2-L3",
-            "L3-L4",
-            "L4-L5",
-            "L5-S1",
+            "L1_L2",
+            "L2_L3",
+            "L3_L4",
+            "L4_L5",
+            "L5_S1",
         ])
         self.assertTrue(all(plan.slices for plan in result.plans))
+
+    def test_lumbar_interspace_count_applies_to_every_interval(self):
+        """数量 20 表示每个有效椎间隙分别生成 20 张。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            study_part=StudyPartEnum.腰椎,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.横状位,
+                slice_thickness=2.0,
+                slice_spacing=2.0,
+                slice_image_count=20,
+                window_presets=["骨窗"],
+                slice_type=SliceType.椎间隙,
+            )],
+        )
+
+        result = LumbarInterspacePlanner().build_plans(
+            request,
+            self._lumbar_localization_result(),
+        )
+
+        self.assertEqual(len(result.plans), 5)
+        self.assertTrue(all(len(plan.slices) == 20 for plan in result.plans))
+        self.assertEqual(sum(len(plan.slices) for plan in result.plans), 100)
+
+    def test_straight_plan_calculates_missing_spacing_from_count(self):
+        """给定层厚和数量后，每个计划根据自己的有效范围计算层间距。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            study_part=StudyPartEnum.肺部,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.横状位,
+                slice_thickness=5.0,
+                slice_spacing=None,
+                slice_image_count=4,
+                window_presets=["肺窗"],
+            )],
+        )
+
+        plan = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            self._lumbar_localization_result(),
+        ).plans[0]
+
+        self.assertEqual(len(plan.slices), 4)
+        self.assertEqual(plan.slice_thickness, 5.0)
+        self.assertEqual(plan.slice_spacing, 2.0)
+        self.assertEqual(plan.sampling_details["effective_range_mm"], 11.0)
+        self.assertEqual(plan.sampling_details["total_range_mm"], 11.0)
+
+    def test_cpr_count_generates_exact_number_of_offsets(self):
+        """CPR 数量直接决定每套偏移曲面的实际输出张数。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            study_part=StudyPartEnum.腰椎,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.冠状位,
+                slice_thickness=2.0,
+                slice_spacing=2.0,
+                slice_image_count=20,
+                window_presets=["骨窗"],
+                slice_type=SliceType.CPR,
+            )],
+        )
+
+        plan = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            self._spine_localization_result(("L1", "L2", "L3"), "腰椎"),
+        ).plans[0]
+
+        self.assertEqual(len(plan.slices), 20)
+        self.assertEqual(len(plan.offsets_mm), 20)
+        self.assertEqual(plan.sampling_details["slice_image_count"], 20)
+
+    def test_planning_names_multiple_configs_for_same_plane_in_order(self):
+        """同一状位多套配置必须生成唯一计划编号和连续输出名称。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            study_part=StudyPartEnum.肺部,
+            plane_configs=[
+                PlaneConfig(PlaneTypeEnum.横状位, 5.0, 5.0, ["肺窗"]),
+                PlaneConfig(
+                    PlaneTypeEnum.横状位,
+                    5.0,
+                    None,
+                    ["肺窗"],
+                    slice_image_count=4,
+                ),
+            ],
+        )
+        context = ProcessingContext(request)
+        self._set_planning_inputs(context, self._lumbar_localization_result())
+
+        PlanningStage().execute(context)
+
+        plans = context.get_result("planning")["plans"]
+        self.assertEqual(len(plans), 2)
+        self.assertEqual(len({plan["plan_id"] for plan in plans}), 2)
+        self.assertEqual(
+            [plan["output_plane"] for plan in plans],
+            ["横状位", "横状位1"],
+        )
+
+    def test_plane_config_ids_are_global_in_request_order(self):
+        """配置编号在整个请求内唯一，不按状位分别重新编号。"""
+
+        plane_configs = [
+            PlaneConfig(PlaneTypeEnum.横状位, 5.0, 5.0, ["骨窗"]),
+            PlaneConfig(PlaneTypeEnum.矢状位, 5.0, 5.0, ["骨窗"]),
+            PlaneConfig(PlaneTypeEnum.冠状位, 5.0, 5.0, ["骨窗"]),
+        ]
+
+        PlanningStage._assign_plane_config_ids(plane_configs)
+
+        self.assertEqual(
+            [config.config_id for config in plane_configs],
+            ["配置01", "配置02", "配置03"],
+        )
+        self.assertEqual(
+            [config.output_plane for config in plane_configs],
+            ["横状位", "矢状位", "冠状位"],
+        )
+
+    def test_repeated_plane_output_names_increment_from_one(self):
+        """重复状位依次使用原名、后缀1和后缀2。"""
+
+        plane_configs = [
+            PlaneConfig(PlaneTypeEnum.横状位, 5.0, 5.0, ["骨窗"]),
+            PlaneConfig(PlaneTypeEnum.横状位, 3.0, 3.0, ["骨窗"]),
+            PlaneConfig(PlaneTypeEnum.横状位, 2.0, 2.0, ["骨窗"]),
+        ]
+
+        PlanningStage._assign_plane_config_ids(plane_configs)
+
+        self.assertEqual(
+            [config.output_plane for config in plane_configs],
+            ["横状位", "横状位1", "横状位2"],
+        )
 
     def test_lumbar_interspace_plans_share_one_body_centered_sagittal_localizer(self):
         """五个椎间计划可有不同切面，但必须共用一张含全部椎体的底图。"""
@@ -4914,7 +5047,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(
             [segment.group_name for segment in segments],
-            ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"],
+            ["L1_L2", "L2_L3", "L3_L4", "L4_L5", "L5_S1"],
         )
         self.assertEqual(warnings, [])
         for index, segment in enumerate(segments):
@@ -4962,7 +5095,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(
             [segment.group_name for segment in segments],
-            ["L1-L2", "L2-L3"],
+            ["L1_L2", "L2_L3"],
         )
         self.assertEqual(segments[0].target_start.z, 8.5)
         self.assertEqual(segments[0].target_end.z, 7.5)
@@ -4973,7 +5106,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertEqual(segments[0].target_region_bbox["z_min"], 5)
         self.assertEqual(segments[0].target_region_bbox["z_max"], 11)
         self.assertTrue(segments[0].recenter_target_in_plane)
-        self.assertTrue(any("L3-L4" in warning for warning in warnings))
+        self.assertTrue(any("L3_L4" in warning for warning in warnings))
 
     def test_lumbar_interspace_uses_sagittal_faces_when_full_bboxes_overlap(self):
         """全量 bbox 重叠时，仍应使用四棱柱相向端面生成斜横切区间。"""
@@ -5036,8 +5169,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result,
         )
 
-        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
-        self.assertFalse(any("L1-L2" in warning for warning in warnings))
+        self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
+        self.assertFalse(any("L1_L2" in warning for warning in warnings))
         segment = segments[0]
         self.assertAlmostEqual(segment.target_start.z, 11.0)
         self.assertAlmostEqual(segment.target_end.z, 9.0)
@@ -5086,7 +5219,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
-        self.assertEqual(plan.group_name, "L1-L2")
+        self.assertEqual(plan.group_name, "L1_L2")
         self.assertLess(plan.slices[0].normal.y, -0.2)
         self.assertLess(plan.slices[0].normal.z, -0.8)
         self.assertAlmostEqual(plan.extent_mm.width, 10.0)
@@ -5122,9 +5255,9 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result,
         )
 
-        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
         self.assertIsNone(segments[0].frame)
-        self.assertTrue(any("L1-L2" in warning and "端面" in warning for warning in warnings))
+        self.assertTrue(any("L1_L2" in warning and "端面" in warning for warning in warnings))
 
     def test_lumbar_interspace_falls_back_when_face_interval_is_degenerate(self):
         """端面中心退化时不能丢弃有效 bbox 区间。"""
@@ -5153,9 +5286,9 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result,
         )
 
-        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
         self.assertIsNone(segments[0].frame)
-        self.assertTrue(any("L1-L2" in warning and "端面" in warning for warning in warnings))
+        self.assertTrue(any("L1_L2" in warning and "端面" in warning for warning in warnings))
 
     def test_lumbar_interspace_tolerates_malformed_spine_geometry_container(self):
         """损坏的 spine_geometry 容器应安全回退到 bbox。"""
@@ -5179,9 +5312,9 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result,
         )
 
-        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
         self.assertIsNone(segments[0].frame)
-        self.assertFalse(any("L1-L2" in warning for warning in warnings))
+        self.assertFalse(any("L1_L2" in warning for warning in warnings))
 
     def test_lumbar_interspace_rejects_incomplete_face_pair(self):
         """只有一条头脚面时应视为不完整几何并回退 bbox。"""
@@ -5209,9 +5342,9 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization_result,
         )
 
-        self.assertEqual([segment.group_name for segment in segments], ["L1-L2"])
+        self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
         self.assertIsNone(segments[0].frame)
-        self.assertTrue(any("L1-L2" in warning and "端面" in warning for warning in warnings))
+        self.assertTrue(any("L1_L2" in warning and "端面" in warning for warning in warnings))
 
     def test_lumbar_interspace_target_extent_uses_current_label_pair(self):
         """区间范围切应使用当前相邻椎体 bbox 并集构造横状位计划。"""
@@ -5252,7 +5385,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
-        self.assertEqual(plan.group_name, "L1-L2")
+        self.assertEqual(plan.group_name, "L1_L2")
         self.assertEqual(plan.extent_mm.to_dict(), {
             "width": 20.0,
             "height": 20.0,
@@ -5292,39 +5425,39 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             self.assertEqual(data["plan_count"], 1)
             self.assertEqual(data["plans"][0]["plan_id"], "肺部_MPR_横状位")
             self.assertIn("slices", data["plans"][0])
-            self.assertEqual(data["diagnostics"][0]["slice_count"], 4)
+            self.assertEqual(data["diagnostics"][0]["slice_count"], 3)
             self.assertEqual(data["diagnostics"][0]["slice_thickness"], 5.0)
             self.assertEqual(data["diagnostics"][0]["slice_spacing"], 5.0)
             self.assertEqual(data["diagnostics"][0]["spacing_minus_thickness"], 0.0)
-            self.assertIn("首尾对称", data["diagnostics"][0]["calculation_note"])
+            self.assertIn("均等外扩", data["diagnostics"][0]["calculation_note"])
             self.assertEqual(data["diagnostics"][0]["actual_spacing_min_mm"], 5.0)
             self.assertEqual(data["diagnostics"][0]["actual_spacing_max_mm"], 5.0)
             self.assertFalse(data["diagnostics"][0]["has_nonuniform_spacing"])
             self.assertFalse(data["diagnostics"][0]["has_extra_endpoint_slice"])
             self.assertEqual(data["diagnostics"][0]["leading_uncovered_mm"], 0.0)
             self.assertEqual(data["diagnostics"][0]["trailing_uncovered_mm"], 0.0)
-            self.assertEqual(data["diagnostics"][0]["leading_overflow_mm"], 4.5)
-            self.assertEqual(data["diagnostics"][0]["trailing_overflow_mm"], 4.5)
+            self.assertEqual(data["diagnostics"][0]["leading_overflow_mm"], 2.0)
+            self.assertEqual(data["diagnostics"][0]["trailing_overflow_mm"], 2.0)
             self.assertEqual(
                 data["diagnostics"][0]["leading_center_uncovered_mm"],
-                0.0,
+                0.5,
             )
             self.assertEqual(
                 data["diagnostics"][0]["trailing_center_uncovered_mm"],
-                0.0,
+                0.5,
             )
             self.assertEqual(
                 data["diagnostics"][0]["leading_center_overflow_mm"],
-                2.0,
+                0.0,
             )
             self.assertEqual(
                 data["diagnostics"][0]["trailing_center_overflow_mm"],
-                2.0,
+                0.0,
             )
             self.assertEqual(data["diagnostics"][0]["target_length_mm"], 11.0)
             self.assertFalse(data["diagnostics"][0]["target_shorter_than_thickness"])
-            self.assertEqual(data["diagnostics"][0]["first_coverage_start"]["z"], 15.0)
-            self.assertEqual(data["diagnostics"][0]["last_coverage_end"]["z"], -5.0)
+            self.assertEqual(data["diagnostics"][0]["first_coverage_start"]["z"], 12.5)
+            self.assertEqual(data["diagnostics"][0]["last_coverage_end"]["z"], -2.5)
 
     def test_planning_diagnostics_ignore_sub_tolerance_center_gaps(self):
         """中心越界量在规划容差内时，不应被诊断为首尾缺失。"""

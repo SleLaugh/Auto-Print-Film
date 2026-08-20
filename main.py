@@ -87,7 +87,7 @@ def parse_arguments():
         type=str,
         default=None,
         # 这里先采用 JSON 字符串，避免为一个小参数组同时维护命令行文件入口。
-        help='三平面重建参数 JSON 数组，例如: [{"Plane":"冠状位","SliceThickness":5,"SliceSpacing":10,"WindowPresets":["骨窗"],"SliceType":"MPR"}]'
+        help='三平面重建参数 JSON 数组，层厚、层间距、数量至少传两项，值为 0 表示未配置，例如: [{"Plane":"冠状位","SliceThickness":5,"SliceImageCount":20,"WindowPresets":["骨窗"],"SliceType":"MPR"}]'
     )
 
     # 解析命令行输入的参数

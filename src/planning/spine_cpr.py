@@ -16,6 +16,7 @@ from src.planning.geometry import (
     vector_length,
     voxel_index_to_physical,
 )
+from src.planning.sampling import ResolvedSampling, resolve_sampling
 from src.planning.spine_common import get_label_center, union_bboxes
 from src.planning.straight import SliceRangeExtension, resolve_slice_range_extension
 from src.utils import DebugLog
@@ -125,13 +126,14 @@ def build_spine_sagittal_cpr_plans(
     include_range_suffix = range_modes != ["full_label"]
     plans: list[SlicePlan] = []
     for range_mode in range_modes:
-        offsets = _resolve_offsets_mm(
+        offsets, sampling = _resolve_sampling_offsets_mm(
             localization_result,
             source_labels,
             curve_points,
             offset_axis,
-            float(plane_config.slice_thickness),
-            float(plane_config.slice_spacing),
+            plane_config.slice_thickness,
+            plane_config.slice_spacing,
+            plane_config.slice_image_count,
             range_mode=range_mode,
         )
         slices = [
@@ -175,8 +177,8 @@ def build_spine_sagittal_cpr_plans(
                 _minimum_image_spacing(image_info),
                 0.0,
             ),
-            slice_thickness=plane_config.slice_thickness,
-            slice_spacing=plane_config.slice_spacing,
+            slice_thickness=sampling.slice_thickness,
+            slice_spacing=sampling.slice_spacing,
             window_presets=list(plane_config.window_presets),
             source_labels=source_labels,
             curve_points=curve_points,
@@ -190,6 +192,9 @@ def build_spine_sagittal_cpr_plans(
             localizer_plane="矢状位",
             confidence=1.0,
             warnings=center_warnings,
+            config_id=plane_config.config_id,
+            output_plane=plane_config.output_plane,
+            sampling_details=sampling.to_dict(),
         ))
 
     DebugLog(
@@ -971,16 +976,53 @@ def spine_target_bbox(
     return union_bboxes(*bboxes), used_labels
 
 
-def _resolve_offsets_mm(
+def _resolve_sampling_offsets_mm(
     localization_result: Dict[str, Any],
     label_names: List[str],
     curve_points: List[Point3D],
     offset_axis: Point3D,
-    slice_thickness: float,
-    slice_spacing: float,
+    slice_thickness: float | None,
+    slice_spacing: float | None,
+    slice_image_count: int | None,
     range_mode: str = CPR_RANGE_MODE_FULL_LABEL,
-) -> List[float]:
-    """按原始椎体标注体素外缘和层厚生成 CPR offset。"""
+) -> tuple[List[float], ResolvedSampling]:
+    """按 CPR 有效偏移范围统一计算实际层厚、层间距和数量。"""
+
+    minimum, maximum = _resolve_offset_interval_mm(
+        localization_result,
+        label_names,
+        curve_points,
+        offset_axis,
+        range_mode=range_mode,
+        fallback_spacing=(slice_spacing or slice_thickness or 1.0),
+    )
+    sampling = resolve_sampling(
+        effective_range_mm=max(0.0, maximum - minimum),
+        slice_thickness=slice_thickness,
+        slice_spacing=slice_spacing,
+        slice_image_count=slice_image_count,
+    )
+    first_center = (
+        minimum
+        - (sampling.total_range_mm - (maximum - minimum)) / 2.0
+        + sampling.slice_thickness / 2.0
+    )
+    offsets = [
+        round(first_center + index * sampling.slice_spacing, 6)
+        for index in range(sampling.slice_image_count)
+    ]
+    return offsets, sampling
+
+
+def _resolve_offset_interval_mm(
+    localization_result: Dict[str, Any],
+    label_names: List[str],
+    curve_points: List[Point3D],
+    offset_axis: Point3D,
+    range_mode: str = CPR_RANGE_MODE_FULL_LABEL,
+    fallback_spacing: float = 1.0,
+) -> Tuple[float, float]:
+    """返回 CPR 已应用配置扩展后的有效偏移范围。"""
 
     if range_mode == CPR_RANGE_MODE_BODY_PRISM:
         filtered_interval = _filtered_annotation_offset_interval_mm(
@@ -990,15 +1032,9 @@ def _resolve_offsets_mm(
             offset_axis,
         )
         if filtered_interval is not None:
-            filtered_interval = _extend_cpr_offset_interval(
+            return _extend_cpr_offset_interval(
                 localization_result,
                 filtered_interval,
-            )
-            return _offsets_covering_interval(
-                filtered_interval[0],
-                filtered_interval[1],
-                slice_thickness,
-                slice_spacing,
             )
 
     raw_interval = _raw_label_offset_interval_mm(
@@ -1008,23 +1044,16 @@ def _resolve_offsets_mm(
         offset_axis,
     )
     if raw_interval is not None:
-        raw_interval = _extend_cpr_offset_interval(
+        return _extend_cpr_offset_interval(
             localization_result,
             raw_interval,
         )
-        return _offsets_covering_interval(
-            raw_interval[0],
-            raw_interval[1],
-            slice_thickness,
-            slice_spacing,
-        )
-    return _bbox_offsets_mm(
+    return _bbox_offset_interval_mm(
         localization_result,
         label_names,
         curve_points,
         offset_axis,
-        slice_thickness,
-        slice_spacing,
+        slice_spacing=fallback_spacing,
     )
 
 
@@ -1455,47 +1484,14 @@ def _voxel_safety_margin_mm(image: sitk.Image) -> float:
     return 0.5 * math.sqrt(sum(value ** 2 for value in spacing))
 
 
-def _offsets_covering_interval(
-    d_min: float,
-    d_max: float,
-    slice_thickness: float,
-    slice_spacing: float,
-) -> List[float]:
-    """生成不少包 `[d_min, d_max]` 的 CPR 厚层中心 offset。"""
-
-    thickness = float(slice_thickness)
-    spacing = float(slice_spacing)
-    if thickness <= 0.0:
-        raise ValueError("slice_thickness 必须大于 0")
-    if spacing <= 0.0:
-        raise ValueError("slice_spacing 必须大于 0")
-
-    half_thickness = thickness / 2.0
-    neg_count = int(
-        math.ceil(max(0.0, -float(d_min) - half_thickness) / spacing)
-    )
-    pos_count = int(
-        math.ceil(max(0.0, float(d_max) - half_thickness) / spacing)
-    )
-    while -neg_count * spacing - half_thickness > float(d_min) + 1e-6:
-        neg_count += 1
-    while pos_count * spacing + half_thickness < float(d_max) - 1e-6:
-        pos_count += 1
-    return [
-        round(index * spacing, 6)
-        for index in range(-neg_count, pos_count + 1)
-    ]
-
-
-def _bbox_offsets_mm(
+def _bbox_offset_interval_mm(
     localization_result: Dict[str, Any],
     label_names: List[str],
     curve_points: List[Point3D],
     offset_axis: Point3D,
-    slice_thickness: float,
     slice_spacing: float,
-) -> List[float]:
-    """原始分割不可用时，用完整 bbox 角点作为保守回退。"""
+) -> Tuple[float, float]:
+    """原始分割不可用时，用完整 bbox 角点估算 CPR 有效偏移范围。"""
 
     center_projection = float(np.median([
         _dot(point, offset_axis)
@@ -1523,12 +1519,7 @@ def _bbox_offsets_mm(
         localization_result,
         (min(projections), max(projections)),
     )
-    return _offsets_covering_interval(
-        interval[0],
-        interval[1],
-        slice_thickness,
-        slice_spacing,
-    )
+    return float(interval[0]), float(interval[1])
 
 
 def _bbox_corners(bbox: Dict[str, float], image_info: Dict[str, Any]) -> List[Point3D]:

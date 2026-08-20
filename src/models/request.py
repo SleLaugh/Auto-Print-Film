@@ -32,20 +32,93 @@ def _parse_scan_thickness(value: Any) -> float:
     return thickness
 
 
+def _parse_optional_positive_float(value: Any, name: str) -> float | None:
+    """解析外部可选层厚或层间距；0 由 PlaneConfig 保留后再规范化。"""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{name}必须是大于 0 的有限数值")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name}必须是大于 0 的有限数值") from error
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ValueError(f"{name}必须是 0 或大于 0 的有限数值")
+    return parsed
+
+
+def _parse_optional_positive_integer(value: Any, name: str) -> int | None:
+    """解析外部可选切片数量；0 由 PlaneConfig 保留后再规范化。"""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{name}必须是 0 或大于 0 的整数")
+    if not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name}必须是 0 或大于 0 的整数")
+    return int(value)
+
+
 @dataclass
 class PlaneConfig:
     """单个重建状位的采样和显示配置。"""
     # 重建状位：横状位、矢状位或冠状位。
     plane: PlaneTypeEnum
     # 目标层厚，单位按业务输入约定使用 mm。
-    slice_thickness: float
+    slice_thickness: Optional[float]
     # 目标层间距，单位按业务输入约定使用 mm。
-    slice_spacing: float
+    slice_spacing: Optional[float]
     # 一个状位可以同时输出多套窗宽窗位图像，例如骨窗和纵隔窗。
     window_presets: List[str]
     line_extent_mode: CutLineExtentModeEnum = CutLineExtentModeEnum.整平面
     # 切片方式由调用方显式选择；普通直线重建默认使用 MPR。
     slice_type: SliceType = SliceType.MPR
+    # 每个实际切割计划的切片数量；椎间隙会对每个间隙分别应用该数量。
+    slice_image_count: Optional[int] = None
+    # 以下字段只在第六阶段内部使用，不属于外部请求协议。
+    config_id: str = field(default="", repr=False, compare=False)
+    output_plane: str = field(default="", repr=False, compare=False)
+    requested_slice_thickness: Optional[float] = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    requested_slice_spacing: Optional[float] = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    requested_slice_image_count: Optional[int] = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """代码内直接构造配置时，也把三个采样参数的 0 规范化为未配置。"""
+
+        self.requested_slice_thickness = self.slice_thickness
+        self.requested_slice_spacing = self.slice_spacing
+        self.requested_slice_image_count = self.slice_image_count
+        if (
+            not isinstance(self.slice_thickness, bool)
+            and self.slice_thickness == 0
+        ):
+            self.slice_thickness = None
+        if (
+            not isinstance(self.slice_spacing, bool)
+            and self.slice_spacing == 0
+        ):
+            self.slice_spacing = None
+        if (
+            not isinstance(self.slice_image_count, bool)
+            and self.slice_image_count == 0
+        ):
+            self.slice_image_count = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'PlaneConfig':
@@ -55,14 +128,27 @@ class PlaneConfig:
         CLI 和外部接口传入的是字符串值；这里统一转换成枚举，后续阶段
         就不需要反复处理字符串合法性。
         """
+        thickness = data.get('SliceThickness')
+        spacing = data.get('SliceSpacing')
+        image_count = data.get('SliceImageCount')
         return cls(
             plane=PlaneTypeEnum(data['Plane']),
-            slice_thickness=float(data['SliceThickness']),
-            slice_spacing=float(data['SliceSpacing']),
+            slice_thickness=_parse_optional_positive_float(
+                thickness,
+                "层厚",
+            ),
+            slice_spacing=_parse_optional_positive_float(
+                spacing,
+                "层间距",
+            ),
             window_presets=[str(value) for value in data.get('WindowPresets', [])],
             slice_type=SliceType(data.get('SliceType', SliceType.MPR.value)),
             line_extent_mode=CutLineExtentModeEnum(
                 data.get('line_extent_mode', CutLineExtentModeEnum.整平面.value)
+            ),
+            slice_image_count=_parse_optional_positive_integer(
+                image_count,
+                "数量",
             ),
         )
 
@@ -73,14 +159,19 @@ class PlaneConfig:
         枚举在内存里方便代码判断，但 JSON 报告和外部接口只能稳定消费字符串，
         所以这里统一转回中文协议值。
         """
-        return {
+        data = {
             'Plane': self.plane.value,
-            'SliceThickness': self.slice_thickness,
-            'SliceSpacing': self.slice_spacing,
             'WindowPresets': list(self.window_presets),
             'SliceType': self.slice_type.value,
             'line_extent_mode': self.line_extent_mode.value,
         }
+        if self.slice_thickness is not None:
+            data['SliceThickness'] = self.slice_thickness
+        if self.slice_spacing is not None:
+            data['SliceSpacing'] = self.slice_spacing
+        if self.slice_image_count is not None:
+            data['SliceImageCount'] = self.slice_image_count
+        return data
 
 
 def default_plane_configs() -> List[PlaneConfig]:
@@ -181,8 +272,8 @@ class Request:
         """
         校验请求参数是否足够执行流水线。
 
-        这里先做结构层校验：路径不能为空、三平面配置不能冲突、层厚/层间距必须
-        为正数。真实路径是否存在仍由各阶段按自己的读取逻辑处理。
+        这里先做结构层校验：路径不能为空，每项状位配置必须提供两个或三个有效
+        采样参数，并配置至少一个窗位。真实路径是否存在仍由各阶段读取时处理。
         """
         if not self.dicom_dir:
             return False, "dicom_dir 不能为空"
@@ -201,19 +292,44 @@ class Request:
         if not self.plane_configs:
             return False, "plane_configs 不能为空"
 
-        seen_planes = set()
         for plane_config in self.plane_configs:
             plane_value = plane_config.plane.value
-            # 同一个状位重复出现会导致后续输出目录和采样参数语义不明确。
-            if plane_value in seen_planes:
-                return False, f"plane_configs 中存在重复状位: {plane_value}"
-            seen_planes.add(plane_value)
+            sampling_values = (
+                plane_config.slice_thickness,
+                plane_config.slice_spacing,
+                plane_config.slice_image_count,
+            )
+            provided_count = sum(value is not None for value in sampling_values)
+            if provided_count not in (2, 3):
+                return False, (
+                    f"{plane_value} 层厚、层间距、数量必须传入其中两个或三个"
+                )
 
-            # 层厚和层间距是重采样的核心输入，0 或负数无法生成有效切片序列。
-            if plane_config.slice_thickness <= 0:
-                return False, f"{plane_value} 层厚必须大于 0"
-            if plane_config.slice_spacing <= 0:
-                return False, f"{plane_value} 层间距必须大于 0"
+            for name, value in (
+                ("层厚", plane_config.slice_thickness),
+                ("层间距", plane_config.slice_spacing),
+            ):
+                if value is None:
+                    continue
+                if isinstance(value, bool):
+                    return False, f"{plane_value} {name}必须是大于 0 的有限数值"
+                try:
+                    parsed_value = float(value)
+                except (TypeError, ValueError):
+                    return False, f"{plane_value} {name}必须是大于 0 的有限数值"
+                if not math.isfinite(parsed_value) or parsed_value <= 0:
+                    return False, f"{plane_value} {name}必须是大于 0 的有限数值"
+
+            image_count = plane_config.slice_image_count
+            if (
+                image_count is not None
+                and (
+                    isinstance(image_count, bool)
+                    or not isinstance(image_count, int)
+                    or image_count <= 0
+                )
+            ):
+                return False, f"{plane_value} 数量必须是大于 0 的整数"
             # 没有窗宽窗位就无法决定最终图像显示版本。
             if not plane_config.window_presets:
                 return False, f"{plane_value} 窗宽窗位不能为空"

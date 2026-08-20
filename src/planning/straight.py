@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List
 from src.models import AnatomicalFrame, ExtentMM, Point3D, SlicePlan
 from src.models.enums import CutLineExtentModeEnum, PlaneTypeEnum
 from src.planning.slice_policy import localization_profile_for_slice_type
+from src.planning.sampling import ResolvedSampling, resolve_sampling
 from src.planning.geometry import (
     build_plane_stack_slices,
     image_axis_direction,
@@ -60,7 +61,7 @@ class CutSegment:
     """第六阶段交给通用直线构造器的一个待切区间。"""
 
     group_name: str
-    """当前区间的稳定名称，例如 whole_range 或 L1-L2。"""
+    """当前区间的稳定名称，例如 whole_range 或 L1_L2。"""
 
     target_start: Point3D
     """目标覆盖范围的物理起始边界点。"""
@@ -380,24 +381,37 @@ def expand_projected_extent_around_anchor(
 def cover_segment_range(
     target_start: Point3D,
     target_end: Point3D,
-    slice_thickness: float,
-    slice_spacing: float,
+    slice_thickness: float | None,
+    slice_spacing: float | None,
     start_extension_mm: float = 0.0,
     end_extension_mm: float = 0.0,
+    slice_image_count: int | None = None,
 ) -> tuple[Point3D, Point3D]:
-    """
-    计算首末切片中心都跨过目标边界的等距范围。
+    """计算完整覆盖有效范围的首末切片中心。"""
 
-    层厚只做参数合法性校验，不参与中心范围计算。可选的 start/end
-    扩展先沿目标自身方向增加有效覆盖区间，单位为毫米；随后相邻中心
-    始终保持请求的层间距，不能整除时使用最少的额外中心并将剩余超出量
-    对称分到首尾。只有未配置扩展且长度在坐标容差内的区间使用唯一中心。
-    """
+    range_start, range_end, _ = resolve_segment_sampling(
+        target_start=target_start,
+        target_end=target_end,
+        slice_thickness=slice_thickness,
+        slice_spacing=slice_spacing,
+        slice_image_count=slice_image_count,
+        start_extension_mm=start_extension_mm,
+        end_extension_mm=end_extension_mm,
+    )
+    return range_start, range_end
 
-    if slice_thickness <= 0:
-        raise ValueError("层厚必须大于 0")
-    if slice_spacing <= 0:
-        raise ValueError("层间距必须大于 0")
+
+def resolve_segment_sampling(
+    target_start: Point3D,
+    target_end: Point3D,
+    slice_thickness: float | None,
+    slice_spacing: float | None,
+    slice_image_count: int | None = None,
+    start_extension_mm: float = 0.0,
+    end_extension_mm: float = 0.0,
+) -> tuple[Point3D, Point3D, ResolvedSampling]:
+    """结合直线目标和既有首尾扩展计算实际参数及切片中心范围。"""
+
     start_extension_mm = _non_negative_extension_value(
         start_extension_mm,
         endpoint="start",
@@ -409,17 +423,22 @@ def cover_segment_range(
 
     target_vector = subtract_points(target_end, target_start)
     target_length = vector_length(target_vector)
-    if (
-        target_length <= CENTER_COVERAGE_TOLERANCE_MM
-        and start_extension_mm == 0.0
-        and end_extension_mm == 0.0
-    ):
+    effective_length = target_length + start_extension_mm + end_extension_mm
+    sampling = resolve_sampling(
+        effective_range_mm=effective_length,
+        slice_thickness=slice_thickness,
+        slice_spacing=slice_spacing,
+        slice_image_count=slice_image_count,
+    )
+    if target_length == 0.0 and start_extension_mm == 0.0 and end_extension_mm == 0.0:
+        if sampling.slice_image_count != 1:
+            raise ValueError("零长度有效范围无法生成多张切片")
         midpoint = Point3D(
             (target_start.x + target_end.x) / 2.0,
             (target_start.y + target_end.y) / 2.0,
             (target_start.z + target_end.z) / 2.0,
         )
-        return midpoint, midpoint
+        return midpoint, midpoint, sampling
     if target_length == 0.0:
         raise ValueError("零长度目标无法确定切片范围扩展方向")
 
@@ -434,34 +453,29 @@ def cover_segment_range(
         target_end.y + direction.y * end_extension_mm,
         target_end.z + direction.z * end_extension_mm,
     )
-    effective_length = target_length + start_extension_mm + end_extension_mm
-
-    # 优先按绝对毫米残差判断是否接近整数中心跨度。斜向坐标的
-    # 有限小数位会让理论 10mm 还原成 10.000003mm，需要吸收该误差。
-    raw_step_count = effective_length / slice_spacing
-    nearest_step_count = max(0, int(round(raw_step_count)))
-    nearest_center_span = nearest_step_count * slice_spacing
-    if abs(nearest_center_span - effective_length) <= (
-        CENTER_COVERAGE_TOLERANCE_MM
-    ):
-        step_count = nearest_step_count
-    else:
-        step_count = max(0, math.ceil(raw_step_count))
-    center_span = step_count * slice_spacing
-    center_delta = center_span - effective_length
-
-    # 容差吸收的微小负差也按中点对称分配，不把坐标误差压到单侧。
+    # 第一张中心向内半个层厚，若总范围超过有效范围，再向外移动均分后的距离。
+    symmetric_range_difference = (
+        sampling.total_range_mm - effective_length
+    ) / 2.0
+    start_center_offset = (
+        sampling.slice_thickness / 2.0
+        - symmetric_range_difference
+    )
     range_start = Point3D(
-        effective_start.x - direction.x * center_delta / 2.0,
-        effective_start.y - direction.y * center_delta / 2.0,
-        effective_start.z - direction.z * center_delta / 2.0,
+        effective_start.x + direction.x * start_center_offset,
+        effective_start.y + direction.y * start_center_offset,
+        effective_start.z + direction.z * start_center_offset,
+    )
+    center_range = (
+        (sampling.slice_image_count - 1)
+        * sampling.slice_spacing
     )
     range_end = Point3D(
-        range_start.x + direction.x * center_span,
-        range_start.y + direction.y * center_span,
-        range_start.z + direction.z * center_span,
+        range_start.x + direction.x * center_range,
+        range_start.y + direction.y * center_range,
+        range_start.z + direction.z * center_range,
     )
-    return range_start, range_end
+    return range_start, range_end, sampling
 
 
 def recenter_point_in_plane(
@@ -550,23 +564,25 @@ def build_straight_slice_plan(
         plane_config.plane,
     )
     # 重定位后的端点或已共用平面坐标的四棱柱最近点对，都沿二者形成的
-    # 最终法向计算中心范围。这样带角度切片也能保持固定层间距，并让
-    # 首末切片中心跨过目标边界。
-    centered_range_start, centered_range_end = cover_segment_range(
+    # 最终法向计算有效范围。这样带角度切片也能保持固定层间距，并让
+    # 首末厚层外缘覆盖目标边界。
+    centered_range_start, centered_range_end, sampling = resolve_segment_sampling(
         centered_target_start,
         centered_target_end,
         plane_config.slice_thickness,
         plane_config.slice_spacing,
+        slice_image_count=plane_config.slice_image_count,
         start_extension_mm=range_extension.start_mm,
         end_extension_mm=range_extension.end_mm,
     )
     path_points = [centered_range_start, centered_range_end]
     slices = build_plane_stack_slices(
         path_points=path_points,
-        slice_spacing=plane_config.slice_spacing,
+        slice_spacing=sampling.slice_spacing,
         normal=frame.normal,
         row_dir=frame.row_dir,
         col_dir=frame.col_dir,
+        slice_image_count=sampling.slice_image_count,
     )
 
     plan_key = slice_type
@@ -590,10 +606,13 @@ def build_straight_slice_plan(
             plane_config.plane,
             localization_result["image"],
         ),
-        slice_thickness=plane_config.slice_thickness,
-        slice_spacing=plane_config.slice_spacing,
+        slice_thickness=sampling.slice_thickness,
+        slice_spacing=sampling.slice_spacing,
         window_presets=list(plane_config.window_presets),
         source_labels=list(segment.source_labels),
         target_start=centered_target_start,
         target_end=centered_target_end,
+        config_id=plane_config.config_id,
+        output_plane=plane_config.output_plane,
+        sampling_details=sampling.to_dict(),
     )

@@ -269,9 +269,9 @@ class Stage7ReconstructionTest(unittest.TestCase):
     def test_interval_plan_keeps_group_directory(self):
         """验证 `test_interval_plan_keeps_group_directory` 场景符合预期。"""
 
-        plan = {"slice_type": "椎间隙", "group_name": "L1-L2"}
+        plan = {"slice_type": "椎间隙", "group_name": "L1_L2"}
 
-        self.assertEqual(ReconstructionStage._plan_group_name(plan), "L1-L2")
+        self.assertEqual(ReconstructionStage._plan_region_name(plan), "L1_L2")
 
     def test_cpr_plan_writes_directly_under_window_directory(self):
         """CPR 输出不应在窗位目录下额外创建 CPR 子目录。"""
@@ -282,7 +282,31 @@ class Stage7ReconstructionTest(unittest.TestCase):
             "group_name": "CPR",
         }
 
-        self.assertEqual(ReconstructionStage._plan_group_name(plan), "")
+        self.assertEqual(ReconstructionStage._plan_region_name(plan), "")
+
+    def test_output_plane_isolates_same_plane_configs(self):
+        """同状位多份配置由状位输出名称隔离，不再拼接配置目录。"""
+
+        mpr_plan = {
+            "geometry_type": "plane_stack",
+            "slice_type": "MPR",
+            "output_plane": "横状位1",
+        }
+        interspace_plan = {
+            "geometry_type": "plane_stack",
+            "slice_type": "椎间隙",
+            "group_name": "L1_L2",
+            "output_plane": "横状位1",
+        }
+
+        self.assertEqual(
+            ReconstructionStage._plan_region_name(mpr_plan),
+            "",
+        )
+        self.assertEqual(
+            ReconstructionStage._plan_region_name(interspace_plan),
+            "L1_L2",
+        )
 
     def test_localizer_uses_representative_original_slice_instead_of_projection(self):
         """验证 `test_localizer_uses_representative_original_slice_instead_of_projection` 场景符合预期。"""
@@ -1083,7 +1107,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
                         # 且从画面上向下指向足侧。
                         self.assertLess(orientation[5], 0.0)
 
-    def test_multiple_interval_plans_write_to_independent_group_directories(self):
+    def test_multiple_interval_plans_write_to_independent_region_directories(self):
         """第七阶段应保留多个区间各自的名称和独立输出目录。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1094,14 +1118,14 @@ class Stage7ReconstructionTest(unittest.TestCase):
             )
             first_plan = context.get_result("planning")["plans"][0]
             first_plan.update({
-                "plan_id": "腰椎_interspace_L1-L2_横状位",
+                "plan_id": "腰椎_interspace_L1_L2_横状位",
                 "slice_type": "椎间隙",
-                "group_name": "L1-L2",
+                "group_name": "L1_L2",
             })
             second_plan = copy.deepcopy(first_plan)
             second_plan.update({
-                "plan_id": "腰椎_interspace_L2-L3_横状位",
-                "group_name": "L2-L3",
+                "plan_id": "腰椎_interspace_L2_L3_横状位",
+                "group_name": "L2_L3",
             })
             context.set_result("planning", {
                 "plans": [first_plan, second_plan],
@@ -1112,22 +1136,22 @@ class Stage7ReconstructionTest(unittest.TestCase):
             output_root = Path(context.request.output_dir)
             self.assertEqual(
                 len(list(
-                    (output_root / "横状位" / "骨窗" / "L1-L2")
+                    (output_root / "横状位" / "骨窗" / "L1_L2")
                     .glob("[0-9]*.dcm")
                 )),
                 1,
             )
             self.assertTrue(
-                (output_root / "横状位" / "骨窗" / "L1-L2" / "Localizer.dcm")
+                (output_root / "横状位" / "骨窗" / "L1_L2" / "Localizer.dcm")
                 .exists()
             )
             self.assertTrue(
-                (output_root / "横状位" / "骨窗" / "L2-L3" / "Localizer.dcm")
+                (output_root / "横状位" / "骨窗" / "L2_L3" / "Localizer.dcm")
                 .exists()
             )
             self.assertEqual(
                 len(list(
-                    (output_root / "横状位" / "骨窗" / "L2-L3")
+                    (output_root / "横状位" / "骨窗" / "L2_L3")
                     .glob("[0-9]*.dcm")
                 )),
                 1,
@@ -1136,6 +1160,48 @@ class Stage7ReconstructionTest(unittest.TestCase):
                 context.get_result("reconstruction")["plan_count"],
                 2,
             )
+
+    def test_duplicate_plane_configs_write_to_numbered_plane_directories(self):
+        """重复状位直接使用横状位、横状位1目录隔离输出。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._make_context_with_one_plan(
+                temp_dir,
+                slice_count=1,
+                window_presets=["骨窗"],
+            )
+            first_plan = context.get_result("planning")["plans"][0]
+            first_plan.update({
+                "plan_id": "肺部_MPR_横状位",
+                "output_plane": "横状位",
+            })
+            second_plan = copy.deepcopy(first_plan)
+            second_plan.update({
+                "plan_id": "肺部_MPR_横状位_配置02",
+                "output_plane": "横状位1",
+            })
+            context.set_result("planning", {
+                "plans": [first_plan, second_plan],
+            })
+
+            ReconstructionStage(config={"parallel": False}).execute(context)
+
+            output_root = Path(context.request.output_dir)
+            self.assertTrue(
+                (output_root / "横状位" / "骨窗" / "1.dcm").exists()
+            )
+            self.assertTrue(
+                (output_root / "横状位1" / "骨窗" / "1.dcm").exists()
+            )
+            outputs = context.get_result("reconstruction")["outputs"]
+            self.assertEqual(
+                [output["plane"] for output in outputs],
+                ["横状位", "横状位1"],
+            )
+            self.assertTrue(all(
+                output["source_plane"] == "横状位"
+                for output in outputs
+            ))
 
     def test_plane_stack_resampler_uses_slice_center_and_in_plane_extent(self):
         """验证 `test_plane_stack_resampler_uses_slice_center_and_in_plane_extent` 场景符合预期。"""

@@ -104,6 +104,12 @@ class SlicePlan:
     """定位图使用的原始正交状位；为空时自动选择，不改变正式切片状位。"""
     confidence: float = 1.0
     warnings: List[str] = field(default_factory=list)
+    config_id: str = ""
+    """当前计划对应的状位配置标识，用于同状位多配置结果关联。"""
+    output_plane: str = ""
+    """用于报告和输出目录的唯一状位名称，例如横状位、横状位1。"""
+    sampling_details: Dict[str, Any] | None = None
+    """实际层厚、层间距、数量、有效范围和总范围的计算详情。"""
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化第七阶段可直接执行的一组完整切片计划。"""
@@ -146,4 +152,11 @@ class SlicePlan:
             data["offsets_mm"] = list(self.offsets_mm)
         if self.cpr_range_mode is not None:
             data["cpr_range_mode"] = self.cpr_range_mode
+        if self.config_id:
+            data["config_id"] = self.config_id
+        if self.output_plane:
+            data["output_plane"] = self.output_plane
+        if self.sampling_details is not None:
+            data["sampling_details"] = dict(self.sampling_details)
+        data["slice_image_count"] = len(self.slices)
         return data

@@ -41,27 +41,29 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             report = json.loads(Path(report_path).read_text(encoding="utf-8"))
             self.assertEqual(
                 set(report),
-                {"StudyPart", "StudyType", "plane_configs"},
+                {"StudyPart", "StudyType", "ScanThickness", "PlaneList"},
             )
             self.assertEqual(report["StudyPart"], "腰椎")
             self.assertEqual(report["StudyType"], "CT")
-            self.assertEqual(report["plane_configs"], [
+            self.assertEqual(report["ScanThickness"], 1.5)
+            self.assertEqual(report["PlaneList"], [
                 {
+                    "ConfigId": "配置01",
                     "Plane": "冠状位",
                     "SliceType": "MPR",
                     "SliceThickness": 5.0,
                     "SliceSpacing": 10.0,
+                    "SliceImageCount": None,
                     "line_extent_mode": "整平面",
-                    "image_count": 0,
-                    "WindowPresets": [
-                        {"name": "骨窗", "path": ""},
-                        {"name": "纵隔窗", "path": ""},
+                    "WindowPresetList": [
+                        {"Name": "骨窗", "RegionList": []},
+                        {"Name": "纵隔窗", "RegionList": []},
                     ],
                 }
             ])
 
-    def test_delivery_report_adds_plane_image_count_and_window_path(self):
-        """验证 `test_delivery_report_adds_plane_image_count_and_window_path` 场景符合预期。"""
+    def test_delivery_report_adds_region_count_and_window_path(self):
+        """窗位下的重建区域返回实际数量和目录。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
@@ -73,14 +75,387 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
 
             report = json.loads(Path(report_path).read_text(encoding="utf-8"))
             axial = next(
-                item for item in report["plane_configs"]
+                item for item in report["PlaneList"]
                 if item["Plane"] == "横状位"
             )
-            self.assertEqual(axial["image_count"], 2)
+            window = axial["WindowPresetList"][0]
+            self.assertEqual(window["Name"], "骨窗")
             self.assertEqual(
-                axial["WindowPresets"],
-                [{"name": "骨窗", "path": str(dcm_dir)}],
+                window["RegionList"],
+                [{
+                    "Region": "default",
+                    "ActualSliceThickness": 1.0,
+                    "ActualSliceSpacing": 1.0,
+                    "ActualSliceImageCount": 2,
+                    "Path": str(dcm_dir),
+                }],
             )
+
+    def test_delivery_report_places_each_region_under_its_window(self):
+        """报告层级必须与状位/窗位/重建区域的磁盘层级一致。"""
+
+        request = Request.from_dict({
+            "dicom_dir": "/tmp/dicom",
+            "output_dir": "/tmp/output",
+            "ScanThickness": 1.0,
+            "plane_configs": [{
+                "Plane": "横状位",
+                "SliceType": "椎间隙",
+                "SliceThickness": 5,
+                "SliceSpacing": 5,
+                "WindowPresets": ["骨窗", "肺窗"],
+            }],
+        })
+        context = ProcessingContext(request)
+        context.set_result("reconstruction", {"outputs": [{
+            "config_id": "配置01",
+            "plane": "横状位",
+            "slice_type": "椎间隙",
+            "group_name": "L1_L2",
+            "slice_thickness": 5.0,
+            "slice_spacing": 5.0,
+            "slice_count": 20,
+            "window_outputs": {
+                "骨窗": "/tmp/output/横状位/骨窗/L1_L2",
+                "肺窗": "/tmp/output/横状位/肺窗/L1_L2",
+            },
+        }]})
+
+        windows = ReportingStage()._build_delivery_report(context)[
+            "PlaneList"
+        ][0]["WindowPresetList"]
+
+        self.assertEqual([window["Name"] for window in windows], ["骨窗", "肺窗"])
+        self.assertEqual(
+            [window["RegionList"][0]["Region"] for window in windows],
+            ["L1_L2", "L1_L2"],
+        )
+        self.assertEqual(
+            [window["RegionList"][0]["Path"] for window in windows],
+            [
+                "/tmp/output/横状位/骨窗/L1_L2",
+                "/tmp/output/横状位/肺窗/L1_L2",
+            ],
+        )
+
+    def test_delivery_report_lists_every_interspace_region_count(self):
+        """椎间隙数量按每个区域执行，并位于对应窗位之下。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = Request.from_dict({
+                "dicom_dir": "/tmp/dicom",
+                "output_dir": temp_dir,
+                "StudyPart": "腰椎",
+                "StudyType": "CT",
+                "ScanThickness": 1.0,
+                "plane_configs": [{
+                    "Plane": "横状位",
+                    "SliceType": "椎间隙",
+                    "SliceThickness": 5,
+                    "SliceSpacing": 5,
+                    "SliceImageCount": 20,
+                    "WindowPresets": ["骨窗"],
+                }],
+            })
+            context = ProcessingContext(request)
+            groups = ["L1_L2", "L2_L3", "L3_L4", "L4_L5", "L5_S1"]
+            context.set_result("reconstruction", {
+                "outputs": [
+                    {
+                        "plan_id": f"腰椎_椎间隙_{group}_横状位",
+                        "config_id": "配置01",
+                        "plane": "横状位",
+                        "slice_type": "椎间隙",
+                        "group_name": group,
+                        "slice_thickness": 5.0,
+                        "slice_spacing": 5.0,
+                        "slice_count": 20,
+                        "sampling_details": {
+                            "effective_range_mm": 10.0,
+                            "total_range_mm": 100.0,
+                            "start_extension_mm": 45.0,
+                            "end_extension_mm": 45.0,
+                            "adjusted": False,
+                            "adjustment_reason": "",
+                        },
+                        "window_outputs": {
+                            "骨窗": str(
+                                Path(temp_dir)
+                                / "横状位"
+                                / "骨窗"
+                                / group
+                            ),
+                        },
+                    }
+                    for group in groups
+                ],
+            })
+
+            report = ReportingStage()._build_delivery_report(context)
+
+            axial = report["PlaneList"][0]
+            self.assertEqual(axial["SliceImageCount"], 20)
+            regions = axial["WindowPresetList"][0]["RegionList"]
+            self.assertEqual(len(regions), 5)
+            self.assertTrue(all(
+                region["ActualSliceImageCount"] == 20
+                for region in regions
+            ))
+            self.assertEqual(
+                [region["Region"] for region in regions],
+                groups,
+            )
+            self.assertTrue(all(
+                region["Path"] == str(
+                    Path(temp_dir)
+                    / "横状位"
+                    / "骨窗"
+                    / region["Region"]
+                )
+                for region in regions
+            ))
+
+    def test_zero_requested_count_is_preserved_beside_actual_count(self):
+        """传入数量 0 必须原样报告，实际计算数量单独返回。"""
+
+        request = Request.from_dict({
+            "dicom_dir": "/tmp/dicom",
+            "output_dir": "/tmp/output",
+            "ScanThickness": 1.0,
+            "plane_configs": [{
+                "Plane": "矢状位",
+                "SliceThickness": 5,
+                "SliceSpacing": 5,
+                "SliceImageCount": 0,
+                "WindowPresets": ["骨窗"],
+            }],
+        })
+        context = ProcessingContext(request)
+        context.set_result("reconstruction", {"outputs": [{
+            "config_id": "配置01",
+            "plane": "矢状位",
+            "slice_type": "MPR",
+            "group_name": "whole_range",
+            "slice_thickness": 5.0,
+            "slice_spacing": 5.0,
+            "slice_count": 21,
+            "window_outputs": {"骨窗": "/tmp/矢状位/骨窗"},
+        }]})
+
+        plane = ReportingStage()._build_delivery_report(context)["PlaneList"][0]
+
+        self.assertEqual(plane["SliceImageCount"], 0)
+        self.assertEqual(
+            plane["WindowPresetList"][0]["RegionList"][0][
+                "ActualSliceImageCount"
+            ],
+            21,
+        )
+
+    def test_delivery_report_uses_actual_slice_type_and_sampling_per_plane(self):
+        """横状位椎间隙、矢状位 MPR、冠状位 CPR 必须按实际输出分别报告。"""
+
+        request = Request.from_dict({
+            "dicom_dir": "/tmp/dicom",
+            "output_dir": "/tmp/output",
+            "StudyPart": "腰椎",
+            "StudyType": "CT",
+            "ScanThickness": 1.0,
+            "plane_configs": [
+                {
+                    "Plane": "横状位",
+                    "SliceType": "椎间隙",
+                    "SliceThickness": 5,
+                    "SliceSpacing": 5,
+                    "SliceImageCount": 0,
+                    "WindowPresets": ["骨窗"],
+                },
+                {
+                    "Plane": "矢状位",
+                    "SliceType": "MPR",
+                    "SliceThickness": 5,
+                    "SliceSpacing": 5,
+                    "SliceImageCount": 0,
+                    "WindowPresets": ["骨窗"],
+                },
+                {
+                    "Plane": "冠状位",
+                    "SliceType": "CPR",
+                    "SliceThickness": 5,
+                    "SliceSpacing": 5,
+                    "SliceImageCount": 0,
+                    "WindowPresets": ["骨窗"],
+                },
+            ],
+        })
+        context = ProcessingContext(request)
+        context.set_result("reconstruction", {
+            "outputs": [
+                {
+                    "config_id": config_id,
+                    "plane": plane,
+                    "slice_type": slice_type,
+                    "group_name": group_name,
+                    "slice_thickness": thickness,
+                    "slice_spacing": spacing,
+                    "slice_count": count,
+                    "window_outputs": {"骨窗": f"/tmp/{plane}/{slice_type}"},
+                }
+                for config_id, plane, slice_type, group_name, thickness, spacing, count in (
+                    ("配置01", "横状位", "椎间隙", "L1_L2", 5.0, 5.0, 12),
+                    ("配置02", "矢状位", "MPR", "whole_range", 4.0, 4.0, 21),
+                    ("配置03", "冠状位", "CPR", "CPR", 3.0, 3.0, 31),
+                )
+            ],
+        })
+
+        report = ReportingStage()._build_delivery_report(context)
+
+        configs = {
+            item["Plane"]: item
+            for item in report["PlaneList"]
+        }
+        expected = {
+            "横状位": ("椎间隙", 5.0, 5.0, 12),
+            "矢状位": ("MPR", 4.0, 4.0, 21),
+            "冠状位": ("CPR", 3.0, 3.0, 31),
+        }
+        for plane, values in expected.items():
+            with self.subTest(plane=plane):
+                slice_type, thickness, spacing, count = values
+                config = configs[plane]
+                self.assertEqual(config["SliceType"], slice_type)
+                region = config["WindowPresetList"][0]["RegionList"][0]
+                self.assertEqual(region["ActualSliceThickness"], thickness)
+                self.assertEqual(region["ActualSliceSpacing"], spacing)
+                self.assertEqual(region["ActualSliceImageCount"], count)
+
+        self.assertEqual(
+            [item["ConfigId"] for item in report["PlaneList"]],
+            ["配置01", "配置02", "配置03"],
+        )
+
+    def test_global_config_ids_do_not_mix_different_plane_outputs(self):
+        """全局配置编号必须让不同状位关联各自实际输出。"""
+
+        request = Request.from_dict({
+            "dicom_dir": "/tmp/dicom",
+            "output_dir": "/tmp/output",
+            "ScanThickness": 1.0,
+            "plane_configs": [
+                {
+                    "Plane": "横状位",
+                    "SliceThickness": 5,
+                    "SliceSpacing": 5,
+                    "WindowPresets": ["骨窗"],
+                },
+                {
+                    "Plane": "冠状位",
+                    "SliceThickness": 5,
+                    "SliceSpacing": 5,
+                    "WindowPresets": ["骨窗"],
+                },
+            ],
+        })
+        context = ProcessingContext(request)
+        context.set_result("reconstruction", {
+            "outputs": [
+                {
+                    "config_id": config_id,
+                    "plane": plane,
+                    "slice_type": "MPR",
+                    "group_name": "whole_range",
+                    "slice_thickness": 5.0,
+                    "slice_spacing": 5.0,
+                    "slice_count": count,
+                    "window_outputs": {"骨窗": f"/tmp/{plane}"},
+                }
+                for config_id, plane, count in (
+                    ("配置01", "横状位", 10),
+                    ("配置02", "冠状位", 20),
+                )
+            ],
+        })
+
+        report = ReportingStage()._build_delivery_report(context)
+
+        configs = {
+            item["Plane"]: item
+            for item in report["PlaneList"]
+        }
+        self.assertEqual(
+            configs["横状位"]["WindowPresetList"][0]["RegionList"][0][
+                "ActualSliceImageCount"
+            ],
+            10,
+        )
+        self.assertEqual(
+            configs["冠状位"]["WindowPresetList"][0]["RegionList"][0][
+                "ActualSliceImageCount"
+            ],
+            20,
+        )
+
+    def test_same_plane_sampling_configs_match_their_own_outputs(self):
+        """同状位多份配置必须按配置编号关联各自的实际参数和目录。"""
+
+        request = Request.from_dict({
+            "dicom_dir": "/tmp/dicom",
+            "output_dir": "/tmp/output",
+            "ScanThickness": 1.0,
+            "plane_configs": [
+                {
+                    "Plane": "横状位",
+                    "SliceThickness": 5,
+                    "SliceSpacing": 5,
+                    "WindowPresets": ["骨窗"],
+                },
+                {
+                    "Plane": "横状位",
+                    "SliceThickness": 3,
+                    "SliceSpacing": 3,
+                    "WindowPresets": ["骨窗"],
+                },
+            ],
+        })
+        context = ProcessingContext(request)
+        context.set_result("reconstruction", {
+            "outputs": [
+                {
+                    "config_id": config_id,
+                    "plane": output_plane,
+                    "source_plane": "横状位",
+                    "slice_type": "MPR",
+                    "group_name": "whole_range",
+                    "slice_thickness": thickness,
+                    "slice_spacing": thickness,
+                    "slice_count": count,
+                    "window_outputs": {"骨窗": path},
+                }
+                for config_id, output_plane, thickness, count, path in (
+                    ("配置01", "横状位", 5.0, 20, "/tmp/横状位/骨窗"),
+                    ("配置02", "横状位1", 3.0, 30, "/tmp/横状位1/骨窗"),
+                )
+            ],
+        })
+
+        report = ReportingStage()._build_delivery_report(context)
+
+        first, second = report["PlaneList"]
+        self.assertEqual(first["ConfigId"], "配置01")
+        self.assertEqual(first["Plane"], "横状位")
+        self.assertEqual(first["SliceThickness"], 5.0)
+        self.assertEqual(
+            first["WindowPresetList"][0]["RegionList"][0]["Path"],
+            "/tmp/横状位/骨窗",
+        )
+        self.assertEqual(second["ConfigId"], "配置02")
+        self.assertEqual(second["Plane"], "横状位1")
+        self.assertEqual(second["SliceThickness"], 3.0)
+        self.assertEqual(
+            second["WindowPresetList"][0]["RegionList"][0]["Path"],
+            "/tmp/横状位1/骨窗",
+        )
 
     def test_debug_report_keeps_full_validation_details(self):
         """验证 `test_debug_report_keeps_full_validation_details` 场景符合预期。"""

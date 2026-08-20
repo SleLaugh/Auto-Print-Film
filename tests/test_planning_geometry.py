@@ -10,8 +10,8 @@ from src.planning.straight import cover_segment_range
 
 
 class PlanningGeometryTest(unittest.TestCase):
-    def test_cover_segment_range_centers_symmetrically_cover_non_divisible_target(self):
-        """目标长度不能整除间距时，首末切片中心应在目标两端之外。"""
+    def test_cover_segment_range_symmetrically_covers_non_divisible_target(self):
+        """总范围超过有效范围时，厚层外沿应在开始和结束方向均等外扩。"""
 
         range_start, range_end = cover_segment_range(
             target_start=Point3D(0.0, 0.0, 0.0),
@@ -21,12 +21,20 @@ class PlanningGeometryTest(unittest.TestCase):
         )
         centers = interpolate_points(range_start, range_end, spacing=5.0)
 
-        self.assertEqual(len(centers), 56)
-        self.assertAlmostEqual(range_end.z - range_start.z, 275.0, places=6)
-        self.assertAlmostEqual(range_start.z, -1.325, places=6)
-        self.assertAlmostEqual(range_end.z, 273.675, places=6)
-        self.assertAlmostEqual(0.0 - range_start.z, 1.325, places=6)
-        self.assertAlmostEqual(range_end.z - 272.35, 1.325, places=6)
+        self.assertEqual(len(centers), 55)
+        self.assertAlmostEqual(range_end.z - range_start.z, 270.0, places=6)
+        self.assertAlmostEqual(range_start.z, 1.175, places=6)
+        self.assertAlmostEqual(range_end.z, 271.175, places=6)
+        self.assertAlmostEqual(
+            0.0 - (range_start.z - 2.5),
+            1.325,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            range_end.z + 2.5 - 272.35,
+            1.325,
+            places=6,
+        )
 
     def test_cover_segment_range_does_not_add_slice_when_exactly_divisible(self):
         """覆盖长度恰好匹配目标时，不应因浮点误差多生成一张切片。"""
@@ -41,7 +49,7 @@ class PlanningGeometryTest(unittest.TestCase):
 
         self.assertEqual(
             [point.z for point in centers],
-            [0.0, 2.0, 4.0, 6.0, 8.0, 10.0],
+            [1.0, 3.0, 5.0, 7.0, 9.0],
         )
 
     def test_cover_segment_range_absorbs_oblique_coordinate_rounding(self):
@@ -57,7 +65,7 @@ class PlanningGeometryTest(unittest.TestCase):
         )
         centers = interpolate_points(range_start, range_end, spacing=5.0)
 
-        self.assertEqual(len(centers), 3)
+        self.assertEqual(len(centers), 2)
         self.assertAlmostEqual(
             (range_start.x + range_end.x) / 2.0,
             (target_start.x + target_end.x) / 2.0,
@@ -82,8 +90,8 @@ class PlanningGeometryTest(unittest.TestCase):
         self.assertEqual(range_start.to_dict(), {"x": 1.0, "y": 2.0, "z": 3.0})
         self.assertEqual(range_end, range_start)
 
-    def test_cover_segment_range_centers_cover_short_nonzero_target(self):
-        """非零目标即使短于层厚和间距，首末中心也必须越过目标两端。"""
+    def test_cover_segment_range_one_thick_slice_covers_short_target(self):
+        """层厚大于有效范围时，一张中心切片即可完整覆盖。"""
 
         range_start, range_end = cover_segment_range(
             target_start=Point3D(0.0, 0.0, 0.0),
@@ -93,9 +101,9 @@ class PlanningGeometryTest(unittest.TestCase):
         )
         centers = interpolate_points(range_start, range_end, spacing=5.0)
 
-        self.assertEqual([point.z for point in centers], [-1.5, 3.5])
-        self.assertLessEqual(range_start.z, 0.0)
-        self.assertGreaterEqual(range_end.z, 2.0)
+        self.assertEqual([point.z for point in centers], [1.0])
+        self.assertLessEqual(range_start.z - 2.5, 0.0)
+        self.assertGreaterEqual(range_end.z + 2.5, 2.0)
 
     def test_cover_segment_range_keeps_requested_spacing_when_spacing_exceeds_thickness(self):
         """层间距大于层厚时仍保持固定间距，仅保证整体首尾包住目标。"""
@@ -110,8 +118,8 @@ class PlanningGeometryTest(unittest.TestCase):
         centers = interpolate_points(range_start, range_end, spacing=5.0)
         self.assertEqual([point.z for point in centers], [0.0, 5.0, 10.0])
 
-    def test_cover_segment_range_center_span_does_not_depend_on_thickness(self):
-        """目标长度不能整除间距时，改变层厚不得改变首末中心和张数。"""
+    def test_cover_segment_range_count_uses_thickness_and_spacing(self):
+        """层厚参与总范围计算，因此改变层厚可以改变数量和中心范围。"""
 
         center_ranges = []
         for slice_thickness in (2.0, 8.0):
@@ -131,19 +139,22 @@ class PlanningGeometryTest(unittest.TestCase):
             ])
 
         self.assertEqual(center_ranges, [
-            [-2.0, 3.0, 8.0, 13.0],
-            [-2.0, 3.0, 8.0, 13.0],
+            [0.5, 5.5, 10.5],
+            [3.0, 8.0],
         ])
 
-    def test_cover_segment_range_rejects_non_positive_parameters(self):
-        """层厚和层间距都必须是正数。"""
+    def test_cover_segment_range_treats_zero_as_missing_parameter(self):
+        """层厚或层间距为 0 且未提供数量时，有效参数不足两个。"""
 
-        for thickness, spacing, message in (
-            (0.0, 1.0, "层厚必须大于 0"),
-            (1.0, 0.0, "层间距必须大于 0"),
+        for thickness, spacing in (
+            (0.0, 1.0),
+            (1.0, 0.0),
         ):
             with self.subTest(thickness=thickness, spacing=spacing):
-                with self.assertRaisesRegex(ValueError, message):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "必须传入其中两个或三个",
+                ):
                     cover_segment_range(
                         target_start=Point3D(0.0, 0.0, 0.0),
                         target_end=Point3D(0.0, 0.0, 10.0),

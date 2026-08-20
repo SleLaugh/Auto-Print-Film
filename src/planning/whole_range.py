@@ -28,6 +28,7 @@ from src.planning.straight import (
     cover_segment_range,
     default_straight_frame,
     recenter_point_in_plane,
+    resolve_segment_sampling,
     resolve_slice_range_extension,
     resolve_projected_extent,
 )
@@ -128,7 +129,7 @@ def bbox_range_points(
     slice_spacing: Optional[float] = None,
 ) -> tuple[Point3D, Point3D]:
     """
-    在指定堆叠轴上生成首末中心跨过 bbox 边界的切片范围。
+    在指定堆叠轴上生成首末厚层外缘覆盖 bbox 边界的切片中心范围。
 
     未传层间距时按公开接口默认令层间距等于层厚；正式规划入口会传入实际
     配置值。只有坐标容差内的零长度目标使用单个中心。
@@ -149,7 +150,7 @@ def bbox_axial_range_points(
     slice_spacing: Optional[float] = None,
 ) -> tuple[Point3D, Point3D]:
     """
-    用整体目标 bbox 的最外侧 z 范围生成跨过边界的横状位中心范围。
+    用整体目标 bbox 的最外侧 z 范围生成完整覆盖边界的横状位中心范围。
 
     未传层间距时按层厚作为公开接口的默认间距。
     """
@@ -447,29 +448,30 @@ def _build_whole_range_plan_from_anatomical_frame(
             f"不支持的切割线范围模式: {plane_config.line_extent_mode}"
         )
 
-    # 使用最少且严格等距的切片中心跨过解剖目标边界；不能整除的剩余
-    # 长度通过首尾对称外扩消化。显式配置的首尾扩展先加入有效目标范围，
-    # 避免肺尖、肺底在厚层平均后看起来缺失。
+    # 显式配置的首尾扩展先加入有效范围，再统一计算层厚、层间距和数量，
+    # 让首末厚层外缘完整覆盖肺尖、肺底等解剖边界。
     range_extension = resolve_slice_range_extension(
         localization_result,
         plane_config.slice_type.value,
         plane,
     )
-    range_start, range_end = cover_segment_range(
+    range_start, range_end, sampling = resolve_segment_sampling(
         centered_target_start,
         centered_target_end,
         plane_config.slice_thickness,
         plane_config.slice_spacing,
+        slice_image_count=plane_config.slice_image_count,
         start_extension_mm=range_extension.start_mm,
         end_extension_mm=range_extension.end_mm,
     )
     path_points = [range_start, range_end]
     slices = build_plane_stack_slices(
         path_points=path_points,
-        slice_spacing=plane_config.slice_spacing,
+        slice_spacing=sampling.slice_spacing,
         normal=straight_frame.normal,
         row_dir=straight_frame.row_dir,
         col_dir=straight_frame.col_dir,
+        slice_image_count=sampling.slice_image_count,
     )
     return SlicePlan(
         plan_id=(
@@ -489,8 +491,8 @@ def _build_whole_range_plan_from_anatomical_frame(
             plane,
             localization_result["image"],
         ),
-        slice_thickness=plane_config.slice_thickness,
-        slice_spacing=plane_config.slice_spacing,
+        slice_thickness=sampling.slice_thickness,
+        slice_spacing=sampling.slice_spacing,
         window_presets=list(plane_config.window_presets),
         source_labels=list(source_labels or ["anatomical_geometry.global_frame"]),
         target_start=centered_target_start,
@@ -498,6 +500,9 @@ def _build_whole_range_plan_from_anatomical_frame(
         localizer_reference=localizer_reference,
         warnings=list(anatomical_frame.warnings),
         confidence=anatomical_frame.confidence,
+        config_id=plane_config.config_id,
+        output_plane=plane_config.output_plane,
+        sampling_details=sampling.to_dict(),
     )
 
 

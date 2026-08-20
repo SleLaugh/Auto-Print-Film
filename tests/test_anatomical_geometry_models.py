@@ -36,7 +36,7 @@ class AnatomicalGeometryModelsTest(unittest.TestCase):
         frame = self._make_frame()
         result = AnatomicalGeometryResult(
             global_frame=frame,
-            local_frames={"L1-L2": frame},
+            local_frames={"L1_L2": frame},
         )
 
         data = result.to_dict()
@@ -47,7 +47,7 @@ class AnatomicalGeometryModelsTest(unittest.TestCase):
             "maximum": 11.0,
         })
         self.assertEqual(data["global_frame"]["method"], "test_frame")
-        self.assertIn("L1-L2", data["local_frames"])
+        self.assertIn("L1_L2", data["local_frames"])
 
     def test_result_round_trips_from_dict(self):
         """实体经过字典序列化和反序列化后不应丢失字段。"""

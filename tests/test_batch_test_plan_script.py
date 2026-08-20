@@ -75,14 +75,14 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         configs = json.loads(value)
 
         self.assertEqual(
-            [config["plane"] for config in configs],
+            [config["Plane"] for config in configs],
             ["横状位", "矢状位", "冠状位"],
         )
         for config in configs:
-            self.assertEqual(config["slice_thickness"], 5)
-            self.assertEqual(config["slice_spacing"], 5)
+            self.assertEqual(config["SliceThickness"], 5)
+            self.assertEqual(config["SliceSpacing"], 5)
             self.assertEqual(
-                config["window_presets"],
+                config["WindowPresets"],
                 ["骨窗", "肺窗", "纵隔窗", "软组织窗"],
             )
             self.assertEqual(config["line_extent_mode"], "部位范围")
@@ -92,10 +92,10 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         """精简 Linux 的 C locale 下，显式 UTF-8 模式仍应正确解析中文请求。"""
 
         payload = json.dumps({
-            "plane": "横状位",
-            "slice_thickness": 5,
-            "slice_spacing": 5,
-            "window_presets": ["骨窗"],
+            "Plane": "横状位",
+            "SliceThickness": 5,
+            "SliceSpacing": 5,
+            "WindowPresets": ["骨窗"],
             "line_extent_mode": "整平面",
         }, ensure_ascii=False)
         environment = dict(os.environ)

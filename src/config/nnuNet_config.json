@@ -7,119 +7,138 @@
     "nnUNet_results": "",
     "_model_rules": [
         {
-            "check_type": "CT",
-            "body_part": "头骨",
+            "study_type": "CT",
+            "study_part": "头骨",
             "model_mapper": [
                 {
-                    "scan_thickness": "default",
+                    "min_scan_thickness": 0.0,
+                    "max_scan_thickness": 1.5,
                     "model_id": 294
                 },
                 {
-                    "scan_thickness": "3mm",
+                    "min_scan_thickness": 1.6,
+                    "max_scan_thickness": 4.5,
                     "model_id": 297
                 },
                 {
-                    "scan_thickness": "6mm",
+                    "min_scan_thickness": 4.6,
+                    "max_scan_thickness": 6.0,
                     "model_id": 298
                 }
             ]
         },
         {
-            "check_type": "CT",
-            "body_part": "颈椎",
+            "study_type": "CT",
+            "study_part": "颈椎",
             "model_mapper": [
                 {
-                    "scan_thickness": "default",
+                    "min_scan_thickness": 0.0,
+                    "max_scan_thickness": 1.5,
                     "model_id": 292
                 },
                 {
-                    "scan_thickness": "3mm",
+                    "min_scan_thickness": 1.6,
+                    "max_scan_thickness": 4.5,
                     "model_id": 297
                 },
                 {
-                    "scan_thickness": "6mm",
+                    "min_scan_thickness": 4.6,
+                    "max_scan_thickness": 6.0,
                     "model_id": 298
                 }
             ]
         },
         {
-            "check_type": "CT",
-            "body_part": "胸椎",
+            "study_type": "CT",
+            "study_part": "胸椎",
             "model_mapper": [
                 {
-                    "scan_thickness": "default",
+                    "min_scan_thickness": 0.0,
+                    "max_scan_thickness": 1.5,
                     "model_id": 292
                 },
                 {
-                    "scan_thickness": "3mm",
+                    "min_scan_thickness": 1.6,
+                    "max_scan_thickness": 4.5,
                     "model_id": 297
                 },
                 {
-                    "scan_thickness": "6mm",
+                    "min_scan_thickness": 4.6,
+                    "max_scan_thickness": 6.0,
                     "model_id": 298
                 }
             ]
         },
         {
-            "check_type": "CT",
-            "body_part": "腰椎",
+            "study_type": "CT",
+            "study_part": "腰椎",
             "model_mapper": [
                 {
-                    "scan_thickness": "default",
+                    "min_scan_thickness": 0.0,
+                    "max_scan_thickness": 1.5,
                     "model_id": 292
                 },
                 {
-                    "scan_thickness": "3mm",
+                    "min_scan_thickness": 1.6,
+                    "max_scan_thickness": 4.5,
                     "model_id": 297
                 },
                 {
-                    "scan_thickness": "6mm",
+                    "min_scan_thickness": 4.6,
+                    "max_scan_thickness": 6.0,
                     "model_id": 298
                 }
             ]
         },
         {
-            "check_type": "CT",
-            "body_part": "肺部",
+            "study_type": "CT",
+            "study_part": "肺部",
             "model_mapper": [
                 {
-                    "scan_thickness": "default",
+                    "min_scan_thickness": 0.0,
+                    "max_scan_thickness": 1.5,
                     "model_id": 315
                 }
             ]
         },
         {
-            "check_type": "CT",
-            "body_part": "骶骨",
+            "study_type": "CT",
+            "study_part": "骶骨",
             "model_mapper": [
                 {
-                    "scan_thickness": "default",
+                    "min_scan_thickness": 0.0,
+                    "max_scan_thickness": 1.5,
                     "model_id": 292
                 },
                 {
-                    "scan_thickness": "3mm",
+                    "min_scan_thickness": 1.6,
+                    "max_scan_thickness": 4.5,
                     "model_id": 297
                 },
                 {
-                    "scan_thickness": "6mm",
+                    "min_scan_thickness": 4.6,
+                    "max_scan_thickness": 6.0,
                     "model_id": 298
                 }
             ]
         },
         {
-            "check_type": "CT",
-            "body_part": "髋骨",
+            "study_type": "CT",
+            "study_part": "髋骨",
             "model_mapper": [
                 {
-                    "scan_thickness": "default",
+                    "min_scan_thickness": 0.0,
+                    "max_scan_thickness": 1.5,
                     "model_id": 294
                 },
                 {
-                    "scan_thickness": "3mm",
+                    "min_scan_thickness": 1.6,
+                    "max_scan_thickness": 4.5,
                     "model_id": 297
                 },
                 {
-                    "scan_thickness": "6mm",
+                    "min_scan_thickness": 4.6,
+                    "max_scan_thickness": 6.0,
                     "model_id": 298
                 }
             ]

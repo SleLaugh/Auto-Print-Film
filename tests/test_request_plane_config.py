@@ -2,7 +2,7 @@ import unittest
 
 from src.models import PlaneConfig, Request
 from src.models.enums import (
-    BodyPartEnum,
+    StudyPartEnum,
     CutLineExtentModeEnum,
     PlaneTypeEnum,
     SliceType,
@@ -30,26 +30,26 @@ class PlaneConfigRequestTest(unittest.TestCase):
             "脊柱窗",
         ]
         config = PlaneConfig.from_dict({
-            "plane": "横状位",
-            "slice_thickness": 5,
-            "slice_spacing": 5,
-            "window_presets": window_names,
+            "Plane": "横状位",
+            "SliceThickness": 5,
+            "SliceSpacing": 5,
+            "WindowPresets": window_names,
         })
 
         self.assertEqual(
             config.window_presets,
             window_names,
         )
-        self.assertEqual(config.to_dict()["window_presets"], window_names)
+        self.assertEqual(config.to_dict()["WindowPresets"], window_names)
 
     def test_plane_config_from_dict_keeps_window_names_as_strings(self):
         """验证 `test_plane_config_from_dict_keeps_window_names_as_strings` 场景符合预期。"""
 
         config = PlaneConfig.from_dict({
-            "plane": "冠状位",
-            "slice_thickness": 5,
-            "slice_spacing": 10,
-            "window_presets": ["骨窗", "肺窗", "纵隔窗"],
+            "Plane": "冠状位",
+            "SliceThickness": 5,
+            "SliceSpacing": 10,
+            "WindowPresets": ["骨窗", "肺窗", "纵隔窗"],
         })
 
         self.assertIs(config.plane, PlaneTypeEnum.冠状位)
@@ -75,10 +75,10 @@ class PlaneConfigRequestTest(unittest.TestCase):
         """外部 SliceType 字段应转换成强类型枚举并原样返回。"""
 
         config = PlaneConfig.from_dict({
-            "plane": "冠状位",
-            "slice_thickness": 3,
-            "slice_spacing": 5,
-            "window_presets": ["骨窗"],
+            "Plane": "冠状位",
+            "SliceThickness": 3,
+            "SliceSpacing": 5,
+            "WindowPresets": ["骨窗"],
             "SliceType": "CPR",
         })
 
@@ -92,10 +92,10 @@ class PlaneConfigRequestTest(unittest.TestCase):
             with self.subTest(removed_value=removed_value):
                 with self.assertRaises(ValueError):
                     PlaneConfig.from_dict({
-                        "plane": "横状位",
-                        "slice_thickness": 3,
-                        "slice_spacing": 5,
-                        "window_presets": ["骨窗"],
+                        "Plane": "横状位",
+                        "SliceThickness": 3,
+                        "SliceSpacing": 5,
+                        "WindowPresets": ["骨窗"],
                         "SliceType": removed_value,
                     })
 
@@ -103,10 +103,10 @@ class PlaneConfigRequestTest(unittest.TestCase):
         """外部请求应直接使用中文部位范围协议值。"""
 
         config = PlaneConfig.from_dict({
-            "plane": "横状位",
-            "slice_thickness": 3,
-            "slice_spacing": 5,
-            "window_presets": ["骨窗"],
+            "Plane": "横状位",
+            "SliceThickness": 3,
+            "SliceSpacing": 5,
+            "WindowPresets": ["骨窗"],
             "line_extent_mode": "部位范围",
         })
 
@@ -123,10 +123,10 @@ class PlaneConfigRequestTest(unittest.TestCase):
             with self.subTest(removed_value=removed_value):
                 with self.assertRaises(ValueError):
                     PlaneConfig.from_dict({
-                        "plane": "横状位",
-                        "slice_thickness": 3,
-                        "slice_spacing": 5,
-                        "window_presets": ["骨窗"],
+                        "Plane": "横状位",
+                        "SliceThickness": 3,
+                        "SliceSpacing": 5,
+                        "WindowPresets": ["骨窗"],
                         "line_extent_mode": removed_value,
                     })
 
@@ -137,30 +137,91 @@ class PlaneConfigRequestTest(unittest.TestCase):
         request = Request.from_dict({
             "dicom_dir": "/tmp/dicom",
             "output_dir": "/tmp/output",
-            "body_part": BodyPartEnum.腰椎.value,
+            "StudyPart": StudyPartEnum.腰椎.value,
+            "StudyType": "CT",
+            "ScanThickness": 1.5,
             "plane_configs": [
                 {
-                    "plane": "冠状位",
-                    "slice_thickness": 5,
-                    "slice_spacing": 10,
-                    "window_presets": ["骨窗", "肺窗"],
+                    "Plane": "冠状位",
+                    "SliceThickness": 5,
+                    "SliceSpacing": 10,
+                    "WindowPresets": ["骨窗", "肺窗"],
                 }
             ],
         })
 
         self.assertIs(request.plane_configs[0].plane, PlaneTypeEnum.冠状位)
+        self.assertIs(request.study_part, StudyPartEnum.腰椎)
+        self.assertEqual(request.to_dict()["StudyPart"], "腰椎")
+        self.assertEqual(request.to_dict()["StudyType"], "CT")
+        self.assertEqual(request.scan_thickness, 1.5)
+        self.assertEqual(request.to_dict()["ScanThickness"], 1.5)
         self.assertEqual(request.to_dict()["plane_configs"], [
             {
-                "plane": "冠状位",
-                "slice_thickness": 5.0,
-                "slice_spacing": 10.0,
-                "window_presets": ["骨窗", "肺窗"],
+                "Plane": "冠状位",
+                "SliceThickness": 5.0,
+                "SliceSpacing": 10.0,
+                "WindowPresets": ["骨窗", "肺窗"],
                 "SliceType": "MPR",
                 "line_extent_mode": "整平面",
             }
         ])
         self.assertNotIn("cut_mode", request.to_dict())
         self.assertFalse(hasattr(request, "cut_mode"))
+
+    def test_request_requires_pascal_case_scan_thickness(self):
+        """外部扫描厚度只接受必填的 PascalCase 数值字段。"""
+
+        with self.assertRaisesRegex(ValueError, "ScanThickness"):
+            Request.from_dict({
+                "dicom_dir": "/tmp/dicom",
+                "output_dir": "/tmp/output",
+                "scan_thickness": 1.0,
+            })
+
+    def test_request_rejects_removed_study_field_names(self):
+        """检查类型和部位只接受新的 StudyType/StudyPart 单词。"""
+
+        for removed_name in (
+            "body_part",
+            "check_type",
+            "study_part",
+            "study_type",
+            "target_part",
+        ):
+            with self.subTest(removed_name=removed_name):
+                with self.assertRaisesRegex(ValueError, "已移除字段"):
+                    Request.from_dict({
+                        "dicom_dir": "/tmp/dicom",
+                        "output_dir": "/tmp/output",
+                        removed_name: "颈椎",
+                        "ScanThickness": 1.0,
+                    })
+
+    def test_plane_config_rejects_removed_lowercase_fields(self):
+        """旧状位字段不再作为兼容入口。"""
+
+        with self.assertRaises(KeyError):
+            PlaneConfig.from_dict({
+                "plane": "横状位",
+                "slice_thickness": 1,
+                "slice_spacing": 1,
+                "window_presets": ["骨窗"],
+            })
+
+    def test_request_validate_rejects_invalid_scan_thickness(self):
+        """扫描层厚必须是非负有限毫米数值。"""
+
+        for value in (-0.1, float("nan"), float("inf"), True):
+            with self.subTest(value=value):
+                request = Request(
+                    dicom_dir="/tmp/dicom",
+                    output_dir="/tmp/output",
+                    scan_thickness=value,
+                )
+                is_valid, error_message = request.validate()
+                self.assertFalse(is_valid)
+                self.assertIn("ScanThickness", error_message)
 
 
     def test_request_defaults_to_currently_supported_axial_plane(self):
@@ -171,10 +232,10 @@ class PlaneConfigRequestTest(unittest.TestCase):
 
         self.assertEqual(request.to_dict()["plane_configs"], [
             {
-                "plane": "横状位",
-                "slice_thickness": 1.0,
-                "slice_spacing": 1.0,
-                "window_presets": ["骨窗"],
+                "Plane": "横状位",
+                "SliceThickness": 1.0,
+                "SliceSpacing": 1.0,
+                "WindowPresets": ["骨窗"],
                 "SliceType": "MPR",
                 "line_extent_mode": "整平面",
             },
@@ -191,16 +252,16 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self._assert_invalid(
             [
                 {
-                    "plane": "横状位",
-                    "slice_thickness": 1,
-                    "slice_spacing": 1,
-                    "window_presets": ["骨窗"],
+                    "Plane": "横状位",
+                    "SliceThickness": 1,
+                    "SliceSpacing": 1,
+                    "WindowPresets": ["骨窗"],
                 },
                 {
-                    "plane": "横状位",
-                    "slice_thickness": 1,
-                    "slice_spacing": 1,
-                    "window_presets": ["骨窗"],
+                    "Plane": "横状位",
+                    "SliceThickness": 1,
+                    "SliceSpacing": 1,
+                    "WindowPresets": ["骨窗"],
                 },
             ],
             "plane_configs 中存在重复状位",
@@ -212,10 +273,10 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self._assert_invalid(
             [
                 {
-                    "plane": "横状位",
-                    "slice_thickness": 0,
-                    "slice_spacing": 1,
-                    "window_presets": ["骨窗"],
+                    "Plane": "横状位",
+                    "SliceThickness": 0,
+                    "SliceSpacing": 1,
+                    "WindowPresets": ["骨窗"],
                 }
             ],
             "层厚必须大于 0",
@@ -227,10 +288,10 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self._assert_invalid(
             [
                 {
-                    "plane": "横状位",
-                    "slice_thickness": 1,
-                    "slice_spacing": 0,
-                    "window_presets": ["骨窗"],
+                    "Plane": "横状位",
+                    "SliceThickness": 1,
+                    "SliceSpacing": 0,
+                    "WindowPresets": ["骨窗"],
                 }
             ],
             "层间距必须大于 0",
@@ -242,10 +303,10 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self._assert_invalid(
             [
                 {
-                    "plane": "横状位",
-                    "slice_thickness": 1,
-                    "slice_spacing": 1,
-                    "window_presets": [],
+                    "Plane": "横状位",
+                    "SliceThickness": 1,
+                    "SliceSpacing": 1,
+                    "WindowPresets": [],
                 }
             ],
             "窗宽窗位不能为空",
@@ -256,10 +317,10 @@ class PlaneConfigRequestTest(unittest.TestCase):
 
         self._assert_invalid(
             [{
-                "plane": "横状位",
-                "slice_thickness": 1,
-                "slice_spacing": 1,
-                "window_presets": ["血管窗"],
+                "Plane": "横状位",
+                "SliceThickness": 1,
+                "SliceSpacing": 1,
+                "WindowPresets": ["血管窗"],
             }],
             "不支持的窗宽窗位预设",
         )
@@ -271,6 +332,7 @@ class PlaneConfigRequestTest(unittest.TestCase):
         request = Request.from_dict({
             "dicom_dir": "/tmp/dicom",
             "output_dir": "/tmp/output",
+            "ScanThickness": 1.0,
             "plane_configs": plane_configs,
         })
 

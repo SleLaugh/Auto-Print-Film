@@ -72,7 +72,7 @@ class LumbarWholeRangePlanner:
             LUMBAR_LABELS,
         )
         cpr_labels = configured_spine_cpr_labels(
-            request.body_part.value,
+            request.study_part.value,
             localization_result,
             LUMBAR_LABELS,
         )

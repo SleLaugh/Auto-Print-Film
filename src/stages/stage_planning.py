@@ -57,7 +57,7 @@ class PlanningStage(BaseStage):
 
         DebugLog("=" * 60)
         DebugLog("【第六阶段】切片规划 - 生成重建执行计划")
-        DebugLog(f"  部位: {request.body_part.value}")
+        DebugLog(f"  部位: {request.study_part.value}")
         DebugLog(
             "  SliceType: "
             + ", ".join(config.slice_type.value for config in request.plane_configs)
@@ -80,7 +80,7 @@ class PlanningStage(BaseStage):
         all_warnings = []
         planner_names = []
         for slice_type, plane_configs in grouped_configs.items():
-            planner = select_planner(request.body_part.value, slice_type)
+            planner = select_planner(request.study_part.value, slice_type)
             planner_names.append(planner.planner_name)
             DebugLog(f"    planner: {planner.planner_name}")
             scoped_request = copy(request)

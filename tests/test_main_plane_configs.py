@@ -15,6 +15,7 @@ class MainPlaneConfigsTest(unittest.TestCase):
         try:
             sys.argv = [
                 "main.py", "-i", "/tmp/dicom", "-o", "/tmp/output",
+                "--scan_thickness", "1.0",
                 "--cut_mode", "whole_range",
             ]
             with self.assertRaises(SystemExit):
@@ -27,7 +28,7 @@ class MainPlaneConfigsTest(unittest.TestCase):
         """验证 `test_parse_plane_configs_json_string` 场景符合预期。"""
 
         configs = main.parse_plane_configs(
-            '[{"plane":"冠状位","slice_thickness":5,"slice_spacing":10,"window_presets":["骨窗","肺窗"]}]'
+            '[{"Plane":"冠状位","SliceThickness":5,"SliceSpacing":10,"WindowPresets":["骨窗","肺窗"]}]'
         )
 
         self.assertIs(configs[0].plane, PlaneTypeEnum.冠状位)
@@ -49,11 +50,10 @@ class MainPlaneConfigsTest(unittest.TestCase):
         """验证 `test_parse_plane_configs_rejects_non_array_json` 场景符合预期。"""
 
         with self.assertRaisesRegex(ValueError, "plane_configs 必须是 JSON 数组"):
-            main.parse_plane_configs('{"plane":"冠状位"}')
+            main.parse_plane_configs('{"Plane":"冠状位"}')
 
-    def test_parse_arguments_accepts_plane_configs_alias(self):
-        # 直接替换 sys.argv，验证 argparse 能识别连字符别名 --plane-configs。
-        """验证 `test_parse_arguments_accepts_plane_configs_alias` 场景符合预期。"""
+    def test_parse_arguments_accepts_underscore_protocol(self):
+        """CLI 参数统一使用小写下划线命名。"""
 
         original_argv = sys.argv
         try:
@@ -63,18 +63,45 @@ class MainPlaneConfigsTest(unittest.TestCase):
                 "/tmp/dicom",
                 "-o",
                 "/tmp/output",
-                "--plane-configs",
-                '[{"plane":"冠状位","slice_thickness":5,"slice_spacing":10,"window_presets":["骨窗"]}]',
+                "--scan_thickness",
+                "1.5",
+                "--plane_configs",
+                '[{"Plane":"冠状位","SliceThickness":5,"SliceSpacing":10,"WindowPresets":["骨窗"]}]',
             ]
 
             args = main.parse_arguments()
 
             self.assertEqual(
                 args.plane_configs,
-                '[{"plane":"冠状位","slice_thickness":5,"slice_spacing":10,"window_presets":["骨窗"]}]',
+                '[{"Plane":"冠状位","SliceThickness":5,"SliceSpacing":10,"WindowPresets":["骨窗"]}]',
             )
+            self.assertEqual(args.scan_thickness, 1.5)
         finally:
             # 测试结束后恢复 argv，避免污染同进程里的其他测试。
+            sys.argv = original_argv
+
+    def test_parse_arguments_rejects_removed_hyphen_aliases(self):
+        """CLI 不再同时维护连字符参数别名。"""
+
+        original_argv = sys.argv
+        try:
+            for removed_name in (
+                "--study-part",
+                "--study-type",
+                "--scan-thickness",
+                "--plane-configs",
+            ):
+                with self.subTest(removed_name=removed_name):
+                    sys.argv = [
+                        "main.py",
+                        "-i", "/tmp/dicom",
+                        "-o", "/tmp/output",
+                        "--scan_thickness", "1.0",
+                        removed_name, "1.0",
+                    ]
+                    with self.assertRaises(SystemExit):
+                        main.parse_arguments()
+        finally:
             sys.argv = original_argv
 
 

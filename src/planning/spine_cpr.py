@@ -146,14 +146,14 @@ def build_spine_sagittal_cpr_plans(
             for index, offset_mm in enumerate(offsets)
         ]
         plan_id, group_name = _cpr_plan_identity(
-            request.body_part.value,
+            request.study_part.value,
             plane_config.plane.value,
             range_mode,
             include_range_suffix,
         )
         plans.append(SlicePlan(
             plan_id=plan_id,
-            body_part=request.body_part.value,
+            study_part=request.study_part.value,
             slice_type="CPR",
             plane=plane_config.plane.value,
             group_name=group_name,
@@ -194,7 +194,7 @@ def build_spine_sagittal_cpr_plans(
 
     DebugLog(
         "    [CPR规划性能] "
-        f"body_part={request.body_part.value}, "
+        f"study_part={request.study_part.value}, "
         f"plane={plane_config.plane.value}, "
         f"labels={len(source_labels)}, "
         f"curve_points={len(curve_points)}, "
@@ -239,14 +239,14 @@ def _config_bool(value: Any, default: bool) -> bool:
 
 
 def _cpr_plan_identity(
-    body_part: str,
+    study_part: str,
     plane: str,
     range_mode: str,
     include_range_suffix: bool,
 ) -> tuple[str, str]:
     """按范围模式生成稳定 plan_id 和输出组名。"""
 
-    base_plan_id = f"{body_part}_CPR_{plane}"
+    base_plan_id = f"{study_part}_CPR_{plane}"
     if not include_range_suffix:
         return base_plan_id, "CPR"
     if range_mode == CPR_RANGE_MODE_BODY_PRISM:
@@ -255,7 +255,7 @@ def _cpr_plan_identity(
 
 
 def configured_spine_cpr_labels(
-    body_part: str,
+    study_part: str,
     localization_result: Dict[str, Any],
     fallback_labels: Iterable[str],
 ) -> List[str]:
@@ -266,7 +266,7 @@ def configured_spine_cpr_labels(
     )
     if configured_labels is None:
         return list(fallback_labels)
-    if body_part == "颈椎":
+    if study_part == "颈椎":
         configured_labels = [
             label_name
             for label_name in configured_labels

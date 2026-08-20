@@ -19,7 +19,7 @@ sys.path.insert(0, str(project_root))
 # ===== 导入（在 sys.path 操作之后）=====
 from src.core import Pipeline
 from src.config import load_app_config
-from src.models import Request, BodyPartEnum, CheckTypeEnum, ScanThicknessEnum, PlaneConfig
+from src.models import Request, StudyPartEnum, StudyTypeEnum, PlaneConfig
 from src.utils import RunLog, ErrorLog, DebugLog, configure_logging
 
 
@@ -51,54 +51,47 @@ def parse_arguments():
         help='输出目录'
     )
     
-    # 添加 --body_part 参数
+    # 添加 --study_part 参数
     # default='腰椎' 表示如果不指定，默认处理腰椎
     # choices 限制了只能从列表中选一个值，输入其他会报错
-    body_part_choices = [e.value for e in BodyPartEnum]
+    study_part_choices = [e.value for e in StudyPartEnum]
     parser.add_argument(
-        '--body_part',
-        '--body-part',
-        '--target_part',
-        '--target-part',
-        dest='body_part',
+        '--study_part',
+        dest='study_part',
         type=str,
         default='腰椎',
-        choices=body_part_choices,
-        help=f'部位，可选值: {", ".join(body_part_choices)}'
+        choices=study_part_choices,
+        help=f'部位，可选值: {", ".join(study_part_choices)}'
     )
 
     parser.add_argument(
-        '--check_type',
-        '--check-type',
-        dest='check_type',
+        '--study_type',
+        dest='study_type',
         type=str,
-        default=CheckTypeEnum.CT.value,
-        choices=[e.value for e in CheckTypeEnum],
+        default=StudyTypeEnum.CT.value,
+        choices=[e.value for e in StudyTypeEnum],
         help='检查类型'
     )
 
     parser.add_argument(
         '--scan_thickness',
-        '--scan-thickness',
         dest='scan_thickness',
-        type=str,
-        default=ScanThicknessEnum.默认.value,
-        choices=[e.value for e in ScanThicknessEnum],
-        help='扫描厚度档位，用于匹配对应模型'
+        type=float,
+        required=True,
+        help='当前原始扫描层厚，单位 mm，用于按区间匹配模型'
     )
 
     parser.add_argument(
         '--plane_configs',
-        '--plane-configs',
         dest='plane_configs',
         type=str,
         default=None,
         # 这里先采用 JSON 字符串，避免为一个小参数组同时维护命令行文件入口。
-        help='三平面重建参数 JSON 数组，例如: [{"plane":"冠状位","slice_thickness":5,"slice_spacing":10,"window_presets":["骨窗"],"SliceType":"MPR"}]'
+        help='三平面重建参数 JSON 数组，例如: [{"Plane":"冠状位","SliceThickness":5,"SliceSpacing":10,"WindowPresets":["骨窗"],"SliceType":"MPR"}]'
     )
 
     # 解析命令行输入的参数
-    # 比如运行：python script.py -i /path/to/dicom -o /path/to/output --body_part 颈椎
+    # 比如运行：python script.py -i /path/to/dicom -o /path/to/output --study_part 颈椎
     # 就会把参数解析成对象返回
     return parser.parse_args()
 
@@ -144,9 +137,9 @@ def main():
         request_kwargs = {
             'dicom_dir': args.input,
             'output_dir': args.output,
-            'body_part': BodyPartEnum(args.body_part),
-            'check_type': CheckTypeEnum(args.check_type),
-            'scan_thickness': ScanThicknessEnum(args.scan_thickness),
+            'study_part': StudyPartEnum(args.study_part),
+            'study_type': StudyTypeEnum(args.study_type),
+            'scan_thickness': args.scan_thickness,
         }
         if plane_configs is not None:
             request_kwargs['plane_configs'] = plane_configs
@@ -159,9 +152,9 @@ def main():
         
         DebugLog(f"输入路径: {request.dicom_dir}")
         DebugLog(f"输出路径: {request.output_dir}")
-        DebugLog(f"部位: {request.body_part.value}")
-        DebugLog(f"检查类型: {request.check_type.value}")
-        DebugLog(f"扫描厚度: {request.scan_thickness.value}")
+        DebugLog(f"部位: {request.study_part.value}")
+        DebugLog(f"检查类型: {request.study_type.value}")
+        DebugLog(f"扫描厚度: {request.scan_thickness}mm")
         DebugLog(f"三平面参数: {request.to_dict()['plane_configs']}")
         
         pipeline = Pipeline(config=app_config)

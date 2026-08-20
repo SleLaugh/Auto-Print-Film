@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 DICOM_ROOT="/home/peng/03_data/demo/Image/dicom"
 RESULT_ROOT="/home/peng/03_data/demo/Image/result"
 PYTHON_BIN=".venv/bin/python"
-PLANE_CONFIGS='[{"plane":"横状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"},{"plane":"矢状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"},{"plane":"冠状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"}]'
+PLANE_CONFIGS='[{"Plane":"横状位","SliceThickness":5,"SliceSpacing":5,"WindowPresets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"},{"Plane":"矢状位","SliceThickness":5,"SliceSpacing":5,"WindowPresets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"},{"Plane":"冠状位","SliceThickness":5,"SliceSpacing":5,"WindowPresets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"}]'
 # 中文请求值依赖 UTF-8 argv；显式开启可避免精简 Linux 环境使用 C/ASCII locale。
 export PYTHONUTF8=1
 DRY_RUN=0
@@ -56,26 +56,26 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
     PYTHON_BIN="python"
 fi
 
-# 格式: "dicom目录名|result目录名|部位"
+# 格式: "dicom目录名|result目录名|部位|扫描层厚(mm)"
 CASES=(
-    "颈1_1mm|颈椎_颈1_1mm|颈椎"
-    "颈2_1mm|颈椎_颈2_1mm|颈椎"
-    "颈3_1mm|颈椎_颈3_1mm|颈椎"
-    "颈到盆1_1.5mm|胸椎_颈到盆1_1.5mm|胸椎"
-    "颈到盆2_1.5mm|胸椎_颈到盆2_1.5mm|胸椎"
-    "颈到腰1_1.5mm|胸椎_颈到腰1_1.5mm|胸椎"
-    "颈到盆1_1.5mm|腰椎_颈到盆1_1.5mm|腰椎"
-    "颈到盆2_1.5mm|腰椎_颈到盆2_1.5mm|腰椎"
-    "颈到腰1_1.5mm|腰椎_颈到腰1_1.5mm|腰椎"
-    "腰1_1mm|腰椎_腰1_1mm|腰椎"
-    "腰2_1.5mm_歪|腰椎_腰2_1.5mm_歪|腰椎"
-    "腰3_1mm|腰椎_腰3_1mm|腰椎"
-    "肺1_1mm|肺部_肺1_1mm|肺部"
-    "肺3_1mm|肺部_肺3_1mm|肺部"
-    "颈到腰1_1.5mm|肺部_颈到腰1_1.5mm|肺部"
-    "盆1_1.5mm|髋骨_盆1_1.5mm|髋骨"
-    "盆2_1.5mm|髋骨_盆2_1.5mm|髋骨"
-    "颈到盆1_1.5mm|髋骨_颈到盆1_1.5mm|髋骨"
+    "颈1_1mm|颈椎_颈1_1mm|颈椎|1.0"
+    "颈2_1mm|颈椎_颈2_1mm|颈椎|1.0"
+    "颈3_1mm|颈椎_颈3_1mm|颈椎|1.0"
+    "颈到盆1_1.5mm|胸椎_颈到盆1_1.5mm|胸椎|1.5"
+    "颈到盆2_1.5mm|胸椎_颈到盆2_1.5mm|胸椎|1.5"
+    "颈到腰1_1.5mm|胸椎_颈到腰1_1.5mm|胸椎|1.5"
+    "颈到盆1_1.5mm|腰椎_颈到盆1_1.5mm|腰椎|1.5"
+    "颈到盆2_1.5mm|腰椎_颈到盆2_1.5mm|腰椎|1.5"
+    "颈到腰1_1.5mm|腰椎_颈到腰1_1.5mm|腰椎|1.5"
+    "腰1_1mm|腰椎_腰1_1mm|腰椎|1.0"
+    "腰2_1.5mm_歪|腰椎_腰2_1.5mm_歪|腰椎|1.5"
+    "腰3_1mm|腰椎_腰3_1mm|腰椎|1.0"
+    "肺1_1mm|肺部_肺1_1mm|肺部|1.0"
+    "肺3_1mm|肺部_肺3_1mm|肺部|1.0"
+    "颈到腰1_1.5mm|肺部_颈到腰1_1.5mm|肺部|1.5"
+    "盆1_1.5mm|髋骨_盆1_1.5mm|髋骨|1.5"
+    "盆2_1.5mm|髋骨_盆2_1.5mm|髋骨|1.5"
+    "颈到盆1_1.5mm|髋骨_颈到盆1_1.5mm|髋骨|1.5"
 )
 
 failures=()
@@ -117,15 +117,15 @@ wait_for_all() {
 }
 
 for index in "${!CASES[@]}"; do
-    IFS='|' read -r dicom_name result_name body_part <<< "${CASES[$index]}"
+    IFS='|' read -r dicom_name result_name study_part scan_thickness <<< "${CASES[$index]}"
     input_dir="$DICOM_ROOT/$dicom_name"
     output_dir="$RESULT_ROOT/$result_name"
 
-    printf '\n[%02d/%02d] %s -> %s (%s)\n' "$((index + 1))" "${#CASES[@]}" "$input_dir" "$output_dir" "$body_part"
+    printf '\n[%02d/%02d] %s -> %s (%s)\n' "$((index + 1))" "${#CASES[@]}" "$input_dir" "$output_dir" "$study_part"
 
     if [[ ! -d "$input_dir" ]]; then
         printf '跳过：输入目录不存在: %s\n' "$input_dir" >&2
-        failures+=("$dicom_name|$body_part|missing input")
+        failures+=("$dicom_name|$study_part|missing input")
         if [[ "$STOP_ON_FAILURE" -eq 1 ]]; then
             break
         fi
@@ -137,7 +137,8 @@ for index in "${!CASES[@]}"; do
         "main.py"
         "-i" "$input_dir"
         "-o" "$output_dir"
-        "--body_part" "$body_part"
+        "--study_part" "$study_part"
+        "--scan_thickness" "$scan_thickness"
         "--plane_configs" "$PLANE_CONFIGS"
     )
 
@@ -153,7 +154,7 @@ for index in "${!CASES[@]}"; do
 
     log_dir="$output_dir/log"
     if ! mkdir -p "$log_dir"; then
-        failures+=("$dicom_name|$body_part|cannot create log directory")
+        failures+=("$dicom_name|$study_part|cannot create log directory")
         if [[ "$STOP_ON_FAILURE" -eq 1 ]]; then
             break
         fi
@@ -164,7 +165,7 @@ for index in "${!CASES[@]}"; do
     printf '启动后台任务，日志: %s\n' "$log_file"
     "${cmd[@]}" >"$log_file" 2>&1 &
     pids+=("$!")
-    pid_labels+=("$dicom_name|$body_part")
+    pid_labels+=("$dicom_name|$study_part")
     pid_logs+=("$log_file")
 
     if [[ "$STOP_ON_FAILURE" -eq 1 ]] && [[ "${#failures[@]}" -gt 0 ]]; then

@@ -18,7 +18,7 @@ class PlanningResult:
     planner_name: str = ""
 
 
-def select_planner(body_part: str, slice_type: str) -> Any:
+def select_planner(study_part: str, slice_type: str) -> Any:
     """
     根据部位和外部指定的 SliceType 选择第六阶段 planner。
 
@@ -41,10 +41,10 @@ def select_planner(body_part: str, slice_type: str) -> Any:
         ("头骨", "MPR"): SingleLabelWholeRangePlanner,
         ("髋骨", "MPR"): SingleLabelWholeRangePlanner,
     }
-    key = (body_part, slice_type)
+    key = (study_part, slice_type)
     if key not in planner_types:
         raise ValueError(
-            f"未找到第六阶段 planner: body_part={body_part}, "
+            f"未找到第六阶段 planner: study_part={study_part}, "
             f"SliceType={slice_type}"
         )
     return planner_types[key]()

@@ -11,10 +11,10 @@
             "args": [
                 "-i", "/home/peng/03_data/demo/Image/dicom/颈1_1mm",
                 "-o", "/home/peng/03_data/demo/Image/result__/颈1_1mm",
-                "--body_part", "颈椎",
-                "--check_type", "CT",
-                "--scan_thickness", "default",
-                "--plane_configs", "[{\"plane\":\"横状位\",\"slice_thickness\":5,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\",\"SliceType\":\"MPR\"},{\"plane\":\"矢状位\",\"slice_thickness\":5,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\",\"SliceType\":\"MPR\"},{\"plane\":\"冠状位\",\"slice_thickness\":5,\"slice_spacing\":5,\"window_presets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\",\"SliceType\":\"MPR\"}]"
+                "--study_part", "颈椎",
+                "--study_type", "CT",
+                "--scan_thickness", "1.0",
+                "--plane_configs", "[{\"Plane\":\"横状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\",\"SliceType\":\"MPR\"},{\"Plane\":\"矢状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\",\"SliceType\":\"MPR\"},{\"Plane\":\"冠状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\",\"SliceType\":\"MPR\"}]"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"

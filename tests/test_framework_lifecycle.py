@@ -8,7 +8,7 @@ class FrameworkLifecycleTest(unittest.TestCase):
     def test_framework_error_serializes_stable_fields(self):
         error = CapabilityError(
             "不支持的能力",
-            details={"body_part": "颈椎"},
+            details={"study_part": "颈椎"},
         )
 
         self.assertEqual(error.to_dict(), {
@@ -16,7 +16,7 @@ class FrameworkLifecycleTest(unittest.TestCase):
             "message": "不支持的能力",
             "stage": None,
             "retryable": False,
-            "details": {"body_part": "颈椎"},
+            "details": {"study_part": "颈椎"},
         })
 
     def test_stage_record_tracks_terminal_state(self):

@@ -94,7 +94,7 @@ class LocalizationGeometryTest(unittest.TestCase):
                 "intervals": interspace,
             })
 
-    def test_spine_cpr_config_is_read_from_spine_body_part_only(self):
+    def test_spine_cpr_config_is_read_from_spine_study_part_only(self):
         """脊柱 CPR 配置只从对应脊柱部位读取，其他部位不返回该配置。"""
 
         stage = LocalizationStage()
@@ -122,7 +122,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         image = sitk.GetImageFromArray(mask.astype(np.uint8))
 
         geometry, diagnostics = stage._build_anatomical_geometry(
-            body_part="肺部",
+            study_part="肺部",
             target_mask=mask,
             image=image,
         )
@@ -141,7 +141,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         image = sitk.GetImageFromArray(mask.astype(np.uint8))
 
         geometry, diagnostics = stage._build_anatomical_geometry(
-            body_part="头骨",
+            study_part="头骨",
             target_mask=mask,
             image=image,
         )
@@ -155,7 +155,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         stage = LocalizationStage()
         shape = (40, 32, 40)
         image = sitk.GetImageFromArray(np.zeros(shape, dtype=np.uint8))
-        for body_part, start_label, end_label in (
+        for study_part, start_label, end_label in (
             ("颈椎", "vertebrae_C1", "vertebrae_C7"),
             ("胸椎", "vertebrae_C7", "vertebrae_L1"),
         ):
@@ -168,7 +168,7 @@ class LocalizationGeometryTest(unittest.TestCase):
             target_mask = np.logical_or.reduce(list(label_masks.values()))
 
             geometry, diagnostics = stage._build_anatomical_geometry(
-                body_part=body_part,
+                study_part=study_part,
                 target_mask=target_mask,
                 image=image,
                 label_masks=label_masks,
@@ -196,7 +196,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         label_masks["hip_right"][6:24, 5:15, 26:36] = True
 
         geometry, diagnostics = stage._build_anatomical_geometry(
-            body_part="髋骨",
+            study_part="髋骨",
             target_mask=np.logical_or.reduce(list(label_masks.values())),
             image=image,
             label_masks=label_masks,
@@ -390,7 +390,7 @@ class LocalizationGeometryTest(unittest.TestCase):
                 "vertebrae_C4": LabelTarget("vertebrae_C4", [4]),
                 "vertebrae_C5": LabelTarget("vertebrae_C5", [5]),
             },
-            body_part="颈椎",
+            study_part="颈椎",
         )
 
         self.assertEqual(candidate["correction_status"], "rejected")
@@ -418,7 +418,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         candidate = stage._build_xy_correction_candidate(
             seg_array,
             {"skull": LabelTarget("skull", [1])},
-            body_part="头骨",
+            study_part="头骨",
         )
 
         self.assertEqual(candidate["correction_status"], "rejected")
@@ -447,7 +447,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         candidate = stage._build_xy_correction_candidate(
             seg_array,
             {"skull": LabelTarget("skull", [1])},
-            body_part="头骨",
+            study_part="头骨",
         )
 
         self.assertEqual(candidate["correction_status"], "candidate")
@@ -1368,7 +1368,7 @@ class LocalizationGeometryTest(unittest.TestCase):
             wraps=LocalizationStage._sagittal_body_quadrilateral,
         ) as quadrilateral:
             geometry = LocalizationStage._build_spine_body_geometry(
-                body_part="腰椎",
+                study_part="腰椎",
                 image=image,
                 seg_array=seg_array,
                 label_targets={
@@ -1489,7 +1489,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         seg_array = np.zeros((12, 16, 20), dtype=np.uint8)
         seg_array[2:10, 4:12, 5:15] = 7
         geometry = LocalizationStage._build_spine_body_geometry(
-            body_part="腰椎",
+            study_part="腰椎",
             image=image,
             seg_array=seg_array,
             label_targets={"vertebrae_L1": LabelTarget("vertebrae_L1", [7])},
@@ -1511,7 +1511,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         seg_array = np.zeros((12, 16, 20), dtype=np.uint8)
         seg_array[2:10, 4:12, 5:15] = 7
         geometry = LocalizationStage._build_spine_body_geometry(
-            body_part="腰椎",
+            study_part="腰椎",
             image=image,
             seg_array=seg_array,
             label_targets={"vertebrae_L1": LabelTarget("vertebrae_L1", [7])},
@@ -2030,7 +2030,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         }
 
         geometry = stage._build_spine_body_geometry(
-            body_part="颈椎",
+            study_part="颈椎",
             image=image,
             seg_array=seg_array,
             label_targets=label_targets,
@@ -2648,7 +2648,7 @@ class LocalizationGeometryTest(unittest.TestCase):
 
         image = sitk.Image(4, 4, 4, sitk.sitkUInt8)
         geometry = LocalizationStage._build_spine_body_geometry(
-            body_part="肺部",
+            study_part="肺部",
             image=image,
             seg_array=np.zeros((4, 4, 4), dtype=np.uint8),
             label_targets={},

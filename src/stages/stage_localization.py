@@ -178,7 +178,7 @@ class LocalizationOperations(BaseStage):
     
     @staticmethod
     def _build_anatomical_geometry(
-        body_part: str,
+        study_part: str,
         target_mask: np.ndarray,
         image: sitk.Image,
         label_masks: Dict[str, np.ndarray] | None = None,
@@ -187,18 +187,18 @@ class LocalizationOperations(BaseStage):
     ) -> tuple[AnatomicalGeometryResult | None, Dict[str, Any]]:
         """只为已经适配的部位计算统一解剖坐标，其余部位保持旧行为。"""
 
-        if body_part == "肺部":
+        if study_part == "肺部":
             return estimate_lung_frame_with_diagnostics(target_mask, image)
-        if body_part in {"颈椎", "胸椎"}:
+        if study_part in {"颈椎", "胸椎"}:
             if not label_masks or not start_label or not end_label:
-                raise ValueError(f"{body_part} 解剖坐标缺少首尾椎体标签信息")
+                raise ValueError(f"{study_part} 解剖坐标缺少首尾椎体标签信息")
             return estimate_spine_frame_with_diagnostics(
                 label_masks=label_masks,
                 start_label=start_label,
                 end_label=end_label,
                 image=image,
             )
-        if body_part == "髋骨":
+        if study_part == "髋骨":
             if not label_masks or not start_label or not end_label:
                 raise ValueError("髋骨解剖坐标缺少左右髋骨标签信息")
             if start_label not in label_masks:
@@ -710,7 +710,7 @@ class LocalizationOperations(BaseStage):
         self,
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
-        body_part: str | None = None,
+        study_part: str | None = None,
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
     ) -> Dict[str, Any]:
         """估计横状位 XY 回正候选角，但不执行主流程回正。
@@ -757,7 +757,7 @@ class LocalizationOperations(BaseStage):
                     self.correction_non_spine_angle_threshold_degrees
                 ),
                 'should_correct': should_correct,
-                'body_part': body_part,
+                'study_part': study_part,
                 'reason': reason,
             }
         skew_info = self._detect_target_axial_skew(
@@ -2120,7 +2120,7 @@ class LocalizationOperations(BaseStage):
     @classmethod
     def _build_spine_body_geometry(
         cls,
-        body_part: str,
+        study_part: str,
         image: sitk.Image,
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
@@ -2134,7 +2134,7 @@ class LocalizationOperations(BaseStage):
         标注质心。物理坐标直接由当前工作图像转换，保证与第四阶段定位空间一致。
         """
 
-        if body_part not in {"颈椎", "胸椎", "腰椎"}:
+        if study_part not in {"颈椎", "胸椎", "腰椎"}:
             return None
 
         sagittal_geometries: dict[
@@ -3854,7 +3854,7 @@ class LocalizationOperations(BaseStage):
     ) -> None:
         """写出定位结果，供后续映射、MPR 和调试使用。"""
         localization_result = LocalizationResult(
-            body_part=request.body_part.value,
+            study_part=request.study_part.value,
             localization_profile=(
                 LocalizationStage._resolve_request_localization_profile(request)
             ),
@@ -3941,22 +3941,22 @@ class LocalizationOperations(BaseStage):
             localization_profile
             or self._resolve_request_localization_profile(request)
         )
-        body_part = getattr(request.body_part, 'value', request.body_part)
+        study_part = getattr(request.study_part, 'value', request.study_part)
         cut_configs = self._resolve_cut_configs(request)
         cut_config = cut_configs.get(localization_profile)
         if cut_config is None:
             raise ValueError(
-                f"未找到定位范围配置: body_part={body_part}, "
+                f"未找到定位范围配置: study_part={study_part}, "
                 f"profile={localization_profile}"
             )
         return cut_config
 
-    def _resolve_spine_cpr_config(self, body_part: str) -> Dict[str, Any]:
+    def _resolve_spine_cpr_config(self, study_part: str) -> Dict[str, Any]:
         """从当前脊柱部位配置中读取 CPR 配置，非脊柱部位返回空配置。"""
 
         target_configs = self._localization_config.get('targets', {})
         target_config = (
-            target_configs.get(body_part, {})
+            target_configs.get(study_part, {})
             if isinstance(target_configs, dict)
             else {}
         )
@@ -3975,11 +3975,11 @@ class LocalizationOperations(BaseStage):
         让第六阶段在一次混合请求中为 MPR/CPR 和椎间隙读取各自范围配置。
         """
 
-        body_part = getattr(request.body_part, 'value', request.body_part)
+        study_part = getattr(request.study_part, 'value', request.study_part)
         target_configs = self._localization_config.get('targets', {})
-        target_config = target_configs.get(body_part)
+        target_config = target_configs.get(study_part)
         if not target_config:
-            raise ValueError(f"未找到部位定位配置: {body_part}")
+            raise ValueError(f"未找到部位定位配置: {study_part}")
 
         cut_configs: Dict[str, CutConfig] = {}
         for configured_mode in ('whole_range', 'interspace'):
@@ -4205,7 +4205,7 @@ class LocalizationStage(LocalizationOperations):
                 "resolved_cut_configs"
             ],
             "spine_cpr_config": self._resolve_spine_cpr_config(
-                context.request.body_part.value,
+                context.request.study_part.value,
             ),
             "label_targets": self._label_targets_to_dict(label_targets),
             "dataset_json_path": correction_result["dataset_json_path"],

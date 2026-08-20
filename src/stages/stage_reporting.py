@@ -116,11 +116,11 @@ class ReportingStage(BaseStage):
 
         plane_configs = []
         for config in request_data.get('plane_configs', []):
-            plane = str(config['plane'])
+            plane = str(config['Plane'])
             summary = plane_summaries.get(plane, {})
             image_count = int(summary.get('slice_count', 0))
             window_presets = []
-            for window_name in config.get('window_presets', []):
+            for window_name in config.get('WindowPresets', []):
                 has_output = window_name in actual_windows.get(plane, set())
                 window_presets.append({
                     'name': window_name,
@@ -128,18 +128,19 @@ class ReportingStage(BaseStage):
                 })
 
             plane_configs.append({
-                'plane': plane,
-                'slice_thickness': float(config['slice_thickness']),
-                'slice_spacing': float(config['slice_spacing']),
+                'Plane': plane,
+                'SliceType': config['SliceType'],
+                'SliceThickness': float(config['SliceThickness']),
+                'SliceSpacing': float(config['SliceSpacing']),
                 'line_extent_mode': config['line_extent_mode'],
                 # 表示实际切片张数；多个窗位共享同一批切片，不重复累计。
                 'image_count': image_count,
-                'window_presets': window_presets,
+                'WindowPresets': window_presets,
             })
 
         return {
-            'body_part': request_data['body_part'],
-            'check_type': request_data['check_type'],
+            'StudyPart': request_data['StudyPart'],
+            'StudyType': request_data['StudyType'],
             'plane_configs': plane_configs,
         }
 
@@ -250,7 +251,7 @@ class ReportingStage(BaseStage):
 
         return {
             'plan_id': plan.get('plan_id', ''),
-            'body_part': plan.get('body_part', ''),
+            'study_part': plan.get('study_part', ''),
             'slice_type': plan.get('slice_type', ''),
             'plane': plan.get('plane', ''),
             'group_name': plan.get('group_name', ''),

@@ -31,10 +31,10 @@ class SingleLabelWholeRangePlanner:
 
         plans = []
         warnings = []
-        spine_labels = SPINE_CPR_LABELS.get(request.body_part.value)
+        spine_labels = SPINE_CPR_LABELS.get(request.study_part.value)
         if spine_labels is not None:
             spine_labels = configured_spine_cpr_labels(
-                request.body_part.value,
+                request.study_part.value,
                 localization_result,
                 spine_labels,
             )
@@ -58,7 +58,7 @@ class SingleLabelWholeRangePlanner:
                 continue
             if (
                 spine_labels is not None
-                and request.body_part.value == "胸椎"
+                and request.study_part.value == "胸椎"
                 and plane_config.plane == PlaneTypeEnum.冠状位
             ):
                 target_region_bbox, source_labels = spine_target_bbox(
@@ -76,7 +76,7 @@ class SingleLabelWholeRangePlanner:
                 # 脊柱矢状位恢复为普通直线 MPR，定位线继续画在冠状位背景上。
                 plan.localizer_plane = PlaneTypeEnum.冠状位.value
             if (
-                request.body_part.value == "胸椎"
+                request.study_part.value == "胸椎"
                 and plane_config.plane == PlaneTypeEnum.冠状位
                 and target_region_bbox is not None
             ):

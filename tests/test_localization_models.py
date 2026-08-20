@@ -11,7 +11,7 @@ class LocalizationModelsTest(unittest.TestCase):
 
         with self.assertRaisesRegex(TypeError, "cut_configs"):
             LocalizationResult(
-                body_part="肺部",
+                study_part="肺部",
                 localization_profile="whole_range",
                 seg_path="/tmp/seg.nii.gz",
                 model={"model_id": 1},
@@ -36,7 +36,7 @@ class LocalizationModelsTest(unittest.TestCase):
         """第五阶段标注质心应独立序列化，不覆盖第四阶段全量 coords。"""
 
         result = LocalizationResult(
-            body_part="腰椎",
+            study_part="腰椎",
             localization_profile="whole_range",
             seg_path="/tmp/seg.nii.gz",
             model={"model_id": 1},

@@ -35,7 +35,7 @@ class ConfigLoaderTest(unittest.TestCase):
                 "_fold": "2",
                 "_continue": False,
                 "nnUNet_raw": "/models/raw",
-                "_model_rules": [{"body_part": "腰椎"}],
+                "_model_rules": [{"study_part": "腰椎"}],
             },
         )
 
@@ -43,14 +43,14 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.nnunet.fold, "2")
         self.assertFalse(config.nnunet.continue_mode)
         self.assertEqual(config.nnunet.raw, "/models/raw")
-        self.assertEqual(config.nnunet.model_rules[0]["body_part"], "腰椎")
+        self.assertEqual(config.nnunet.model_rules[0]["study_part"], "腰椎")
 
     def test_stages_accept_the_single_loaded_nnunet_configuration(self):
         stage_config = {
             "_configuration": "3d_lowres",
             "_fold": "3",
             "_continue": False,
-            "_model_rules": [{"body_part": "腰椎"}],
+            "_model_rules": [{"study_part": "腰椎"}],
             "nnUNet_raw": "/central/raw",
             "nnUNet_preprocessed": "/central/preprocessed",
             "nnUNet_results": "/central/results",
@@ -76,7 +76,7 @@ class ConfigLoaderTest(unittest.TestCase):
             environ={},
             defaults={
                 "nnUNet_results": "/central/results",
-                "_model_rules": [{"body_part": "腰椎"}],
+                "_model_rules": [{"study_part": "腰椎"}],
             },
         )
 

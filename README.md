@@ -114,6 +114,21 @@ Windows 示例：
 }
 ```
 
+同一部位可以在 `_model_rules[].model_mapper` 中按原始扫描层厚配置不同模型。每项
+使用包含边界的毫米区间：
+
+```json
+{
+  "min_scan_thickness": 0.0,
+  "max_scan_thickness": 1.5,
+  "model_id": 292
+}
+```
+
+当前脊柱、头骨、骶骨和髋骨按 `0-1.5mm`、`1.6-4.5mm`、`4.6-6mm`
+分别选择原薄层、3mm、6mm 模型。肺部目前只有 `0-1.5mm` 的模型。外部厚度未命中
+任何区间或同时命中重叠区间时，分割阶段会明确失败，不会自动选择临近模型。
+
 ## 运行
 
 先激活虚拟环境。
@@ -122,17 +137,17 @@ Linux / macOS：
 
 ```bash
 source .venv/bin/activate
-python main.py -i /path/to/dicom_dir -o /path/to/output_dir --body_part 腰椎 --check_type CT --scan_thickness 3mm
+python main.py -i /path/to/dicom_dir -o /path/to/output_dir --study_part 腰椎 --study_type CT --scan_thickness 3.0
 ```
 
 Windows PowerShell：
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python main.py -i D:\data\dicom_dir -o D:\data\output_dir --body_part 腰椎 --check_type CT --scan_thickness 3mm
+python main.py -i D:\data\dicom_dir -o D:\data\output_dir --study_part 腰椎 --study_type CT --scan_thickness 3.0
 ```
 
-支持的 `--body_part`：
+支持的 `--study_part`：
 
 ```text
 头骨, 颈椎, 胸椎, 腰椎, 肺部, 骶骨, 髋骨

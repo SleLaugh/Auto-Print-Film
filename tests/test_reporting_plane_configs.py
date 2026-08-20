@@ -24,12 +24,13 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             request = Request.from_dict({
                 "dicom_dir": "/tmp/dicom",
                 "output_dir": temp_dir,
+                "ScanThickness": 1.5,
                 "plane_configs": [
                     {
-                        "plane": "冠状位",
-                        "slice_thickness": 5,
-                        "slice_spacing": 10,
-                        "window_presets": ["骨窗", "纵隔窗"],
+                        "Plane": "冠状位",
+                        "SliceThickness": 5,
+                        "SliceSpacing": 10,
+                        "WindowPresets": ["骨窗", "纵隔窗"],
                     }
                 ],
             })
@@ -40,18 +41,19 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             report = json.loads(Path(report_path).read_text(encoding="utf-8"))
             self.assertEqual(
                 set(report),
-                {"body_part", "check_type", "plane_configs"},
+                {"StudyPart", "StudyType", "plane_configs"},
             )
-            self.assertEqual(report["body_part"], "腰椎")
-            self.assertEqual(report["check_type"], "CT")
+            self.assertEqual(report["StudyPart"], "腰椎")
+            self.assertEqual(report["StudyType"], "CT")
             self.assertEqual(report["plane_configs"], [
                 {
-                    "plane": "冠状位",
-                    "slice_thickness": 5.0,
-                    "slice_spacing": 10.0,
+                    "Plane": "冠状位",
+                    "SliceType": "MPR",
+                    "SliceThickness": 5.0,
+                    "SliceSpacing": 10.0,
                     "line_extent_mode": "整平面",
                     "image_count": 0,
-                    "window_presets": [
+                    "WindowPresets": [
                         {"name": "骨窗", "path": ""},
                         {"name": "纵隔窗", "path": ""},
                     ],
@@ -72,11 +74,11 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             report = json.loads(Path(report_path).read_text(encoding="utf-8"))
             axial = next(
                 item for item in report["plane_configs"]
-                if item["plane"] == "横状位"
+                if item["Plane"] == "横状位"
             )
             self.assertEqual(axial["image_count"], 2)
             self.assertEqual(
-                axial["window_presets"],
+                axial["WindowPresets"],
                 [{"name": "骨窗", "path": str(dcm_dir)}],
             )
 

@@ -34,8 +34,8 @@ class CapabilityRegistry:
         }
         combinations.add(("腰椎", "椎间隙", "横状位"))
         combinations.update({
-            (body_part, "CPR", "冠状位")
-            for body_part in ("颈椎", "胸椎", "腰椎")
+            (study_part, "CPR", "冠状位")
+            for study_part in ("颈椎", "胸椎", "腰椎")
         })
         return cls(frozenset(combinations))
 
@@ -46,27 +46,27 @@ class CapabilityRegistry:
         当前能力表已经包含状位维度，因此任何未注册的部位、切法或状位组合都会
         在清空输出目录前被拒绝。
         """
-        check_type = _value(request.check_type)
-        body_part = _value(request.body_part)
-        if check_type != "CT":
-            raise self._error(check_type, body_part, "", None)
+        study_type = _value(request.study_type)
+        study_part = _value(request.study_part)
+        if study_type != "CT":
+            raise self._error(study_type, study_part, "", None)
         for plane_config in request.plane_configs:
             plane = _value(plane_config.plane)
             slice_type = _value(plane_config.slice_type)
-            if (body_part, slice_type, plane) not in self.supported:
-                raise self._error(check_type, body_part, slice_type, plane)
+            if (study_part, slice_type, plane) not in self.supported:
+                raise self._error(study_type, study_part, slice_type, plane)
 
     def _error(
         self,
-        check_type: str,
-        body_part: str,
+        study_type: str,
+        study_part: str,
         slice_type: str,
         plane: str | None,
     ) -> CapabilityError:
         """构造包含完整请求组合的标准能力错误。"""
         details = {
-            "check_type": check_type,
-            "body_part": body_part,
+            "study_type": study_type,
+            "study_part": study_part,
             "SliceType": slice_type,
             "plane": plane,
         }

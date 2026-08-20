@@ -6,7 +6,7 @@
 from enum import Enum
 
 
-class BodyPartEnum(Enum):
+class StudyPartEnum(Enum):
     """部位枚举"""
     头骨 = "头骨"
     颈椎 = "颈椎"
@@ -17,17 +17,10 @@ class BodyPartEnum(Enum):
     髋骨 = "髋骨"
 
 
-class CheckTypeEnum(Enum):
+class StudyTypeEnum(Enum):
     """检查类型枚举"""
     CT = "CT"
     MR = "MR"
-
-
-class ScanThicknessEnum(Enum):
-    """扫描厚度档位枚举"""
-    默认 = "default"
-    三毫米 = "3mm"
-    六毫米 = "6mm"
 
 
 class SliceType(Enum):

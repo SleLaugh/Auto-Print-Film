@@ -277,7 +277,7 @@ def build_whole_range_plan_from_bbox(
     )
     plan = build_straight_slice_plan(
         request=request,
-        cut_mode="whole_range",
+        slice_type=plane_config.slice_type.value,
         plane_config=plane_config,
         localization_result=localization_result,
         segment=segment,
@@ -452,7 +452,7 @@ def _build_whole_range_plan_from_anatomical_frame(
     # 避免肺尖、肺底在厚层平均后看起来缺失。
     range_extension = resolve_slice_range_extension(
         localization_result,
-        "whole_range",
+        plane_config.slice_type.value,
         plane,
     )
     range_start, range_end = cover_segment_range(
@@ -472,9 +472,11 @@ def _build_whole_range_plan_from_anatomical_frame(
         col_dir=straight_frame.col_dir,
     )
     return SlicePlan(
-        plan_id=f"{request.body_part.value}_whole_range_{plane.value}",
+        plan_id=(
+            f"{request.body_part.value}_{plane_config.slice_type.value}_{plane.value}"
+        ),
         body_part=request.body_part.value,
-        cut_mode="whole_range",
+        slice_type=plane_config.slice_type.value,
         plane=plane.value,
         group_name="whole_range",
         geometry_type="plane_stack",

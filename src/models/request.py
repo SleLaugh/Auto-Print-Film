@@ -13,6 +13,7 @@ from .enums import (
     ScanThicknessEnum,
     PlaneTypeEnum,
     CutLineExtentModeEnum,
+    SliceType,
 )
 from .window import get_window_preset
 
@@ -29,6 +30,8 @@ class PlaneConfig:
     # 一个状位可以同时输出多套窗宽窗位图像，例如骨窗和纵隔窗。
     window_presets: List[str]
     line_extent_mode: CutLineExtentModeEnum = CutLineExtentModeEnum.整平面
+    # 切片方式由调用方显式选择；普通直线重建默认使用 MPR。
+    slice_type: SliceType = SliceType.MPR
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'PlaneConfig':
@@ -43,6 +46,7 @@ class PlaneConfig:
             slice_thickness=float(data['slice_thickness']),
             slice_spacing=float(data['slice_spacing']),
             window_presets=[str(value) for value in data.get('window_presets', [])],
+            slice_type=SliceType(data.get('SliceType', SliceType.MPR.value)),
             line_extent_mode=CutLineExtentModeEnum(
                 data.get('line_extent_mode', CutLineExtentModeEnum.整平面.value)
             ),
@@ -60,6 +64,7 @@ class PlaneConfig:
             'slice_thickness': self.slice_thickness,
             'slice_spacing': self.slice_spacing,
             'window_presets': list(self.window_presets),
+            'SliceType': self.slice_type.value,
             'line_extent_mode': self.line_extent_mode.value,
         }
 

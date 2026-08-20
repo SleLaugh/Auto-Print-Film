@@ -5,7 +5,7 @@
 
 from typing import Any, Dict
 
-from src.models.enums import PlaneTypeEnum
+from src.models.enums import PlaneTypeEnum, SliceType
 from src.planning.spine_cpr import (
     SPINE_CPR_LABELS,
     build_spine_sagittal_cpr_plans,
@@ -41,7 +41,10 @@ class SingleLabelWholeRangePlanner:
         for plane_config in request.plane_configs:
             target_region_bbox = None
             source_labels = None
-            if spine_labels is not None:
+            if (
+                spine_labels is not None
+                and plane_config.slice_type is SliceType.CPR
+            ):
                 cpr_plans, cpr_warnings = build_spine_sagittal_cpr_plans(
                     request=request,
                     plane_config=plane_config,
@@ -49,17 +52,19 @@ class SingleLabelWholeRangePlanner:
                     label_names=spine_labels,
                 )
                 warnings.extend(cpr_warnings)
-                if cpr_plans:
-                    plans.extend(cpr_plans)
-                    continue
-                if (
-                    request.body_part.value == "胸椎"
-                    and plane_config.plane == PlaneTypeEnum.冠状位
-                ):
-                    target_region_bbox, source_labels = spine_target_bbox(
-                        localization_result,
-                        spine_labels,
-                    )
+                if not cpr_plans:
+                    raise ValueError("CPR 规划失败: " + "; ".join(cpr_warnings))
+                plans.extend(cpr_plans)
+                continue
+            if (
+                spine_labels is not None
+                and request.body_part.value == "胸椎"
+                and plane_config.plane == PlaneTypeEnum.冠状位
+            ):
+                target_region_bbox, source_labels = spine_target_bbox(
+                    localization_result,
+                    spine_labels,
+                )
             plan = build_whole_range_plan_from_bbox(
                 request=request,
                 plane_config=plane_config,

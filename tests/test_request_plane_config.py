@@ -5,6 +5,7 @@ from src.models.enums import (
     BodyPartEnum,
     CutLineExtentModeEnum,
     PlaneTypeEnum,
+    SliceType,
 )
 
 
@@ -60,6 +61,43 @@ class PlaneConfigRequestTest(unittest.TestCase):
         )
         self.assertEqual(config.line_extent_mode.value, "整平面")
         self.assertEqual(config.window_presets, ["骨窗", "肺窗", "纵隔窗"])
+        self.assertIs(config.slice_type, SliceType.MPR)
+
+    def test_slice_type_enum_order_matches_external_protocol(self):
+        """模板界面按 MPR、CPR、椎间隙的稳定顺序展示。"""
+
+        self.assertEqual(
+            [slice_type.value for slice_type in SliceType],
+            ["MPR", "CPR", "椎间隙"],
+        )
+
+    def test_plane_config_parses_explicit_cpr_slice_type(self):
+        """外部 SliceType 字段应转换成强类型枚举并原样返回。"""
+
+        config = PlaneConfig.from_dict({
+            "plane": "冠状位",
+            "slice_thickness": 3,
+            "slice_spacing": 5,
+            "window_presets": ["骨窗"],
+            "SliceType": "CPR",
+        })
+
+        self.assertIs(config.slice_type, SliceType.CPR)
+        self.assertEqual(config.to_dict()["SliceType"], "CPR")
+
+    def test_plane_config_rejects_removed_slice_type_values(self):
+        """旧切法值不再作为兼容入口。"""
+
+        for removed_value in ("whole_range", "interspace", "cpr", "整切"):
+            with self.subTest(removed_value=removed_value):
+                with self.assertRaises(ValueError):
+                    PlaneConfig.from_dict({
+                        "plane": "横状位",
+                        "slice_thickness": 3,
+                        "slice_spacing": 5,
+                        "window_presets": ["骨窗"],
+                        "SliceType": removed_value,
+                    })
 
     def test_plane_config_parses_chinese_target_line_extent_mode(self):
         """外部请求应直接使用中文部位范围协议值。"""
@@ -117,6 +155,7 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 "slice_thickness": 5.0,
                 "slice_spacing": 10.0,
                 "window_presets": ["骨窗", "肺窗"],
+                "SliceType": "MPR",
                 "line_extent_mode": "整平面",
             }
         ])
@@ -136,6 +175,7 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 "slice_thickness": 1.0,
                 "slice_spacing": 1.0,
                 "window_presets": ["骨窗"],
+                "SliceType": "MPR",
                 "line_extent_mode": "整平面",
             },
         ])

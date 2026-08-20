@@ -282,9 +282,9 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             "plans": [{
                 "plan_id": "测试_plan",
                 "plane": "横状位",
+                "slice_type": "MPR",
                 "group_name": "整切",
                 "geometry_type": "plane_stack",
-                "cut_mode": "whole_range",
                 "slices": [{"index": index} for index in range(1, slice_count + 1)],
                 "warnings": [],
             }],
@@ -305,6 +305,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             "outputs": [{
                 "plan_id": "测试_plan",
                 "plane": "横状位",
+                "slice_type": "MPR",
                 "group_name": "整切",
                 "geometry_type": "plane_stack",
                 "slice_thickness": 1.0,

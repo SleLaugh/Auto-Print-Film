@@ -154,7 +154,7 @@ def build_spine_sagittal_cpr_plans(
         plans.append(SlicePlan(
             plan_id=plan_id,
             body_part=request.body_part.value,
-            cut_mode="cpr",
+            slice_type="CPR",
             plane=plane_config.plane.value,
             group_name=group_name,
             geometry_type="curved_stack",
@@ -278,7 +278,14 @@ def configured_spine_cpr_labels(
 def _configured_whole_range_spine_labels(
     localization_result: Dict[str, Any],
 ) -> List[str] | None:
-    resolved_cut_config = localization_result.get("resolved_cut_config")
+    resolved_cut_configs = localization_result.get("resolved_cut_configs")
+    resolved_cut_config = (
+        resolved_cut_configs.get("whole_range")
+        if isinstance(resolved_cut_configs, dict)
+        else None
+    )
+    if resolved_cut_config is None:
+        resolved_cut_config = localization_result.get("resolved_cut_config")
     if not isinstance(resolved_cut_config, dict):
         return None
 
@@ -1166,7 +1173,7 @@ def _resolve_cpr_offset_range_extension(
 
     return resolve_slice_range_extension(
         localization_result,
-        "whole_range",
+        "CPR",
         PlaneTypeEnum.冠状位,
     )
 

@@ -266,6 +266,7 @@ class ReconstructionStage(BaseStage):
         return {
             "plan_id": plan["plan_id"],
             "plane": plan["plane"],
+            "slice_type": plan["slice_type"],
             "group_name": plan.get("group_name", ""),
             "geometry_type": plan.get("geometry_type", "plane_stack"),
             "slice_thickness": float(plan["slice_thickness"]),
@@ -1296,7 +1297,7 @@ class ReconstructionStage(BaseStage):
 
         if plan.get("geometry_type") == "curved_stack":
             return ""
-        if plan.get("cut_mode") in {"whole_range", "整切"}:
+        if plan.get("slice_type") == "MPR":
             return ""
         group_name = str(plan.get("group_name", ""))
         if group_name in {"", "whole_range"}:
@@ -1322,6 +1323,7 @@ class ReconstructionStage(BaseStage):
             )
         for field_name in (
             "plane",
+            "slice_type",
             "slices",
             "extent_mm",
             "output_spacing_mm",
@@ -1331,6 +1333,17 @@ class ReconstructionStage(BaseStage):
         ):
             if field_name not in plan:
                 raise ValueError(f"plan_id={plan_id} 缺少字段: {field_name}")
+        slice_type = str(plan["slice_type"])
+        if slice_type not in {"MPR", "CPR", "椎间隙"}:
+            raise ValueError(
+                f"plan_id={plan_id} SliceType={slice_type} 不受支持"
+            )
+        if slice_type == "CPR" and geometry_type != "curved_stack":
+            raise ValueError(f"plan_id={plan_id} CPR 必须使用 curved_stack")
+        if slice_type != "CPR" and geometry_type != "plane_stack":
+            raise ValueError(
+                f"plan_id={plan_id} {slice_type} 必须使用 plane_stack"
+            )
         if not isinstance(plan["slices"], list):
             raise ValueError(f"plan_id={plan_id} slices 必须是列表")
         if not plan["slices"]:

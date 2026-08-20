@@ -251,7 +251,7 @@ class ReportingStage(BaseStage):
         return {
             'plan_id': plan.get('plan_id', ''),
             'body_part': plan.get('body_part', ''),
-            'cut_mode': plan.get('cut_mode', ''),
+            'slice_type': plan.get('slice_type', ''),
             'plane': plan.get('plane', ''),
             'group_name': plan.get('group_name', ''),
             'geometry_type': plan.get('geometry_type', ''),

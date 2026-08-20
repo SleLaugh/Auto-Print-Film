@@ -13,51 +13,16 @@ import json
 import math
 import time
 from copy import copy
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any
-
-import numpy as np
-import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.models import PlanningStageResult, Point3D
-from src.reconstruction import CurvedStackResampler
 from src.planning.geometry import normalize_vector, subtract_points, vector_length
 from src.planning.straight import CENTER_COVERAGE_TOLERANCE_MM
 from src.planning import select_planner
-from src.planning.cut_policy import cut_mode_for_plane
 from src.utils import DebugLog, is_debug_file_enabled
-
-
-@dataclass(frozen=True)
-class _OverviewAxes:
-    """一个默认直线状位在输入图像索引空间中的总览轴配置。"""
-
-    stack_axis: int
-    """切片中心排列和层厚覆盖所在的输入轴，0/1/2 对应 x/y/z。"""
-
-    fixed_axis: int
-    """生成单层总览时固定不变的输入轴。"""
-
-    line_axis: int
-    """每条切片中心线和层厚覆盖带延伸的输入轴。"""
-
-
-_OVERVIEW_AXES = {
-    "横状位": _OverviewAxes(stack_axis=2, fixed_axis=0, line_axis=1),
-    "矢状位": _OverviewAxes(stack_axis=0, fixed_axis=1, line_axis=2),
-    "冠状位": _OverviewAxes(stack_axis=1, fixed_axis=0, line_axis=2),
-}
-"""横、矢、冠零角度直线计划对应的总览输入轴配置。"""
-
-_LOCALIZER_OVERVIEW_AXES = {
-    "横状位": _OverviewAxes(stack_axis=0, fixed_axis=2, line_axis=1),
-    "矢状位": _OverviewAxes(stack_axis=1, fixed_axis=0, line_axis=2),
-    "冠状位": _OverviewAxes(stack_axis=0, fixed_axis=1, line_axis=2),
-}
-"""按原始正交定位背景选择总览固定轴。"""
 
 
 class PlanningStage(BaseStage):
@@ -72,8 +37,8 @@ class PlanningStage(BaseStage):
         """
         根据定位和解剖分析结果生成重建阶段可直接执行的切片计划。
 
-        请求中的每个状位先按部位策略选择整切或区间切 planner，再统一写出
-        `slice_plans.json`；debug 模式下额外生成定位线和原始图像总览。
+        请求中的每个状位按外部指定的 SliceType 选择 planner，再统一写出
+        `slice_plans.json`。规划阶段不再生成 NIfTI 调试总览。
         """
 
         prev_result = context.get_result('localization')
@@ -93,7 +58,10 @@ class PlanningStage(BaseStage):
         DebugLog("=" * 60)
         DebugLog("【第六阶段】切片规划 - 生成重建执行计划")
         DebugLog(f"  部位: {request.body_part.value}")
-        DebugLog("  切割方式: 按部位和状位自动推导")
+        DebugLog(
+            "  SliceType: "
+            + ", ".join(config.slice_type.value for config in request.plane_configs)
+        )
         DebugLog(f"  定位坐标数量: {len(coords)}")
         DebugLog("=" * 60)
 
@@ -102,15 +70,17 @@ class PlanningStage(BaseStage):
         DebugLog("  [1] select_planner: 选择部位/切法 planner...")
         grouped_configs: Dict[str, list[Any]] = {}
         for plane_config in request.plane_configs:
-            mode = cut_mode_for_plane(request.body_part, plane_config.plane)
-            grouped_configs.setdefault(mode, []).append(plane_config)
+            grouped_configs.setdefault(
+                plane_config.slice_type.value,
+                [],
+            ).append(plane_config)
 
         DebugLog("  [2] build_plans: 生成并展开切片计划...")
         all_plans = []
         all_warnings = []
         planner_names = []
-        for cut_mode, plane_configs in grouped_configs.items():
-            planner = select_planner(request.body_part.value, cut_mode)
+        for slice_type, plane_configs in grouped_configs.items():
+            planner = select_planner(request.body_part.value, slice_type)
             planner_names.append(planner.planner_name)
             DebugLog(f"    planner: {planner.planner_name}")
             scoped_request = copy(request)
@@ -131,72 +101,9 @@ class PlanningStage(BaseStage):
         plans = [plan.to_dict() for plan in all_plans]
         diagnostics = self._build_plan_diagnostics(plans)
 
-        debug_overlay_path = ""
-        debug_center_cross_overlay_path = ""
-        debug_overview_overlay_path = ""
-        debug_native_overview_overlay_path = ""
-        debug_overview_paths: Dict[str, str] = {}
-        debug_native_overview_paths: Dict[str, str] = {}
         metadata_path = ""
         if is_debug_file_enabled():
-            DebugLog("  [3] write_debug_overlay: 写出切割线和含原图总览...")
-            debug_plans = self._debug_overlay_plans(plans)
-            if debug_plans:
-                overlay_start = time.perf_counter()
-                debug_overlay_path = self._write_slice_plan_overlay(
-                    context=context,
-                    localization_result=prev_result,
-                    plans=debug_plans,
-                )
-                if debug_overlay_path:
-                    DebugLog(
-                        "    [调试文件性能] 已生成: "
-                        f"{debug_overlay_path}, "
-                        f"plans={len(debug_plans)}, "
-                        f"耗时={time.perf_counter() - overlay_start:.3f}s"
-                    )
-                center_cross_start = time.perf_counter()
-                debug_center_cross_overlay_path = self._write_center_cross_overlay(
-                    context=context,
-                    localization_result=prev_result,
-                    plans=debug_plans,
-                )
-                if debug_center_cross_overlay_path:
-                    DebugLog(
-                        "    [调试文件性能] 已生成: "
-                        f"{debug_center_cross_overlay_path}, "
-                        f"plans={len(debug_plans)}, "
-                        f"耗时={time.perf_counter() - center_cross_start:.3f}s"
-                    )
-                overview_start = time.perf_counter()
-                (
-                    debug_overview_paths,
-                    debug_native_overview_paths,
-                ) = self._write_slice_plan_overview_overlays(
-                    context=context,
-                    localization_result=prev_result,
-                    plans=debug_plans,
-                )
-                DebugLog(
-                    "    [切片规划性能] write_slice_plan_overview_overlays完成: "
-                    f"overview={len(debug_overview_paths)}, "
-                    f"native={len(debug_native_overview_paths)}, "
-                    f"耗时={time.perf_counter() - overview_start:.3f}s"
-                )
-                debug_overview_overlay_path = self._legacy_overview_path(
-                    debug_overview_paths,
-                    debug_plans,
-                )
-                debug_native_overview_overlay_path = self._legacy_overview_path(
-                    debug_native_overview_paths,
-                    debug_plans,
-                )
-            else:
-                DebugLog(
-                    "    [切片规划性能] write_debug_overlay跳过: "
-                    "仅包含横/矢普通整切计划"
-                )
-            DebugLog("  [4] write_metadata: 写出 slice_plans.json...")
+            DebugLog("  [3] write_metadata: 写出 slice_plans.json...")
             metadata_start = time.perf_counter()
             metadata_path = self._write_slice_plans(
                 context,
@@ -204,12 +111,6 @@ class PlanningStage(BaseStage):
                 plans=plans,
                 diagnostics=diagnostics,
                 warnings=all_warnings,
-                debug_overlay_path=debug_overlay_path,
-                debug_center_cross_overlay_path=debug_center_cross_overlay_path,
-                debug_overview_overlay_path=debug_overview_overlay_path,
-                debug_native_overview_overlay_path=debug_native_overview_overlay_path,
-                debug_overview_paths=debug_overview_paths,
-                debug_native_overview_paths=debug_native_overview_paths,
             )
             DebugLog(
                 "    [切片规划性能] write_metadata完成: "
@@ -223,13 +124,6 @@ class PlanningStage(BaseStage):
             'diagnostics': diagnostics,
             'plan_count': len(plans),
             'metadata_path': str(metadata_path),
-            'debug_slice_plan_overlay_path': debug_overlay_path,
-            'debug_center_cross_overlay_path': debug_center_cross_overlay_path,
-            'debug_slice_plan_overview_overlay_path': debug_overview_overlay_path,
-            'debug_slice_plan_native_overview_overlay_path': debug_native_overview_overlay_path,
-            'debug_slice_plan_overview_paths': debug_overview_paths,
-            'debug_slice_plan_overview_with_image_paths': debug_overview_paths,
-            'debug_slice_plan_native_overview_paths': debug_native_overview_paths,
         }
 
         context.set_stage_result(PlanningStageResult(payload=result))
@@ -244,48 +138,12 @@ class PlanningStage(BaseStage):
                 f"层厚 {diagnostic['slice_thickness']}mm, "
                 f"层间距 {diagnostic['slice_spacing']}mm"
             )
-        if debug_overlay_path:
-            DebugLog(f"    切割线 overlay: {debug_overlay_path}")
-        if debug_center_cross_overlay_path:
-            DebugLog(f"    十字中线 overlay: {debug_center_cross_overlay_path}")
-        if debug_overview_overlay_path:
-            DebugLog(f"    切割线总览 overlay: {debug_overview_overlay_path}")
-        for plane, path in debug_native_overview_paths.items():
-            DebugLog(f"    {plane}原始网格总览 overlay: {path}")
         if all_warnings:
             DebugLog(f"    warnings: {all_warnings}")
         DebugLog("  第六阶段完成")
         DebugLog("=" * 60)
 
         return context
-
-    @staticmethod
-    def _debug_overlay_plans(plans: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
-        """过滤掉耗时且当前不再需要的规划调试图计划。"""
-
-        return [
-            plan
-            for plan in plans
-            if not PlanningStage._is_skipped_debug_overlay_plan(plan)
-        ]
-
-    @staticmethod
-    def _is_skipped_debug_overlay_plan(plan: Dict[str, Any]) -> bool:
-        """过滤当前不再默认落盘的规划 NIfTI 检查图。"""
-
-        plane = str(plan.get("plane", ""))
-        cut_mode = str(plan.get("cut_mode", ""))
-        geometry_type = str(plan.get("geometry_type", "plane_stack"))
-        is_plain_whole_range = (
-            plane in {"横状位", "矢状位"}
-            and geometry_type != "curved_stack"
-            and cut_mode in {"whole_range", "整切", "整"}
-        )
-        is_cpr_debug = (
-            plane == "冠状位"
-            and geometry_type == "curved_stack"
-        )
-        return is_plain_whole_range or is_cpr_debug
 
     def _write_slice_plans(
         self,
@@ -294,12 +152,6 @@ class PlanningStage(BaseStage):
         plans: list[Dict[str, Any]],
         diagnostics: list[Dict[str, Any]],
         warnings: list[str],
-        debug_overlay_path: str,
-        debug_center_cross_overlay_path: str,
-        debug_overview_overlay_path: str,
-        debug_native_overview_overlay_path: str,
-        debug_overview_paths: Dict[str, str],
-        debug_native_overview_paths: Dict[str, str],
     ) -> Path:
         """把规划输出写入 metadata/slice_plans.json，方便重建和人工检查。"""
 
@@ -313,62 +165,18 @@ class PlanningStage(BaseStage):
             "plans": plans,
             "diagnostics": diagnostics,
             "warnings": warnings,
-            "debug_slice_plan_overlay_path": debug_overlay_path,
-            "debug_center_cross_overlay_path": debug_center_cross_overlay_path,
-            "debug_slice_plan_overview_overlay_path": debug_overview_overlay_path,
-            "debug_slice_plan_native_overview_overlay_path": debug_native_overview_overlay_path,
-            "debug_slice_plan_overview_paths": debug_overview_paths,
-            "debug_slice_plan_overview_with_image_paths": debug_overview_paths,
-            "debug_slice_plan_native_overview_paths": debug_native_overview_paths,
         }
         with open(metadata_path, "w", encoding="utf-8") as file:
             json.dump(data, file, ensure_ascii=False, indent=2)
         return metadata_path
 
-    @staticmethod
-    def _debug_plan_suffix(plans: list[Dict[str, Any]]) -> str:
-        """把实际生成计划的状位和切割方式压缩成调试文件名后缀。"""
-
-        plane_labels = {
-            "横状位": "横",
-            "矢状位": "矢",
-            "冠状位": "冠",
-        }
-        cut_mode_labels = {
-            "whole_range": "整",
-            "整切": "整",
-            "interspace": "区",
-            "椎间切": "区",
-            "区间切": "区",
-            "cpr": "CPR",
-            "CPR": "CPR",
-        }
-
-        planes = []
-        cut_modes = []
-        for plan in plans:
-            plane = str(plan.get("plane", ""))
-            plane_label = plane_labels.get(plane, plane)
-            if plane_label and plane_label not in planes:
-                planes.append(plane_label)
-
-            cut_mode = str(plan.get("cut_mode", ""))
-            cut_mode_label = cut_mode_labels.get(cut_mode, cut_mode)
-            if cut_mode_label and cut_mode_label not in cut_modes:
-                cut_modes.append(cut_mode_label)
-
-        return (
-            f"{'+'.join(planes) or '未知'}_"
-            f"{'+'.join(cut_modes) or '未知'}"
-        )
-
     def _build_plan_diagnostics(self, plans: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
         """
         为每个 plan 生成可读诊断信息。
 
-        这部分不参与第七阶段执行，只用于排查“到底是计划张数少，还是 overlay
-        看起来少”。尤其当层间距大于层厚时，输出图之间本来就会有物理空档，
-        需要在 JSON 里直观看出来。
+        这部分不参与第七阶段执行，只用于从 JSON 排查计划张数和物理覆盖范围。
+        尤其当层间距大于层厚时，输出图之间本来就会有物理空档，需要在诊断字段
+        中明确表达。
         """
 
         diagnostics = []
@@ -565,849 +373,8 @@ class PlanningStage(BaseStage):
     def _dict_to_point(point: Dict[str, Any]):
         """把 JSON 中的 x/y/z 字典转换成 Point3D，用于诊断距离计算。"""
 
-        from src.models import Point3D
-
         return Point3D(
             x=float(point["x"]),
             y=float(point["y"]),
             z=float(point["z"]),
         )
-
-    def _write_slice_plan_overlay(
-        self,
-        context: ProcessingContext,
-        localization_result: Dict[str, Any],
-        plans: list[Dict[str, Any]],
-    ) -> tuple[str, str]:
-        """
-        写出第六阶段切割线调试 overlay。
-
-        overlay 与定位调试产物使用同一套 NIfTI 思路：参考图来自第四阶段声明的
-        seg_for_reconstruction_path，输出图与参考图同 size/spacing/origin/direction。
-        数值约定为：
-        - plan_index * 10 + 1：该 plan 的中心路径线。
-        - plan_index * 10 + 2：该 plan 已展开切片的中心点。
-        - plan_index * 10 + 3：每张切片在该平面内的十字引导线。
-
-        这个文件只用于人工核对“线画得对不对”，不作为第七阶段执行输入。
-        """
-
-        reference_path = localization_result.get("seg_for_reconstruction_path")
-        if not reference_path:
-            return ""
-
-        reference_path = Path(reference_path)
-        if not reference_path.exists():
-            return ""
-
-        reference_image = sitk.ReadImage(str(reference_path))
-        reference_array = sitk.GetArrayFromImage(reference_image)
-        overlay_array = np.zeros(reference_array.shape, dtype=np.uint16)
-
-        for plan_index, plan in enumerate(plans, start=1):
-            path_value = plan_index * 10 + 1
-            center_value = plan_index * 10 + 2
-            slice_guide_value = plan_index * 10 + 3
-            path_points = plan.get("path_points", [])
-            for start_point, end_point in zip(path_points, path_points[1:]):
-                self._paint_physical_line(
-                    reference_image=reference_image,
-                    overlay_array=overlay_array,
-                    start_point=start_point,
-                    end_point=end_point,
-                    value=path_value,
-                )
-
-            for planned_slice in plan.get("slices", []):
-                self._paint_planned_slice_guides(
-                    reference_image=reference_image,
-                    overlay_array=overlay_array,
-                    planned_slice=planned_slice,
-                    extent_mm=plan.get("extent_mm", {}),
-                    value=slice_guide_value,
-                )
-                self._paint_physical_marker(
-                    reference_image=reference_image,
-                    overlay_array=overlay_array,
-                    point=planned_slice["center"],
-                    value=center_value,
-                )
-
-        output_path = (
-            Path(context.request.output_dir)
-            / "metadata"
-            / f"切片线_{self._debug_plan_suffix(plans)}.nii.gz"
-        )
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        overlay_image = sitk.GetImageFromArray(overlay_array)
-        overlay_image.CopyInformation(reference_image)
-        sitk.WriteImage(overlay_image, str(output_path))
-        return str(output_path)
-
-    def _write_center_cross_overlay(
-        self,
-        context: ProcessingContext,
-        localization_result: Dict[str, Any],
-        plans: list[Dict[str, Any]],
-    ) -> str:
-        """
-        以第五阶段部位中心为唯一交点，把本次状位需要的解剖轴合并绘制。
-
-        已适配部位使用 anatomical_geometry 的原点和三轴；其他部位回退到
-        correction_scope_bbox 的物理中心和原图方向轴。十字只用于核对部位
-        居中与方向，不使用整面切片的画布中心，也不参与第七阶段重建。
-        """
-
-        reference_path = localization_result.get("seg_for_reconstruction_path")
-        if not reference_path or not Path(reference_path).exists():
-            return ""
-
-        reference_image = sitk.ReadImage(str(reference_path))
-        overlay_array = np.zeros(
-            sitk.GetArrayFromImage(reference_image).shape,
-            dtype=np.uint16,
-        )
-        geometry = localization_result.get("anatomical_geometry") or {}
-        global_frame = geometry.get("global_frame") or {}
-        if global_frame:
-            center = {
-                axis: float(global_frame["origin"][axis])
-                for axis in ("x", "y", "z")
-            }
-            anatomical_axes = {
-                "left_right": global_frame["left_right_axis"],
-                "anterior_posterior": global_frame["anterior_posterior_axis"],
-                "superior_inferior": global_frame["superior_inferior_axis"],
-            }
-        else:
-            bbox = localization_result.get("correction_scope_bbox")
-            if not bbox:
-                return ""
-            center_point = reference_image.TransformContinuousIndexToPhysicalPoint((
-                (float(bbox["x_min"]) + float(bbox["x_max"])) / 2.0,
-                (float(bbox["y_min"]) + float(bbox["y_max"])) / 2.0,
-                (float(bbox["z_min"]) + float(bbox["z_max"])) / 2.0,
-            ))
-            center = dict(zip(("x", "y", "z"), center_point))
-            direction = np.asarray(
-                reference_image.GetDirection(),
-                dtype=float,
-            ).reshape(3, 3)
-            anatomical_axes = {
-                "left_right": dict(zip(("x", "y", "z"), direction[:, 0])),
-                "anterior_posterior": dict(zip(("x", "y", "z"), direction[:, 1])),
-                "superior_inferior": dict(zip(("x", "y", "z"), direction[:, 2])),
-            }
-
-        axes_by_plane = {
-            "横状位": ("left_right", "anterior_posterior"),
-            "矢状位": ("anterior_posterior", "superior_inferior"),
-            "冠状位": ("left_right", "superior_inferior"),
-        }
-        requested_planes = {
-            str(plan.get("plane"))
-            for plan in plans
-        }
-        axis_names = {
-            axis_name
-            for plane, plane_axes in axes_by_plane.items()
-            if plane in requested_planes
-            for axis_name in plane_axes
-        }
-        size = reference_image.GetSize()
-        physical_corners = np.asarray([
-            reference_image.TransformIndexToPhysicalPoint((x, y, z))
-            for x in (0, size[0] - 1)
-            for y in (0, size[1] - 1)
-            for z in (0, size[2] - 1)
-        ])
-        center_array = np.asarray([center["x"], center["y"], center["z"]])
-        white_value = int(np.iinfo(np.uint16).max)
-        for axis_name in axis_names:
-            direction = anatomical_axes[axis_name]
-            direction_array = np.asarray([
-                float(direction["x"]),
-                float(direction["y"]),
-                float(direction["z"]),
-            ])
-            direction_array /= np.linalg.norm(direction_array)
-            half_length = float(np.max(np.abs(
-                (physical_corners - center_array) @ direction_array
-            )))
-            self._paint_direction_line(
-                reference_image=reference_image,
-                overlay_array=overlay_array,
-                center=center,
-                direction=direction,
-                half_length=half_length,
-                value=white_value,
-            )
-
-        if not np.any(overlay_array):
-            return ""
-        output_path = (
-            Path(context.request.output_dir)
-            / "metadata"
-            / f"十字中线_{self._debug_plan_suffix(plans)}.nii.gz"
-        )
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        overlay_image = sitk.GetImageFromArray(overlay_array)
-        overlay_image.CopyInformation(reference_image)
-        sitk.WriteImage(overlay_image, str(output_path))
-        return str(output_path)
-
-    def _write_slice_plan_overview_overlays(
-        self,
-        context: ProcessingContext,
-        localization_result: Dict[str, Any],
-        plans: list[Dict[str, Any]],
-    ) -> tuple[Dict[str, str], Dict[str, str]]:
-        """
-        按横、矢、冠状位分别写出含 CT 背景和原始网格总览。
-
-        每个文件只包含一个状位，避免三组互相垂直的切割线叠在一起。含原图
-        含原图总览把当前状位的堆叠轴细化到 0.5mm，保证 ITK 中的
-        显示间距一致；原始网格总览仍用输入网格核对位置。两者都只画
-        最细中心线，不再按层厚铺满。
-        缺少原始 CT 时只写原始网格总览。
-        """
-
-        reference_path = localization_result.get("seg_for_reconstruction_path")
-        if not reference_path:
-            return {}, {}
-
-        reference_path = Path(reference_path)
-        if not reference_path.exists():
-            return {}, {}
-
-        reference_image = sitk.ReadImage(str(reference_path))
-        raw_path = localization_result.get("raw_for_reconstruction_path")
-        raw_image = None
-        if raw_path and Path(raw_path).exists():
-            raw_image = sitk.ReadImage(str(raw_path))
-        plans_by_plane: Dict[str, list[Dict[str, Any]]] = {}
-        for plan in plans:
-            plane = str(plan.get("plane", ""))
-            if plane not in _OVERVIEW_AXES:
-                continue
-            plans_by_plane.setdefault(plane, []).append(plan)
-
-        metadata_dir = Path(context.request.output_dir) / "metadata"
-        metadata_dir.mkdir(parents=True, exist_ok=True)
-        overview_paths: Dict[str, str] = {}
-        native_overview_paths: Dict[str, str] = {}
-        for plane, plane_plans in plans_by_plane.items():
-            axes = self._overview_axes_for_plans(plane, plane_plans)
-            native_overlay_array = np.zeros(
-                tuple(reversed(reference_image.GetSize())),
-                dtype=np.uint16,
-            )
-            uniform_reference = self._build_uniform_overview_reference(
-                reference_image,
-                axes.stack_axis,
-            )
-            uniform_overlay_array = np.zeros(
-                tuple(reversed(uniform_reference.GetSize())),
-                dtype=np.uint16,
-            )
-            for plan_index, plan in enumerate(plane_plans, start=1):
-                overview_value = plan_index * 10 + 4
-                self._paint_plan_overview(
-                    reference_image=reference_image,
-                    overlay_array=native_overlay_array,
-                    plan=plan,
-                    axes=axes,
-                    value=overview_value,
-                )
-                self._paint_plan_overview(
-                    reference_image=uniform_reference,
-                    overlay_array=uniform_overlay_array,
-                    plan=plan,
-                    axes=axes,
-                    value=overview_value,
-                )
-
-            debug_suffix = self._debug_plan_suffix(plane_plans)
-            output_path = metadata_dir / f"切片总览含原图_{debug_suffix}.nii.gz"
-            native_output_path = (
-                metadata_dir
-                / f"切片原始网格总览_{debug_suffix}.nii.gz"
-            )
-            if raw_image is not None:
-                debug_file_start = time.perf_counter()
-                overview_image = self._build_overview_with_image(
-                    raw_image,
-                    uniform_reference,
-                    uniform_overlay_array,
-                )
-                sitk.WriteImage(overview_image, str(output_path))
-                DebugLog(
-                    "    [调试文件性能] 已生成: "
-                    f"{output_path}, "
-                    f"耗时={time.perf_counter() - debug_file_start:.3f}s"
-                )
-                overview_paths[plane] = str(output_path)
-            debug_file_start = time.perf_counter()
-            native_overlay_image = sitk.GetImageFromArray(native_overlay_array)
-            native_overlay_image.CopyInformation(reference_image)
-            sitk.WriteImage(native_overlay_image, str(native_output_path))
-            DebugLog(
-                "    [调试文件性能] 已生成: "
-                f"{native_output_path}, "
-                f"耗时={time.perf_counter() - debug_file_start:.3f}s"
-            )
-            native_overview_paths[plane] = str(native_output_path)
-
-        return overview_paths, native_overview_paths
-
-    @staticmethod
-    def _overview_axes_for_plans(
-        plane: str,
-        plans: list[Dict[str, Any]],
-    ) -> _OverviewAxes:
-        """CPR 总览按定位背景选轴；普通切片继续按输出状位选轴。"""
-
-        for plan in plans:
-            if plan.get("geometry_type") != "curved_stack":
-                continue
-            localizer_plane = str(plan.get("localizer_plane") or plane)
-            return _LOCALIZER_OVERVIEW_AXES.get(
-                localizer_plane,
-                _OVERVIEW_AXES[plane],
-            )
-        return _OVERVIEW_AXES[plane]
-
-    @staticmethod
-    def _legacy_overview_path(
-        paths_by_plane: Dict[str, str],
-        plans: list[Dict[str, Any]],
-    ) -> str:
-        """返回单路径摘要所需的横状位或第一个可用状位文件。"""
-
-        if "横状位" in paths_by_plane:
-            return paths_by_plane["横状位"]
-        for plan in plans:
-            plane = str(plan.get("plane", ""))
-            if plane in paths_by_plane:
-                return paths_by_plane[plane]
-        return ""
-
-    @staticmethod
-    def _build_overview_with_image(
-        raw_image: sitk.Image,
-        reference_image: sitk.Image,
-        overlay_array: np.ndarray,
-    ) -> sitk.Image:
-        """把 CT 放到原始总览网格，并只烧录最细切片中心线。"""
-
-        raw_array = sitk.GetArrayViewFromImage(raw_image)
-        source_min = float(np.min(raw_array))
-        source_max = float(np.max(raw_array))
-        int16_min = int(np.iinfo(np.int16).min)
-        int16_max = int(np.iinfo(np.int16).max)
-        resampled = sitk.Resample(
-            raw_image,
-            reference_image,
-            sitk.Transform(),
-            sitk.sitkLinear,
-            min(max(source_min, int16_min), int16_max),
-            sitk.sitkInt16,
-        )
-        result_array = sitk.GetArrayFromImage(resampled)
-        intensity_span = max(source_max - source_min, 1.0)
-        center_value = min(int(round(source_max + intensity_span)), int16_max)
-        result_array[overlay_array % 10 == 4] = center_value
-
-        result = sitk.GetImageFromArray(result_array)
-        result.CopyInformation(reference_image)
-        return result
-
-    @staticmethod
-    def _build_uniform_overview_reference(
-        reference_image: sitk.Image,
-        stack_axis: int,
-    ) -> sitk.Image:
-        """只细化当前状位堆叠轴，生成 0.5mm 等距展示网格。"""
-
-        if stack_axis not in (0, 1, 2):
-            raise ValueError("总览堆叠轴只能是 0、1、2")
-        spacing = list(reference_image.GetSpacing())
-        size = list(reference_image.GetSize())
-        uniform_spacing = 0.5
-        physical_extent = (size[stack_axis] - 1) * spacing[stack_axis]
-        size[stack_axis] = int(math.ceil(
-            physical_extent / uniform_spacing,
-        )) + 1
-        spacing[stack_axis] = uniform_spacing
-        uniform_reference = sitk.Image(
-            int(size[0]),
-            int(size[1]),
-            int(size[2]),
-            sitk.sitkUInt16,
-        )
-        uniform_reference.SetSpacing(tuple(spacing))
-        uniform_reference.SetOrigin(reference_image.GetOrigin())
-        uniform_reference.SetDirection(reference_image.GetDirection())
-        return uniform_reference
-
-    def _paint_plan_overview(
-        self,
-        reference_image: sitk.Image,
-        overlay_array: np.ndarray,
-        plan: Dict[str, Any],
-        axes: _OverviewAxes,
-        value: int,
-    ) -> None:
-        """
-        把一组零角度直线 slice 投到当前状位的固定正交层上。
-
-        总览图只绘制输出切片中心线。当前方法使用输入
-        图像 x/y/z 索引轴，只适用于本阶段已经支持的零角度横、矢、冠计划。
-        """
-
-        if plan.get("geometry_type") == "curved_stack":
-            self._paint_curved_plan_overview(
-                reference_image=reference_image,
-                overlay_array=overlay_array,
-                plan=plan,
-                axes=axes,
-                value=value,
-            )
-            return
-
-        slices = plan.get("slices", [])
-        if not slices:
-            return
-
-        extent_mm = plan.get("extent_mm", {})
-        half_height = float(extent_mm.get("height", 0.0)) / 2.0
-        if half_height <= 0:
-            return
-
-        # 输入索引轴只适用于零角度计划。肺部等斜切计划必须直接使用第六阶段
-        # 计算的物理 row_dir/col_dir，否则总览会显示成水平线，与第七阶段真正
-        # 执行的斜切方向不一致。
-        first_normal = slices[0].get("normal", {})
-        direction = np.asarray(reference_image.GetDirection(), dtype=float).reshape(3, 3)
-        expected_normal = direction[:, axes.stack_axis]
-        actual_normal = np.asarray([
-            float(first_normal.get("x", 0.0)),
-            float(first_normal.get("y", 0.0)),
-            float(first_normal.get("z", 0.0)),
-        ])
-        if abs(abs(float(np.dot(expected_normal, actual_normal))) - 1.0) > 1e-6:
-            for planned_slice in slices:
-                self._paint_planned_slice_guides(
-                    reference_image=reference_image,
-                    overlay_array=overlay_array,
-                    planned_slice=planned_slice,
-                    extent_mm=extent_mm,
-                    value=value,
-                )
-            return
-
-        center_indices = [
-            reference_image.TransformPhysicalPointToContinuousIndex((
-                float(planned_slice["center"]["x"]),
-                float(planned_slice["center"]["y"]),
-                float(planned_slice["center"]["z"]),
-            ))
-            for planned_slice in slices
-        ]
-        overview_fixed_index = int(round(float(np.median([
-            index_xyz[axes.fixed_axis] for index_xyz in center_indices
-        ]))))
-        half_height_voxels = (
-            half_height / reference_image.GetSpacing()[axes.line_axis]
-        )
-        for center_index in center_indices:
-            self._paint_overview_index_line(
-                overlay_array=overlay_array,
-                overview_fixed_index=overview_fixed_index,
-                line_center_index=center_index[axes.line_axis],
-                stack_index=int(round(center_index[axes.stack_axis])),
-                axes=axes,
-                half_height_voxels=half_height_voxels,
-                value=value,
-            )
-
-    def _paint_curved_plan_overview(
-        self,
-        reference_image: sitk.Image,
-        overlay_array: np.ndarray,
-        plan: Dict[str, Any],
-        axes: _OverviewAxes,
-        value: int,
-    ) -> None:
-        """把 CPR 中心曲线投影到指定原始定位背景上。"""
-
-        curve_points = plan.get("curve_points") or []
-        if len(curve_points) < 2:
-            return
-        fixed_index = self._curved_overview_fixed_index(
-            reference_image,
-            plan,
-            axes.fixed_axis,
-        )
-        projected_curves = self._curved_overview_projected_curves(
-            plan=plan,
-            fixed_axis=axes.fixed_axis,
-        )
-        for projected_points in projected_curves.values():
-            for start_point, end_point in zip(projected_points, projected_points[1:]):
-                self._paint_projected_physical_line(
-                    reference_image=reference_image,
-                    overlay_array=overlay_array,
-                    start_point=start_point,
-                    end_point=end_point,
-                    axes=axes,
-                    fixed_index=fixed_index,
-                    value=value,
-                )
-
-    @staticmethod
-    def _curved_overview_fixed_index(
-        reference_image: sitk.Image,
-        plan: Dict[str, Any],
-        fixed_axis: int,
-    ) -> int:
-        """选择 CPR 调试总览经过目标曲线的原始正交层。"""
-
-        localizer_reference = plan.get("localizer_reference")
-        if localizer_reference:
-            reference_index = reference_image.TransformPhysicalPointToContinuousIndex((
-                float(localizer_reference["x"]),
-                float(localizer_reference["y"]),
-                float(localizer_reference["z"]),
-            ))
-            fixed_index = int(round(float(reference_index[fixed_axis])))
-        else:
-            curve_indices = [
-                reference_image.TransformPhysicalPointToContinuousIndex((
-                    float(point["x"]),
-                    float(point["y"]),
-                    float(point["z"]),
-                ))
-                for point in plan.get("curve_points", [])
-            ]
-            fixed_index = int(round(float(np.median([
-                index_xyz[fixed_axis] for index_xyz in curve_indices
-            ]))))
-        return min(max(fixed_index, 0), reference_image.GetSize()[fixed_axis] - 1)
-
-    @staticmethod
-    def _curved_overview_offsets(plan: Dict[str, Any]) -> list[float]:
-        """返回 CPR 调试总览需要投影的全部 offset 中心线。"""
-
-        raw_offsets = plan.get("offsets_mm")
-        offsets: list[float] = []
-        if isinstance(raw_offsets, list):
-            for value in raw_offsets:
-                try:
-                    offset = float(value)
-                except (TypeError, ValueError):
-                    continue
-                if math.isfinite(offset):
-                    offsets.append(offset)
-        if not offsets:
-            offsets = [0.0]
-        if not any(abs(offset) <= 1e-6 for offset in offsets):
-            offsets.append(0.0)
-
-        return sorted({round(offset, 6) for offset in offsets})
-
-    @classmethod
-    def _curved_overview_projected_curves(
-        cls,
-        *,
-        plan: Dict[str, Any],
-        fixed_axis: int,
-    ) -> Dict[float, list[Dict[str, float]]]:
-        """按实际 CPR 采样曲线和 offset 生成总览曲线。"""
-
-        curve = np.asarray([
-            cls._point_array(point)
-            for point in (plan.get("curve_points") or [])
-        ], dtype=float)
-        if len(curve) < 2:
-            return {}
-        offsets = cls._curved_overview_offsets(plan)
-        rows = cls._curved_overview_sample_count(plan, len(curve))
-        curve = CurvedStackResampler._resample_curve(curve, rows)
-        offset_axis = cls._point_array(plan.get("offset_axis") or {})
-        offset_length = float(np.linalg.norm(offset_axis))
-        if not np.isfinite(offset_length) or offset_length <= 1e-8:
-            return {}
-        offset_axis /= offset_length
-        try:
-            offset_curves = CurvedStackResampler._offset_curve_samples(
-                curve,
-                offset_axis,
-                offsets,
-                support_mm=CurvedStackResampler._maximum_offset_extent_mm(plan),
-            )
-        except ValueError:
-            return {}
-
-        projected_curves: Dict[float, list[Dict[str, float]]] = {}
-        for offset_mm in offsets:
-            projected = offset_curves[offset_mm]
-            projected_curves[offset_mm] = [
-                {
-                    "x": float(point[0]),
-                    "y": float(point[1]),
-                    "z": float(point[2]),
-                }
-                for point in projected
-            ]
-        return projected_curves
-
-    @staticmethod
-    def _curved_overview_sample_count(plan: Dict[str, Any], fallback: int) -> int:
-        """复用 CPR 重建器的纵向输出行数。"""
-
-        extent = plan.get("extent_mm") or {}
-        spacing = plan.get("output_spacing_mm") or {}
-        try:
-            height = float(extent["height"])
-            spacing_y = float(spacing["y"])
-        except (KeyError, TypeError, ValueError):
-            return fallback
-        if not math.isfinite(height) or not math.isfinite(spacing_y) or spacing_y <= 0.0:
-            return fallback
-        return max(1, int(round(height / spacing_y)) + 1)
-
-    @staticmethod
-    def _point_array(point: Dict[str, Any]) -> np.ndarray:
-        """读取物理点或方向字典。"""
-
-        return np.asarray([
-            float(point["x"]),
-            float(point["y"]),
-            float(point["z"]),
-        ], dtype=float)
-
-    def _paint_projected_physical_line(
-        self,
-        reference_image: sitk.Image,
-        overlay_array: np.ndarray,
-        start_point: Dict[str, float],
-        end_point: Dict[str, float],
-        axes: _OverviewAxes,
-        fixed_index: int,
-        value: int,
-    ) -> None:
-        """把物理线段投影到一个固定正交定位层。"""
-
-        start_xyz = np.asarray(
-            reference_image.TransformPhysicalPointToContinuousIndex((
-                start_point["x"],
-                start_point["y"],
-                start_point["z"],
-            )),
-            dtype=float,
-        )
-        end_xyz = np.asarray(
-            reference_image.TransformPhysicalPointToContinuousIndex((
-                end_point["x"],
-                end_point["y"],
-                end_point["z"],
-            )),
-            dtype=float,
-        )
-        difference = end_xyz - start_xyz
-        steps = max(
-            int(np.ceil(abs(difference[axes.stack_axis]))),
-            int(np.ceil(abs(difference[axes.line_axis]))),
-            1,
-        )
-        size_xyz = tuple(reversed(overlay_array.shape))
-        if not 0 <= fixed_index < size_xyz[axes.fixed_axis]:
-            return
-        for step in range(steps + 1):
-            index = start_xyz + difference * step / steps
-            index_xyz = [0, 0, 0]
-            index_xyz[axes.stack_axis] = int(round(float(index[axes.stack_axis])))
-            index_xyz[axes.line_axis] = int(round(float(index[axes.line_axis])))
-            index_xyz[axes.fixed_axis] = fixed_index
-            if not all(0 <= index_xyz[axis] < size_xyz[axis] for axis in range(3)):
-                continue
-            overlay_array[
-                index_xyz[2],
-                index_xyz[1],
-                index_xyz[0],
-            ] = value
-
-    def _paint_overview_index_line(
-        self,
-        overlay_array: np.ndarray,
-        overview_fixed_index: int,
-        line_center_index: float,
-        stack_index: int,
-        axes: _OverviewAxes,
-        half_height_voxels: float,
-        value: int,
-    ) -> None:
-        """在固定正交层上沿当前状位线轴画一条总览线。"""
-
-        line_start = int(round(line_center_index - half_height_voxels))
-        line_end = int(round(line_center_index + half_height_voxels))
-        size_xyz = tuple(reversed(overlay_array.shape))
-        if not 0 <= stack_index < size_xyz[axes.stack_axis]:
-            return
-        if not 0 <= overview_fixed_index < size_xyz[axes.fixed_axis]:
-            return
-        line_start = max(line_start, 0)
-        line_end = min(line_end, size_xyz[axes.line_axis] - 1)
-        for line_index in range(line_start, line_end + 1):
-            index_xyz = [0, 0, 0]
-            index_xyz[axes.stack_axis] = stack_index
-            index_xyz[axes.fixed_axis] = overview_fixed_index
-            index_xyz[axes.line_axis] = line_index
-            overlay_array[
-                index_xyz[2],
-                index_xyz[1],
-                index_xyz[0],
-            ] = value
-
-    @staticmethod
-    def _physical_point_to_array_index(
-        reference_image: sitk.Image,
-        point: Dict[str, float],
-    ) -> tuple[int, int, int]:
-        """把 x/y/z 物理坐标转换成 numpy 数组使用的 z/y/x 索引。"""
-
-        index_xyz = reference_image.TransformPhysicalPointToIndex((
-            float(point["x"]),
-            float(point["y"]),
-            float(point["z"]),
-        ))
-        return int(index_xyz[2]), int(index_xyz[1]), int(index_xyz[0])
-
-    @staticmethod
-    def _is_inside_array(array: np.ndarray, z: int, y: int, x: int) -> bool:
-        """判断 z/y/x 是否落在 overlay 数组内。"""
-
-        z_size, y_size, x_size = array.shape
-        return 0 <= z < z_size and 0 <= y < y_size and 0 <= x < x_size
-
-    def _paint_physical_line(
-        self,
-        reference_image: sitk.Image,
-        overlay_array: np.ndarray,
-        start_point: Dict[str, float],
-        end_point: Dict[str, float],
-        value: int,
-    ) -> None:
-        """在 overlay 上画一条连接两个物理坐标点的体素线。"""
-
-        start_zyx = self._physical_point_to_array_index(reference_image, start_point)
-        end_zyx = self._physical_point_to_array_index(reference_image, end_point)
-        dz = end_zyx[0] - start_zyx[0]
-        dy = end_zyx[1] - start_zyx[1]
-        dx = end_zyx[2] - start_zyx[2]
-        steps = max(abs(dz), abs(dy), abs(dx), 1)
-
-        for step in range(steps + 1):
-            z = int(round(start_zyx[0] + dz * step / steps))
-            y = int(round(start_zyx[1] + dy * step / steps))
-            x = int(round(start_zyx[2] + dx * step / steps))
-            if self._is_inside_array(overlay_array, z, y, x):
-                overlay_array[z, y, x] = value
-
-    def _paint_planned_slice_guides(
-        self,
-        reference_image: sitk.Image,
-        overlay_array: np.ndarray,
-        planned_slice: Dict[str, Any],
-        extent_mm: Dict[str, float],
-        value: int,
-    ) -> None:
-        """
-        在单张 slice 所在平面内画十字引导线。
-
-        中心路径线在横状位上常常只像一个点，不利于人工检查。这里用
-        row_dir/col_dir 和 extent_mm 画两条穿过中心的平面内线，打开
-        overlay 时能直接看到“每张图切在哪里”。
-        """
-
-        center = planned_slice["center"]
-        row_dir = planned_slice["row_dir"]
-        col_dir = planned_slice["col_dir"]
-        half_width = float(extent_mm.get("width", 0.0)) / 2.0
-        half_height = float(extent_mm.get("height", 0.0)) / 2.0
-
-        if half_width > 0:
-            self._paint_direction_line(
-                reference_image=reference_image,
-                overlay_array=overlay_array,
-                center=center,
-                direction=row_dir,
-                half_length=half_width,
-                value=value,
-            )
-        if half_height > 0:
-            self._paint_direction_line(
-                reference_image=reference_image,
-                overlay_array=overlay_array,
-                center=center,
-                direction=col_dir,
-                half_length=half_height,
-                value=value,
-            )
-
-    def _paint_direction_line(
-        self,
-        reference_image: sitk.Image,
-        overlay_array: np.ndarray,
-        center: Dict[str, float],
-        direction: Dict[str, float],
-        half_length: float,
-        value: int,
-    ) -> None:
-        """沿某个方向从中心点向两侧画一条物理长度线段。"""
-
-        start_point = {
-            "x": center["x"] - direction["x"] * half_length,
-            "y": center["y"] - direction["y"] * half_length,
-            "z": center["z"] - direction["z"] * half_length,
-        }
-        end_point = {
-            "x": center["x"] + direction["x"] * half_length,
-            "y": center["y"] + direction["y"] * half_length,
-            "z": center["z"] + direction["z"] * half_length,
-        }
-        self._paint_physical_line(
-            reference_image=reference_image,
-            overlay_array=overlay_array,
-            start_point=start_point,
-            end_point=end_point,
-            value=value,
-        )
-
-    def _paint_physical_marker(
-        self,
-        reference_image: sitk.Image,
-        overlay_array: np.ndarray,
-        point: Dict[str, float],
-        value: int,
-    ) -> None:
-        """在 overlay 上标出一张 slice 的中心点，画成小十字方便查看。"""
-
-        center_z, center_y, center_x = self._physical_point_to_array_index(
-            reference_image,
-            point,
-        )
-        offsets = [
-            (0, 0, 0),
-            (0, -1, 0),
-            (0, 1, 0),
-            (0, 0, -1),
-            (0, 0, 1),
-        ]
-        for dz, dy, dx in offsets:
-            z = center_z + dz
-            y = center_y + dy
-            x = center_x + dx
-            if self._is_inside_array(overlay_array, z, y, x):
-                overlay_array[z, y, x] = value

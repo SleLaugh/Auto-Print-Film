@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 DICOM_ROOT="/home/peng/03_data/demo/Image/dicom"
 RESULT_ROOT="/home/peng/03_data/demo/Image/result"
 PYTHON_BIN=".venv/bin/python"
-PLANE_CONFIGS='[{"plane":"横状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"整平面"},{"plane":"矢状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"整平面"},{"plane":"冠状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"整平面"}]'
+PLANE_CONFIGS='[{"plane":"横状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"},{"plane":"矢状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"},{"plane":"冠状位","slice_thickness":5,"slice_spacing":5,"window_presets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"}]'
 # 中文请求值依赖 UTF-8 argv；显式开启可避免精简 Linux 环境使用 C/ASCII locale。
 export PYTHONUTF8=1
 DRY_RUN=0
@@ -58,18 +58,24 @@ fi
 
 # 格式: "dicom目录名|result目录名|部位"
 CASES=(
-    "颈1_1mm|颈1_1mm|颈椎"
-    "颈2_1mm|颈2_1mm|颈椎"
-    "颈3_1mm|颈3_1mm|颈椎"
-    "颈到盆1_1.5mm|颈到盆1_1.5mm_胸椎|胸椎"
-    "颈到盆2_1.5mm|颈到盆2_1.5mm_胸椎|胸椎"
-    "颈到腰1_1.5mm|颈到腰1_1.5mm_胸椎|胸椎"
-    "颈到盆1_1.5mm|颈到盆1_1.5mm_腰椎|腰椎"
-    "颈到盆2_1.5mm|颈到盆2_1.5mm_腰椎|腰椎"
-    "颈到腰1_1.5mm|颈到腰1_1.5mm_腰椎|腰椎"
-    "腰1_1mm|腰1_1mm|腰椎"
-    "腰2_1.5mm_歪|腰2_1.5mm_歪|腰椎"
-    "腰3_1mm|腰3_1mm|腰椎"
+    "颈1_1mm|颈椎_颈1_1mm|颈椎"
+    "颈2_1mm|颈椎_颈2_1mm|颈椎"
+    "颈3_1mm|颈椎_颈3_1mm|颈椎"
+    "颈到盆1_1.5mm|胸椎_颈到盆1_1.5mm|胸椎"
+    "颈到盆2_1.5mm|胸椎_颈到盆2_1.5mm|胸椎"
+    "颈到腰1_1.5mm|胸椎_颈到腰1_1.5mm|胸椎"
+    "颈到盆1_1.5mm|腰椎_颈到盆1_1.5mm|腰椎"
+    "颈到盆2_1.5mm|腰椎_颈到盆2_1.5mm|腰椎"
+    "颈到腰1_1.5mm|腰椎_颈到腰1_1.5mm|腰椎"
+    "腰1_1mm|腰椎_腰1_1mm|腰椎"
+    "腰2_1.5mm_歪|腰椎_腰2_1.5mm_歪|腰椎"
+    "腰3_1mm|腰椎_腰3_1mm|腰椎"
+    "肺1_1mm|肺部_肺1_1mm|肺部"
+    "肺3_1mm|肺部_肺3_1mm|肺部"
+    "颈到腰1_1.5mm|肺部_颈到腰1_1.5mm|肺部"
+    "盆1_1.5mm|髋骨_盆1_1.5mm|髋骨"
+    "盆2_1.5mm|髋骨_盆2_1.5mm|髋骨"
+    "颈到盆1_1.5mm|髋骨_颈到盆1_1.5mm|髋骨"
 )
 
 failures=()

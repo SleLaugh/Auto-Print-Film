@@ -15,7 +15,7 @@ from .anatomy import AnatomicalGeometryResult
 
 
 CutConfig = Dict[str, Any] | list[Dict[str, Any]]
-"""原始定位切法配置：整切为对象，椎间切为 start/end 对象数组。"""
+"""原始定位范围配置：whole_range 为对象，interspace 为 start/end 对象数组。"""
 
 
 @dataclass
@@ -121,14 +121,15 @@ class NiftiImageInfo:
 class LocalizationResult:
     """第三至第五阶段调试汇总实体，对应 metadata/localization_result.json。"""
     body_part: str  # 请求处理的部位，如 头骨、腰椎、肺部
-    cut_mode: str  # 切割方式，如 whole_range 或 interspace
+    localization_profile: str  # 定位范围方案，如 whole_range 或 interspace
     seg_path: str  # 当前用于定位的分割文件路径
     model: Dict[str, Any]  # 分割阶段匹配到的模型信息
     dataset_json_path: str  # 当前模型对应的 dataset.json 路径
     image: NiftiImageInfo  # 分割图像空间信息
     cut_config: CutConfig  # 当前原始配置；whole_range 为对象，interspace 为区间数组
-    cut_configs: Dict[str, CutConfig]  # 当前部位按切法保存的原始对象或数组
+    cut_configs: Dict[str, CutConfig]  # 当前部位按定位范围方案保存的原始对象或数组
     resolved_cut_config: Dict[str, Any]  # alias 解析后的内部对象；椎间数组放在 intervals
+    resolved_cut_configs: Dict[str, Dict[str, Any]]  # 全部范围方案解析后的内部对象
     label_targets: Dict[str, LabelTarget]  # 本次需要定位的 label 目标
     coords: Dict[str, LabelCoordinate]  # 每个目标 label 的 bbox/centroid 定位结果
     raw_for_reconstruction_path: str = ""  # 第三阶段选定的工作 raw；候选可用时指向回正 raw
@@ -141,12 +142,9 @@ class LocalizationResult:
     corrected_seg_path: str = ""  # 兼容旧字段；未回正时等于 seg_for_reconstruction_path
     candidate_raw_path: str = ""  # 横状位 XY 候选回正 raw；成功提升时也作为主流程 raw
     candidate_seg_path: str = ""  # 横状位 XY 候选回正 seg；成功提升时也作为主流程 seg
-    debug_bbox_overlay_path: str = ""  # 研发期 ITK-SNAP bbox 边框 overlay；后续稳定后可删除
-    debug_target_mask_overlay_path: str = ""  # 研发期 ITK-SNAP 真实目标 mask overlay；用于避免把外接盒投影视为定位偏移
     debug_label_mask_overlay_path: str = ""  # 研发期 ITK-SNAP 分 label mask overlay；保留各椎体原始 label id
     debug_vertebral_body_mask_overlay_path: str = ""  # 研发期椎体主体候选 mask overlay；用于校验是否能从完整椎体 label 中排除后方附件
     debug_vertebral_body_prism_mask_overlay_path: str = ""  # 研发期椎体四棱柱 mask overlay；用于核对规则化主体与 CPR 质心
-    debug_xy_correction_crosshair_overlay_path: str = ""  # 横状位 XY 候选回正方向线 overlay
     is_skewed: bool = False  # 兼容旧字段；当前语义等同于 correction_applied，不再表示已可靠检测到歪斜
     skew_params: Dict[str, Any] = field(default_factory=dict)  # 兼容旧字段；语义等同于 correction_params
     anatomical_geometry: Optional[AnatomicalGeometryResult] = None  # 第五阶段统一解剖坐标；未适配部位为空
@@ -158,7 +156,7 @@ class LocalizationResult:
 
         data = {
             'body_part': self.body_part,
-            'cut_mode': self.cut_mode,
+            'localization_profile': self.localization_profile,
             'seg_path': self.seg_path,
             'model': self.model,
             'dataset_json_path': self.dataset_json_path,
@@ -166,6 +164,7 @@ class LocalizationResult:
             'cut_config': self.cut_config,
             'cut_configs': self.cut_configs,
             'resolved_cut_config': self.resolved_cut_config,
+            'resolved_cut_configs': self.resolved_cut_configs,
             'label_targets': {
                 name: target.to_dict()
                 for name, target in self.label_targets.items()
@@ -187,12 +186,9 @@ class LocalizationResult:
             'corrected_seg_path': self.corrected_seg_path,
             'candidate_raw_path': self.candidate_raw_path,
             'candidate_seg_path': self.candidate_seg_path,
-            'debug_bbox_overlay_path': self.debug_bbox_overlay_path,
-            'debug_target_mask_overlay_path': self.debug_target_mask_overlay_path,
             'debug_label_mask_overlay_path': self.debug_label_mask_overlay_path,
             'debug_vertebral_body_mask_overlay_path': self.debug_vertebral_body_mask_overlay_path,
             'debug_vertebral_body_prism_mask_overlay_path': self.debug_vertebral_body_prism_mask_overlay_path,
-            'debug_xy_correction_crosshair_overlay_path': self.debug_xy_correction_crosshair_overlay_path,
             'is_skewed': self.is_skewed,
             'skew_params': self.skew_params,
         }

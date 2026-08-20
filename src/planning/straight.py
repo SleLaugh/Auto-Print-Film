@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List
 
 from src.models import AnatomicalFrame, ExtentMM, Point3D, SlicePlan
 from src.models.enums import CutLineExtentModeEnum, PlaneTypeEnum
+from src.planning.slice_policy import localization_profile_for_slice_type
 from src.planning.geometry import (
     build_plane_stack_slices,
     image_axis_direction,
@@ -93,23 +94,24 @@ class SliceRangeExtension:
 
 def resolve_slice_range_extension(
     localization_result: Dict[str, Any],
-    cut_mode: str,
+    slice_type: str,
     plane: PlaneTypeEnum,
 ) -> SliceRangeExtension:
-    """按当前切法和状位读取可选范围扩展，未配置时返回 0mm。
+    """按当前 SliceType 对应的定位范围方案读取可选扩展。
 
-    对象形配置可携带按状位配置的扩展距离；当前正式 `interspace` 配置是数组，
+    对象形配置可携带按状位配置的扩展距离；椎间隙配置是数组，
     因而自然按 0mm 处理。配置已由第三阶段校验，这里仍做最小数值检查，保证
     直接调用规划器时不会把非法距离带入几何计算。
     """
 
+    profile = localization_profile_for_slice_type(slice_type)
     cut_config: Dict[str, Any] = {}
     cut_configs = localization_result.get("cut_configs")
     if isinstance(cut_configs, dict):
-        candidate = cut_configs.get(cut_mode)
+        candidate = cut_configs.get(profile)
         if isinstance(candidate, dict):
             cut_config = candidate
-    elif localization_result.get("cut_mode") in (None, cut_mode):
+    elif localization_result.get("localization_profile") in (None, profile):
         candidate = localization_result.get("cut_config")
         if isinstance(candidate, dict):
             cut_config = candidate
@@ -502,7 +504,7 @@ def _default_output_spacing(
 
 def build_straight_slice_plan(
     request: Any,
-    cut_mode: str,
+    slice_type: str,
     plane_config: Any,
     localization_result: Dict[str, Any],
     segment: CutSegment,
@@ -544,7 +546,7 @@ def build_straight_slice_plan(
         )
     range_extension = resolve_slice_range_extension(
         localization_result,
-        cut_mode,
+        slice_type,
         plane_config.plane,
     )
     # 重定位后的端点或已共用平面坐标的四棱柱最近点对，都沿二者形成的
@@ -567,7 +569,7 @@ def build_straight_slice_plan(
         col_dir=frame.col_dir,
     )
 
-    plan_key = cut_mode
+    plan_key = slice_type
     if segment.group_name != "whole_range":
         plan_key = f"{plan_key}_{segment.group_name}"
     return SlicePlan(
@@ -575,7 +577,7 @@ def build_straight_slice_plan(
             f"{request.body_part.value}_{plan_key}_{plane_config.plane.value}"
         ),
         body_part=request.body_part.value,
-        cut_mode=cut_mode,
+        slice_type=slice_type,
         plane=plane_config.plane.value,
         group_name=segment.group_name,
         geometry_type="plane_stack",

@@ -34,13 +34,15 @@ class LoggerUtilsTest(unittest.TestCase):
                     output_dir=output_dir,
                 )
 
-                manager._write_to_files(
+                LoggerManager._write_to_files(
+                    manager,
                     manager.LOG_TYPE_DEBUG,
                     "任务启动日志",
                 )
                 log_path = manager._get_log_file_path(manager.LOG_TYPE_DEBUG)
                 ArtifactManager(output_dir).prepare()
-                manager._write_to_files(
+                LoggerManager._write_to_files(
+                    manager,
                     manager.LOG_TYPE_DEBUG,
                     "任务结束日志",
                 )

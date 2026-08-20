@@ -110,7 +110,7 @@ class LocalizationOperations(BaseStage):
         """
         加载定位/切割范围配置。
 
-        配置只描述“某个部位在某种切割方式下，需要哪些定位范围”。
+        配置只描述“某个部位在某种内部范围方案下，需要哪些定位标签”。
         层厚、层间距、切几张等采样参数不放在这里，后续由外部请求传入。
         """
         config_paths = [
@@ -553,7 +553,7 @@ class LocalizationOperations(BaseStage):
         把本次任务关心的所有 label 合成一个整体 mask。
 
         横状位回正不能用整套 CT 判断，因为同一段片子里可能头歪、胸椎正，
-        也可能反过来。这里先按 body_part + cut_mode 解析出的 label 范围
+        也可能反过来。这里先按部位和定位范围方案解析出的 label 范围
         缩小目标，再只看这个目标范围的姿态。
         """
         target_label_ids = []
@@ -1236,74 +1236,6 @@ class LocalizationOperations(BaseStage):
         }
 
     @staticmethod
-    def _draw_xy_line(
-        overlay: np.ndarray,
-        z_index: int,
-        center_yx: tuple[float, float],
-        angle_degrees: float,
-        half_length: float,
-        label_id: int,
-    ) -> None:
-        """在单个横状位层面画一条指定角度的诊断线。"""
-
-        radians = math.radians(angle_degrees)
-        center_y, center_x = center_yx
-        sample_count = int(max(2.0, half_length * 2.0))
-        for distance in np.linspace(-half_length, half_length, sample_count):
-            x_index = int(round(center_x + distance * math.cos(radians)))
-            y_index = int(round(center_y + distance * math.sin(radians)))
-            if (
-                0 <= z_index < overlay.shape[0]
-                and 0 <= y_index < overlay.shape[1]
-                and 0 <= x_index < overlay.shape[2]
-            ):
-                overlay[z_index, y_index, x_index] = label_id
-
-    def _write_xy_correction_crosshair_overlay(
-        self,
-        reference_image: sitk.Image,
-        output_path: Path,
-        correction_center_bbox: VoxelBBox,
-        candidate: Dict[str, Any],
-    ) -> str:
-        """在原始网格上写出原始 x/y 轴和候选目标轴。"""
-
-        overlay = np.zeros(tuple(reversed(reference_image.GetSize())), dtype=np.uint8)
-        z_index = int(round(
-            (correction_center_bbox.z_min + correction_center_bbox.z_max) / 2.0
-        ))
-        center_y = (
-            correction_center_bbox.y_min + correction_center_bbox.y_max
-        ) / 2.0
-        center_x = (
-            correction_center_bbox.x_min + correction_center_bbox.x_max
-        ) / 2.0
-        half_length = max(
-            8.0,
-            min(
-                float(correction_center_bbox.x_max - correction_center_bbox.x_min),
-                float(correction_center_bbox.y_max - correction_center_bbox.y_min),
-            ) / 2.0,
-        )
-        self._draw_xy_line(overlay, z_index, (center_y, center_x), 0.0, half_length, 1)
-        self._draw_xy_line(overlay, z_index, (center_y, center_x), 90.0, half_length, 2)
-        self._draw_xy_line(
-            overlay,
-            z_index,
-            (center_y, center_x),
-            float(candidate.get('angle_degrees', 0.0)),
-            half_length,
-            3,
-        )
-
-        overlay_image = sitk.GetImageFromArray(overlay)
-        overlay_image.CopyInformation(reference_image)
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        sitk.WriteImage(overlay_image, str(output_path))
-        return str(output_path)
-
-    @staticmethod
     def _rotate_image_xy(
         image: sitk.Image,
         rotation_degrees: float,
@@ -1391,86 +1323,6 @@ class LocalizationOperations(BaseStage):
         ]
         if missing_names:
             raise ValueError(f"seg.nii.gz 中未找到目标Label体素: {', '.join(missing_names)}")
-
-    @staticmethod
-    def _write_debug_bbox_overlay(
-        reference_image: sitk.Image,
-        label_coordinates: Dict[str, LabelCoordinate],
-        correction_scope_bbox: VoxelBBox,
-        output_path: Path,
-        include_label_bboxes: bool = False,
-    ) -> str:
-        """
-        写出研发期 bbox 可视化 overlay，方便在 ITK-SNAP 中直接看定位框。
-
-        这个文件只用于人工验证定位，不参与后续 pipeline。overlay 与
-        reference_image 使用同一套 size/spacing/origin/direction。数值约定：
-        1 表示本次目标整体 bbox。默认不画每个 label 的 bbox，避免 ITK-SNAP
-        里一屏叠太多框；如果临时需要细看单椎体范围，可把
-        include_label_bboxes 打开，单个 label 的 bbox 会使用该 label 的第一个
-        label id。因为只是研发辅助输出，后续稳定后删除本方法和调用点即可。
-        """
-        reference_array = sitk.GetArrayFromImage(reference_image)
-        overlay_array = np.zeros(reference_array.shape, dtype=np.uint16)
-        output_path = Path(output_path)
-
-        def paint_bbox_edges(bbox: VoxelBBox, value: int) -> None:
-            """将指定体素包围盒的六个边界面写入调试 overlay。"""
-
-            z_size, y_size, x_size = overlay_array.shape
-            z_min = max(0, min(int(bbox.z_min), z_size - 1))
-            z_max = max(0, min(int(bbox.z_max), z_size - 1))
-            y_min = max(0, min(int(bbox.y_min), y_size - 1))
-            y_max = max(0, min(int(bbox.y_max), y_size - 1))
-            x_min = max(0, min(int(bbox.x_min), x_size - 1))
-            x_max = max(0, min(int(bbox.x_max), x_size - 1))
-            if z_min > z_max or y_min > y_max or x_min > x_max:
-                return
-
-            # 只画六个面的一层边框，不填满盒子。这样在 ITK-SNAP 里能看到
-            # 定位范围，但不会遮住内部真实分割。
-            overlay_array[z_min, y_min:y_max + 1, x_min:x_max + 1] = value
-            overlay_array[z_max, y_min:y_max + 1, x_min:x_max + 1] = value
-            overlay_array[z_min:z_max + 1, y_min, x_min:x_max + 1] = value
-            overlay_array[z_min:z_max + 1, y_max, x_min:x_max + 1] = value
-            overlay_array[z_min:z_max + 1, y_min:y_max + 1, x_min] = value
-            overlay_array[z_min:z_max + 1, y_min:y_max + 1, x_max] = value
-
-        paint_bbox_edges(correction_scope_bbox, 1)
-        if include_label_bboxes:
-            for coord in label_coordinates.values():
-                if not coord.found or not coord.bbox or not coord.label_ids:
-                    continue
-                paint_bbox_edges(coord.bbox, int(coord.label_ids[0]))
-
-        overlay_image = sitk.GetImageFromArray(overlay_array)
-        overlay_image.CopyInformation(reference_image)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        sitk.WriteImage(overlay_image, str(output_path))
-        return str(output_path)
-
-    @staticmethod
-    def _write_debug_target_mask_overlay(
-        reference_image: sitk.Image,
-        seg_array: np.ndarray,
-        label_targets: Dict[str, LabelTarget],
-        output_path: Path,
-    ) -> str:
-        """
-        写出研发期真实目标 mask overlay，方便在 ITK-SNAP 中核对定位是否偏。
-
-        bbox overlay 画的是轴对齐外接盒，在矢状位/冠状位上会被少量极值体素
-        或斜着的目标形态撑大。这个 overlay 只保留本次请求关心的 label 体素，
-        数值统一写成 1，用来回答“目标本身在哪里”，不表达外接盒范围。
-        """
-        target_mask = LocalizationStage._build_target_mask(seg_array, label_targets)
-        overlay_array = target_mask.astype(np.uint8)
-        overlay_image = sitk.GetImageFromArray(overlay_array)
-        overlay_image.CopyInformation(reference_image)
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        sitk.WriteImage(overlay_image, str(output_path))
-        return str(output_path)
 
     @staticmethod
     def _write_debug_label_mask_overlay(
@@ -3975,6 +3827,7 @@ class LocalizationOperations(BaseStage):
         cut_config: CutConfig,
         cut_configs: Dict[str, CutConfig],
         resolved_cut_config: Dict[str, Any],
+        resolved_cut_configs: Dict[str, Dict[str, Any]],
         label_targets: Dict[str, LabelTarget],
         label_coordinates: Dict[str, LabelCoordinate],
         dataset_json_path: Path,
@@ -3990,12 +3843,9 @@ class LocalizationOperations(BaseStage):
         corrected_seg_path: str,
         candidate_raw_path: str,
         candidate_seg_path: str,
-        debug_bbox_overlay_path: str,
-        debug_target_mask_overlay_path: str,
         debug_label_mask_overlay_path: str,
         debug_vertebral_body_mask_overlay_path: str,
         debug_vertebral_body_prism_mask_overlay_path: str,
-        debug_xy_correction_crosshair_overlay_path: str,
         spine_geometry: Dict[str, Any] | None,
         is_skewed: bool,
         skew_params: Dict[str, Any],
@@ -4005,7 +3855,9 @@ class LocalizationOperations(BaseStage):
         """写出定位结果，供后续映射、MPR 和调试使用。"""
         localization_result = LocalizationResult(
             body_part=request.body_part.value,
-            cut_mode=LocalizationStage._resolve_request_cut_mode(request),
+            localization_profile=(
+                LocalizationStage._resolve_request_localization_profile(request)
+            ),
             seg_path=str(seg_path),
             model=model_info,
             dataset_json_path=str(dataset_json_path),
@@ -4018,6 +3870,7 @@ class LocalizationOperations(BaseStage):
             cut_config=cut_config,
             cut_configs=cut_configs,
             resolved_cut_config=resolved_cut_config,
+            resolved_cut_configs=resolved_cut_configs,
             label_targets=label_targets,
             coords=label_coordinates,
             raw_for_reconstruction_path=raw_for_reconstruction_path,
@@ -4030,15 +3883,10 @@ class LocalizationOperations(BaseStage):
             corrected_seg_path=corrected_seg_path,
             candidate_raw_path=candidate_raw_path,
             candidate_seg_path=candidate_seg_path,
-            debug_bbox_overlay_path=debug_bbox_overlay_path,
-            debug_target_mask_overlay_path=debug_target_mask_overlay_path,
             debug_label_mask_overlay_path=debug_label_mask_overlay_path,
             debug_vertebral_body_mask_overlay_path=debug_vertebral_body_mask_overlay_path,
             debug_vertebral_body_prism_mask_overlay_path=(
                 debug_vertebral_body_prism_mask_overlay_path
-            ),
-            debug_xy_correction_crosshair_overlay_path=(
-                debug_xy_correction_crosshair_overlay_path
             ),
             spine_geometry=spine_geometry,
             spine_cpr_config=spine_cpr_config or {},
@@ -4068,31 +3916,38 @@ class LocalizationOperations(BaseStage):
         }
 
     @staticmethod
-    def _resolve_request_cut_mode(request) -> str:
-        """根据请求部位和全部状位推导第三阶段需要加载的定位范围模式。"""
+    def _resolve_request_localization_profile(request) -> str:
+        """根据全部 SliceType 选择第三阶段需要加载的定位范围方案。"""
 
-        from src.planning.cut_policy import localization_cut_mode
+        from src.planning.slice_policy import localization_profile_for_request
 
-        return localization_cut_mode(
-            request.body_part,
-            (config.plane for config in request.plane_configs),
+        return localization_profile_for_request(
+            config.slice_type for config in request.plane_configs
         )
 
-    def _resolve_cut_config(self, request, cut_mode: str | None = None) -> CutConfig:
+    def _resolve_cut_config(
+        self,
+        request,
+        localization_profile: str | None = None,
+    ) -> CutConfig:
         """
-        根据请求部位和自动推导的定位范围模式查找配置。
+        根据请求中的 SliceType 所需定位范围方案查找配置。
 
         具体范围统一从 localization_config.json 读取。
         whole_range 使用带 start/end 的对象；interspace 直接使用由多个
         start/end 对象组成的数组，不再增加 intervals 包装节点。
         """
-        cut_mode = cut_mode or self._resolve_request_cut_mode(request)
+        localization_profile = (
+            localization_profile
+            or self._resolve_request_localization_profile(request)
+        )
         body_part = getattr(request.body_part, 'value', request.body_part)
         cut_configs = self._resolve_cut_configs(request)
-        cut_config = cut_configs.get(cut_mode)
+        cut_config = cut_configs.get(localization_profile)
         if cut_config is None:
             raise ValueError(
-                f"未找到切割方式配置: body_part={body_part}, cut_mode={cut_mode}"
+                f"未找到定位范围配置: body_part={body_part}, "
+                f"profile={localization_profile}"
             )
         return cut_config
 
@@ -4114,10 +3969,10 @@ class LocalizationOperations(BaseStage):
         return {'full_label': full_label if isinstance(full_label, bool) else True}
 
     def _resolve_cut_configs(self, request) -> Dict[str, CutConfig]:
-        """返回当前部位的全部切法配置，并统一校验其中的范围扩展设置。
+        """返回当前部位的全部定位范围配置，并统一校验范围扩展设置。
 
-        第三阶段选择标签时只使用当前定位模式；完整配置由第四阶段写入定位契约，
-        让第六阶段在一次混合状位请求中为整切和区间切读取各自配置。
+        第三阶段选择标签时使用主定位范围；全部解析结果由第四阶段写入定位契约，
+        让第六阶段在一次混合请求中为 MPR/CPR 和椎间隙读取各自范围配置。
         """
 
         body_part = getattr(request.body_part, 'value', request.body_part)
@@ -4178,7 +4033,7 @@ class LocalizationOperations(BaseStage):
         return [value]
 
     @staticmethod
-    def _validate_cut_config(cut_mode: str, cut_config: CutConfig) -> None:
+    def _validate_cut_config(profile: str, cut_config: CutConfig) -> None:
         """
         校验切割配置结构。
 
@@ -4186,7 +4041,7 @@ class LocalizationOperations(BaseStage):
             whole_range: {"start": "L1", "end": "S1"}
             interspace: [{"start": "L1", "end": "L2"}]
         """
-        if cut_mode == 'whole_range':
+        if profile == 'whole_range':
             if not isinstance(cut_config, dict):
                 raise ValueError(f"whole_range 配置必须是对象: {cut_config}")
             LocalizationStage._validate_slice_range_extension(cut_config)
@@ -4194,7 +4049,7 @@ class LocalizationOperations(BaseStage):
                 raise ValueError(f"whole_range 配置必须包含 start/end: {cut_config}")
             return
 
-        if cut_mode == 'interspace':
+        if profile == 'interspace':
             if not isinstance(cut_config, list) or not cut_config:
                 raise ValueError(f"interspace 配置必须是非空数组: {cut_config}")
             for interval in cut_config:
@@ -4204,7 +4059,7 @@ class LocalizationOperations(BaseStage):
                     raise ValueError(f"interspace 区间必须包含 start/end: {interval}")
             return
 
-        raise ValueError(f"未知切割方式: {cut_mode}")
+        raise ValueError(f"未知定位范围方案: {profile}")
 
     @staticmethod
     def _validate_slice_range_extension(cut_config: Dict[str, Any]) -> None:
@@ -4306,11 +4161,16 @@ class LocalizationStage(LocalizationOperations):
                     correction_result["dataset_json_path"]
                 ),
                 "model_info": correction_result.get("model") or {},
-                "cut_mode": correction_result["cut_mode"],
+                "localization_profile": correction_result[
+                    "localization_profile"
+                ],
                 "cut_config": correction_result["cut_config"],
                 "cut_configs": correction_result["cut_configs"],
                 "resolved_cut_config": correction_result[
                     "resolved_cut_config"
+                ],
+                "resolved_cut_configs": correction_result[
+                    "resolved_cut_configs"
                 ],
             }
             context.metadata[_LOCALIZATION_WORKSPACE_KEY] = workspace
@@ -4335,10 +4195,15 @@ class LocalizationStage(LocalizationOperations):
         ).to_dict()
         payload = {
             "coords": self._coordinates_to_dict(label_coordinates),
-            "cut_mode": correction_result["cut_mode"],
+            "localization_profile": correction_result[
+                "localization_profile"
+            ],
             "cut_config": correction_result["cut_config"],
             "cut_configs": correction_result["cut_configs"],
             "resolved_cut_config": correction_result["resolved_cut_config"],
+            "resolved_cut_configs": correction_result[
+                "resolved_cut_configs"
+            ],
             "spine_cpr_config": self._resolve_spine_cpr_config(
                 context.request.body_part.value,
             ),
@@ -4362,12 +4227,6 @@ class LocalizationStage(LocalizationOperations):
             "candidate_seg_path": correction_result["candidate_seg_path"],
             "is_skewed": correction_result["is_skewed"],
             "skew_params": correction_result["skew_params"],
-            "debug_bbox_overlay_path": "",
-            "debug_target_mask_overlay_path": "",
-            "debug_xy_correction_crosshair_overlay_path": correction_result.get(
-                "debug_xy_correction_crosshair_overlay_path",
-                "",
-            ),
         }
         context.set_stage_result(LocalizationStageResult(payload=payload))
 

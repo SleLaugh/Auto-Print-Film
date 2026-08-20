@@ -5,7 +5,7 @@
 
 from typing import Any, Dict, List, Tuple
 
-from src.models.enums import PlaneTypeEnum
+from src.models.enums import PlaneTypeEnum, SliceType
 from src.planning.base import PlanningResult
 from src.planning.spine_cpr import (
     build_spine_sagittal_cpr_plans,
@@ -77,14 +77,16 @@ class LumbarWholeRangePlanner:
             LUMBAR_LABELS,
         )
         for plane_config in request.plane_configs:
-            cpr_plans, cpr_warnings = build_spine_sagittal_cpr_plans(
-                request=request,
-                plane_config=plane_config,
-                localization_result=localization_result,
-                label_names=cpr_labels,
-            )
-            warnings.extend(cpr_warnings)
-            if cpr_plans:
+            if plane_config.slice_type is SliceType.CPR:
+                cpr_plans, cpr_warnings = build_spine_sagittal_cpr_plans(
+                    request=request,
+                    plane_config=plane_config,
+                    localization_result=localization_result,
+                    label_names=cpr_labels,
+                )
+                warnings.extend(cpr_warnings)
+                if not cpr_plans:
+                    raise ValueError("CPR 规划失败: " + "; ".join(cpr_warnings))
                 plans.extend(cpr_plans)
                 continue
             plan = build_whole_range_plan_from_bbox(
@@ -140,7 +142,7 @@ class LumbarInterspacePlanner:
                 )
                 plan = build_straight_slice_plan(
                     request=request,
-                    cut_mode="interspace",
+                    slice_type=SliceType.椎间隙.value,
                     plane_config=plane_config,
                     localization_result=localization_result,
                     segment=segment,

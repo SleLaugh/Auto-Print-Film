@@ -18,9 +18,9 @@ class PlanningResult:
     planner_name: str = ""
 
 
-def select_planner(body_part: str, cut_mode: str) -> Any:
+def select_planner(body_part: str, slice_type: str) -> Any:
     """
-    根据部位和切割方式选择第六阶段 planner。
+    根据部位和外部指定的 SliceType 选择第六阶段 planner。
 
     planner 的输出结构保持一致，差异只留在“从哪里切、怎么生成路径”的
     业务逻辑里。第七阶段只看 SlicePlan，不关心这里选中了哪个 planner。
@@ -30,17 +30,21 @@ def select_planner(body_part: str, cut_mode: str) -> Any:
     from src.planning.single_label import SingleLabelWholeRangePlanner
 
     planner_types = {
-        ("颈椎", "whole_range"): SingleLabelWholeRangePlanner,
-        ("胸椎", "whole_range"): SingleLabelWholeRangePlanner,
-        ("腰椎", "whole_range"): LumbarWholeRangePlanner,
-        ("腰椎", "interspace"): LumbarInterspacePlanner,
-        ("肺部", "whole_range"): SingleLabelWholeRangePlanner,
-        ("头骨", "whole_range"): SingleLabelWholeRangePlanner,
-        ("髋骨", "whole_range"): SingleLabelWholeRangePlanner,
+        ("颈椎", "MPR"): SingleLabelWholeRangePlanner,
+        ("颈椎", "CPR"): SingleLabelWholeRangePlanner,
+        ("胸椎", "MPR"): SingleLabelWholeRangePlanner,
+        ("胸椎", "CPR"): SingleLabelWholeRangePlanner,
+        ("腰椎", "MPR"): LumbarWholeRangePlanner,
+        ("腰椎", "CPR"): LumbarWholeRangePlanner,
+        ("腰椎", "椎间隙"): LumbarInterspacePlanner,
+        ("肺部", "MPR"): SingleLabelWholeRangePlanner,
+        ("头骨", "MPR"): SingleLabelWholeRangePlanner,
+        ("髋骨", "MPR"): SingleLabelWholeRangePlanner,
     }
-    key = (body_part, cut_mode)
+    key = (body_part, slice_type)
     if key not in planner_types:
         raise ValueError(
-            f"未找到第六阶段 planner: body_part={body_part}, cut_mode={cut_mode}"
+            f"未找到第六阶段 planner: body_part={body_part}, "
+            f"SliceType={slice_type}"
         )
     return planner_types[key]()

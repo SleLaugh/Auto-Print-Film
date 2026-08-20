@@ -27,7 +27,7 @@
   <!-- 步骤 1：接收外部参数。 -->
   <rect x="210" y="120" width="680" height="120" rx="20" fill="#eaf4ff" stroke="#6d9dcb" stroke-width="2"/>
   <text x="550" y="160" text-anchor="middle" class="step-title">① 接收切割请求</text>
-  <text x="550" y="196" text-anchor="middle" class="code">cut_mode + plane + line_extent_mode + 层厚 + 层间距</text>
+  <text x="550" y="196" text-anchor="middle" class="code">SliceType + plane + line_extent_mode + 层厚 + 层间距</text>
   <text x="550" y="224" text-anchor="middle" class="small">line_extent_mode 默认是整平面</text>
   <path d="M550 240 L550 285" class="line"/>
 
@@ -41,15 +41,15 @@
   <!-- 步骤 3：根据切割方式确定纵向区间。 -->
   <rect x="210" y="470" width="680" height="125" rx="20" fill="#f0f3fb" stroke="#7f8fc1" stroke-width="2"/>
   <text x="550" y="510" text-anchor="middle" class="step-title">③ 确定“从哪里切到哪里”</text>
-  <text x="550" y="546" text-anchor="middle" class="body">whole_range：生成 1 个 CutSegment</text>
-  <text x="550" y="577" text-anchor="middle" class="body">interspace：生成多个独立 CutSegment</text>
+  <text x="550" y="546" text-anchor="middle" class="body">MPR：生成 1 个 CutSegment</text>
+  <text x="550" y="577" text-anchor="middle" class="body">椎间隙：生成多个独立 CutSegment</text>
   <path d="M550 595 L550 640" class="line"/>
 
   <!-- 步骤 4：确定直线坐标系，角度在此参与。 -->
   <rect x="210" y="650" width="680" height="135" rx="20" fill="#edf9f2" stroke="#62a078" stroke-width="3"/>
   <text x="550" y="690" text-anchor="middle" class="step-title">④ 确定直线切割方向</text>
-  <text x="550" y="727" text-anchor="middle" class="body">逐个 CutSegment 解析；当前横 / 矢 / 冠默认角度为 0</text>
-  <text x="550" y="758" text-anchor="middle" class="body">后续：区间切在矢状参考面逐段算角度，仍输出横状位</text>
+  <text x="550" y="727" text-anchor="middle" class="body">逐个 CutSegment 解析；MPR 使用对应状位的基础直线方向</text>
+  <text x="550" y="758" text-anchor="middle" class="body">椎间隙在矢状参考面逐段解析角度，仍输出横状位</text>
   <path d="M550 785 L550 830" class="line"/>
 
   <!-- 步骤 5：范围模式分叉。 -->

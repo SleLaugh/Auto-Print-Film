@@ -1,6 +1,5 @@
 """第三阶段：为后续定位与重建选定统一图像空间。"""
 
-import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -8,7 +7,7 @@ import SimpleITK as sitk
 
 from src.core.context import ProcessingContext
 from src.models import SpatialCorrectionStageResult
-from src.utils import DebugLog, is_debug_file_enabled
+from src.utils import DebugLog
 
 from .stage_localization import (
     LocalizationOperations,
@@ -47,15 +46,19 @@ class SpatialCorrectionStage(LocalizationOperations):
         DebugLog(f"  输入分割: {seg_path}")
         DebugLog(f"  部位: {request.body_part.value}")
 
-        cut_mode = self._resolve_request_cut_mode(request)
+        localization_profile = self._resolve_request_localization_profile(request)
         cut_configs = self._resolve_cut_configs(request)
-        cut_config = cut_configs.get(cut_mode)
+        cut_config = cut_configs.get(localization_profile)
         if not cut_config:
             raise ValueError(
-                f"未找到切割方式配置: body_part={request.body_part.value}, "
-                f"cut_mode={cut_mode}"
+                f"未找到定位范围配置: body_part={request.body_part.value}, "
+                f"profile={localization_profile}"
             )
-        resolved_cut_config = self._resolve_label_aliases(cut_config)
+        resolved_cut_configs = {
+            profile: self._resolve_label_aliases(config)
+            for profile, config in cut_configs.items()
+        }
+        resolved_cut_config = resolved_cut_configs[localization_profile]
 
         dataset_json_path = self._find_dataset_json(model_info, seg_path=seg_path)
         label_map = self._load_label_map(dataset_json_path)
@@ -123,25 +126,6 @@ class SpatialCorrectionStage(LocalizationOperations):
         else:
             DebugLog("  未启用校正，后续阶段使用原始空间")
 
-        debug_crosshair_path = ""
-        if is_debug_file_enabled():
-            metadata_dir = Path(request.output_dir) / "metadata"
-            metadata_dir.mkdir(parents=True, exist_ok=True)
-            crosshair_path = metadata_dir / "横状位XY回正十字线.nii.gz"
-            debug_file_start = time.perf_counter()
-            self._write_xy_correction_crosshair_overlay(
-                reference_image=image,
-                output_path=crosshair_path,
-                correction_center_bbox=correction_scope_bbox,
-                candidate=candidate,
-            )
-            DebugLog(
-                "  [调试文件性能] 已生成: "
-                f"{crosshair_path}, "
-                f"耗时={time.perf_counter() - debug_file_start:.3f}s"
-            )
-            debug_crosshair_path = str(crosshair_path)
-
         # 快照只在本次进程内复用，不进入 manifest 或阶段 JSON。
         context.metadata[_LOCALIZATION_WORKSPACE_KEY] = {
             "seg_path": correction_result["seg_for_reconstruction_path"],
@@ -154,10 +138,11 @@ class SpatialCorrectionStage(LocalizationOperations):
             "correction_scope_bbox": correction_scope_bbox,
             "dataset_json_path": dataset_json_path,
             "model_info": model_info,
-            "cut_mode": cut_mode,
+            "localization_profile": localization_profile,
             "cut_config": cut_config,
             "cut_configs": cut_configs,
             "resolved_cut_config": resolved_cut_config,
+            "resolved_cut_configs": resolved_cut_configs,
             "candidate": candidate,
         }
 
@@ -165,10 +150,11 @@ class SpatialCorrectionStage(LocalizationOperations):
             "raw_input_path": str(raw_path),
             "seg_input_path": str(seg_path),
             "model": model_info,
-            "cut_mode": cut_mode,
+            "localization_profile": localization_profile,
             "cut_config": cut_config,
             "cut_configs": cut_configs,
             "resolved_cut_config": resolved_cut_config,
+            "resolved_cut_configs": resolved_cut_configs,
             "label_targets": self._label_targets_to_dict(label_targets),
             "dataset_json_path": str(dataset_json_path),
             "raw_for_reconstruction_path": correction_result[
@@ -187,7 +173,6 @@ class SpatialCorrectionStage(LocalizationOperations):
             "candidate_seg_path": correction_result["candidate_seg_path"],
             "is_skewed": correction_result["correction_applied"],
             "skew_params": correction_result["correction_params"],
-            "debug_xy_correction_crosshair_overlay_path": debug_crosshair_path,
         }
         context.set_stage_result(SpatialCorrectionStageResult(payload=payload))
 

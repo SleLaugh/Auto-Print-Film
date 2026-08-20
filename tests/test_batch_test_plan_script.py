@@ -60,7 +60,9 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         self.assertIn("横状位", result.stdout)
         self.assertIn("矢状位", result.stdout)
         self.assertIn("冠状位", result.stdout)
-        self.assertIn("整平面", result.stdout)
+        self.assertIn("部位范围", result.stdout)
+        self.assertIn("SliceType", result.stdout)
+        self.assertIn("MPR", result.stdout)
         self.assertNotIn("full_plane", result.stdout)
 
     def test_plane_configs_value_is_valid_json(self):
@@ -83,7 +85,8 @@ class BatchTestPlanScriptTest(unittest.TestCase):
                 config["window_presets"],
                 ["骨窗", "肺窗", "纵隔窗", "软组织窗"],
             )
-            self.assertEqual(config["line_extent_mode"], "整平面")
+            self.assertEqual(config["line_extent_mode"], "部位范围")
+            self.assertEqual(config["SliceType"], "MPR")
 
     def test_chinese_extent_mode_parses_under_c_locale_with_utf8_mode(self):
         """精简 Linux 的 C locale 下，显式 UTF-8 模式仍应正确解析中文请求。"""

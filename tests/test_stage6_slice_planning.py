@@ -14,7 +14,7 @@ _logger_manager.debug_file_enabled = True
 from src.core.context import ProcessingContext
 from src.models import PlaneConfig, Point3D, Request
 from src.models.enums import CutLineExtentModeEnum
-from src.models.enums import BodyPartEnum, CutModeEnum, PlaneTypeEnum
+from src.models.enums import BodyPartEnum, PlaneTypeEnum, SliceType
 from src.planning.base import select_planner
 from src.planning.geometry import normalize_vector, subtract_points
 from src.planning.lumbar import LumbarInterspacePlanner, LumbarWholeRangePlanner
@@ -191,6 +191,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     PlaneConfig(
                         PlaneTypeEnum.横状位, 1.0, 3.0,
                         ["骨窗"],
+                        slice_type=SliceType.椎间隙,
                     ),
                     PlaneConfig(
                         PlaneTypeEnum.矢状位, 1.0, 3.0,
@@ -211,18 +212,18 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 [
                     (
                         plan["plane"],
-                        plan["cut_mode"],
+                        plan["slice_type"],
                         plan["geometry_type"],
                     )
                     for plan in plans
                 ],
                 [
-                    ("横状位", "interspace", "plane_stack"),
-                    ("横状位", "interspace", "plane_stack"),
-                    ("横状位", "interspace", "plane_stack"),
-                    ("横状位", "interspace", "plane_stack"),
-                    ("横状位", "interspace", "plane_stack"),
-                    ("矢状位", "whole_range", "plane_stack"),
+                    ("横状位", "椎间隙", "plane_stack"),
+                    ("横状位", "椎间隙", "plane_stack"),
+                    ("横状位", "椎间隙", "plane_stack"),
+                    ("横状位", "椎间隙", "plane_stack"),
+                    ("横状位", "椎间隙", "plane_stack"),
+                    ("矢状位", "MPR", "plane_stack"),
                 ],
             )
             sagittal_plan = plans[-1]
@@ -231,8 +232,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             self.assertNotIn("curve_points", sagittal_plan)
             self.assertNotIn("offsets_mm", sagittal_plan)
 
-    def test_spine_coronal_cpr_falls_back_when_fewer_than_three_labels(self):
-        """有效椎体少于 3 个时，冠状位 CPR 应降级为现有直线 MPR。"""
+    def test_spine_coronal_cpr_fails_when_fewer_than_three_labels(self):
+        """显式 CPR 条件不足时必须失败，不能静默改成 MPR。"""
 
         request = Request(
             dicom_dir="/tmp/dicom",
@@ -242,6 +243,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
                     ["骨窗"],
+                    slice_type=SliceType.CPR,
                 ),
             ],
         )
@@ -249,10 +251,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         for label_name in ("vertebrae_L3", "vertebrae_L4", "vertebrae_L5", "vertebrae_S1"):
             localization_result["coords"][label_name]["found"] = False
 
-        result = LumbarWholeRangePlanner().build_plans(request, localization_result)
-
-        self.assertEqual(result.plans[0].geometry_type, "plane_stack")
-        self.assertIn("CPR 降级", result.warnings[0])
+        with self.assertRaisesRegex(ValueError, "CPR 规划失败"):
+            LumbarWholeRangePlanner().build_plans(request, localization_result)
 
     def test_spine_cpr_prefers_prism_centroid(self):
         """第五阶段几何可用时，CPR 应优先使用四棱柱体素质心。"""
@@ -455,6 +455,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
                     ["骨窗"],
+                    slice_type=SliceType.CPR,
                 ),
             ],
         )
@@ -492,6 +493,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
                     ["骨窗"],
+                    slice_type=SliceType.CPR,
                 ),
             ],
         )
@@ -1239,6 +1241,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
                     ["骨窗"],
+                    slice_type=SliceType.CPR,
                 ),
             ],
         )
@@ -1590,7 +1593,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
             plane_configs=[
-                PlaneConfig(PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"]),
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"],
+                    slice_type=SliceType.CPR,
+                ),
             ],
         )
         localization_result = self._lumbar_localization_result()
@@ -1641,7 +1647,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
             plane_configs=[
-                PlaneConfig(PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"]),
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"],
+                    slice_type=SliceType.CPR,
+                ),
             ],
         )
         localization_result = self._lumbar_localization_result()
@@ -1682,6 +1691,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
                     ["骨窗"],
+                    slice_type=SliceType.CPR,
                 ),
             ],
         )
@@ -1747,6 +1757,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
                     ["骨窗"],
+                    slice_type=SliceType.CPR,
                 ),
             ],
         )
@@ -1793,6 +1804,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
                     ["骨窗"],
+                    slice_type=SliceType.CPR,
                 ),
             ],
         )
@@ -1835,6 +1847,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
                     ["骨窗"],
+                    slice_type=SliceType.CPR,
                 ),
             ],
         )
@@ -2023,6 +2036,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 1.0,
                     ["骨窗"],
+                    slice_type=SliceType.CPR,
                 ),
             ],
         )
@@ -2091,6 +2105,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
                     ["骨窗"],
+                    slice_type=SliceType.CPR,
                 ),
             ],
         )
@@ -2121,50 +2136,6 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             [f"vertebrae_C{index}" for index in range(2, 8)],
         )
 
-    def test_overview_with_image_preserves_ct_and_highlights_overlay_labels(self):
-        """验证 `test_overview_with_image_preserves_ct_and_highlights_overlay_labels` 场景符合预期。"""
-
-        raw_array = np.array([
-            [[0, 10], [20, 30]],
-            [[40, 50], [60, 70]],
-        ], dtype=np.int16)
-        raw_image = sitk.GetImageFromArray(raw_array)
-        raw_image.SetSpacing((1.0, 1.0, 1.0))
-
-        reference_image = sitk.Image(2, 3, 2, sitk.sitkUInt16)
-        reference_image.SetSpacing((1.0, 0.5, 1.0))
-        overlay_array = np.zeros((2, 3, 2), dtype=np.uint16)
-        overlay_array[0, 1, 0] = 15
-        overlay_array[0, 1, 1] = 14
-
-        result = PlanningStage._build_overview_with_image(
-            raw_image,
-            reference_image,
-            overlay_array,
-        )
-        result_array = sitk.GetArrayFromImage(result)
-
-        self.assertEqual(result.GetSize(), reference_image.GetSize())
-        self.assertEqual(result.GetPixelID(), sitk.sitkInt16)
-        self.assertEqual(result.GetSpacing(), reference_image.GetSpacing())
-        self.assertEqual(result.GetOrigin(), reference_image.GetOrigin())
-        self.assertEqual(result.GetDirection(), reference_image.GetDirection())
-        self.assertAlmostEqual(float(result_array[0, 0, 0]), 0.0)
-        self.assertAlmostEqual(float(result_array[0, 2, 1]), 30.0)
-        # 旧层厚带标签不再烧录，只高亮最细中心线。
-        self.assertAlmostEqual(float(result_array[0, 1, 0]), 10.0)
-        self.assertGreater(float(result_array[0, 1, 1]), 70.0)
-
-    def test_debug_filename_suffix_uses_short_plane_and_cut_mode_labels(self):
-        """验证 `test_debug_filename_suffix_uses_short_plane_and_cut_mode_labels` 场景符合预期。"""
-
-        self.assertEqual(
-            PlanningStage._debug_plan_suffix([
-                {"plane": "冠状位", "cut_mode": "interspace"},
-            ]),
-            "冠_区",
-        )
-
     def test_select_planner_supports_configured_whole_range_body_parts(self):
         """验证 `test_select_planner_supports_configured_whole_range_body_parts` 场景符合预期。"""
 
@@ -2187,7 +2158,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         for body_part in whole_range_body_parts:
             with self.subTest(body_part=body_part):
-                planner = select_planner(body_part, CutModeEnum.整切.value)
+                planner = select_planner(body_part, SliceType.MPR.value)
                 if body_part == BodyPartEnum.腰椎.value:
                     self.assertIsInstance(planner, LumbarWholeRangePlanner)
                 else:
@@ -2240,7 +2211,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
         localization_result = {
             "body_part": "肺部",
-            "cut_mode": "whole_range",
+            "localization_profile": "whole_range",
             "correction_scope_bbox": {
                 "z_min": 0,
                 "z_max": 10,
@@ -2268,7 +2239,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertEqual(result.planner_name, "SingleLabelWholeRangePlanner")
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
-        self.assertEqual(plan.plan_id, "肺部_whole_range_横状位")
+        self.assertEqual(plan.plan_id, "肺部_MPR_横状位")
         self.assertEqual(len(plan.slices), 4)
         self.assertEqual(
             [planned_slice.center.z for planned_slice in plan.slices],
@@ -2300,7 +2271,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
         localization_result = {
             "body_part": "肺部",
-            "cut_mode": "whole_range",
+            "localization_profile": "whole_range",
             "cut_configs": {
                 "whole_range": {
                     "start": "lung",
@@ -2694,6 +2665,38 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             {"x": -1.0, "y": -0.0, "z": -0.0},
         )
 
+    def test_thoracic_coronal_mpr_keeps_spine_target_range(self):
+        """胸椎冠状位 MPR 应使用胸椎段 bbox，且不进入 CPR。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.胸椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 2.0, 5.0, ["骨窗"],
+                ),
+            ],
+        )
+        localization_result = self._spine_localization_result(
+            ("C7", "T1", "T2", "T12", "L1"),
+            "胸椎",
+        )
+
+        plan = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.slice_type, "MPR")
+        self.assertEqual(plan.geometry_type, "plane_stack")
+        self.assertEqual(plan.localizer_plane, "矢状位")
+        self.assertEqual(plan.source_labels, [
+            "vertebrae_T1",
+            "vertebrae_T2",
+            "vertebrae_T12",
+        ])
+
     def test_thoracic_coronal_uses_cpr_curve_on_sagittal_localizer(self):
         """胸椎冠状位应按 CPR 曲线规划，并在矢状位定位图显示 T 段。"""
 
@@ -2702,7 +2705,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             output_dir="/tmp/output",
             body_part=BodyPartEnum.胸椎,
             plane_configs=[
-                PlaneConfig(PlaneTypeEnum.冠状位, 2.0, 5.0, ["骨窗"]),
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 2.0, 5.0, ["骨窗"],
+                    slice_type=SliceType.CPR,
+                ),
             ],
         )
         localization_result = self._spine_localization_result(
@@ -2771,7 +2777,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         ).plans[0]
 
         self.assertEqual(plan.geometry_type, "curved_stack")
-        self.assertEqual(plan.cut_mode, "cpr")
+        self.assertEqual(plan.slice_type, "CPR")
         self.assertEqual(plan.group_name, "CPR")
         self.assertEqual(plan.plane, "冠状位")
         self.assertEqual(plan.localizer_plane, "矢状位")
@@ -2797,7 +2803,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             output_dir="/tmp/output",
             body_part=BodyPartEnum.胸椎,
             plane_configs=[
-                PlaneConfig(PlaneTypeEnum.冠状位, 2.0, 5.0, ["骨窗"]),
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 2.0, 5.0, ["骨窗"],
+                    slice_type=SliceType.CPR,
+                ),
             ],
         )
         localization_result = self._spine_localization_result(
@@ -2891,7 +2900,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 output_dir="/tmp/output",
                 body_part=BodyPartEnum.胸椎,
                 plane_configs=[
-                    PlaneConfig(PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"]),
+                    PlaneConfig(
+                        PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"],
+                        slice_type=SliceType.CPR,
+                    ),
                 ],
             )
 
@@ -3008,7 +3020,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
             plane_configs=[
-                PlaneConfig(PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"]),
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"],
+                    slice_type=SliceType.CPR,
+                ),
             ],
         )
 
@@ -3188,7 +3203,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 output_dir="/tmp/output",
                 body_part=BodyPartEnum.腰椎,
                 plane_configs=[
-                    PlaneConfig(PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"]),
+                    PlaneConfig(
+                        PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"],
+                        slice_type=SliceType.CPR,
+                    ),
                 ],
             )
 
@@ -3228,16 +3246,16 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             with self.subTest(body_part=body_part):
                 self.assertNotIn("spine_cpr", config["targets"][body_part])
 
-    def test_checked_in_thoracic_cpr_uses_body_prism_range(self):
-        """胸椎 CPR 默认使用主椎体范围，避免 full_label 后方结构拉偏。"""
+    def test_checked_in_spine_cpr_uses_full_label_range(self):
+        """当前脊柱 CPR 配置统一覆盖完整标注范围。"""
 
         config_path = Path("src/config/localization_config.json")
         config = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertFalse(
+        self.assertTrue(
             config["targets"]["胸椎"]["spine_cpr"]["full_label"],
         )
-        self.assertFalse(
+        self.assertTrue(
             config["targets"]["腰椎"]["spine_cpr"]["full_label"],
         )
 
@@ -3254,7 +3272,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
             plane_configs=[
-                PlaneConfig(PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"]),
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"],
+                    slice_type=SliceType.CPR,
+                ),
             ],
         )
 
@@ -3285,7 +3306,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
             plane_configs=[
-                PlaneConfig(PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"]),
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"],
+                    slice_type=SliceType.CPR,
+                ),
             ],
         )
 
@@ -3328,7 +3352,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             output_dir="/tmp/output",
             body_part=BodyPartEnum.腰椎,
             plane_configs=[
-                PlaneConfig(PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"]),
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"],
+                    slice_type=SliceType.CPR,
+                ),
             ],
         )
         localization_result = self._lumbar_localization_result()
@@ -3345,6 +3372,50 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         ).plans[0]
 
         self.assertEqual(plan.geometry_type, "curved_stack")
+        self.assertEqual(plan.source_labels, [
+            "vertebrae_L2",
+            "vertebrae_L3",
+            "vertebrae_L4",
+            "vertebrae_L5",
+        ])
+
+    def test_lumbar_cpr_uses_whole_range_in_mixed_interspace_request(self):
+        """混合请求以椎间隙定位时，CPR 仍使用独立的整段范围。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            body_part=BodyPartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"],
+                    slice_type=SliceType.CPR,
+                ),
+            ],
+        )
+        localization_result = self._lumbar_localization_result()
+        localization_result["localization_profile"] = "interspace"
+        localization_result["resolved_cut_config"] = {
+            "intervals": [
+                {
+                    "start_labels": ["vertebrae_L1"],
+                    "end_labels": ["vertebrae_L2"],
+                },
+            ],
+        }
+        localization_result["resolved_cut_configs"] = {
+            "whole_range": {
+                "start_labels": ["vertebrae_L2"],
+                "end_labels": ["vertebrae_L5"],
+            },
+            "interspace": localization_result["resolved_cut_config"],
+        }
+
+        plan = LumbarWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
         self.assertEqual(plan.source_labels, [
             "vertebrae_L2",
             "vertebrae_L3",
@@ -3424,35 +3495,6 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             [plan.localizer_plane for plan in (axial, sagittal, coronal)],
             ["冠状位", "冠状位", "矢状位"],
         )
-
-    def test_oblique_plan_overview_draws_the_actual_sloped_guide(self):
-        """验证 `test_oblique_plan_overview_draws_the_actual_sloped_guide` 场景符合预期。"""
-
-        from src.stages.stage_planning import PlanningStage, _OVERVIEW_AXES
-
-        image = sitk.Image(64, 64, 64, sitk.sitkUInt8)
-        overlay = np.zeros((64, 64, 64), dtype=np.uint16)
-        plan = {
-            "extent_mm": {"width": 40.0, "height": 20.0},
-            "slices": [{
-                "center": {"x": 32.0, "y": 32.0, "z": 32.0},
-                "normal": {"x": -0.6, "y": 0.0, "z": 0.8},
-                "row_dir": {"x": 0.8, "y": 0.0, "z": 0.6},
-                "col_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
-            }],
-        }
-
-        PlanningStage()._paint_plan_overview(
-            reference_image=image,
-            overlay_array=overlay,
-            plan=plan,
-            axes=_OVERVIEW_AXES["横状位"],
-            value=14,
-        )
-
-        painted = np.argwhere(overlay == 14)
-        self.assertGreater(len(np.unique(painted[:, 0])), 1)
-        self.assertGreater(len(np.unique(painted[:, 2])), 1)
 
     def test_single_label_planner_builds_sagittal_whole_range_plan(self):
         """单目标整切 planner 应把矢状位交给通用直线构造器。"""
@@ -3702,7 +3744,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         plan = build_straight_slice_plan(
             request=request,
-            cut_mode="whole_range",
+            slice_type="MPR",
             plane_config=request.plane_configs[0],
             localization_result=localization_result,
             segment=segment,
@@ -3755,7 +3797,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         plan = build_straight_slice_plan(
             request=request,
-            cut_mode="interspace",
+            slice_type="椎间隙",
             plane_config=request.plane_configs[0],
             localization_result=localization_result,
             segment=segment,
@@ -4352,7 +4394,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         plan = build_straight_slice_plan(
             request=request,
-            cut_mode="whole_range",
+            slice_type="MPR",
             plane_config=request.plane_configs[0],
             localization_result=localization_result,
             segment=segment,
@@ -4472,7 +4514,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
         localization_result = {
             "body_part": "肺部",
-            "cut_mode": "whole_range",
+            "localization_profile": "whole_range",
             "correction_scope_bbox": {
                 "z_min": 0,
                 "z_max": 10,
@@ -4566,7 +4608,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
-        self.assertEqual(plan.plan_id, "腰椎_whole_range_横状位")
+        self.assertEqual(plan.plan_id, "腰椎_MPR_横状位")
         self.assertEqual(len(plan.slices), 4)
         self.assertEqual(plan.slices[0].center.z, 12.5)
         self.assertEqual(plan.slices[-1].center.z, -2.5)
@@ -5248,7 +5290,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             self.assertTrue(metadata_path.exists())
             data = json.loads(metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(data["plan_count"], 1)
-            self.assertEqual(data["plans"][0]["plan_id"], "肺部_whole_range_横状位")
+            self.assertEqual(data["plans"][0]["plan_id"], "肺部_MPR_横状位")
             self.assertIn("slices", data["plans"][0])
             self.assertEqual(data["diagnostics"][0]["slice_count"], 4)
             self.assertEqual(data["diagnostics"][0]["slice_thickness"], 5.0)
@@ -5305,593 +5347,60 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertEqual(diagnostics[0]["leading_center_uncovered_mm"], 0.0)
         self.assertEqual(diagnostics[0]["trailing_center_uncovered_mm"], 0.0)
 
-    def test_planning_stage_skips_whole_range_axial_debug_overlays(self):
-        """普通横状位整切不再写耗时 debug overlay。"""
+    def test_planning_writes_json_without_debug_nifti(self):
+        """混合切片请求只写规划 JSON，不再生成规划调试 NIfTI。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            seg_path = temp_path / "seg.nii.gz"
-            image = sitk.GetImageFromArray(np.zeros((18, 80, 80), dtype=np.uint8))
-            image.SetSpacing((1.0, 1.0, 1.0))
-            image.SetOrigin((0.0, 0.0, 0.0))
-            sitk.WriteImage(image, str(seg_path))
-
-            request = Request(
-                dicom_dir="/tmp/dicom",
-                output_dir=temp_dir,
-                body_part=BodyPartEnum.肺部,
-                plane_configs=[
-                    PlaneConfig(
-                        plane=PlaneTypeEnum.横状位,
-                        slice_thickness=5.0,
-                        slice_spacing=5.0,
-                        window_presets=["骨窗"],
-                    )
-                ],
-            )
-            localization_result = self._lumbar_localization_result()
-            localization_result["correction_scope_bbox"]["z_min"] = 3
-            localization_result["correction_scope_bbox"]["z_max"] = 13
-            localization_result["seg_for_reconstruction_path"] = str(seg_path)
-            context = ProcessingContext(request)
-            self._set_planning_inputs(context, localization_result)
-
-            PlanningStage().execute(context)
-
-            result = context.get_result("planning")
-            self.assertEqual(result["debug_slice_plan_overlay_path"], "")
-            self.assertEqual(result["debug_center_cross_overlay_path"], "")
-            self.assertEqual(result["debug_slice_plan_overview_paths"], {})
-            self.assertEqual(
-                result["debug_slice_plan_overview_with_image_paths"],
-                {},
-            )
-            self.assertEqual(result["debug_slice_plan_native_overview_paths"], {})
-            metadata_dir = temp_path / "metadata"
-            self.assertFalse((metadata_dir / "切片线_横_整.nii.gz").exists())
-            self.assertFalse((metadata_dir / "十字中线_横_整.nii.gz").exists())
-            self.assertFalse((metadata_dir / "切片总览含原图_横_整.nii.gz").exists())
-            self.assertFalse((metadata_dir / "切片原始网格总览_横_整.nii.gz").exists())
-
-    def test_planning_stage_skips_cpr_debug_overlays(self):
-        """CPR 冠状位不再写第六阶段调试 overlay 和总览。"""
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            seg_path = temp_path / "seg.nii.gz"
-            raw_path = temp_path / "raw.nii.gz"
-            image = sitk.GetImageFromArray(
-                np.zeros((18, 80, 80), dtype=np.uint8),
-            )
-            image.SetSpacing((1.0, 2.0, 3.0))
-            image.SetOrigin((0.0, 0.0, 0.0))
-            sitk.WriteImage(image, str(seg_path))
-            raw_image = sitk.Cast(image, sitk.sitkInt16) + 100
-            sitk.WriteImage(raw_image, str(raw_path))
-
             request = Request(
                 dicom_dir="/tmp/dicom",
                 output_dir=temp_dir,
                 body_part=BodyPartEnum.腰椎,
                 plane_configs=[
                     PlaneConfig(
-                        plane=plane,
-                        slice_thickness=3.0,
-                        slice_spacing=5.0,
-                        window_presets=["骨窗"],
-                    )
-                    for plane in (
-                        PlaneTypeEnum.横状位,
-                        PlaneTypeEnum.矢状位,
-                        PlaneTypeEnum.冠状位,
-                    )
-                ],
-            )
-            localization_result = self._lumbar_localization_result()
-            localization_result["image"]["spacing_xyz"] = [1.0, 2.0, 3.0]
-            localization_result["seg_for_reconstruction_path"] = str(seg_path)
-            localization_result["raw_for_reconstruction_path"] = str(raw_path)
-            context = ProcessingContext(request)
-            self._set_planning_inputs(context, localization_result)
-
-            PlanningStage().execute(context)
-
-            result = context.get_result("planning")
-            center_cross_path = Path(result["debug_center_cross_overlay_path"])
-            self.assertEqual(center_cross_path.name, "十字中线_横_区.nii.gz")
-            self.assertTrue(center_cross_path.exists())
-            overview_paths = result["debug_slice_plan_overview_paths"]
-            overview_with_image_paths = result[
-                "debug_slice_plan_overview_with_image_paths"
-            ]
-            native_paths = result["debug_slice_plan_native_overview_paths"]
-            expected_planes = {"横状位"}
-            self.assertEqual(set(overview_paths), expected_planes)
-            self.assertEqual(overview_with_image_paths, overview_paths)
-            self.assertEqual(set(native_paths), expected_planes)
-
-            expected_spacing = {
-                "横状位": (1.0, 2.0, 0.5),
-            }
-            for plane, path in overview_paths.items():
-                with self.subTest(kind="uniform", plane=plane):
-                    self.assertIn("切片总览含原图_", Path(path).name)
-                    overview_image = sitk.ReadImage(path)
-                    overview_array = sitk.GetArrayFromImage(overview_image)
-                    self.assertEqual(
-                        overview_image.GetSpacing(),
-                        expected_spacing[plane],
-                    )
-                    self.assertTrue(np.any(overview_array > 0))
-
-            self.assertFalse(any(
-                temp_path.glob("metadata/切片总览_*.nii.gz")
-            ))
-
-            for plane, path in native_paths.items():
-                with self.subTest(kind="native", plane=plane):
-                    native_image = sitk.ReadImage(path)
-                    native_array = sitk.GetArrayFromImage(native_image)
-                    self.assertEqual(native_image.GetSize(), image.GetSize())
-                    self.assertEqual(native_image.GetSpacing(), image.GetSpacing())
-                    self.assertEqual(native_image.GetOrigin(), image.GetOrigin())
-                    self.assertEqual(
-                        native_image.GetDirection(),
-                        image.GetDirection(),
-                    )
-                    self.assertTrue(np.any(native_array > 0))
-
-            self.assertEqual(
-                result["debug_slice_plan_overview_overlay_path"],
-                overview_paths["横状位"],
-            )
-            self.assertEqual(
-                result["debug_slice_plan_native_overview_overlay_path"],
-                native_paths["横状位"],
-            )
-            self.assertFalse(
-                (temp_path / "metadata" / "切片总览含原图_横_整.nii.gz").exists()
-            )
-            self.assertFalse(
-                (temp_path / "metadata" / "切片原始网格总览_矢_整.nii.gz").exists()
-            )
-            self.assertFalse(
-                (temp_path / "metadata" / "切片线_冠_CPR.nii.gz").exists()
-            )
-            self.assertFalse(
-                (temp_path / "metadata" / "切片原始网格总览_冠_CPR.nii.gz").exists()
-            )
-            self.assertFalse(
-                (temp_path / "metadata" / "切片总览含原图_冠_CPR.nii.gz").exists()
-            )
-            self.assertFalse(
-                (temp_path / "metadata" / "十字中线_冠_CPR.nii.gz").exists()
-            )
-            self.assertFalse(
-                (temp_path / "metadata" / "十字中线_横+冠_区+CPR.nii.gz").exists()
-            )
-            metadata = json.loads(
-                Path(result["metadata_path"]).read_text(encoding="utf-8"),
-            )
-            self.assertEqual(
-                metadata["debug_center_cross_overlay_path"],
-                str(center_cross_path),
-            )
-            self.assertEqual(
-                metadata["debug_slice_plan_overview_paths"],
-                overview_paths,
-            )
-            self.assertEqual(
-                metadata["debug_slice_plan_overview_with_image_paths"],
-                overview_paths,
-            )
-            self.assertEqual(
-                metadata["debug_slice_plan_native_overview_paths"],
-                native_paths,
-            )
-
-    def test_planning_cpr_overview_draws_curve_on_sagittal_background(self):
-        """CPR 调试总览应按曲线点画在矢状位背景上。"""
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            seg_path = temp_path / "seg.nii.gz"
-            image = sitk.GetImageFromArray(np.zeros((36, 36, 36), dtype=np.uint8))
-            image.SetSpacing((1.0, 1.0, 1.0))
-            image.SetOrigin((0.0, 0.0, 0.0))
-            sitk.WriteImage(image, str(seg_path))
-            context = ProcessingContext(
-                Request(
-                    dicom_dir="/tmp/dicom",
-                    output_dir=temp_dir,
-                    body_part=BodyPartEnum.腰椎,
-                    plane_configs=[],
-                )
-            )
-            localization_result = {
-                "seg_for_reconstruction_path": str(seg_path),
-            }
-            plan = {
-                "plane": "矢状位",
-                "geometry_type": "curved_stack",
-                "cut_mode": "cpr",
-                "localizer_plane": "矢状位",
-                "localizer_reference": {"x": 18.0, "y": 18.0, "z": 18.0},
-                "extent_mm": {"width": 20.0, "height": 28.0},
-                "curve_points": [
-                    {"x": 18.0, "y": 10.0, "z": 5.0},
-                    {"x": 18.0, "y": 16.0, "z": 14.0},
-                    {"x": 18.0, "y": 8.0, "z": 23.0},
-                    {"x": 18.0, "y": 14.0, "z": 32.0},
-                ],
-                "offset_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
-                "offsets_mm": [0.0],
-                "slices": [{
-                    "index": 1,
-                    "center": {"x": 18.0, "y": 12.0, "z": 18.0},
-                    "normal": {"x": 1.0, "y": 0.0, "z": 0.0},
-                    "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
-                    "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
-                    "offset_mm": 0.0,
-                }],
-            }
-
-            _, native_paths = PlanningStage()._write_slice_plan_overview_overlays(
-                context,
-                localization_result,
-                [plan],
-            )
-            overview = sitk.ReadImage(native_paths["矢状位"])
-            highlighted = np.argwhere(sitk.GetArrayFromImage(overview) > 0)
-
-            self.assertGreater(len(highlighted), 20)
-            self.assertGreater(self._max_line_fit_residual(highlighted), 2.0)
-
-    def test_planning_cpr_overview_draws_equally_spaced_offsets(self):
-        """CPR 调试总览应只画等间距 offset 中心线。"""
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            seg_path = temp_path / "seg.nii.gz"
-            image = sitk.GetImageFromArray(np.zeros((36, 36, 36), dtype=np.uint8))
-            image.SetSpacing((1.0, 1.0, 1.0))
-            image.SetOrigin((0.0, 0.0, 0.0))
-            sitk.WriteImage(image, str(seg_path))
-            context = ProcessingContext(
-                Request(
-                    dicom_dir="/tmp/dicom",
-                    output_dir=temp_dir,
-                    body_part=BodyPartEnum.腰椎,
-                    plane_configs=[],
-                )
-            )
-            localization_result = {
-                "seg_for_reconstruction_path": str(seg_path),
-            }
-            plan = {
-                "plane": "矢状位",
-                "geometry_type": "curved_stack",
-                "cut_mode": "cpr",
-                "localizer_plane": "矢状位",
-                "localizer_reference": {"x": 18.0, "y": 18.0, "z": 18.0},
-                "extent_mm": {"width": 20.0, "height": 28.0},
-                "curve_points": [
-                    {"x": 18.0, "y": 18.0, "z": 5.0},
-                    {"x": 18.0, "y": 18.0, "z": 14.0},
-                    {"x": 18.0, "y": 18.0, "z": 23.0},
-                    {"x": 18.0, "y": 18.0, "z": 32.0},
-                ],
-                "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
-                "offsets_mm": [-8.0, 0.0, 8.0],
-                "slice_thickness": 4.0,
-                "slices": [{
-                    "index": 1,
-                    "center": {"x": 18.0, "y": 18.0, "z": 18.0},
-                    "normal": {"x": 1.0, "y": 0.0, "z": 0.0},
-                    "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
-                    "col_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
-                    "offset_mm": 0.0,
-                }],
-            }
-
-            _, native_paths = PlanningStage()._write_slice_plan_overview_overlays(
-                context,
-                localization_result,
-                [plan],
-            )
-            overview = sitk.ReadImage(native_paths["矢状位"])
-            highlighted = np.argwhere(sitk.GetArrayFromImage(overview) > 0)
-
-            self.assertEqual(
-                np.unique(highlighted[:, 1]).tolist(),
-                [10, 18, 26],
-            )
-
-    def test_planning_cpr_overview_draws_every_planned_offset(self):
-        """CPR 调试总览必须按实际切片 offset 一张对应一条线。"""
-
-        plan = {
-            "offsets_mm": [float(value) for value in range(-35, 70, 5)],
-        }
-
-        self.assertEqual(
-            PlanningStage._curved_overview_offsets(plan),
-            [float(value) for value in range(-35, 70, 5)],
-        )
-        self.assertEqual(len(plan["offsets_mm"]), 21)
-
-    def test_planning_cpr_overview_keeps_bent_offsets_equally_spaced(self):
-        """第六阶段总览也应复用弯曲段等距 offset 几何。"""
-
-        projected = PlanningStage._curved_overview_projected_curves(
-            plan={
-                "curve_points": [
-                    {"x": 32.0, "y": 24.0, "z": 12.0},
-                    {"x": 32.0, "y": 24.0, "z": 32.0},
-                    {"x": 32.0, "y": 44.0, "z": 42.0},
-                ],
-                "offset_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
-                "offsets_mm": [-10.0, 0.0, 10.0],
-                "slice_thickness": 5.0,
-            },
-            fixed_axis=0,
-        )
-        lower = np.asarray([
-            [point[axis] for axis in ("x", "y", "z")]
-            for point in projected[-10.0]
-        ])
-        center = np.asarray([
-            [point[axis] for axis in ("x", "y", "z")]
-            for point in projected[0.0]
-        ])
-        upper = np.asarray([
-            [point[axis] for axis in ("x", "y", "z")]
-            for point in projected[10.0]
-        ])
-
-        np.testing.assert_allclose((lower + upper) / 2.0, center, atol=1e-6)
-        np.testing.assert_allclose(
-            np.linalg.norm(upper - center, axis=1),
-            10.0,
-            atol=1e-6,
-        )
-        self.assertFalse(np.allclose(upper[:, 2], center[:, 2]))
-
-    def test_center_cross_uses_lung_anatomical_origin_in_long_scan(self):
-        """颈到盆长扫描的十字中线应落在肺中心，而不是整幅图像中心。"""
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            seg_path = Path(temp_dir) / "seg.nii.gz"
-            image = sitk.GetImageFromArray(
-                np.zeros((100, 40, 40), dtype=np.uint8),
-            )
-            sitk.WriteImage(image, str(seg_path))
-            request = Request(
-                dicom_dir="/tmp/dicom",
-                output_dir=temp_dir,
-                body_part=BodyPartEnum.肺部,
-            )
-            context = ProcessingContext(request)
-            localization_result = {
-                "seg_for_reconstruction_path": str(seg_path),
-                "anatomical_geometry": {
-                    "global_frame": {
-                        "origin": {"x": 20.0, "y": 20.0, "z": 80.0},
-                        "left_right_axis": {"x": 1.0, "y": 0.0, "z": 0.0},
-                        "anterior_posterior_axis": {"x": 0.0, "y": 1.0, "z": 0.0},
-                        "superior_inferior_axis": {"x": 0.0, "y": 0.0, "z": 1.0},
-                        "bounds": {
-                            "left_right": {"minimum": 10.0, "maximum": 30.0},
-                            "anterior_posterior": {"minimum": 10.0, "maximum": 30.0},
-                            "superior_inferior": {"minimum": 70.0, "maximum": 90.0},
-                        },
-                        "method": "test_lung_frame",
-                        "confidence": 1.0,
-                        "applied": True,
-                        "warnings": [],
-                    },
-                    "local_frames": {},
-                },
-            }
-            plans = [
-                {
-                    "plane": "横状位",
-                    "cut_mode": "whole_range",
-                    "extent_mm": {"width": 30.0, "height": 30.0},
-                    "slices": [{
-                        "center": {"x": 20.0, "y": 20.0, "z": 50.0},
-                        "row_dir": {"x": 1.0, "y": 0.0, "z": 0.0},
-                        "col_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
-                    }],
-                },
-                {
-                    "plane": "矢状位",
-                    "cut_mode": "whole_range",
-                    "extent_mm": {"width": 30.0, "height": 30.0},
-                    "slices": [{
-                        "center": {"x": 20.0, "y": 20.0, "z": 50.0},
-                        "row_dir": {"x": 0.0, "y": 1.0, "z": 0.0},
-                        "col_dir": {"x": 0.0, "y": 0.0, "z": -1.0},
-                    }],
-                },
-                {
-                    "plane": "冠状位",
-                    "cut_mode": "whole_range",
-                    "extent_mm": {"width": 30.0, "height": 30.0},
-                    "slices": [{
-                        "center": {"x": 20.0, "y": 20.0, "z": 50.0},
-                        "row_dir": {"x": 1.0, "y": 0.0, "z": 0.0},
-                        "col_dir": {"x": 0.0, "y": 0.0, "z": -1.0},
-                    }],
-                },
-            ]
-
-            output_path = PlanningStage()._write_center_cross_overlay(
-                context,
-                localization_result,
-                plans,
-            )
-            overlay = sitk.GetArrayFromImage(sitk.ReadImage(output_path))
-
-            self.assertEqual(int(overlay[80, 20, 30]), 65535)
-            self.assertEqual(int(overlay[50, 20, 30]), 0)
-
-    def test_planning_stage_skips_whole_range_overview_overlay(self):
-        """普通横状位整切不再写含原图和原始网格总览。"""
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            seg_path = temp_path / "seg.nii.gz"
-            raw_path = temp_path / "raw.nii.gz"
-            image = sitk.GetImageFromArray(np.zeros((18, 80, 80), dtype=np.uint8))
-            image.SetSpacing((1.0, 1.0, 1.0))
-            image.SetOrigin((0.0, 0.0, 0.0))
-            sitk.WriteImage(image, str(seg_path))
-            sitk.WriteImage(sitk.Cast(image, sitk.sitkInt16), str(raw_path))
-
-            request = Request(
-                dicom_dir="/tmp/dicom",
-                output_dir=temp_dir,
-                body_part=BodyPartEnum.肺部,
-                plane_configs=[
+                        PlaneTypeEnum.横状位, 3.0, 5.0, ["骨窗"],
+                        slice_type=SliceType.椎间隙,
+                    ),
                     PlaneConfig(
-                        plane=PlaneTypeEnum.横状位,
-                        slice_thickness=5.0,
-                        slice_spacing=5.0,
-                        window_presets=["骨窗"],
-                    )
+                        PlaneTypeEnum.矢状位, 3.0, 5.0, ["骨窗"],
+                    ),
+                    PlaneConfig(
+                        PlaneTypeEnum.冠状位, 3.0, 5.0, ["骨窗"],
+                        slice_type=SliceType.CPR,
+                    ),
                 ],
             )
-            localization_result = self._lumbar_localization_result()
-            localization_result["correction_scope_bbox"]["z_min"] = 3
-            localization_result["correction_scope_bbox"]["z_max"] = 13
-            localization_result["seg_for_reconstruction_path"] = str(seg_path)
-            localization_result["raw_for_reconstruction_path"] = str(raw_path)
             context = ProcessingContext(request)
-            self._set_planning_inputs(context, localization_result)
+            self._set_planning_inputs(
+                context,
+                self._lumbar_localization_result(),
+            )
 
             PlanningStage().execute(context)
 
             result = context.get_result("planning")
-            self.assertEqual(result["debug_slice_plan_overview_overlay_path"], "")
+            metadata_path = Path(result["metadata_path"])
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            obsolete_keys = {
+                "debug_slice_plan_overlay_path",
+                "debug_center_cross_overlay_path",
+                "debug_slice_plan_overview_overlay_path",
+                "debug_slice_plan_native_overview_overlay_path",
+                "debug_slice_plan_overview_paths",
+                "debug_slice_plan_overview_with_image_paths",
+                "debug_slice_plan_native_overview_paths",
+            }
+
+            self.assertEqual(result["plan_count"], 7)
             self.assertEqual(
-                result["debug_slice_plan_native_overview_overlay_path"],
-                "",
+                {plan["slice_type"] for plan in result["plans"]},
+                {"MPR", "CPR", "椎间隙"},
             )
-            self.assertFalse(
-                (temp_path / "metadata" / "切片总览含原图_横_整.nii.gz").exists()
+            self.assertFalse(obsolete_keys & result.keys())
+            self.assertFalse(obsolete_keys & metadata.keys())
+            self.assertEqual(
+                list((Path(temp_dir) / "metadata").glob("*.nii.gz")),
+                [],
             )
-            self.assertFalse(
-                (temp_path / "metadata" / "切片原始网格总览_横_整.nii.gz").exists()
-            )
-
-    def test_planning_stage_overview_uses_minimum_line_width(self):
-        """验证 `test_planning_stage_overview_uses_minimum_line_width` 场景符合预期。"""
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            seg_path = temp_path / "seg.nii.gz"
-            raw_path = temp_path / "raw.nii.gz"
-            image = sitk.GetImageFromArray(np.zeros((18, 80, 80), dtype=np.uint8))
-            image.SetSpacing((1.0, 1.0, 1.0))
-            image.SetOrigin((0.0, 0.0, 0.0))
-            sitk.WriteImage(image, str(seg_path))
-            sitk.WriteImage(sitk.Cast(image, sitk.sitkInt16), str(raw_path))
-
-            request = Request(
-                dicom_dir="/tmp/dicom",
-                output_dir=temp_dir,
-                body_part=BodyPartEnum.肺部,
-                plane_configs=[
-                    PlaneConfig(
-                        plane=PlaneTypeEnum.横状位,
-                        slice_thickness=3.0,
-                        slice_spacing=5.0,
-                        window_presets=["骨窗"],
-                    )
-                ],
-            )
-            localization_result = self._lumbar_localization_result()
-            localization_result["correction_scope_bbox"]["z_min"] = 3
-            localization_result["correction_scope_bbox"]["z_max"] = 13
-            localization_result["seg_for_reconstruction_path"] = str(seg_path)
-            localization_result["raw_for_reconstruction_path"] = str(raw_path)
-            context = ProcessingContext(request)
-            self._set_planning_inputs(context, localization_result)
-
-            PlanningStage().execute(context)
-
-            result = context.get_result("planning")
-            overview_paths, _ = PlanningStage()._write_slice_plan_overview_overlays(
-                context=context,
-                localization_result=localization_result,
-                plans=result["plans"],
-            )
-            overview_path = Path(overview_paths["横状位"])
-            overview_image = sitk.ReadImage(str(overview_path))
-            overview_array = sitk.GetArrayFromImage(overview_image)
-            # 层厚不再决定显示宽度；每张切片只占等距网格一行。
-            painted_rows = np.unique(np.argwhere(overview_array > 0)[:, 0])
-            self.assertEqual(painted_rows.tolist(), [1, 11, 21, 31])
-
-    def test_planning_stage_overview_overlay_respects_image_direction(self):
-        """验证 `test_planning_stage_overview_overlay_respects_image_direction` 场景符合预期。"""
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            seg_path = temp_path / "seg.nii.gz"
-            raw_path = temp_path / "raw.nii.gz"
-            image = sitk.GetImageFromArray(np.zeros((18, 80, 80), dtype=np.uint8))
-            image.SetSpacing((1.0, 1.0, 1.0))
-            image.SetOrigin((0.0, 0.0, 100.0))
-            image.SetDirection((
-                0.0, -1.0, 0.0,
-                1.0, 0.0, 0.0,
-                0.0, 0.0, -1.0,
-            ))
-            sitk.WriteImage(image, str(seg_path))
-            sitk.WriteImage(sitk.Cast(image, sitk.sitkInt16), str(raw_path))
-
-            request = Request(
-                dicom_dir="/tmp/dicom",
-                output_dir=temp_dir,
-                body_part=BodyPartEnum.肺部,
-                plane_configs=[
-                    PlaneConfig(
-                        plane=PlaneTypeEnum.横状位,
-                        slice_thickness=5.0,
-                        slice_spacing=5.0,
-                        window_presets=["骨窗"],
-                    )
-                ],
-            )
-            localization_result = self._lumbar_localization_result()
-            localization_result["image"]["origin_xyz"] = [0.0, 0.0, 100.0]
-            localization_result["image"]["direction"] = [
-                0.0, -1.0, 0.0,
-                1.0, 0.0, 0.0,
-                0.0, 0.0, -1.0,
-            ]
-            localization_result["correction_scope_bbox"]["z_min"] = 3
-            localization_result["correction_scope_bbox"]["z_max"] = 13
-            localization_result["seg_for_reconstruction_path"] = str(seg_path)
-            localization_result["raw_for_reconstruction_path"] = str(raw_path)
-            context = ProcessingContext(request)
-            self._set_planning_inputs(context, localization_result)
-
-            PlanningStage().execute(context)
-
-            result = context.get_result("planning")
-            overview_paths, _ = PlanningStage()._write_slice_plan_overview_overlays(
-                context=context,
-                localization_result=localization_result,
-                plans=result["plans"],
-            )
-            overview_path = Path(overview_paths["横状位"])
-            overview_image = sitk.ReadImage(str(overview_path))
-            overview_array = sitk.GetArrayFromImage(overview_image)
-            center_rows = np.unique(np.argwhere(overview_array > 0)[:, 0])
-            self.assertEqual(center_rows.tolist(), [1, 11, 21, 31])
 
     @staticmethod
     def _spine_localization_result(labels, body_part):
@@ -5918,7 +5427,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         return {
             "body_part": body_part,
-            "cut_mode": "whole_range",
+            "localization_profile": "whole_range",
             "correction_scope_bbox": {
                 "z_min": 0,
                 "z_max": 12,
@@ -6063,7 +5572,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         return {
             "body_part": "腰椎",
-            "cut_mode": "whole_range",
+            "localization_profile": "whole_range",
             "correction_scope_bbox": {
                 "z_min": 0,
                 "z_max": 10,

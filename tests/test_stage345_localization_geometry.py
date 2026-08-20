@@ -571,27 +571,6 @@ class LocalizationGeometryTest(unittest.TestCase):
                 "not_candidate",
             )
 
-    def test_xy_correction_crosshair_overlay_writes_reference_and_candidate_axes(self):
-        """十字线 overlay 应在原始网格上标出参考轴和候选轴。"""
-
-        stage = LocalizationStage()
-        with tempfile.TemporaryDirectory() as temp_dir:
-            image = sitk.GetImageFromArray(np.zeros((3, 40, 40), dtype=np.uint8))
-            output_path = Path(temp_dir) / "横状位XY回正十字线.nii.gz"
-
-            written_path = stage._write_xy_correction_crosshair_overlay(
-                reference_image=image,
-                output_path=output_path,
-                correction_center_bbox=VoxelBBox(1, 1, 10, 30, 10, 30),
-                candidate={"correction_status": "candidate", "angle_degrees": 20.0},
-            )
-
-            overlay = sitk.GetArrayFromImage(sitk.ReadImage(written_path))
-            self.assertEqual(overlay.shape, (3, 40, 40))
-            self.assertGreater(int(np.count_nonzero(overlay == 1)), 0)
-            self.assertGreater(int(np.count_nonzero(overlay == 2)), 0)
-            self.assertGreater(int(np.count_nonzero(overlay == 3)), 0)
-
     def test_find_dataset_json_prefers_segmentation_sidecar_file(self):
         # nnUNet 模型目录可能有多个 dataset.json；seg 同目录的 sidecar 最贴近当前分割结果。
         """验证 `test_find_dataset_json_prefers_segmentation_sidecar_file` 场景符合预期。"""
@@ -771,106 +750,6 @@ class LocalizationGeometryTest(unittest.TestCase):
         self.assertEqual(skew_info["used_label_names"], ["vertebrae_C2", "vertebrae_C3"])
         self.assertEqual(skew_info["skipped_label_names"], ["vertebrae_C1"])
         self.assertAlmostEqual(skew_info["angle_degrees"], 21.0, delta=3.0)
-
-    def test_debug_bbox_overlay_writes_edges_on_reference_grid(self):
-        # 研发期用这个 overlay 在 ITK-SNAP 里直接看定位框；它只画边框，不填满盒子。
-        """验证 `test_debug_bbox_overlay_writes_edges_on_reference_grid` 场景符合预期。"""
-
-        stage = LocalizationStage()
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            reference_image = sitk.GetImageFromArray(np.zeros((6, 10, 10), dtype=np.uint8))
-            reference_image.SetSpacing((0.5, 0.6, 1.5))
-            reference_image.SetOrigin((10.0, 20.0, 30.0))
-            label_coordinates = {
-                "vertebrae_C1": LabelCoordinate(
-                    label_name="vertebrae_C1",
-                    label_ids=[26],
-                    voxel_count=10,
-                    found=True,
-                    centroid=VoxelPoint(z=2.0, y=3.0, x=4.0),
-                    bbox=VoxelBBox(z_min=1, z_max=3, y_min=2, y_max=5, x_min=3, x_max=6),
-                ),
-                "vertebrae_C2": LabelCoordinate(
-                    label_name="vertebrae_C2",
-                    label_ids=[25],
-                    voxel_count=8,
-                    found=True,
-                    centroid=VoxelPoint(z=4.0, y=6.0, x=6.0),
-                    bbox=VoxelBBox(z_min=3, z_max=4, y_min=6, y_max=8, x_min=5, x_max=8),
-                ),
-            }
-            overlay_path = temp_path / "定位框.nii.gz"
-
-            written_path = stage._write_debug_bbox_overlay(
-                reference_image=reference_image,
-                label_coordinates=label_coordinates,
-                correction_scope_bbox=VoxelBBox(z_min=0, z_max=5, y_min=0, y_max=9, x_min=0, x_max=9),
-                output_path=overlay_path,
-            )
-
-            overlay_image = sitk.ReadImage(str(overlay_path))
-            overlay_array = sitk.GetArrayFromImage(overlay_image)
-            self.assertEqual(written_path, str(overlay_path))
-            self.assertEqual(overlay_image.GetSize(), reference_image.GetSize())
-            for actual, expected in zip(overlay_image.GetSpacing(), reference_image.GetSpacing()):
-                self.assertAlmostEqual(actual, expected, places=6)
-            self.assertEqual(overlay_image.GetOrigin(), reference_image.GetOrigin())
-            self.assertEqual(overlay_array[0, 0, 0], 1)
-            self.assertEqual(overlay_array[1, 2, 3], 0)
-            self.assertEqual(overlay_array[2, 3, 4], 0)
-
-            label_overlay_path = temp_path / "localization_label_bbox_overlay.nii.gz"
-            stage._write_debug_bbox_overlay(
-                reference_image=reference_image,
-                label_coordinates=label_coordinates,
-                correction_scope_bbox=VoxelBBox(z_min=0, z_max=5, y_min=0, y_max=9, x_min=0, x_max=9),
-                output_path=label_overlay_path,
-                include_label_bboxes=True,
-            )
-            label_overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(label_overlay_path)))
-            self.assertEqual(label_overlay_array[1, 2, 3], 26)
-            self.assertEqual(label_overlay_array[3, 6, 5], 25)
-
-    def test_debug_target_mask_overlay_writes_only_requested_target_voxels(self):
-        # bbox 是外接盒，矢状位/冠状位上会被极值体素撑大；研发期再输出一个
-        # 真实目标 mask overlay，用来在 ITK-SNAP 里核对定位目标本身有没有偏。
-        """验证 `test_debug_target_mask_overlay_writes_only_requested_target_voxels` 场景符合预期。"""
-
-        stage = LocalizationStage()
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            seg_array = np.zeros((3, 5, 6), dtype=np.uint8)
-            seg_array[0, 1, 2] = 20
-            seg_array[1, 2, 3] = 21
-            seg_array[2, 3, 4] = 99
-            reference_image = sitk.GetImageFromArray(seg_array)
-            reference_image.SetSpacing((0.5, 0.6, 1.5))
-            reference_image.SetOrigin((10.0, 20.0, 30.0))
-            label_targets = {
-                "vertebrae_C7": LabelTarget("vertebrae_C7", [20]),
-                "vertebrae_C6": LabelTarget("vertebrae_C6", [21]),
-            }
-            overlay_path = temp_path / "目标掩膜.nii.gz"
-
-            written_path = stage._write_debug_target_mask_overlay(
-                reference_image=reference_image,
-                seg_array=seg_array,
-                label_targets=label_targets,
-                output_path=overlay_path,
-            )
-
-            overlay_image = sitk.ReadImage(str(overlay_path))
-            overlay_array = sitk.GetArrayFromImage(overlay_image)
-            self.assertEqual(written_path, str(overlay_path))
-            self.assertEqual(overlay_image.GetSize(), reference_image.GetSize())
-            self.assertEqual(overlay_image.GetOrigin(), reference_image.GetOrigin())
-            for actual, expected in zip(overlay_image.GetSpacing(), reference_image.GetSpacing()):
-                self.assertAlmostEqual(actual, expected, places=6)
-            self.assertEqual(overlay_array[0, 1, 2], 1)
-            self.assertEqual(overlay_array[1, 2, 3], 1)
-            self.assertEqual(overlay_array[2, 3, 4], 0)
-            self.assertEqual(set(np.unique(overlay_array).tolist()), {0, 1})
 
     def test_debug_label_mask_overlay_keeps_each_requested_label_id(self):
         # 这个 overlay 用于查看每个椎体自己的位置区间：目标 label 保留原始
@@ -3095,6 +2974,16 @@ class LocalizationGeometryTest(unittest.TestCase):
                 [{"start": "L1", "end": "S1"}],
             )
             self.assertEqual(
+                metadata["resolved_cut_configs"]["whole_range"]
+                ["start_labels"],
+                ["vertebrae_L1"],
+            )
+            self.assertEqual(
+                metadata["resolved_cut_configs"]["interspace"]
+                ["intervals"][0]["end_labels"],
+                ["vertebrae_S1"],
+            )
+            self.assertEqual(
                 metadata["raw_for_reconstruction_path"],
                 expected_candidate_raw_path,
             )
@@ -3125,26 +3014,11 @@ class LocalizationGeometryTest(unittest.TestCase):
             body_overlay_path = (
                 temp_path / "metadata" / "椎体主体掩膜.nii.gz"
             )
-            xy_crosshair_path = (
-                temp_path / "metadata" / "横状位XY回正十字线.nii.gz"
-            )
             prism_overlay_path = (
                 temp_path / "metadata" / "椎体四棱柱掩膜.nii.gz"
             )
-            self.assertEqual(result["debug_bbox_overlay_path"], "")
-            self.assertEqual(metadata["debug_bbox_overlay_path"], "")
-            self.assertEqual(result["debug_target_mask_overlay_path"], "")
-            self.assertEqual(metadata["debug_target_mask_overlay_path"], "")
             self.assertEqual(result["debug_label_mask_overlay_path"], str(label_overlay_path))
             self.assertEqual(metadata["debug_label_mask_overlay_path"], str(label_overlay_path))
-            self.assertEqual(
-                result["debug_xy_correction_crosshair_overlay_path"],
-                str(xy_crosshair_path),
-            )
-            self.assertEqual(
-                metadata["debug_xy_correction_crosshair_overlay_path"],
-                str(xy_crosshair_path),
-            )
             self.assertEqual(
                 result["debug_vertebral_body_prism_mask_overlay_path"],
                 str(prism_overlay_path),
@@ -3153,12 +3027,20 @@ class LocalizationGeometryTest(unittest.TestCase):
                 metadata["debug_vertebral_body_prism_mask_overlay_path"],
                 str(prism_overlay_path),
             )
-            self.assertFalse((temp_path / "metadata" / "定位框.nii.gz").exists())
-            self.assertFalse((temp_path / "metadata" / "目标掩膜.nii.gz").exists())
             self.assertTrue(label_overlay_path.exists())
             self.assertTrue(body_overlay_path.exists())
-            self.assertTrue(xy_crosshair_path.exists())
             self.assertTrue(prism_overlay_path.exists())
+            self.assertEqual(
+                {
+                    path.name
+                    for path in (temp_path / "metadata").glob("*.nii.gz")
+                },
+                {
+                    "标签掩膜.nii.gz",
+                    "椎体主体掩膜.nii.gz",
+                    "椎体四棱柱掩膜.nii.gz",
+                },
+            )
             for debug_path in (
                 label_overlay_path,
                 body_overlay_path,

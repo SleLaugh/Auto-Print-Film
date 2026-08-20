@@ -87,11 +87,16 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                     localization_result["dataset_json_path"]
                 ),
                 "model_info": correction_result.get("model") or {},
-                "cut_mode": localization_result["cut_mode"],
+                "localization_profile": localization_result[
+                    "localization_profile"
+                ],
                 "cut_config": localization_result["cut_config"],
                 "cut_configs": localization_result["cut_configs"],
                 "resolved_cut_config": localization_result[
                     "resolved_cut_config"
+                ],
+                "resolved_cut_configs": localization_result[
+                    "resolved_cut_configs"
                 ],
             }
             context.metadata[_LOCALIZATION_WORKSPACE_KEY] = workspace
@@ -114,8 +119,11 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 label_masks[label_name] = label_mask
 
         resolved_cut_config = localization_result["resolved_cut_config"]
-        start_labels = resolved_cut_config.get("start_labels") or []
-        end_labels = resolved_cut_config.get("end_labels") or []
+        anatomical_cut_config = localization_result[
+            "resolved_cut_configs"
+        ].get("whole_range", resolved_cut_config)
+        start_labels = anatomical_cut_config.get("start_labels") or []
+        end_labels = anatomical_cut_config.get("end_labels") or []
         anatomical_geometry, anatomical_diagnostics = (
             self._build_anatomical_geometry(
                 body_part=body_part,
@@ -193,6 +201,9 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 cut_config=localization_result["cut_config"],
                 cut_configs=localization_result["cut_configs"],
                 resolved_cut_config=resolved_cut_config,
+                resolved_cut_configs=localization_result[
+                    "resolved_cut_configs"
+                ],
                 label_targets=label_targets,
                 label_coordinates=label_coordinates,
                 dataset_json_path=Path(localization_result["dataset_json_path"]),
@@ -212,15 +223,9 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 corrected_seg_path=localization_result["corrected_seg_path"],
                 candidate_raw_path=localization_result["candidate_raw_path"],
                 candidate_seg_path=localization_result["candidate_seg_path"],
-                debug_bbox_overlay_path="",
-                debug_target_mask_overlay_path="",
                 debug_label_mask_overlay_path=debug_label_path,
                 debug_vertebral_body_mask_overlay_path=debug_body_path,
                 debug_vertebral_body_prism_mask_overlay_path=debug_prism_path,
-                debug_xy_correction_crosshair_overlay_path=localization_result.get(
-                    "debug_xy_correction_crosshair_overlay_path",
-                    "",
-                ),
                 spine_geometry=spine_geometry,
                 is_skewed=localization_result["is_skewed"],
                 skew_params=localization_result["skew_params"],

@@ -13,8 +13,8 @@
 | 第三至五阶段校正、label/bbox、解剖几何 | `modules/localization/README.md` | 只处理目标范围或四棱柱时从这里开始 |
 | 第六/七阶段切片规划、MPR 和 CPR 重建 | `modules/reconstruction/README.md` | 规划、重采样或部位专属 MPR 优先读这里 |
 | 切片中心覆盖、层间距、首尾扩展 | `modules/slicing/README.md` | 当前规则以后 2026-07-20 覆盖设计为准 |
-| 整切、区间切、直线切割流程、切法推导 | `modules/cutting/README.md` | 只改区间生成或切法选择时读这里 |
-| 窗宽窗位、调试总览、CT 背景展示 | `modules/viewer/README.md` | 展示和调试图需求从这里开始 |
+| MPR、椎间隙、直线切割流程、SliceType 能力 | `modules/cutting/README.md` | 只改区间生成或切法选择时读这里 |
+| 窗宽窗位、DICOM 定位图、CT 背景展示 | `modules/viewer/README.md` | 展示和定位图需求从这里开始 |
 | 追溯历史实施或审阅过程 | `archive/plans/`、`archive/reviews/` | 默认不要读取 |
 
 ## 当前事实源
@@ -47,9 +47,9 @@
 | 空间校正、label、bbox、解剖几何 | `modules/localization/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
 | 切片规划、MPR/CPR、重建执行 | `modules/reconstruction/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
 | 切片中心、层间距、范围扩展 | `modules/slicing/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
-| 直线切割、整切、区间切、切法推导 | `modules/cutting/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
+| 直线切割、MPR、椎间隙、SliceType | `modules/cutting/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
 | DICOM 命名、定位图、输出标签 | `modules/dicom/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
-| 窗宽窗位、调试总览、展示图 | `modules/viewer/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
+| 窗宽窗位、DICOM 定位图、展示图 | `modules/viewer/YYYY-MM-DD-主题设计.md` | 保持为当前入口 |
 | 当前实施计划 | `plans/YYYY-MM-DD-主题.md` | 完成后移入 `archive/plans/` |
 | 一次性代码或文档审阅记录 | `archive/reviews/YYYY-MM-DD-主题.md` | 保持历史属性，不作为当前规则 |
 | 被新规则替代的旧设计 | `archive/specs_old/` | 在旧文件顶部注明当前替代文件 |

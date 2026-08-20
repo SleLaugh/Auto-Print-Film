@@ -14,6 +14,8 @@
 - `localization_config.json` 中 `whole_range` 是含 `start/end` 的对象，
   `interspace` 直接是多个 `start/end` 对象组成的数组，不使用 `intervals` 包装层；
   `cut_configs` 按原始形态向后传递，alias 解析结果才使用内部 `intervals` 字段。
+- 混合请求通过 `resolved_cut_configs` 同时转交整切和椎间定位范围；MPR/CPR 使用
+  `whole_range`，椎间隙使用 `interspace`，不能共用一个可变的当前范围。
 - 标注质心只供第六阶段 CPR/区间切几何使用，不覆盖第四阶段的全量 `coords`。
 - 过滤主体进一步规则化为保持椎体倾斜角度的填充四棱柱，CPR 优先使用实际
   四棱柱 Mask 的体素质心；矢状四边形使用 LR 支撑核心，并只补回与主体紧邻、

@@ -8,7 +8,7 @@ class SlicePlanModelsTest(unittest.TestCase):
         plan = SlicePlan(
             plan_id="腰椎_whole_range_横状位",
             body_part="腰椎",
-            cut_mode="whole_range",
+            slice_type="MPR",
             plane="横状位",
             group_name="whole_range",
             geometry_type="plane_stack",
@@ -53,7 +53,7 @@ class SlicePlanModelsTest(unittest.TestCase):
         plan = SlicePlan(
             plan_id="腰椎_CPR_矢状位",
             body_part="腰椎",
-            cut_mode="cpr",
+            slice_type="CPR",
             plane="矢状位",
             group_name="CPR",
             geometry_type="curved_stack",

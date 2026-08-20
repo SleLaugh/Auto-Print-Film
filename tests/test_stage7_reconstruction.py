@@ -15,7 +15,6 @@ import SimpleITK as sitk
 from src.core.context import ProcessingContext
 from src.models import (
     BodyPartEnum,
-    CutModeEnum,
     PlaneConfig,
     PlaneTypeEnum,
     Request,
@@ -270,7 +269,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
     def test_interval_plan_keeps_group_directory(self):
         """验证 `test_interval_plan_keeps_group_directory` 场景符合预期。"""
 
-        plan = {"cut_mode": "interspace", "group_name": "L1-L2"}
+        plan = {"slice_type": "椎间隙", "group_name": "L1-L2"}
 
         self.assertEqual(ReconstructionStage._plan_group_name(plan), "L1-L2")
 
@@ -279,7 +278,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
 
         plan = {
             "geometry_type": "curved_stack",
-            "cut_mode": "cpr",
+            "slice_type": "CPR",
             "group_name": "CPR",
         }
 
@@ -1096,7 +1095,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
             first_plan = context.get_result("planning")["plans"][0]
             first_plan.update({
                 "plan_id": "腰椎_interspace_L1-L2_横状位",
-                "cut_mode": "interspace",
+                "slice_type": "椎间隙",
                 "group_name": "L1-L2",
             })
             second_plan = copy.deepcopy(first_plan)
@@ -1744,7 +1743,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
             plan = context.get_result("planning")["plans"][0]
             plan.update({
                 "plan_id": "腰椎_CPR_矢状位",
-                "cut_mode": "cpr",
+                "slice_type": "CPR",
                 "plane": "矢状位",
                 "group_name": "CPR",
                 "curve_points": [
@@ -1789,7 +1788,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
             plan = context.get_result("planning")["plans"][0]
             plan.update({
                 "plan_id": "腰椎_CPR_冠状位",
-                "cut_mode": "cpr",
+                "slice_type": "CPR",
                 "plane": "冠状位",
                 "group_name": "CPR",
                 "curve_points": [
@@ -1852,7 +1851,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
                 plan = context.get_result("planning")["plans"][0]
                 plan.update({
                     "plan_id": "腰椎_CPR_矢状位",
-                    "cut_mode": "cpr",
+                    "slice_type": "CPR",
                     "plane": "矢状位",
                     "group_name": "CPR",
                     "curve_points": [
@@ -2357,7 +2356,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
         plan = {
             "plan_id": "测试_整切_横状位",
             "body_part": "腰椎",
-            "cut_mode": "whole_range",
+            "slice_type": "MPR",
             "plane": "横状位",
             "group_name": "whole_range",
             "geometry_type": geometry_type,

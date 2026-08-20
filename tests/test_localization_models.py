@@ -7,12 +7,12 @@ class LocalizationModelsTest(unittest.TestCase):
     """验证第三至第五阶段调试汇总实体的序列化和字段契约。"""
 
     def test_localization_result_requires_all_cut_configs(self):
-        """最终定位实体必须显式传入当前部位的全部切法配置。"""
+        """最终定位实体必须显式传入当前部位的全部定位范围配置。"""
 
         with self.assertRaisesRegex(TypeError, "cut_configs"):
             LocalizationResult(
                 body_part="肺部",
-                cut_mode="whole_range",
+                localization_profile="whole_range",
                 seg_path="/tmp/seg.nii.gz",
                 model={"model_id": 1},
                 dataset_json_path="/tmp/dataset.json",
@@ -37,7 +37,7 @@ class LocalizationModelsTest(unittest.TestCase):
 
         result = LocalizationResult(
             body_part="腰椎",
-            cut_mode="whole_range",
+            localization_profile="whole_range",
             seg_path="/tmp/seg.nii.gz",
             model={"model_id": 1},
             dataset_json_path="/tmp/dataset.json",
@@ -54,6 +54,9 @@ class LocalizationModelsTest(unittest.TestCase):
             cut_config={"start": "L1", "end": "S1"},
             cut_configs={"whole_range": {"start": "L1", "end": "S1"}},
             resolved_cut_config={"start": "L1", "end": "S1"},
+            resolved_cut_configs={
+                "whole_range": {"start": "L1", "end": "S1"},
+            },
             label_targets={},
             coords={},
             debug_vertebral_body_prism_mask_overlay_path=(

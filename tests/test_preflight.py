@@ -9,24 +9,24 @@ from src.core.preflight import PreflightValidator
 from src.models import PlaneConfig, Request
 from src.models.enums import (
     BodyPartEnum,
-    CutModeEnum,
     PlaneTypeEnum,
+    SliceType,
 )
-from src.planning.cut_policy import cut_mode_for_plane
+from src.planning.slice_policy import localization_profile_for_slice_type
 
 
-class CutPolicyTest(unittest.TestCase):
-    """汇总 `CutPolicyTest` 相关测试场景。"""
+class SlicePolicyTest(unittest.TestCase):
+    """验证 SliceType 只决定显式切法及其定位范围。"""
 
-    def test_only_lumbar_axial_uses_interspace(self):
-        """验证 `test_only_lumbar_axial_uses_interspace` 场景符合预期。"""
+    def test_slice_types_resolve_localization_profiles(self):
+        """MPR/CPR 共用整体范围，椎间隙使用相邻椎体范围。"""
 
-        self.assertEqual(cut_mode_for_plane("腰椎", "横状位"), "interspace")
-        self.assertEqual(cut_mode_for_plane("腰椎", "矢状位"), "whole_range")
-        self.assertEqual(cut_mode_for_plane("颈椎", "横状位"), "whole_range")
+        self.assertEqual(localization_profile_for_slice_type("MPR"), "whole_range")
+        self.assertEqual(localization_profile_for_slice_type("CPR"), "whole_range")
+        self.assertEqual(localization_profile_for_slice_type("椎间隙"), "interspace")
 
 
-def make_request(body_part, cut_mode, plane, input_dir="/tmp/dicom", output_dir="/tmp/output"):
+def make_request(body_part, slice_type, plane, input_dir="/tmp/dicom", output_dir="/tmp/output"):
     """为测试准备 `make_request` 所需的数据或记录行为。"""
 
     return Request(
@@ -38,6 +38,7 @@ def make_request(body_part, cut_mode, plane, input_dir="/tmp/dicom", output_dir=
             1.0,
             1.0,
             ["骨窗"],
+            slice_type=SliceType(slice_type),
         )],
     )
 
@@ -45,39 +46,47 @@ def make_request(body_part, cut_mode, plane, input_dir="/tmp/dicom", output_dir=
 class PreflightTest(unittest.TestCase):
     """汇总 `PreflightTest` 相关测试场景。"""
 
-    def test_current_capabilities_register_three_planes_for_whole_range(self):
-        """所有已支持整切的部位都应对外声明三个默认直线状位。"""
+    def test_current_capabilities_register_three_planes_for_mpr(self):
+        """所有已支持部位都应对外声明三个基础 MPR 状位。"""
 
         combinations = set(CapabilityRegistry.current().combinations())
         for body_part in ("颈椎", "胸椎", "腰椎", "肺部", "头骨", "髋骨"):
             for plane in ("横状位", "矢状位", "冠状位"):
                 with self.subTest(body_part=body_part, plane=plane):
                     self.assertIn(
-                        (body_part, "whole_range", plane),
+                        (body_part, "MPR", plane),
                         combinations,
                     )
 
-    def test_registry_accepts_current_lumbar_axial_whole_range(self):
-        """验证 `test_registry_accepts_current_lumbar_axial_whole_range` 场景符合预期。"""
+    def test_registry_accepts_lumbar_axial_mpr(self):
+        """腰椎横状位默认基础切法为 MPR。"""
 
         CapabilityRegistry.current().validate(
-            make_request("腰椎", "whole_range", "横状位")
+            make_request("腰椎", "MPR", "横状位")
         )
 
-    def test_registry_derives_cervical_axial_as_whole_range(self):
-        """验证 `test_registry_derives_cervical_axial_as_whole_range` 场景符合预期。"""
+    def test_registry_accepts_lumbar_axial_interspace(self):
+        """腰椎横状位额外支持椎间隙切片。"""
 
         CapabilityRegistry.current().validate(
-            make_request("颈椎", "interspace", "横状位")
+            make_request("腰椎", "椎间隙", "横状位")
         )
 
-    def test_registry_allows_future_planes_for_a_supported_workflow(self):
-        # 状位能力由第六阶段逐步实现；预检不能阻断同一部位/切法的后续扩展参数。
-        """验证 `test_registry_allows_future_planes_for_a_supported_workflow` 场景符合预期。"""
+    def test_registry_rejects_interspace_for_cervical_axial(self):
+        """专用切法不能用于未注册的部位。"""
 
-        request = make_request("腰椎", "whole_range", "矢状位")
+        request = make_request("颈椎", "椎间隙", "横状位")
 
-        CapabilityRegistry.current().validate(request)
+        with self.assertRaises(CapabilityError):
+            CapabilityRegistry.current().validate(request)
+
+    def test_registry_rejects_cpr_for_lumbar_axial(self):
+        """CPR 只允许用于已注册的脊柱冠状位。"""
+
+        request = make_request("腰椎", "CPR", "横状位")
+
+        with self.assertRaises(CapabilityError):
+            CapabilityRegistry.current().validate(request)
 
     def test_preflight_failure_does_not_create_output_directory(self):
         """验证 `test_preflight_failure_does_not_create_output_directory` 场景符合预期。"""
@@ -89,7 +98,7 @@ class PreflightTest(unittest.TestCase):
             output_dir = root / "not-created"
             request = make_request(
                 "腰椎",
-                "whole_range",
+                "MPR",
                 "横状位",
                 str(input_dir),
                 str(output_dir),
@@ -109,7 +118,7 @@ class PreflightTest(unittest.TestCase):
             input_dir = output_dir / "dicom"
             input_dir.mkdir(parents=True)
             request = make_request(
-                "腰椎", "whole_range", "横状位",
+                "腰椎", "MPR", "横状位",
                 str(input_dir), str(output_dir),
             )
 
@@ -127,7 +136,7 @@ class PreflightTest(unittest.TestCase):
             input_dir.mkdir()
             output_dir = input_dir / "generated"
             request = make_request(
-                "腰椎", "whole_range", "横状位",
+                "腰椎", "MPR", "横状位",
                 str(input_dir), str(output_dir),
             )
 

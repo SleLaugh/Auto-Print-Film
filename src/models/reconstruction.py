@@ -72,7 +72,7 @@ class SlicePlan:
 
     plan_id: str
     body_part: str
-    cut_mode: str
+    slice_type: str
     plane: str
     group_name: str
     geometry_type: str
@@ -111,7 +111,7 @@ class SlicePlan:
         data = {
             "plan_id": self.plan_id,
             "body_part": self.body_part,
-            "cut_mode": self.cut_mode,
+            "slice_type": self.slice_type,
             "plane": self.plane,
             "group_name": self.group_name,
             "geometry_type": self.geometry_type,

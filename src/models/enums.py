@@ -30,16 +30,12 @@ class ScanThicknessEnum(Enum):
     六毫米 = "6mm"
 
 
-class CutModeEnum(Enum):
-    """切割方式枚举"""
-    整切 = "whole_range"
-    椎间切 = "interspace"
+class SliceType(Enum):
+    """外部请求可选择的切片方式。"""
 
-
-class PositioningModeEnum(Enum):
-    """定位模式枚举"""
-    单区间 = "single"          # 单区间模式（大多数部位使用）
-    多区间 = "multi"           # 多区间模式（腰椎间盘突出需要多区间划分）
+    MPR = "MPR"
+    CPR = "CPR"
+    椎间隙 = "椎间隙"
 
 
 class PlaneTypeEnum(Enum):

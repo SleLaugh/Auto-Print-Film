@@ -26,16 +26,16 @@
   <!-- 第一层：三个相互独立的输入维度。 -->
   <rect x="55" y="125" width="385" height="190" rx="20" fill="#eaf4ff" stroke="#6ea3d5" stroke-width="2"/>
   <text x="247" y="165" text-anchor="middle" class="box-title">① 切哪几层</text>
-  <text x="85" y="205" class="code">cut_mode</text>
-  <text x="85" y="240" class="body">whole_range：1 个 CutSegment</text>
-  <text x="85" y="275" class="body">interspace：多个 CutSegment</text>
+  <text x="85" y="205" class="code">SliceType</text>
+  <text x="85" y="240" class="body">MPR：1 个 CutSegment</text>
+  <text x="85" y="275" class="body">椎间隙：多个 CutSegment</text>
   <text x="85" y="302" class="small">每段独立保存起止边界和目标 bbox</text>
 
   <rect x="507" y="125" width="385" height="190" rx="20" fill="#eef9f1" stroke="#69a77b" stroke-width="2"/>
   <text x="699" y="165" text-anchor="middle" class="box-title">② 以什么方向切</text>
   <text x="537" y="205" class="code">StraightPlaneFrame</text>
-  <text x="537" y="240" class="body">当前：横 / 矢 / 冠默认直线</text>
-  <text x="537" y="275" class="body">后续：默认方向 + 旋转角度</text>
+  <text x="537" y="240" class="body">基础：横 / 矢 / 冠直线方向</text>
+  <text x="537" y="275" class="body">椎间隙：逐段解析斜横方向</text>
   <text x="537" y="302" class="small">产生 row_dir / col_dir / normal</text>
 
   <rect x="959" y="125" width="385" height="190" rx="20" fill="#fff5e8" stroke="#d19a4a" stroke-width="2"/>
@@ -76,11 +76,11 @@
   <!-- 底部：两张参考照片对应的组合。 -->
   <rect x="55" y="755" width="620" height="105" rx="18" fill="#f4f8fd" stroke="#89a8c5" stroke-width="2"/>
   <text x="80" y="790" class="box-title">第一张照片：整面带角度</text>
-  <text x="80" y="826" class="code">whole_range + 带角度直线 + 整平面</text>
+  <text x="80" y="826" class="code">MPR + 带角度直线 + 整平面</text>
   <text x="80" y="850" class="small">平行切片带角度，每张图覆盖整个原图平面</text>
 
   <rect x="725" y="755" width="620" height="105" rx="18" fill="#fff8ee" stroke="#c9a36e" stroke-width="2"/>
   <text x="750" y="790" class="box-title">第二张照片：范围带角度</text>
-  <text x="750" y="826" class="code">whole_range + 带角度直线 + 部位范围</text>
+  <text x="750" y="826" class="code">MPR + 带角度直线 + 部位范围</text>
   <text x="750" y="850" class="small">切片方向相同，但每张图只覆盖颈椎附近范围</text>
 </svg>

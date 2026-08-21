@@ -62,8 +62,8 @@ class SpatialCorrectionStage(LocalizationOperations):
 
         dataset_json_path = self._find_dataset_json(model_info, seg_path=seg_path)
         label_map = self._load_label_map(dataset_json_path)
-        label_targets = self._resolve_label_targets(
-            resolved_cut_config,
+        label_targets = self._resolve_combined_label_targets(
+            resolved_cut_configs,
             label_map,
         )
 

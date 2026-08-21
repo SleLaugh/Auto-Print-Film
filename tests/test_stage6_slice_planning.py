@@ -16,6 +16,10 @@ from src.models import PlaneConfig, Point3D, Request
 from src.models.enums import CutLineExtentModeEnum
 from src.models.enums import StudyPartEnum, PlaneTypeEnum, SliceType
 from src.planning.base import select_planner
+from src.planning.cervical import (
+    CERVICAL_INTERVALS,
+    CervicalInterspacePlanner,
+)
 from src.planning.geometry import normalize_vector, subtract_points
 from src.planning.lumbar import LumbarInterspacePlanner, LumbarWholeRangePlanner
 from src.planning.single_label import SingleLabelWholeRangePlanner
@@ -2135,6 +2139,62 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             [f"vertebrae_C{index}" for index in range(2, 8)],
         )
 
+    def test_cervical_interspace_starts_at_c2_c3_and_keeps_five_gaps(self):
+        """颈椎横状位不生成环椎 C1 与 C2 之间的区间。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            study_part=StudyPartEnum.颈椎,
+            plane_configs=[PlaneConfig(
+                plane=PlaneTypeEnum.横状位,
+                slice_thickness=2.0,
+                slice_spacing=2.0,
+                window_presets=["骨窗"],
+                slice_type=SliceType.椎间隙,
+            )],
+        )
+        localization_result = self._spine_localization_result(
+            ("C1", "C2", "C3", "C4", "C5", "C6", "C7"),
+            "颈椎",
+        )
+        for index, coord in enumerate(localization_result["coords"].values()):
+            z = 24.0 - index * 4.0
+            coord["centroid"]["z"] = z
+            coord["bbox"]["z_min"] = int(z) - 1
+            coord["bbox"]["z_max"] = int(z) + 1
+
+        with patch(
+            "src.planning.cervical.regularize_cervical_interspace_segments",
+            side_effect=lambda _, segments: (list(segments), []),
+        ) as regularize:
+            result = CervicalInterspacePlanner().build_plans(
+                request,
+                localization_result,
+            )
+
+        regularize.assert_called_once()
+        self.assertEqual(
+            [plan.group_name for plan in result.plans],
+            ["C2_C3", "C3_C4", "C4_C5", "C5_C6", "C6_C7"],
+        )
+        self.assertNotIn("C1_C2", [plan.group_name for plan in result.plans])
+        self.assertEqual(
+            CERVICAL_INTERVALS[0],
+            ("C2_C3", "vertebrae_C2", "vertebrae_C3"),
+        )
+        self.assertTrue(all(
+            "vertebrae_C1" not in plan.source_labels
+            for plan in result.plans
+        ))
+
+    def test_select_planner_supports_cervical_interspace(self):
+        """颈椎椎间隙请求必须选择专用规划器。"""
+
+        planner = select_planner("颈椎", SliceType.椎间隙.value)
+
+        self.assertIsInstance(planner, CervicalInterspacePlanner)
+
     def test_select_planner_supports_configured_whole_range_study_parts(self):
         """验证 `test_select_planner_supports_configured_whole_range_study_parts` 场景符合预期。"""
 
@@ -2191,6 +2251,13 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     set(interval) == {"start", "end"}
                     for interval in interspace
                 ))
+        self.assertEqual(
+            config["targets"]["颈椎"]["interspace"],
+            [
+                {"start": f"C{index}", "end": f"C{index + 1}"}
+                for index in range(2, 7)
+            ],
+        )
 
     def test_single_label_whole_range_planner_builds_axial_plan_from_bbox(self):
         """验证 `test_single_label_whole_range_planner_builds_axial_plan_from_bbox` 场景符合预期。"""
@@ -3892,6 +3959,308 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertIsNone(
             _closest_convex_polygon_pair_2d(horizontal, vertical),
         )
+
+    def test_interspace_facing_pair_uses_full_shared_midpoint_for_small_overlap(self):
+        """共同中点仍有足够间隙时，不能把切片中心拉向正间隙一端。"""
+
+        from src.planning.spine_common import (
+            _facing_convex_polygon_boundary_pair_2d,
+        )
+
+        upper = [
+            (-118.26528292399925, -90.54306294485141),
+            (-96.08122018642437, -83.28981372543835),
+            (-97.19533011351777, -69.20201696556389),
+            (-114.90242903822754, -71.93928749669388),
+        ]
+        lower = [
+            (-110.38675671206288, -104.37629001222695),
+            (-93.26371015102883, -99.78155479906933),
+            (-92.84843218229823, -84.01150535360331),
+            (-110.79563093203059, -87.87899157998513),
+        ]
+
+        pair = _facing_convex_polygon_boundary_pair_2d(upper, lower)
+
+        self.assertIsNotNone(pair)
+        upper_point, lower_point, _ = pair
+        self.assertAlmostEqual(
+            (upper_point[0] + lower_point[0]) / 2.0,
+            -103.33403352661477,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            (upper_point[1] + lower_point[1]) / 2.0,
+            -85.97040727160639,
+            places=6,
+        )
+
+    def test_interspace_facing_pair_keeps_wider_positive_subrange(self):
+        """共同中点间隙明显变窄时，仍使用更可靠的正间隙子区间。"""
+
+        from src.planning.spine_common import (
+            _facing_convex_polygon_boundary_pair_2d,
+        )
+
+        upper = [
+            (-130.5633441505035, -48.838557129339236),
+            (-112.833983375, -34.48777944333965),
+            (-112.833983375, -23.891889132339184),
+            (-128.8847361128766, -25.9484475253361),
+        ]
+        lower = [
+            (-125.17370432990435, -53.000001),
+            (-111.35713977564123, -53.000001),
+            (-109.02013944764123, -38.749999),
+            (-122.50209284383028, -38.749999),
+        ]
+
+        pair = _facing_convex_polygon_boundary_pair_2d(upper, lower)
+
+        self.assertIsNotNone(pair)
+        upper_point, lower_point, squared_gap = pair
+        self.assertAlmostEqual(
+            (upper_point[0] + lower_point[0]) / 2.0,
+            -115.08961066169228,
+            places=6,
+        )
+        self.assertGreater(math.sqrt(squared_gap), 2.0)
+
+    def test_cervical_low_volume_body_limits_abnormal_interspace_normal(self):
+        """低体积颈椎主体不能把椎间法向拉离主体中心线超过十度。"""
+
+        from src.models import Point3D
+        from src.planning.spine_common import (
+            regularize_cervical_interspace_segments,
+        )
+        from src.planning.straight import CutSegment, StraightPlaneFrame
+
+        annotations = {
+            "vertebrae_C3": {
+                "found": True,
+                "voxel_count": 500,
+                "centroid_physical": {"x": 0.0, "y": -2.0, "z": 20.0},
+            },
+            "vertebrae_C4": {
+                "found": True,
+                "voxel_count": 370,
+                "centroid_physical": {"x": 0.0, "y": 0.0, "z": 10.0},
+            },
+            "vertebrae_C5": {
+                "found": True,
+                "voxel_count": 600,
+                "centroid_physical": {"x": 0.0, "y": 4.0, "z": 0.0},
+            },
+        }
+        localization_result = {
+            "study_part": "颈椎",
+            "spine_geometry": {
+                "filtered_annotation_centroids": annotations,
+            },
+        }
+        original = CutSegment(
+            group_name="C4_C5",
+            target_start=Point3D(0.0, 2.0, 6.0),
+            target_end=Point3D(0.0, 2.0, 4.0),
+            target_region_bbox={
+                "x_min": 0,
+                "x_max": 1,
+                "y_min": 0,
+                "y_max": 1,
+                "z_min": 0,
+                "z_max": 1,
+            },
+            source_labels=("vertebrae_C4", "vertebrae_C5"),
+            frame=StraightPlaneFrame(
+                row_dir=Point3D(1.0, 0.0, 0.0),
+                col_dir=Point3D(0.0, -1.0, 0.0),
+                normal=Point3D(0.0, 0.0, -1.0),
+            ),
+            recenter_target_in_plane=False,
+        )
+
+        corrected, warnings = regularize_cervical_interspace_segments(
+            localization_result,
+            [original],
+        )
+
+        self.assertEqual(len(corrected), 1)
+        centerline = normalize_vector(Point3D(0.0, 4.0, -10.0))
+        normal = corrected[0].frame.normal
+        deviation = math.degrees(math.acos(max(-1.0, min(1.0,
+            normal.x * centerline.x
+            + normal.y * centerline.y
+            + normal.z * centerline.z
+        ))))
+        self.assertAlmostEqual(deviation, 10.0, places=6)
+        self.assertAlmostEqual(
+            math.dist(
+                tuple(corrected[0].target_start.to_dict().values()),
+                tuple(corrected[0].target_end.to_dict().values()),
+            ),
+            2.0,
+            places=6,
+        )
+        self.assertTrue(any("C4_C5" in warning for warning in warnings))
+
+        annotations["vertebrae_C4"]["voxel_count"] = 380
+        unchanged, unchanged_warnings = (
+            regularize_cervical_interspace_segments(
+                localization_result,
+                [original],
+            )
+        )
+        self.assertEqual(unchanged[0].frame.normal, original.frame.normal)
+        self.assertEqual(unchanged_warnings, [])
+
+    def test_interspace_body_pair_translates_underestimated_prism_gap(self):
+        """真实主体间隙明显更大时只平移切片，不改变长度和方向。"""
+
+        from src.planning.spine_common import (
+            _translate_interspace_to_body_pair,
+        )
+        from src.planning.straight import StraightPlaneFrame
+
+        localization_result = {
+            "spine_geometry": {
+                "interspace_body_pairs": {
+                    "C6_C7": {
+                        "found": True,
+                        "minimum_distance_mm": 2.0,
+                        "support_point_count": 12,
+                        "midpoint_physical": {
+                            "x": 0.0,
+                            "y": -4.0,
+                            "z": -2.0,
+                        },
+                    },
+                },
+            },
+        }
+        frame = StraightPlaneFrame(
+            row_dir=Point3D(1.0, 0.0, 0.0),
+            col_dir=Point3D(0.0, -1.0, 0.0),
+            normal=Point3D(0.0, 0.0, -1.0),
+        )
+        target_start = Point3D(0.0, 0.0, 0.25)
+        target_end = Point3D(0.0, 0.0, -0.25)
+
+        translated_start, translated_end, warning = (
+            _translate_interspace_to_body_pair(
+                localization_result,
+                "C6_C7",
+                target_start,
+                target_end,
+                frame,
+            )
+        )
+
+        self.assertEqual(translated_start, Point3D(0.0, 0.0, -1.75))
+        self.assertEqual(translated_end, Point3D(0.0, 0.0, -2.25))
+        self.assertAlmostEqual(
+            math.dist(
+                tuple(translated_start.to_dict().values()),
+                tuple(translated_end.to_dict().values()),
+            ),
+            0.5,
+        )
+        self.assertIn("C6_C7", warning)
+
+        localization_result["spine_geometry"]["interspace_body_pairs"][
+            "C6_C7"
+        ]["minimum_distance_mm"] = 1.5
+        unchanged_start, unchanged_end, unchanged_warning = (
+            _translate_interspace_to_body_pair(
+                localization_result,
+                "C6_C7",
+                target_start,
+                target_end,
+                frame,
+            )
+        )
+        self.assertEqual(unchanged_start, target_start)
+        self.assertEqual(unchanged_end, target_end)
+        self.assertIsNone(unchanged_warning)
+
+    def test_terminal_cervical_interspace_moves_toward_c7_from_high_center(self):
+        """C6_C7 高于相邻主体中面时只向 C7 侧受限平移。"""
+
+        from src.planning.spine_common import (
+            _translate_interspace_to_body_pair,
+        )
+        from src.planning.straight import StraightPlaneFrame
+
+        localization_result = {
+            "spine_geometry": {
+                "interspace_body_pairs": {
+                    "C6_C7": {
+                        "found": True,
+                        "minimum_distance_mm": 0.8,
+                        "support_point_count": 12,
+                        "midpoint_physical": {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 0.0,
+                        },
+                        "upper_label": "vertebrae_C6",
+                        "lower_label": "vertebrae_C7",
+                    },
+                },
+                "filtered_annotation_centroids": {
+                    "vertebrae_C6": {
+                        "centroid_physical": {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 1.0,
+                        },
+                    },
+                    "vertebrae_C7": {
+                        "centroid_physical": {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": -1.6,
+                        },
+                    },
+                },
+            },
+        }
+        frame = StraightPlaneFrame(
+            row_dir=Point3D(1.0, 0.0, 0.0),
+            col_dir=Point3D(0.0, -1.0, 0.0),
+            normal=Point3D(0.0, 0.0, -1.0),
+        )
+        target_start = Point3D(0.0, 0.0, 0.25)
+        target_end = Point3D(0.0, 0.0, -0.25)
+
+        translated_start, translated_end, warning = (
+            _translate_interspace_to_body_pair(
+                localization_result,
+                "C6_C7",
+                target_start,
+                target_end,
+                frame,
+            )
+        )
+
+        self.assertEqual(translated_start, Point3D(0.0, 0.0, -0.55))
+        self.assertEqual(translated_end, Point3D(0.0, 0.0, -1.05))
+        self.assertIn("向 C7 侧", warning)
+
+        localization_result["spine_geometry"][
+            "filtered_annotation_centroids"
+        ]["vertebrae_C7"]["centroid_physical"]["z"] = -1.4
+        unchanged_start, unchanged_end, unchanged_warning = (
+            _translate_interspace_to_body_pair(
+                localization_result,
+                "C6_C7",
+                target_start,
+                target_end,
+                frame,
+            )
+        )
+        self.assertEqual(unchanged_start, target_start)
+        self.assertEqual(unchanged_end, target_end)
+        self.assertIsNone(unchanged_warning)
 
     def test_interspace_overlapping_prisms_keep_ordered_boundary_pair(self):
         """外包络轻微穿入时仍按上下相向边界保留椎间区间。"""

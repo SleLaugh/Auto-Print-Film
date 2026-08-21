@@ -72,13 +72,22 @@ class PreflightTest(unittest.TestCase):
             make_request("腰椎", "椎间隙", "横状位")
         )
 
-    def test_registry_rejects_interspace_for_cervical_axial(self):
-        """专用切法不能用于未注册的部位。"""
+    def test_registry_accepts_cervical_axial_interspace(self):
+        """颈椎横状位支持从 C2_C3 开始的椎间隙切片。"""
 
-        request = make_request("颈椎", "椎间隙", "横状位")
+        CapabilityRegistry.current().validate(
+            make_request("颈椎", "椎间隙", "横状位")
+        )
 
-        with self.assertRaises(CapabilityError):
-            CapabilityRegistry.current().validate(request)
+    def test_registry_rejects_cervical_interspace_for_non_axial_planes(self):
+        """颈椎椎间隙不能用于矢状位或冠状位。"""
+
+        for plane in ("矢状位", "冠状位"):
+            with self.subTest(plane=plane):
+                with self.assertRaises(CapabilityError):
+                    CapabilityRegistry.current().validate(
+                        make_request("颈椎", "椎间隙", plane)
+                    )
 
     def test_registry_rejects_cpr_for_lumbar_axial(self):
         """CPR 只允许用于已注册的脊柱冠状位。"""

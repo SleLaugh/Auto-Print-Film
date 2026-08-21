@@ -644,6 +644,40 @@ class LocalizationGeometryTest(unittest.TestCase):
             "end": "C7",
         })
 
+    def test_cervical_interspace_targets_still_include_c1_for_localization(self):
+        """椎间隙从 C2 开始，但颈椎整体定位仍必须包含 C1。"""
+
+        stage = LocalizationStage()
+        label_map = {
+            f"vertebrae_C{index}": [index]
+            for index in range(1, 8)
+        }
+        resolved_cut_configs = {
+            "whole_range": {
+                "start_labels": ["vertebrae_C1"],
+                "end_labels": ["vertebrae_C7"],
+            },
+            "interspace": {
+                "intervals": [
+                    {
+                        "start_labels": [f"vertebrae_C{index}"],
+                        "end_labels": [f"vertebrae_C{index + 1}"],
+                    }
+                    for index in range(2, 7)
+                ],
+            },
+        }
+
+        targets = stage._resolve_combined_label_targets(
+            resolved_cut_configs,
+            label_map,
+        )
+
+        self.assertEqual(
+            list(targets),
+            [f"vertebrae_C{index}" for index in range(1, 8)],
+        )
+
     def test_s1_range_prefers_vertebrae_s1_over_sacrum_when_available(self):
         # S1 这个业务名表示第一骶椎。模型同时提供 vertebrae_S1 和 sacrum 时，
         # 整切范围应该纳入 vertebrae_S1，不能直接跳到整块骶骨。
@@ -2460,6 +2494,31 @@ class LocalizationGeometryTest(unittest.TestCase):
         np.testing.assert_array_equal(minimum, [30, 70, 90])
         self.assertEqual(local_mask.shape, (8, 12, 14))
         self.assertLess(local_mask.size, body_mask.size // 100)
+
+    def test_stage5_nearest_body_interspace_uses_physical_gap_midpoint(self):
+        """相邻主体最近间隙必须保留物理距离、中点和面支撑数量。"""
+
+        upper_mask = np.zeros((10, 12, 14), dtype=bool)
+        lower_mask = np.zeros_like(upper_mask)
+        upper_mask[6:9, 4:8, 3:9] = True
+        lower_mask[1:4, 4:8, 3:9] = True
+        image = sitk.GetImageFromArray(upper_mask.astype(np.uint8))
+        image.SetSpacing((1.0, 1.0, 2.0))
+        image.SetOrigin((10.0, 20.0, 30.0))
+
+        geometry = LocalizationStage._nearest_body_interspace_geometry(
+            image,
+            np.argwhere(upper_mask),
+            np.argwhere(lower_mask),
+        )
+
+        self.assertIsNotNone(geometry)
+        self.assertAlmostEqual(geometry["minimum_distance_mm"], 6.0)
+        self.assertEqual(geometry["support_point_count"], 24)
+        self.assertEqual(
+            geometry["midpoint_physical"],
+            {"x": 15.5, "y": 25.5, "z": 39.0},
+        )
 
     def test_stage5_geometry_does_not_materialize_full_prism_per_label(self):
         """第五阶段主流程必须走局部棱柱，不能为每个 label 构造整幅 mask。"""

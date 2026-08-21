@@ -317,6 +317,20 @@ class LocalizationOperations(BaseStage):
             )
         return targets
 
+    def _resolve_combined_label_targets(
+        self,
+        resolved_cut_configs: Dict[str, Dict[str, Any]],
+        label_map: Dict[str, list[int]],
+    ) -> Dict[str, LabelTarget]:
+        """合并全部范围方案的标签，保留整体定位所需的首尾椎体。"""
+
+        combined_targets: Dict[str, LabelTarget] = {}
+        for resolved_cut_config in resolved_cut_configs.values():
+            combined_targets.update(
+                self._resolve_label_targets(resolved_cut_config, label_map)
+            )
+        return combined_targets
+
     def _collect_label_names(
         self,
         resolved_cut_config: Dict[str, Any],
@@ -2127,11 +2141,12 @@ class LocalizationOperations(BaseStage):
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
     ) -> Dict[str, Any] | None:
         """
-        为第五阶段生成脊柱专用过滤标注和标注质心，供第六阶段 CPR 使用。
+        为第五阶段生成脊柱过滤主体、四棱柱和相邻主体间隙几何。
 
         这里不修改原始 label 的质心和 bbox。完整 label 负责定位及覆盖范围，
-        过滤标注负责计算标注质心；颈椎 C1 保留在完整定位中，但不进入 CPR
-        标注质心。物理坐标直接由当前工作图像转换，保证与第四阶段定位空间一致。
+        过滤主体负责 CPR 质心、椎间四棱柱和真实最近间隙参考；颈椎 C1 保留在
+        完整定位中，但不进入这些主体几何。物理坐标直接由当前工作图像转换，
+        保证与第四阶段定位空间一致。
         """
 
         if study_part not in {"颈椎", "胸椎", "腰椎"}:
@@ -2336,6 +2351,44 @@ class LocalizationOperations(BaseStage):
                 ),
             }
 
+        interspace_body_pairs: Dict[str, Dict[str, Any]] = {}
+        ordered_body_labels = sorted(
+            (
+                label_name
+                for label_name, indices in body_indices.items()
+                if indices.size > 0 and cls._vertebra_key(label_name) != "C1"
+            ),
+            key=lambda label_name: cls._vertebra_order_index(label_name),
+        )
+        for upper_label, lower_label in zip(
+            ordered_body_labels,
+            ordered_body_labels[1:],
+        ):
+            upper_index = cls._vertebra_order_index(upper_label)
+            lower_index = cls._vertebra_order_index(lower_label)
+            if (
+                upper_index is None
+                or lower_index is None
+                or lower_index != upper_index + 1
+            ):
+                continue
+            geometry = cls._nearest_body_interspace_geometry(
+                image,
+                body_indices[upper_label],
+                body_indices[lower_label],
+            )
+            if geometry is None:
+                continue
+            group_name = (
+                f"{cls._vertebra_key(upper_label)}_"
+                f"{cls._vertebra_key(lower_label)}"
+            )
+            interspace_body_pairs[group_name] = {
+                "upper_label": upper_label,
+                "lower_label": lower_label,
+                **geometry,
+            }
+
         return {
             "filtered_annotation": {
                 "method": "vertebral_body_candidate_v1",
@@ -2344,9 +2397,111 @@ class LocalizationOperations(BaseStage):
             },
             "stage": "stage5_anatomical_analysis",
             "filtered_annotation_centroids": filtered_annotation_centroids,
+            "interspace_body_pairs": interspace_body_pairs,
             "excluded_from_annotation_centroids": ["vertebrae_C1"],
             "full_label_geometry": "coords",
             "full_label_bbox": "coords.*.bbox",
+        }
+
+    @staticmethod
+    def _nearest_body_interspace_geometry(
+        image: sitk.Image,
+        upper_indices: np.ndarray,
+        lower_indices: np.ndarray,
+    ) -> Dict[str, Any] | None:
+        """从相邻过滤主体体素提取有实际支撑的最近间隙中点。"""
+
+        if upper_indices.size == 0 or lower_indices.size == 0:
+            return None
+
+        region_minimum = np.minimum(
+            upper_indices.min(axis=0),
+            lower_indices.min(axis=0),
+        )
+        region_maximum = np.maximum(
+            upper_indices.max(axis=0),
+            lower_indices.max(axis=0),
+        )
+        region_shape = region_maximum - region_minimum + 1
+        lower_mask = np.zeros(tuple(region_shape), dtype=np.uint8)
+        lower_local = lower_indices - region_minimum
+        lower_mask[tuple(lower_local.T)] = 1
+
+        lower_image = sitk.GetImageFromArray(lower_mask)
+        lower_image.SetSpacing(image.GetSpacing())
+        distance_filter = sitk.DanielssonDistanceMapImageFilter()
+        distance_filter.SetInputIsBinary(True)
+        distance_filter.SetUseImageSpacing(True)
+        try:
+            distance_image = distance_filter.Execute(lower_image)
+        except RuntimeError:
+            return None
+        distance_array = sitk.GetArrayFromImage(distance_image)
+        vector_array = sitk.GetArrayFromImage(
+            distance_filter.GetVectorDistanceMap()
+        )
+
+        upper_local = upper_indices - region_minimum
+        upper_distances = distance_array[tuple(upper_local.T)]
+        finite_distances = upper_distances[np.isfinite(upper_distances)]
+        if finite_distances.size == 0:
+            return None
+        minimum_distance = float(np.min(finite_distances))
+        if minimum_distance <= 0.0:
+            return None
+
+        spacing = np.asarray(image.GetSpacing(), dtype=float)
+        support_tolerance = max(float(np.min(spacing)) * 0.25, 1e-6)
+        supported = np.isfinite(upper_distances) & (
+            upper_distances <= minimum_distance + support_tolerance
+        )
+        supported_upper = upper_local[supported]
+        if supported_upper.size == 0:
+            return None
+        nearest_offsets_xyz = vector_array[tuple(supported_upper.T)]
+        supported_lower = (
+            supported_upper
+            + nearest_offsets_xyz[:, ::-1].astype(int)
+        )
+        valid = np.all(
+            (supported_lower >= 0) & (supported_lower < region_shape),
+            axis=1,
+        )
+        if not np.any(valid):
+            return None
+        supported_upper = supported_upper[valid]
+        supported_lower = supported_lower[valid]
+        valid = lower_mask[tuple(supported_lower.T)] > 0
+        if not np.any(valid):
+            return None
+        supported_upper = supported_upper[valid] + region_minimum
+        supported_lower = supported_lower[valid] + region_minimum
+
+        origin = np.asarray(image.GetOrigin(), dtype=float)
+        direction = np.asarray(
+            image.GetDirection(),
+            dtype=float,
+        ).reshape(3, 3)
+
+        def to_physical(indices_zyx: np.ndarray) -> np.ndarray:
+            indices_xyz = indices_zyx[:, ::-1].astype(float)
+            return origin + (indices_xyz * spacing) @ direction.T
+
+        upper_physical = to_physical(supported_upper)
+        lower_physical = to_physical(supported_lower)
+        midpoint_physical = np.median(
+            (upper_physical + lower_physical) / 2.0,
+            axis=0,
+        )
+        return {
+            "found": True,
+            "minimum_distance_mm": minimum_distance,
+            "support_point_count": int(len(supported_upper)),
+            "midpoint_physical": {
+                "x": float(midpoint_physical[0]),
+                "y": float(midpoint_physical[1]),
+                "z": float(midpoint_physical[2]),
+            },
         }
 
     @staticmethod

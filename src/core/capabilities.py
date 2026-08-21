@@ -32,7 +32,10 @@ class CapabilityRegistry:
             for part in mpr_parts
             for plane in mpr_planes
         }
-        combinations.add(("腰椎", "椎间隙", "横状位"))
+        combinations.update({
+            (study_part, "椎间隙", "横状位")
+            for study_part in ("颈椎", "腰椎")
+        })
         combinations.update({
             (study_part, "CPR", "冠状位")
             for study_part in ("颈椎", "胸椎", "腰椎")

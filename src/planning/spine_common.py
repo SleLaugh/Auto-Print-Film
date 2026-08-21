@@ -3,6 +3,7 @@
 
 """脊柱类 planner 的公共方法。"""
 
+from dataclasses import replace
 import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -15,6 +16,15 @@ from src.planning.geometry import (
     voxel_index_to_physical,
 )
 from src.planning.straight import CutSegment, StraightPlaneFrame, default_straight_frame
+
+
+_CERVICAL_INTERSPACE_MAX_CENTERLINE_DEVIATION_DEGREES = 10.0
+_CERVICAL_INTERSPACE_LOW_BODY_VOLUME_FRACTION = 0.75
+_INTERSPACE_BODY_PAIR_MIN_SUPPORT_POINTS = 8
+_INTERSPACE_PROJECTED_GAP_UNDERESTIMATE_MM = 1.0
+_CERVICAL_TERMINAL_INTERSPACE = "C6_C7"
+_CERVICAL_TERMINAL_CENTER_OFFSET_TRIGGER_MM = 0.25
+_CERVICAL_TERMINAL_INFERIOR_MARGIN_MM = 0.5
 
 
 def voxel_centroid_to_physical(
@@ -710,6 +720,12 @@ def _facing_convex_polygon_boundary_pair_2d(
         return None
     minimum_gap = minimum_pair[2]
     maximum_gap = maximum_pair[2]
+
+    # 共同覆盖中点仍有正间隙时先保留候选。旧逻辑会先按零交点拆出正间隙
+    # 子区间，再取子区间中点，可能让轻微相交的四棱柱把中心拉向一端。
+    # 最终仍需与正区间代表间隙比较，避免为了居中而明显缩短有效范围。
+    midpoint_coordinate = (overlap_minimum + overlap_maximum) / 2.0
+    midpoint_pair = boundary_pair_at(midpoint_coordinate)
     boundaries = [overlap_minimum, overlap_maximum]
     if minimum_gap * maximum_gap < 0.0:
         crossing = overlap_minimum - minimum_gap * (
@@ -730,13 +746,18 @@ def _facing_convex_polygon_boundary_pair_2d(
             positive_intervals,
             key=lambda item: (item[0], item[2][2]),
         )
+        if (
+            midpoint_pair is not None
+            and midpoint_pair[2] > 1e-8
+            and midpoint_pair[2] >= selected_pair[2] * 0.75
+        ):
+            selected_pair = midpoint_pair
         upper_boundary, lower_boundary, gap = selected_pair
         return upper_boundary, lower_boundary, gap * gap
 
     if not permit_inverted_gap:
         return None
-    midpoint_coordinate = (overlap_minimum + overlap_maximum) / 2.0
-    pair = boundary_pair_at(midpoint_coordinate)
+    pair = midpoint_pair
     if pair is None or abs(pair[2]) <= 1e-8:
         return None
     raw_upper, raw_lower, raw_gap = pair
@@ -754,6 +775,308 @@ def _facing_convex_polygon_boundary_pair_2d(
         midpoint[1] + boundary_normal[1] * half_distance,
     )
     return ordered_upper, ordered_lower, raw_gap * raw_gap
+
+
+def _body_centroid_physical(
+    localization_result: Dict[str, Any],
+    label_name: str,
+) -> Optional[Point3D]:
+    """读取过滤主体质心，缺失时回退到完整标签质心。"""
+
+    annotation = _filtered_spine_annotations(localization_result).get(
+        label_name,
+        {},
+    )
+    if isinstance(annotation, dict):
+        point = _parse_xyz_point(annotation.get("centroid_physical"))
+        if point is not None:
+            return point
+    return get_label_center(localization_result, label_name)
+
+
+def _limited_normal_toward_centerline(
+    normal: Point3D,
+    centerline: Point3D,
+    maximum_deviation_degrees: float,
+) -> tuple[Point3D, float]:
+    """把法向限制在主体中心线附近，并返回修正前的夹角。"""
+
+    aligned_centerline = centerline
+    dot_value = _dot(normal, aligned_centerline)
+    if dot_value < 0.0:
+        aligned_centerline = Point3D(
+            -aligned_centerline.x,
+            -aligned_centerline.y,
+            -aligned_centerline.z,
+        )
+        dot_value = -dot_value
+    dot_value = max(-1.0, min(1.0, dot_value))
+    deviation_degrees = math.degrees(math.acos(dot_value))
+    if deviation_degrees <= maximum_deviation_degrees:
+        return normal, deviation_degrees
+
+    tangent_component = Point3D(
+        normal.x - aligned_centerline.x * dot_value,
+        normal.y - aligned_centerline.y * dot_value,
+        normal.z - aligned_centerline.z * dot_value,
+    )
+    tangent_direction = normalize_vector(tangent_component)
+    limited_radians = math.radians(maximum_deviation_degrees)
+    limited = normalize_vector(Point3D(
+        aligned_centerline.x * math.cos(limited_radians)
+        + tangent_direction.x * math.sin(limited_radians),
+        aligned_centerline.y * math.cos(limited_radians)
+        + tangent_direction.y * math.sin(limited_radians),
+        aligned_centerline.z * math.cos(limited_radians)
+        + tangent_direction.z * math.sin(limited_radians),
+    ))
+    return limited, deviation_degrees
+
+
+def regularize_cervical_interspace_segments(
+    localization_result: Dict[str, Any],
+    segments: Sequence[CutSegment],
+) -> tuple[List[CutSegment], List[str]]:
+    """仅对低可信颈椎主体造成的异常椎间法向做有限度约束。"""
+
+    annotations = _filtered_spine_annotations(localization_result)
+    body_volumes = []
+    for annotation in annotations.values():
+        if not isinstance(annotation, dict):
+            continue
+        try:
+            voxel_count = int(annotation.get("voxel_count", 0))
+        except (TypeError, ValueError):
+            continue
+        if annotation.get("found") is not False and voxel_count > 0:
+            body_volumes.append(float(voxel_count))
+    if len(body_volumes) < 3:
+        return list(segments), []
+    median_body_volume = _median(body_volumes)
+
+    corrected_segments: List[CutSegment] = []
+    warnings: List[str] = []
+    for segment in segments:
+        if segment.frame is None or len(segment.source_labels) != 2:
+            corrected_segments.append(segment)
+            continue
+
+        endpoint_volumes = []
+        for label_name in segment.source_labels:
+            annotation = annotations.get(label_name)
+            try:
+                voxel_count = int(
+                    annotation.get("voxel_count", 0)
+                    if isinstance(annotation, dict)
+                    else 0
+                )
+            except (TypeError, ValueError):
+                voxel_count = 0
+            endpoint_volumes.append(voxel_count)
+        low_volume_threshold = (
+            median_body_volume
+            * _CERVICAL_INTERSPACE_LOW_BODY_VOLUME_FRACTION
+        )
+        if not endpoint_volumes or min(endpoint_volumes) >= low_volume_threshold:
+            corrected_segments.append(segment)
+            continue
+
+        upper_center = _body_centroid_physical(
+            localization_result,
+            segment.source_labels[0],
+        )
+        lower_center = _body_centroid_physical(
+            localization_result,
+            segment.source_labels[1],
+        )
+        if upper_center is None or lower_center is None:
+            corrected_segments.append(segment)
+            continue
+        try:
+            centerline = subtract_points(lower_center, upper_center)
+            row_component = _dot(centerline, segment.frame.row_dir)
+            centerline = normalize_vector(Point3D(
+                centerline.x - segment.frame.row_dir.x * row_component,
+                centerline.y - segment.frame.row_dir.y * row_component,
+                centerline.z - segment.frame.row_dir.z * row_component,
+            ))
+            limited_normal, deviation_degrees = (
+                _limited_normal_toward_centerline(
+                    segment.frame.normal,
+                    centerline,
+                    _CERVICAL_INTERSPACE_MAX_CENTERLINE_DEVIATION_DEGREES,
+                )
+            )
+        except ValueError:
+            corrected_segments.append(segment)
+            continue
+        if deviation_degrees <= (
+            _CERVICAL_INTERSPACE_MAX_CENTERLINE_DEVIATION_DEGREES
+        ):
+            corrected_segments.append(segment)
+            continue
+
+        target_vector = subtract_points(segment.target_end, segment.target_start)
+        target_length = vector_length(target_vector)
+        midpoint = Point3D(
+            (segment.target_start.x + segment.target_end.x) / 2.0,
+            (segment.target_start.y + segment.target_end.y) / 2.0,
+            (segment.target_start.z + segment.target_end.z) / 2.0,
+        )
+        half_length = target_length / 2.0
+        target_start = Point3D(
+            midpoint.x - limited_normal.x * half_length,
+            midpoint.y - limited_normal.y * half_length,
+            midpoint.z - limited_normal.z * half_length,
+        )
+        target_end = Point3D(
+            midpoint.x + limited_normal.x * half_length,
+            midpoint.y + limited_normal.y * half_length,
+            midpoint.z + limited_normal.z * half_length,
+        )
+        try:
+            col_dir = normalize_vector(_cross(
+                limited_normal,
+                segment.frame.row_dir,
+            ))
+        except ValueError:
+            corrected_segments.append(segment)
+            continue
+        corrected_segments.append(replace(
+            segment,
+            target_start=target_start,
+            target_end=target_end,
+            frame=StraightPlaneFrame(
+                row_dir=segment.frame.row_dir,
+                col_dir=col_dir,
+                normal=limited_normal,
+            ),
+        ))
+        warnings.append(
+            f"脊柱区间 {segment.group_name} 主体体积偏小且四棱柱法向偏离"
+            f"主体中心线 {deviation_degrees:.1f}°，已限制为 "
+            f"{_CERVICAL_INTERSPACE_MAX_CENTERLINE_DEVIATION_DEGREES:.1f}°"
+        )
+    return corrected_segments, warnings
+
+
+def _translate_interspace_to_body_pair(
+    localization_result: Dict[str, Any],
+    group_name: str,
+    target_start: Point3D,
+    target_end: Point3D,
+    frame: StraightPlaneFrame,
+) -> tuple[Point3D, Point3D, Optional[str]]:
+    """用主体间隙和颈椎末端中面参考只校正切片位置。"""
+
+    spine_geometry = localization_result.get("spine_geometry")
+    if not isinstance(spine_geometry, dict):
+        return target_start, target_end, None
+    body_pairs = spine_geometry.get("interspace_body_pairs")
+    if not isinstance(body_pairs, dict):
+        return target_start, target_end, None
+    body_pair = body_pairs.get(group_name)
+    if not isinstance(body_pair, dict) or body_pair.get("found") is not True:
+        return target_start, target_end, None
+    try:
+        minimum_distance = float(body_pair["minimum_distance_mm"])
+        support_point_count = int(body_pair["support_point_count"])
+    except (KeyError, TypeError, ValueError):
+        return target_start, target_end, None
+    midpoint_reference = _parse_xyz_point(body_pair.get("midpoint_physical"))
+    if (
+        midpoint_reference is None
+        or not math.isfinite(minimum_distance)
+        or minimum_distance <= 0.0
+        or support_point_count < _INTERSPACE_BODY_PAIR_MIN_SUPPORT_POINTS
+    ):
+        return target_start, target_end, None
+
+    target_length = vector_length(subtract_points(target_end, target_start))
+    midpoint = Point3D(
+        (target_start.x + target_end.x) / 2.0,
+        (target_start.y + target_end.y) / 2.0,
+        (target_start.z + target_end.z) / 2.0,
+    )
+    gap_underestimated = minimum_distance - target_length > (
+        _INTERSPACE_PROJECTED_GAP_UNDERESTIMATE_MM
+    )
+    warning_reason: Optional[str] = None
+    if gap_underestimated:
+        translation_mm = _dot(
+            subtract_points(midpoint_reference, midpoint),
+            frame.normal,
+        )
+        warning_reason = (
+            f"四棱柱投影范围 {target_length:.1f}mm 小于主体最近间隙 "
+            f"{minimum_distance:.1f}mm"
+        )
+    elif group_name == _CERVICAL_TERMINAL_INTERSPACE:
+        annotations = _filtered_spine_annotations(localization_result)
+        upper_annotation = annotations.get(
+            str(body_pair.get("upper_label", "")),
+        )
+        lower_annotation = annotations.get(
+            str(body_pair.get("lower_label", "")),
+        )
+        upper_center = _parse_xyz_point(
+            upper_annotation.get("centroid_physical")
+            if isinstance(upper_annotation, dict)
+            else None
+        )
+        lower_center = _parse_xyz_point(
+            lower_annotation.get("centroid_physical")
+            if isinstance(lower_annotation, dict)
+            else None
+        )
+        if upper_center is None or lower_center is None:
+            return target_start, target_end, None
+        body_midpoint = Point3D(
+            (upper_center.x + lower_center.x) / 2.0,
+            (upper_center.y + lower_center.y) / 2.0,
+            (upper_center.z + lower_center.z) / 2.0,
+        )
+        center_offset_mm = _dot(
+            subtract_points(body_midpoint, midpoint),
+            frame.normal,
+        )
+        if center_offset_mm <= (
+            _CERVICAL_TERMINAL_CENTER_OFFSET_TRIGGER_MM
+        ):
+            return target_start, target_end, None
+        translation_mm = (
+            center_offset_mm + _CERVICAL_TERMINAL_INFERIOR_MARGIN_MM
+        )
+        warning_reason = (
+            f"中心位于相邻主体中面上方 {center_offset_mm:.1f}mm，"
+            f"已向 C7 侧保留 {_CERVICAL_TERMINAL_INFERIOR_MARGIN_MM:.1f}mm 余量"
+        )
+    else:
+        return target_start, target_end, None
+
+    if not math.isfinite(translation_mm) or abs(translation_mm) <= 1e-8:
+        return target_start, target_end, None
+
+    translation = Point3D(
+        frame.normal.x * translation_mm,
+        frame.normal.y * translation_mm,
+        frame.normal.z * translation_mm,
+    )
+    translated_start = Point3D(
+        target_start.x + translation.x,
+        target_start.y + translation.y,
+        target_start.z + translation.z,
+    )
+    translated_end = Point3D(
+        target_end.x + translation.x,
+        target_end.y + translation.y,
+        target_end.z + translation.z,
+    )
+    warning = (
+        f"脊柱区间 {group_name} {warning_reason}，已沿法向平移 "
+        f"{abs(translation_mm):.1f}mm"
+    )
+    return translated_start, translated_end, warning
 
 
 def _overlapping_convex_polygon_boundary_pair_2d(
@@ -1095,6 +1418,20 @@ def resolve_spine_interspace_segments(
             target_region_bbox = union_bboxes(upper_bbox, lower_bbox)
             if face_geometry is not None:
                 target_start, target_end, frame = face_geometry
+                if using_prism_geometry:
+                    (
+                        target_start,
+                        target_end,
+                        position_warning,
+                    ) = _translate_interspace_to_body_pair(
+                        localization_result,
+                        group_name,
+                        target_start,
+                        target_end,
+                        frame,
+                    )
+                    if position_warning is not None:
+                        warnings.append(position_warning)
             else:
                 if face_data_present or invalid_face_interval:
                     warnings.append(

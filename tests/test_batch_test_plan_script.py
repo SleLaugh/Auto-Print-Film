@@ -90,9 +90,10 @@ class BatchTestPlanScriptTest(unittest.TestCase):
                 for plane in ("横状位", "矢状位", "冠状位")
             },
         )
+        self.assertEqual(mapping[("颈椎", "横状位")], "椎间隙")
+        self.assertEqual(mapping[("颈椎", "冠状位")], "CPR")
         self.assertEqual(mapping[("腰椎", "横状位")], "椎间隙")
         self.assertEqual(mapping[("腰椎", "冠状位")], "CPR")
-        self.assertEqual(mapping[("颈椎", "冠状位")], "CPR")
         self.assertEqual(mapping[("胸椎", "冠状位")], "CPR")
         self.assertEqual(mapping[("肺部", "冠状位")], "MPR")
         self.assertEqual(mapping[("髋骨", "冠状位")], "MPR")

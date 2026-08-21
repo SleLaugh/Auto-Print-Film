@@ -8,7 +8,7 @@ RESULT_ROOT="/home/peng/03_data/demo/Image/result"
 PYTHON_BIN=".venv/bin/python"
 # 每条批量用例按“部位 + 状位”查找切割方式；范围模式省略时默认整平面。
 SLICE_TYPE_CONFIGS=(
-    "颈椎|横状位|MPR"
+    "颈椎|横状位|椎间隙"
     "颈椎|矢状位|MPR"
     "颈椎|冠状位|CPR"
     "胸椎|横状位|MPR"

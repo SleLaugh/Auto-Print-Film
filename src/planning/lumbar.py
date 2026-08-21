@@ -15,11 +15,8 @@ from src.planning.spine_common import (
     resolve_spine_interspace_segments,
     resolve_spine_localizer_reference,
 )
-from src.planning.straight import (
-    CutSegment,
-    build_straight_slice_plan,
-    default_straight_frame,
-)
+from src.planning.spine_interspace import build_spine_interspace_plans
+from src.planning.straight import CutSegment
 from src.planning.whole_range import build_whole_range_plan_from_bbox
 
 
@@ -109,7 +106,7 @@ class LumbarWholeRangePlanner:
 
 
 class LumbarInterspacePlanner:
-    """腰椎区间切 planner，第一版只生成横状位 plane_stack。"""
+    """腰椎横状位椎间隙规划器。"""
 
     planner_name = "LumbarInterspacePlanner"
 
@@ -120,41 +117,10 @@ class LumbarInterspacePlanner:
     ) -> PlanningResult:
         """逐个解析椎间区间，并通过通用直线构造器生成横状位计划。"""
 
-        plans = []
-        localizer_reference = resolve_spine_localizer_reference(
+        return build_spine_interspace_plans(
+            request,
             localization_result,
-            LUMBAR_LABELS,
-        )
-        segments, warnings = resolve_lumbar_interspace_segments(
-            localization_result,
-        )
-        for segment in segments:
-            for plane_config in request.plane_configs:
-                if plane_config.plane != PlaneTypeEnum.横状位:
-                    warnings.append(f"暂不支持腰椎区间切状位: {plane_config.plane.value}")
-                    continue
-
-                # 方向解析必须放在区间循环内部：每个椎间可携带自己的端面斜横切坐标系，
-                # 定位结果没有该字段时才回退到零角度横状位。
-                frame = segment.frame or default_straight_frame(
-                    plane_config.plane,
-                    localization_result["image"],
-                )
-                plan = build_straight_slice_plan(
-                    request=request,
-                    slice_type=SliceType.椎间隙.value,
-                    plane_config=plane_config,
-                    localization_result=localization_result,
-                    segment=segment,
-                    frame=frame,
-                )
-                # 五个椎间计划只共享定位图固定层，各自的斜切中心和方向不变。
-                plan.localizer_plane = PlaneTypeEnum.矢状位.value
-                plan.localizer_reference = localizer_reference
-                plans.append(plan)
-
-        return PlanningResult(
-            plans=plans,
-            warnings=warnings,
+            label_names=LUMBAR_LABELS,
+            intervals=LUMBAR_INTERVALS,
             planner_name=self.planner_name,
         )

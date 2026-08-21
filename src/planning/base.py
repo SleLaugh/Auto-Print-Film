@@ -26,12 +26,14 @@ def select_planner(study_part: str, slice_type: str) -> Any:
     业务逻辑里。第七阶段只看 SlicePlan，不关心这里选中了哪个 planner。
     """
 
+    from src.planning.cervical import CervicalInterspacePlanner
     from src.planning.lumbar import LumbarInterspacePlanner, LumbarWholeRangePlanner
     from src.planning.single_label import SingleLabelWholeRangePlanner
 
     planner_types = {
         ("颈椎", "MPR"): SingleLabelWholeRangePlanner,
         ("颈椎", "CPR"): SingleLabelWholeRangePlanner,
+        ("颈椎", "椎间隙"): CervicalInterspacePlanner,
         ("胸椎", "MPR"): SingleLabelWholeRangePlanner,
         ("胸椎", "CPR"): SingleLabelWholeRangePlanner,
         ("腰椎", "MPR"): LumbarWholeRangePlanner,

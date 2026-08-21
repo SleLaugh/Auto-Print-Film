@@ -1,4 +1,3 @@
-import ast
 import json
 import os
 import subprocess
@@ -60,33 +59,43 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         self.assertIn("横状位", result.stdout)
         self.assertIn("矢状位", result.stdout)
         self.assertIn("冠状位", result.stdout)
-        self.assertIn("部位范围", result.stdout)
+        self.assertNotIn("line_extent_mode", result.stdout)
         self.assertIn("SliceType", result.stdout)
         self.assertIn("MPR", result.stdout)
+        self.assertIn("CPR", result.stdout)
+        self.assertIn("椎间隙", result.stdout)
         self.assertNotIn("full_plane", result.stdout)
 
-    def test_plane_configs_value_is_valid_json(self):
-        assignment = next(
-            line for line in SCRIPT.read_text(encoding="utf-8").splitlines()
-            if line.startswith("PLANE_CONFIGS=")
-        )
-        value = ast.literal_eval(assignment.split("=", 1)[1])
-
-        configs = json.loads(value)
+    def test_slice_type_configs_cover_batch_parts_and_planes(self):
+        script_text = SCRIPT.read_text(encoding="utf-8")
+        start = script_text.index("SLICE_TYPE_CONFIGS=(")
+        end = script_text.index("\n)", start)
+        entries = [
+            line.strip().strip('"')
+            for line in script_text[start:end].splitlines()[1:]
+            if line.strip()
+        ]
+        mapping = {
+            (study_part, plane): slice_type
+            for study_part, plane, slice_type in (
+                entry.split("|") for entry in entries
+            )
+        }
 
         self.assertEqual(
-            [config["Plane"] for config in configs],
-            ["横状位", "矢状位", "冠状位"],
+            set(mapping),
+            {
+                (study_part, plane)
+                for study_part in ("颈椎", "胸椎", "腰椎", "肺部", "髋骨")
+                for plane in ("横状位", "矢状位", "冠状位")
+            },
         )
-        for config in configs:
-            self.assertEqual(config["SliceThickness"], 5)
-            self.assertEqual(config["SliceSpacing"], 5)
-            self.assertEqual(
-                config["WindowPresets"],
-                ["骨窗", "肺窗", "纵隔窗", "软组织窗"],
-            )
-            self.assertEqual(config["line_extent_mode"], "部位范围")
-            self.assertEqual(config["SliceType"], "MPR")
+        self.assertEqual(mapping[("腰椎", "横状位")], "椎间隙")
+        self.assertEqual(mapping[("腰椎", "冠状位")], "CPR")
+        self.assertEqual(mapping[("颈椎", "冠状位")], "CPR")
+        self.assertEqual(mapping[("胸椎", "冠状位")], "CPR")
+        self.assertEqual(mapping[("肺部", "冠状位")], "MPR")
+        self.assertEqual(mapping[("髋骨", "冠状位")], "MPR")
 
     def test_chinese_extent_mode_parses_under_c_locale_with_utf8_mode(self):
         """精简 Linux 的 C locale 下，显式 UTF-8 模式仍应正确解析中文请求。"""

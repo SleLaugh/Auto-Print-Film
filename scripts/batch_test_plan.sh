@@ -6,7 +6,24 @@ cd "$(dirname "$0")/.."
 DICOM_ROOT="/home/peng/03_data/demo/Image/dicom"
 RESULT_ROOT="/home/peng/03_data/demo/Image/result"
 PYTHON_BIN=".venv/bin/python"
-PLANE_CONFIGS='[{"Plane":"横状位","SliceThickness":5,"SliceSpacing":5,"WindowPresets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"},{"Plane":"矢状位","SliceThickness":5,"SliceSpacing":5,"WindowPresets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"},{"Plane":"冠状位","SliceThickness":5,"SliceSpacing":5,"WindowPresets":["骨窗","肺窗","纵隔窗","软组织窗"],"line_extent_mode":"部位范围","SliceType":"MPR"}]'
+# 每条批量用例按“部位 + 状位”查找切割方式；范围模式省略时默认整平面。
+SLICE_TYPE_CONFIGS=(
+    "颈椎|横状位|MPR"
+    "颈椎|矢状位|MPR"
+    "颈椎|冠状位|CPR"
+    "胸椎|横状位|MPR"
+    "胸椎|矢状位|MPR"
+    "胸椎|冠状位|CPR"
+    "腰椎|横状位|椎间隙"
+    "腰椎|矢状位|MPR"
+    "腰椎|冠状位|CPR"
+    "肺部|横状位|MPR"
+    "肺部|矢状位|MPR"
+    "肺部|冠状位|MPR"
+    "髋骨|横状位|MPR"
+    "髋骨|矢状位|MPR"
+    "髋骨|冠状位|MPR"
+)
 # 中文请求值依赖 UTF-8 argv；显式开启可避免精简 Linux 环境使用 C/ASCII locale。
 export PYTHONUTF8=1
 DRY_RUN=0
@@ -55,6 +72,46 @@ done
 if [[ ! -x "$PYTHON_BIN" ]]; then
     PYTHON_BIN="python"
 fi
+
+build_plane_configs() {
+    local study_part="$1"
+    local plane item configured_part configured_plane configured_slice_type
+    local slice_type
+    local config_args=()
+
+    for plane in "横状位" "矢状位" "冠状位"; do
+        slice_type=""
+        for item in "${SLICE_TYPE_CONFIGS[@]}"; do
+            IFS='|' read -r configured_part configured_plane configured_slice_type <<< "$item"
+            if [[ "$configured_part" == "$study_part" && "$configured_plane" == "$plane" ]]; then
+                slice_type="$configured_slice_type"
+                break
+            fi
+        done
+        if [[ -z "$slice_type" ]]; then
+            printf '缺少切割方式配置: %s-%s\n' "$study_part" "$plane" >&2
+            return 1
+        fi
+        config_args+=("$plane" "$slice_type")
+    done
+
+    "$PYTHON_BIN" -c '
+import json
+import sys
+
+configs = []
+for index in range(1, len(sys.argv), 2):
+    plane, slice_type = sys.argv[index:index + 2]
+    configs.append({
+        "Plane": plane,
+        "SliceThickness": 5,
+        "SliceSpacing": 5,
+        "WindowPresets": ["骨窗", "肺窗", "纵隔窗", "软组织窗"],
+        "SliceType": slice_type,
+    })
+print(json.dumps(configs, ensure_ascii=False, separators=(",", ":")))
+' "${config_args[@]}"
+}
 
 # 格式: "dicom目录名|result目录名|部位|扫描层厚(mm)"
 CASES=(
@@ -123,6 +180,14 @@ for index in "${!CASES[@]}"; do
 
     printf '\n[%02d/%02d] %s -> %s (%s)\n' "$((index + 1))" "${#CASES[@]}" "$input_dir" "$output_dir" "$study_part"
 
+    if ! plane_configs="$(build_plane_configs "$study_part")"; then
+        failures+=("$dicom_name|$study_part|missing slice type config")
+        if [[ "$STOP_ON_FAILURE" -eq 1 ]]; then
+            break
+        fi
+        continue
+    fi
+
     if [[ ! -d "$input_dir" ]]; then
         printf '跳过：输入目录不存在: %s\n' "$input_dir" >&2
         failures+=("$dicom_name|$study_part|missing input")
@@ -139,7 +204,7 @@ for index in "${!CASES[@]}"; do
         "-o" "$output_dir"
         "--study_part" "$study_part"
         "--scan_thickness" "$scan_thickness"
-        "--plane_configs" "$PLANE_CONFIGS"
+        "--plane_configs" "$plane_configs"
     )
 
     printf '命令:'

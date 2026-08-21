@@ -141,10 +141,16 @@ class DocumentationConsistencyTests(unittest.TestCase):
             / "dicom"
             / "2026-07-14-DICOM数字命名与定位图设计.md"
         ).read_text(encoding="utf-8")
+        architecture_readme = (
+            SUPERPOWERS_ROOT / "architecture/README.md"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("最终输出硬门禁", dicom_readme)
         self.assertIn("OUTPUT_VALIDATION_ERROR", dicom_design)
-        self.assertIn("校验通过后才写 `report.json`", dicom_design)
+        self.assertIn("校验通过后才在 `report.json`", dicom_design)
+        self.assertIn("`Success=false`", dicom_design)
+        self.assertIn("`kill -9`", architecture_readme)
+        self.assertIn("外部执行服务", architecture_readme)
 
     def test_current_cpr_docs_describe_thick_slab_support(self):
         """当前 CPR 文档应说明层厚参与 offset 覆盖和厚层平均。"""

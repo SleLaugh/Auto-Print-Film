@@ -41,8 +41,17 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             report = json.loads(Path(report_path).read_text(encoding="utf-8"))
             self.assertEqual(
                 set(report),
-                {"StudyPart", "StudyType", "ScanThickness", "PlaneList"},
+                {
+                    "Success",
+                    "Message",
+                    "StudyPart",
+                    "StudyType",
+                    "ScanThickness",
+                    "PlaneList",
+                },
             )
+            self.assertTrue(report["Success"])
+            self.assertEqual(report["Message"], "")
             self.assertEqual(report["StudyPart"], "腰椎")
             self.assertEqual(report["StudyType"], "CT")
             self.assertEqual(report["ScanThickness"], 1.5)
@@ -486,7 +495,15 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
                 any("期望 2 张，实际 1 张" in error
                     for error in debug_report["validation"]["errors"])
             )
-            self.assertFalse((output_dir / "report.json").exists())
+            failure_report = json.loads(
+                (output_dir / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertFalse(failure_report["Success"])
+            self.assertIn("期望 2 张，实际 1 张", failure_report["Message"])
+            self.assertEqual(failure_report["StudyPart"], "腰椎")
+            self.assertEqual(failure_report["StudyType"], "CT")
+            self.assertEqual(failure_report["ScanThickness"], 1.0)
+            self.assertEqual(failure_report["PlaneList"], [])
 
     def test_execute_stores_validation_summary_in_context(self):
         """验证 `test_execute_stores_validation_summary_in_context` 场景符合预期。"""

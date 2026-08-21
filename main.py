@@ -18,9 +18,27 @@ sys.path.insert(0, str(project_root))
 
 # ===== 导入（在 sys.path 操作之后）=====
 from src.core import Pipeline
+from src.core.delivery_report import write_failure_report
 from src.config import load_app_config
 from src.models import Request, StudyPartEnum, StudyTypeEnum, PlaneConfig
 from src.utils import RunLog, ErrorLog, DebugLog, configure_logging
+
+
+class ArgumentParseError(SystemExit):
+    """保留 argparse 退出语义，同时让失败报告取得具体错误。"""
+
+    def __init__(self, message):
+        super().__init__(2)
+        self.message = str(message)
+
+
+class ReportArgumentParser(argparse.ArgumentParser):
+    """把 argparse 的错误文本附加到可捕获异常。"""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
+        raise ArgumentParseError(message)
 
 
 def parse_arguments():
@@ -30,7 +48,7 @@ def parse_arguments():
     返回值：解析后的参数对象
     """
     # 创建参数解析器，description是脚本功能的简短描述
-    parser = argparse.ArgumentParser(description="SpineMPRProcessor")
+    parser = ReportArgumentParser(description="SpineMPRProcessor")
     
     # 添加 -i 或 --input 参数
     # required=True 表示这个参数必须提供，否则程序报错
@@ -124,8 +142,17 @@ def parse_plane_configs(value):
 def main():
     # SimpleITK/GDCM 等原生扩展触发 SIGABRT 时，至少保留 Python 调用栈。
     faulthandler.enable(all_threads=True)
+    output_dir = _cli_value(sys.argv[1:], "-o", "--output")
+    study_part = _cli_value(sys.argv[1:], "--study_part") or "腰椎"
+    study_type = _cli_value(sys.argv[1:], "--study_type") or StudyTypeEnum.CT.value
+    scan_thickness = _cli_value(sys.argv[1:], "--scan_thickness")
+    request = None
     try:
         args = parse_arguments()
+        output_dir = args.output
+        study_part = args.study_part
+        study_type = args.study_type
+        scan_thickness = args.scan_thickness
 
         app_config = load_app_config()
         configure_logging(app_config.logging, output_dir=args.output)
@@ -170,9 +197,88 @@ def main():
                 DebugLog(f"  错误: [{error['stage']}] {error['message']}")
             return 1
             
+    except ArgumentParseError as e:
+        if output_dir:
+            _try_write_failure_report(
+                output_dir,
+                e.message,
+                study_part=study_part,
+                study_type=study_type,
+                scan_thickness=scan_thickness,
+            )
+        return int(e.code)
+    except KeyboardInterrupt as e:
+        if output_dir:
+            _try_write_failure_report(
+                output_dir,
+                "任务被中断",
+                request=request,
+                study_part=study_part,
+                study_type=study_type,
+                scan_thickness=scan_thickness,
+            )
+        ErrorLog("程序执行被中断", e)
+        return 130
+    except SystemExit as e:
+        if e.code and output_dir:
+            _try_write_failure_report(
+                output_dir,
+                f"程序主动退出，退出码: {e.code}",
+                request=request,
+                study_part=study_part,
+                study_type=study_type,
+                scan_thickness=scan_thickness,
+            )
+        return int(e.code or 0)
     except Exception as e:
+        if output_dir:
+            _try_write_failure_report(
+                output_dir,
+                str(e) or type(e).__name__,
+                request=request,
+                study_part=study_part,
+                study_type=study_type,
+                scan_thickness=scan_thickness,
+            )
         ErrorLog("程序执行异常", e)
         return 1
+
+
+def _cli_value(arguments, *names):
+    """在 argparse 失败前尽早提取报告目录和检查信息。"""
+
+    for index, argument in enumerate(arguments):
+        if argument in names and index + 1 < len(arguments):
+            return arguments[index + 1]
+        for name in names:
+            prefix = f"{name}="
+            if argument.startswith(prefix):
+                return argument[len(prefix):]
+    return None
+
+
+def _try_write_failure_report(
+    output_dir,
+    message,
+    *,
+    request=None,
+    study_part=None,
+    study_type=None,
+    scan_thickness=None,
+):
+    """尽力写入失败报告，不让报告异常覆盖真正的处理错误。"""
+
+    try:
+        write_failure_report(
+            output_dir,
+            message,
+            request=request,
+            study_part=study_part,
+            study_type=study_type,
+            scan_thickness=scan_thickness,
+        )
+    except Exception as report_error:
+        ErrorLog("写入失败 report.json 时发生异常", report_error)
 
 
 if __name__ == "__main__":

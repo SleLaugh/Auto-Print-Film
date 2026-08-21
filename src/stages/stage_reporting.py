@@ -17,6 +17,7 @@ from pydicom.errors import InvalidDicomError
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
+from src.core.delivery_report import write_failure_report, write_report
 from src.core.errors import OutputValidationError
 from src.models import ReportingStageResult
 from src.utils import DebugLog, is_debug_file_enabled
@@ -54,9 +55,6 @@ class ReportingStage(BaseStage):
             ))
 
         if not validation['valid']:
-            report_path = Path(request.output_dir) / 'report.json'
-            if report_path.exists():
-                report_path.unlink()
             error_count = len(validation['errors'])
             DebugLog(f"  [校验失败] 共发现 {error_count} 项 DICOM 输出错误")
             for error in validation['errors']:
@@ -64,7 +62,7 @@ class ReportingStage(BaseStage):
             error_preview = '；'.join(validation['errors'][:3])
             if error_count > 3:
                 error_preview += f'；另有 {error_count - 3} 项详见错误详情'
-            raise OutputValidationError(
+            error = OutputValidationError(
                 f"第八阶段输出校验失败，共 {error_count} 项：{error_preview}",
                 stage=self.name,
                 retryable=False,
@@ -73,6 +71,12 @@ class ReportingStage(BaseStage):
                     'errors': list(validation['errors']),
                 },
             )
+            write_failure_report(
+                request.output_dir,
+                str(error),
+                request=request,
+            )
+            raise error
 
         DebugLog("  [3] generate_report: 生成处理报告...")
         report_data = self._build_delivery_report(context)
@@ -177,6 +181,8 @@ class ReportingStage(BaseStage):
             plane_list.append(item)
 
         return {
+            'Success': True,
+            'Message': '',
             'StudyPart': request_data['StudyPart'],
             'StudyType': request_data['StudyType'],
             'ScanThickness': float(request_data['ScanThickness']),
@@ -348,11 +354,7 @@ class ReportingStage(BaseStage):
     def _write_report(context: ProcessingContext, report_data: Dict[str, Any]) -> Path:
         """把精简交付结果写入输出根目录的 report.json。"""
 
-        output_dir = Path(context.request.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        report_path = output_dir / 'report.json'
-        with open(report_path, 'w', encoding='utf-8') as f:
-            json.dump(report_data, f, ensure_ascii=False, indent=2)
+        report_path = write_report(context.request.output_dir, report_data)
         
         DebugLog(f"    报告已生成: {report_path}")
         return report_path

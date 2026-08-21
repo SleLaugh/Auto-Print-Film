@@ -261,12 +261,19 @@ log/BatchLog.txt
 唯一的 `配置01`、`配置02` 等 `ConfigId`。重复状位按出现顺序使用 `横状位`、
 `横状位1`、`横状位2` 这样的唯一输出名称，直接隔离各自目录。
 
-`report.json` 顶层返回 `StudyPart`、`StudyType`、数值类型的 `ScanThickness` 和
-`PlaneList`。每个状位配置保留调用方原始传入的 `SliceThickness`、`SliceSpacing`、
+`report.json` 是每次任务的固定完成标记，顶层返回布尔值 `Success`、文本 `Message`、
+`StudyPart`、`StudyType`、数值类型的 `ScanThickness` 和 `PlaneList`。成功时
+`Success=true`、`Message` 为空，并返回完整切片结果；参数解析、预检或任一处理阶段失败
+时仍会原子写入该文件，`Success=false`、`Message` 为错误信息、`PlaneList` 为空。
+每个成功状位配置保留调用方原始传入的 `SliceThickness`、`SliceSpacing`、
 `SliceImageCount`，包括用来表示未配置的 `0`。实际输出按目录顺序组织为
 `WindowPresetList -> RegionList`；每个重建区域使用唯一的 `Region`，并返回实际层厚、
 实际层间距、实际数量和路径。普通 MPR/CPR 的区域标识为 `default`，椎间隙统一使用
 `C2_C3`、`L1_L2` 等下划线标识。
+
+上述保证覆盖 Python 能捕获的参数、预检、处理异常和主动中断。`kill -9`、原生库崩溃、
+OOM 强制终止或整机掉电不会给进程执行写文件的机会；生产执行服务必须在进程外等待
+Python 退出，发现 `report.json` 缺失或损坏时原子补写 `Success=false` 的兜底报告。
 正式 DICOM 在临时文件中完成层厚、层间距校正后再原子发布，并统一使用
 `ISO_IR 192` UTF-8 字符集，保证中文患者及检查信息可被标准读取器正确解码。
 

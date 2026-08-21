@@ -31,6 +31,15 @@ class FailingStage(BaseStage):
         raise RuntimeError("boom")
 
 
+class InterruptingStage(BaseStage):
+    """模拟用户中断或进程管理器发送的可捕获中止。"""
+
+    def execute(self, context):
+        """抛出 KeyboardInterrupt，验证流水线最外层兜底。"""
+
+        raise KeyboardInterrupt()
+
+
 class DebugArtifactStage(BaseStage):
     """模拟业务阶段直接在 metadata 目录写调试文件。"""
 
@@ -42,6 +51,16 @@ class DebugArtifactStage(BaseStage):
         (metadata_dir / "调试文件.txt").write_text("debug", encoding="utf-8")
         context.set_result(self.name, {"ok": True})
         return context
+
+
+class FailingPreflight:
+    """模拟输出目录清理前发生的预检失败。"""
+
+    @staticmethod
+    def validate(request, config):
+        """抛出固定错误，验证早期失败报告。"""
+
+        raise RuntimeError("preflight boom")
 
 
 def make_request(output_dir):
@@ -212,6 +231,81 @@ class PipelineFrameworkTest(unittest.TestCase):
         self.assertIn("阶段职责: 解剖分析", message)
         self.assertIn("错误原因: boom", message)
         self.assertIsInstance(error, RuntimeError)
+
+    def test_failed_stage_always_writes_failure_report(self):
+        """任一业务阶段失败都必须发布外部可轮询的最终报告。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            response = make_pipeline([
+                FailingStage("anatomical_analysis"),
+                SuccessfulStage("planning"),
+            ]).run(make_request(temp_dir))
+
+            report = json.loads(
+                (Path(temp_dir) / "report.json").read_text(encoding="utf-8")
+            )
+
+        self.assertFalse(response.success)
+        self.assertFalse(report["Success"])
+        self.assertEqual(report["Message"], "boom")
+        self.assertEqual(report["StudyPart"], "腰椎")
+        self.assertEqual(report["PlaneList"], [])
+
+    def test_preflight_failure_writes_failure_report_before_pipeline_starts(self):
+        """预检异常发生在上下文创建前，也必须发布失败报告。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pipeline = Pipeline(
+                stages=[SuccessfulStage("one")],
+                config=AppConfig(
+                    pipeline=PipelineConfig(run_preflight=True),
+                ),
+                preflight=FailingPreflight(),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "preflight boom"):
+                pipeline.run(make_request(temp_dir))
+
+            report = json.loads(
+                (Path(temp_dir) / "report.json").read_text(encoding="utf-8")
+            )
+
+        self.assertFalse(report["Success"])
+        self.assertEqual(report["Message"], "preflight boom")
+        self.assertEqual(report["PlaneList"], [])
+
+    def test_keyboard_interrupt_also_writes_failure_report(self):
+        """不属于普通 Exception 的可捕获中止也必须形成报告。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pipeline = make_pipeline([InterruptingStage("one")])
+
+            with self.assertRaises(KeyboardInterrupt):
+                pipeline.run(make_request(temp_dir))
+
+            report = json.loads(
+                (Path(temp_dir) / "report.json").read_text(encoding="utf-8")
+            )
+
+        self.assertFalse(report["Success"])
+        self.assertEqual(report["Message"], "任务被中断")
+        self.assertEqual(report["PlaneList"], [])
+
+    def test_successful_custom_pipeline_writes_minimal_success_report(self):
+        """没有第八阶段的自定义流水线也必须形成成功状态报告。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            response = make_pipeline([SuccessfulStage("one")]).run(
+                make_request(temp_dir)
+            )
+            report = json.loads(
+                (Path(temp_dir) / "report.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(response.success)
+        self.assertTrue(report["Success"])
+        self.assertEqual(report["Message"], "")
+        self.assertEqual(report["PlaneList"], [])
 
     def test_non_debug_pipeline_does_not_write_manifest(self):
         """验证 `test_non_debug_pipeline_does_not_write_manifest` 场景符合预期。"""

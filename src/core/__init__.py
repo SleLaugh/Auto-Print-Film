@@ -11,6 +11,11 @@ from .pipeline import Pipeline
 from .response import Response
 from .errors import FrameworkError
 from .lifecycle import JobStatus, StageStatus, StageRecord
+from .delivery_report import (
+    build_status_report,
+    write_failure_report,
+    write_report,
+)
 
 __all__ = [
     'BaseStage',
@@ -21,4 +26,7 @@ __all__ = [
     'JobStatus',
     'StageStatus',
     'StageRecord',
+    'build_status_report',
+    'write_failure_report',
+    'write_report',
 ]

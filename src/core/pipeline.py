@@ -17,6 +17,12 @@ from src.utils import ErrorLog, RunLog
 from .artifacts import ArtifactManager, MANIFEST_SCHEMA
 from .base_stage import BaseStage
 from .context import ProcessingContext
+from .delivery_report import (
+    REPORT_FILE_NAME,
+    build_status_report,
+    write_failure_report,
+    write_report,
+)
 from .errors import FrameworkError
 from .lifecycle import JobStatus, StageStatus
 from .preflight import PreflightValidator
@@ -109,6 +115,15 @@ class Pipeline:
         ]
 
     def run(self, request: Any) -> Response:
+        """执行任务，并确保任一可捕获异常都有失败报告。"""
+
+        try:
+            return self._run(request)
+        except BaseException as error:
+            self._try_write_failure_report(request, error)
+            raise
+
+    def _run(self, request: Any) -> Response:
         """
         执行一次完整任务并返回统一响应。
 
@@ -206,9 +221,57 @@ class Pipeline:
             context=context,
             total_time=elapsed,
         )
+        self._write_completion_report(response)
         self._write_manifest(context, artifacts)
         RunLog(f"Pipeline 执行完成: {context.job_status.value}")
         return response
+
+    @staticmethod
+    def _write_completion_report(response: Response) -> None:
+        """确保自定义流水线和任一阶段失败也都有最终状态报告。"""
+
+        if response.success:
+            report_path = Path(response.output_dir) / REPORT_FILE_NAME
+            if not report_path.exists():
+                write_report(
+                    response.output_dir,
+                    build_status_report(
+                        success=True,
+                        message="",
+                        request=response.request,
+                    ),
+                )
+            return
+
+        messages = [
+            error["message"]
+            for error in response.errors
+            if error.get("message")
+        ]
+        write_failure_report(
+            response.output_dir,
+            "；".join(messages) or "处理失败",
+            request=response.request,
+        )
+
+    @staticmethod
+    def _try_write_failure_report(request: Any, error: BaseException) -> None:
+        """尽力发布早期失败；报告写入错误不能掩盖原始异常。"""
+
+        if isinstance(error, KeyboardInterrupt):
+            message = "任务被中断"
+        elif isinstance(error, SystemExit):
+            message = f"程序主动退出，退出码: {error.code}"
+        else:
+            message = str(error) or type(error).__name__
+        try:
+            write_failure_report(
+                request.output_dir,
+                message,
+                request=request,
+            )
+        except Exception as report_error:
+            ErrorLog("写入失败 report.json 时发生异常", report_error)
 
     @staticmethod
     def _now() -> str:

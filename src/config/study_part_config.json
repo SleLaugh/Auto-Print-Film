@@ -1,0 +1,355 @@
+{
+    "schema_version": 1,
+    "label_aliases": {
+        "C1": "vertebrae_C1",
+        "C2": "vertebrae_C2",
+        "C3": "vertebrae_C3",
+        "C4": "vertebrae_C4",
+        "C5": "vertebrae_C5",
+        "C6": "vertebrae_C6",
+        "C7": "vertebrae_C7",
+        "T1": "vertebrae_T1",
+        "T2": "vertebrae_T2",
+        "T3": "vertebrae_T3",
+        "T4": "vertebrae_T4",
+        "T5": "vertebrae_T5",
+        "T6": "vertebrae_T6",
+        "T7": "vertebrae_T7",
+        "T8": "vertebrae_T8",
+        "T9": "vertebrae_T9",
+        "T10": "vertebrae_T10",
+        "T11": "vertebrae_T11",
+        "T12": "vertebrae_T12",
+        "L1": "vertebrae_L1",
+        "L2": "vertebrae_L2",
+        "L3": "vertebrae_L3",
+        "L4": "vertebrae_L4",
+        "L5": "vertebrae_L5",
+        "S1": "vertebrae_S1",
+        "lung": "lung",
+        "skull": "skull",
+        "hip_left": "hip_left",
+        "hip_right": "hip_right"
+    },
+    "study_parts": {
+        "头骨": {
+            "enabled": true,
+            "model_rules": {
+                "CT": [
+                    {
+                        "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
+                        "model_id": 294
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 1.6, "max": 4.5 },
+                        "model_id": 297
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 4.6, "max": 6.0 },
+                        "model_id": 298
+                    }
+                ]
+            },
+            "localization": {
+                "regions": {
+                    "default": { "type": "whole_range", "start_label": "skull", "end_label": "skull" }
+                }
+            },
+            "slice_rules": {
+                "横状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                },
+                "冠状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                },
+                "矢状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                }
+            }
+        },
+        "颈椎": {
+            "enabled": true,
+            "model_rules": {
+                "CT": [
+                    {
+                        "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
+                        "model_id": 292
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 1.6, "max": 4.5 },
+                        "model_id": 297
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 4.6, "max": 6.0 },
+                        "model_id": 298
+                    }
+                ]
+            },
+            "localization": {
+                "spine_cpr": {
+                    "full_label": true,
+                    "excluded_labels": ["C1"]
+                },
+                "regions": {
+                    "default": { "type": "whole_range", "start_label": "C1", "end_label": "C7" },
+                    "C2_C3": { "type": "interspace", "start_label": "C2", "end_label": "C3" },
+                    "C3_C4": { "type": "interspace", "start_label": "C3", "end_label": "C4" },
+                    "C4_C5": { "type": "interspace", "start_label": "C4", "end_label": "C5" },
+                    "C5_C6": { "type": "interspace", "start_label": "C5", "end_label": "C6" },
+                    "C6_C7": { "type": "interspace", "start_label": "C6", "end_label": "C7" }
+                }
+            },
+            "slice_rules": {
+                "横状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    },
+                    "椎间隙": {
+                        "regions": ["C2_C3", "C3_C4", "C4_C5", "C5_C6", "C6_C7"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                },
+                "冠状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    },
+                    "CPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                },
+                "矢状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                }
+            }
+        },
+        "胸椎": {
+            "enabled": true,
+            "model_rules": {
+                "CT": [
+                    {
+                        "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
+                        "model_id": 292
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 1.6, "max": 4.5 },
+                        "model_id": 297
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 4.6, "max": 6.0 },
+                        "model_id": 298
+                    }
+                ]
+            },
+            "localization": {
+                "spine_cpr": {
+                    "full_label": true
+                },
+                "regions": {
+                    "default": { "type": "whole_range", "start_label": "C7", "end_label": "L1" }
+                }
+            },
+            "slice_rules": {
+                "横状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                },
+                "冠状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    },
+                    "CPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                },
+                "矢状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                }
+            }
+        },
+        "腰椎": {
+            "enabled": true,
+            "model_rules": {
+                "CT": [
+                    {
+                        "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
+                        "model_id": 292
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 1.6, "max": 4.5 },
+                        "model_id": 297
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 4.6, "max": 6.0 },
+                        "model_id": 298
+                    }
+                ]
+            },
+            "localization": {
+                "spine_cpr": {
+                    "full_label": true
+                },
+                "regions": {
+                    "default": { "type": "whole_range", "start_label": "L1", "end_label": "S1" },
+                    "L1_L2": { "type": "interspace", "start_label": "L1", "end_label": "L2" },
+                    "L2_L3": { "type": "interspace", "start_label": "L2", "end_label": "L3" },
+                    "L3_L4": { "type": "interspace", "start_label": "L3", "end_label": "L4" },
+                    "L4_L5": { "type": "interspace", "start_label": "L4", "end_label": "L5" },
+                    "L5_S1": { "type": "interspace", "start_label": "L5", "end_label": "S1" }
+                }
+            },
+            "slice_rules": {
+                "横状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    },
+                    "椎间隙": {
+                        "regions": ["L1_L2", "L2_L3", "L3_L4", "L4_L5", "L5_S1"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                },
+                "冠状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    },
+                    "CPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                },
+                "矢状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                }
+            }
+        },
+        "肺部": {
+            "enabled": true,
+            "model_rules": {
+                "CT": [
+                    {
+                        "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
+                        "model_id": 315
+                    }
+                ]
+            },
+            "localization": {
+                "regions": {
+                    "default": { "type": "whole_range", "start_label": "lung", "end_label": "lung" }
+                }
+            },
+            "slice_rules": {
+                "横状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 3.0, "end_mm": 3.0 }
+                    }
+                },
+                "冠状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                },
+                "矢状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                }
+            }
+        },
+        "骶骨": {
+            "enabled": false,
+            "model_rules": {
+                "CT": [
+                    {
+                        "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
+                        "model_id": 292
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 1.6, "max": 4.5 },
+                        "model_id": 297
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 4.6, "max": 6.0 },
+                        "model_id": 298
+                    }
+                ]
+            },
+            "localization": {
+                "regions": {}
+            },
+            "slice_rules": {}
+        },
+        "髋骨": {
+            "enabled": true,
+            "model_rules": {
+                "CT": [
+                    {
+                        "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
+                        "model_id": 294
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 1.6, "max": 4.5 },
+                        "model_id": 297
+                    },
+                    {
+                        "scan_thickness_range_mm": { "min": 4.6, "max": 6.0 },
+                        "model_id": 298
+                    }
+                ]
+            },
+            "localization": {
+                "regions": {
+                    "default": { "type": "whole_range", "start_label": "hip_left", "end_label": "hip_right" }
+                }
+            },
+            "slice_rules": {
+                "横状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 3.0, "end_mm": 3.0 }
+                    }
+                },
+                "冠状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                },
+                "矢状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 }
+                    }
+                }
+            }
+        }
+    }
+}

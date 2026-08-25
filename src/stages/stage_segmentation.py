@@ -16,6 +16,11 @@ import os
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
+from src.config import (
+    load_study_part_config,
+    model_mappings_for,
+    validate_study_part_config,
+)
 from src.models import SegmentationResult
 from src.utils import DebugLog, ErrorLog
 
@@ -24,7 +29,7 @@ class SegmentationStage(BaseStage):
     """推理分割阶段"""
     
     def __init__(self, config: Dict[str, Any] = None):
-        """初始化分割阶段并加载模型匹配规则及 nnUNet 运行配置。"""
+        """初始化分割阶段并加载统一部位配置及 nnUNet 运行配置。"""
 
         super().__init__(name="segmentation", config=config)
         self._load_config()
@@ -40,7 +45,6 @@ class SegmentationStage(BaseStage):
             "_configuration": "3d_fullres",  # 模型配置：使用哪种网络架构配置
             "_fold": "0",  # 训练折数（fold）：使用哪个折的模型权重
             "_continue": True,  # 继续模式：如果输出文件已存在则跳过，避免重复预测
-            "_model_rules": [],
             # nnUNet环境变量。为空时沿用系统环境变量；相对路径按项目根目录解析。
             "nnUNet_raw": "",
             "nnUNet_preprocessed": "",
@@ -76,7 +80,11 @@ class SegmentationStage(BaseStage):
         self._configuration = default_config.get('_configuration', "3d_fullres")
         self._fold = str(default_config.get('_fold', "0"))
         self._continue = default_config.get('_continue', True)
-        self._model_rules = default_config.get('_model_rules', [])
+        self._study_part_config = (
+            default_config.get('study_part_config')
+            or load_study_part_config()
+        )
+        validate_study_part_config(self._study_part_config)
         
         # 设置nnUNet环境变量
         self._nnunet_env_vars = {
@@ -184,9 +192,7 @@ class SegmentationStage(BaseStage):
         """
         根据部位、检查类型和扫描厚度区间匹配对应模型。
 
-        配置结构分两层：
-            1. _model_rules: 匹配 study_part + study_type
-            2. model_mapper: 在命中的 rule 内匹配扫描厚度上下限 -> model_id
+        模型表从统一部位配置读取，再按扫描厚度闭区间匹配 model_id。
         
         Args:
             study_part: 部位名称（如 "腰椎"、"头骨"、"肺部"）
@@ -196,113 +202,116 @@ class SegmentationStage(BaseStage):
         Returns:
             dict: 模型信息
         """
-        normalized_study_type = (study_type or "").strip().lower()
+        normalized_study_type = (study_type or "").strip()
         normalized_scan_thickness = self._normalize_scan_thickness(scan_thickness)
-
-        for rule in self._model_rules:
-            # 第一层：部位和检查类型命中，才进入该 rule 的扫描厚度映射。
-            if rule.get('study_part') and rule['study_part'] != study_part:
-                continue
-
-            rule_study_type = str(rule.get('study_type', '')).strip().lower()
-            if rule_study_type and rule_study_type != normalized_study_type:
-                continue
-
-            model_mapping = self._match_model_mapper(
-                rule,
-                normalized_scan_thickness,
-            )
-            model_id = model_mapping['model_id']
-            return {
-                'model_id': model_id,
-                'dataset_id': model_id,
-                'scan_thickness': normalized_scan_thickness,
-                'min_scan_thickness': model_mapping['min_scan_thickness'],
-                'max_scan_thickness': model_mapping['max_scan_thickness'],
-                'configuration': rule.get('configuration', self._configuration),
-                'fold': str(rule.get('fold', self._fold)),
-                'matched_by': 'model_rules'
-            }
-
-        raise ValueError(
-            "未找到匹配的模型规则: "
-            f"study_part={study_part}, study_type={study_type}, "
-            f"ScanThickness={normalized_scan_thickness}mm"
+        mappings = model_mappings_for(
+            self._study_part_config,
+            study_part,
+            normalized_study_type,
         )
+        model_mapping = self._match_model_mapping(
+            mappings,
+            normalized_scan_thickness,
+            study_part=study_part,
+            study_type=normalized_study_type,
+        )
+        thickness_range = model_mapping['scan_thickness_range_mm']
+        model_id = model_mapping['model_id']
+        return {
+            'model_id': model_id,
+            'dataset_id': model_id,
+            'scan_thickness': normalized_scan_thickness,
+            'min_scan_thickness': float(thickness_range['min']),
+            'max_scan_thickness': float(thickness_range['max']),
+            'configuration': model_mapping.get(
+                'configuration',
+                self._configuration,
+            ),
+            'fold': str(model_mapping.get('fold', self._fold)),
+            'matched_by': 'study_part_config',
+        }
 
     @staticmethod
-    def _match_model_mapper(
-        rule: Dict[str, Any],
+    def _match_model_mapping(
+        mappings,
         scan_thickness: float,
+        *,
+        study_part: str = "",
+        study_type: str = "",
     ) -> Dict[str, Any]:
         """
         在单条模型规则中按闭区间匹配扫描厚度对应的模型。
 
-        model_mapper 示例：
+        模型配置示例：
             [
                 {
-                    "min_scan_thickness": 0.0,
-                    "max_scan_thickness": 1.5,
+                    "scan_thickness_range_mm": {"min": 0.0, "max": 1.5},
                     "model_id": 292
                 }
             ]
 
         上下限均包含在匹配范围内。配置重叠会导致选模不确定，因此直接报错。
         """
-        mapper = rule.get('model_mapper', [])
-        if not mapper:
-            raise ValueError(f"模型规则缺少 model_mapper: {rule}")
+        if not mappings:
+            raise ValueError("模型规则不能为空")
 
         parsed_mappings = []
-        for item in mapper:
+        for item in mappings:
             if 'model_id' not in item:
-                raise ValueError(f"model_mapper 缺少 model_id: {item}")
+                raise ValueError(f"模型规则缺少 model_id: {item}")
+            thickness_range = item.get('scan_thickness_range_mm')
+            if not isinstance(thickness_range, dict):
+                raise ValueError(
+                    f"模型规则缺少 scan_thickness_range_mm: {item}"
+                )
             minimum = SegmentationStage._parse_model_bound(
-                item,
-                'min_scan_thickness',
+                thickness_range,
+                'min',
             )
             maximum = SegmentationStage._parse_model_bound(
-                item,
-                'max_scan_thickness',
+                thickness_range,
+                'max',
             )
             if minimum > maximum:
                 raise ValueError(
-                    "model_mapper 扫描厚度下限不能大于上限: "
+                    "模型规则扫描厚度下限不能大于上限: "
                     f"{item}"
                 )
             parsed_mappings.append({
                 **item,
-                'min_scan_thickness': minimum,
-                'max_scan_thickness': maximum,
+                'scan_thickness_range_mm': {
+                    'min': minimum,
+                    'max': maximum,
+                },
             })
 
         for index, current in enumerate(parsed_mappings):
             for previous in parsed_mappings[:index]:
                 if max(
-                    current['min_scan_thickness'],
-                    previous['min_scan_thickness'],
+                    current['scan_thickness_range_mm']['min'],
+                    previous['scan_thickness_range_mm']['min'],
                 ) <= min(
-                    current['max_scan_thickness'],
-                    previous['max_scan_thickness'],
+                    current['scan_thickness_range_mm']['max'],
+                    previous['scan_thickness_range_mm']['max'],
                 ):
                     raise ValueError(
-                        "model_mapper 扫描厚度区间重叠: "
+                        "模型规则扫描厚度区间重叠: "
                         f"{previous} 与 {current}"
                     )
 
         matches = [
             item
             for item in parsed_mappings
-            if item['min_scan_thickness']
+            if item['scan_thickness_range_mm']['min']
             <= scan_thickness
-            <= item['max_scan_thickness']
+            <= item['scan_thickness_range_mm']['max']
         ]
         if matches:
             return matches[0]
 
         raise ValueError(
             "未找到匹配的扫描厚度模型: "
-            f"study_part={rule.get('study_part')}, study_type={rule.get('study_type')}, "
+            f"study_part={study_part}, study_type={study_type}, "
             f"ScanThickness={scan_thickness}mm"
         )
 
@@ -311,16 +320,16 @@ class SegmentationStage(BaseStage):
         """读取并校验模型映射中的扫描厚度边界。"""
 
         if field_name not in item or isinstance(item[field_name], bool):
-            raise ValueError(f"model_mapper 缺少有效 {field_name}: {item}")
+            raise ValueError(f"模型规则缺少有效 {field_name}: {item}")
         try:
             value = float(item[field_name])
         except (TypeError, ValueError) as error:
             raise ValueError(
-                f"model_mapper 的 {field_name} 必须是非负有限数值: {item}"
+                f"模型规则的 {field_name} 必须是非负有限数值: {item}"
             ) from error
         if not math.isfinite(value) or value < 0:
             raise ValueError(
-                f"model_mapper 的 {field_name} 必须是非负有限数值: {item}"
+                f"模型规则的 {field_name} 必须是非负有限数值: {item}"
             )
         return value
 

@@ -6,7 +6,9 @@
 """
 
 from dataclasses import dataclass
-from typing import FrozenSet, Iterable, Tuple
+from typing import Any, FrozenSet, Iterable, Mapping, Tuple
+
+from src.config.study_parts import capability_entries, load_study_part_config
 
 from .errors import CapabilityError
 
@@ -21,26 +23,27 @@ class CapabilityRegistry:
 
     supported: FrozenSet[CapabilityKey]
     """不可变能力集合，防止任务执行期间被动态修改。"""
+    supported_study_types: FrozenSet[Tuple[str, str]]
+    """配置中已启用部位对应的检查类型。"""
 
     @classmethod
-    def current(cls) -> "CapabilityRegistry":
-        """创建与当前 planner 实现一致的正式能力表。"""
-        mpr_parts = ("颈椎", "胸椎", "腰椎", "肺部", "头骨", "髋骨")
-        mpr_planes = ("横状位", "矢状位", "冠状位")
+    def current(
+        cls,
+        study_part_config: Mapping[str, Any] | None = None,
+    ) -> "CapabilityRegistry":
+        """从统一部位配置创建正式能力表。"""
+
+        config = study_part_config or load_study_part_config()
+        entries = tuple(capability_entries(config))
         combinations = {
-            (part, "MPR", plane)
-            for part in mpr_parts
-            for plane in mpr_planes
+            (study_part, slice_type, plane)
+            for _, study_part, slice_type, plane in entries
         }
-        combinations.update({
-            (study_part, "椎间隙", "横状位")
-            for study_part in ("颈椎", "腰椎")
-        })
-        combinations.update({
-            (study_part, "CPR", "冠状位")
-            for study_part in ("颈椎", "胸椎", "腰椎")
-        })
-        return cls(frozenset(combinations))
+        study_types = {
+            (study_type, study_part)
+            for study_type, study_part, _, _ in entries
+        }
+        return cls(frozenset(combinations), frozenset(study_types))
 
     def validate(self, request) -> None:
         """
@@ -51,7 +54,7 @@ class CapabilityRegistry:
         """
         study_type = _value(request.study_type)
         study_part = _value(request.study_part)
-        if study_type != "CT":
+        if (study_type, study_part) not in self.supported_study_types:
             raise self._error(study_type, study_part, "", None)
         for plane_config in request.plane_configs:
             plane = _value(plane_config.plane)

@@ -98,10 +98,10 @@ class Pipeline:
             "_configuration": config.nnunet.configuration,
             "_fold": config.nnunet.fold,
             "_continue": config.nnunet.continue_mode,
-            "_model_rules": list(config.nnunet.model_rules),
             "nnUNet_raw": config.nnunet.raw,
             "nnUNet_preprocessed": config.nnunet.preprocessed,
             "nnUNet_results": config.nnunet.results,
+            "study_part_config": config.study_part_config,
         }
         return [
             PreprocessingStage(),

@@ -48,6 +48,7 @@ class SpatialCorrectionStage(LocalizationOperations):
 
         localization_profile = self._resolve_request_localization_profile(request)
         cut_configs = self._resolve_cut_configs(request)
+        slice_rules = self._resolve_slice_rules(request)
         cut_config = cut_configs.get(localization_profile)
         if not cut_config:
             raise ValueError(
@@ -143,6 +144,7 @@ class SpatialCorrectionStage(LocalizationOperations):
             "cut_configs": cut_configs,
             "resolved_cut_config": resolved_cut_config,
             "resolved_cut_configs": resolved_cut_configs,
+            "slice_rules": slice_rules,
             "candidate": candidate,
         }
 
@@ -155,6 +157,7 @@ class SpatialCorrectionStage(LocalizationOperations):
             "cut_configs": cut_configs,
             "resolved_cut_config": resolved_cut_config,
             "resolved_cut_configs": resolved_cut_configs,
+            "slice_rules": slice_rules,
             "label_targets": self._label_targets_to_dict(label_targets),
             "dataset_json_path": str(dataset_json_path),
             "raw_for_reconstruction_path": correction_result[

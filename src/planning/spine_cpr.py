@@ -18,22 +18,9 @@ from src.planning.geometry import (
 )
 from src.planning.sampling import ResolvedSampling, resolve_sampling
 from src.planning.spine_common import get_label_center, union_bboxes
-from src.planning.straight import SliceRangeExtension, resolve_slice_range_extension
+from src.planning.straight import SliceRangeExtension, resolve_range_extension
 from src.utils import DebugLog
 
-
-SPINE_CPR_LABELS = {
-    "颈椎": [f"vertebrae_C{index}" for index in range(2, 8)],
-    "胸椎": [f"vertebrae_T{index}" for index in range(1, 13)],
-    "腰椎": [
-        "vertebrae_L1",
-        "vertebrae_L2",
-        "vertebrae_L3",
-        "vertebrae_L4",
-        "vertebrae_L5",
-        "vertebrae_S1",
-    ],
-}
 
 SPINE_CONFIG_LABEL_ORDER = (
     [f"vertebrae_C{index}" for index in range(1, 8)]
@@ -219,28 +206,15 @@ def _configured_cpr_range_modes(
 
     config = localization_result.get("spine_cpr_config")
     if not isinstance(config, dict):
-        config = localization_result.get("spine_cpr", {})
-    if not isinstance(config, dict):
-        config = {}
+        raise ValueError("定位结果缺少 spine_cpr_config")
+    full_label = config.get("full_label")
+    if not isinstance(full_label, bool):
+        raise ValueError("spine_cpr_config.full_label 必须是布尔值")
     return (
         [CPR_RANGE_MODE_FULL_LABEL]
-        if _config_bool(config.get("full_label"), default=True)
+        if full_label
         else [CPR_RANGE_MODE_BODY_PRISM]
     )
-
-
-def _config_bool(value: Any, default: bool) -> bool:
-    """把配置中的布尔或常见字符串布尔值规整成 bool。"""
-
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "1", "yes", "y", "on"}:
-            return True
-        if lowered in {"false", "0", "no", "n", "off"}:
-            return False
-    return default
 
 
 def _cpr_plan_identity(
@@ -260,37 +234,40 @@ def _cpr_plan_identity(
 
 
 def configured_spine_cpr_labels(
-    study_part: str,
     localization_result: Dict[str, Any],
-    fallback_labels: Iterable[str],
 ) -> List[str]:
-    """按第四阶段转交的整切 start/end 配置生成 CPR 椎体列表。"""
+    """按整体区域及 CPR 排除配置生成椎体列表。"""
 
-    configured_labels = _configured_whole_range_spine_labels(
+    configured_labels = configured_whole_range_spine_labels(
         localization_result,
     )
     if configured_labels is None:
-        return list(fallback_labels)
-    if study_part == "颈椎":
-        configured_labels = [
-            label_name
-            for label_name in configured_labels
-            if label_name != "vertebrae_C1"
-        ]
-    return configured_labels or list(fallback_labels)
+        return []
+    cpr_config = localization_result.get("spine_cpr_config")
+    excluded_labels = (
+        cpr_config.get("excluded_labels", [])
+        if isinstance(cpr_config, dict)
+        else []
+    )
+    configured_labels = [
+        label_name
+        for label_name in configured_labels
+        if label_name not in excluded_labels
+    ]
+    return configured_labels
 
 
-def _configured_whole_range_spine_labels(
+def configured_whole_range_spine_labels(
     localization_result: Dict[str, Any],
 ) -> List[str] | None:
+    """按整体区域的起止标签展开当前脊柱部位标签。"""
+
     resolved_cut_configs = localization_result.get("resolved_cut_configs")
     resolved_cut_config = (
         resolved_cut_configs.get("whole_range")
         if isinstance(resolved_cut_configs, dict)
         else None
     )
-    if resolved_cut_config is None:
-        resolved_cut_config = localization_result.get("resolved_cut_config")
     if not isinstance(resolved_cut_config, dict):
         return None
 
@@ -345,7 +322,6 @@ def _get_spine_annotation_centers(
         )
         annotation = filtered_centroids.get(label_name)
         if annotation:
-            has_prism_contract = "prism_found" in annotation
             prism_point = _parse_physical_point(
                 annotation.get("prism_centroid_physical")
             )
@@ -357,11 +333,10 @@ def _get_spine_annotation_centers(
                 annotation.get("centroid_physical")
             )
             if annotation.get("found") and body_point is not None:
-                if has_prism_contract:
-                    warnings.append(
-                        f"{label_name} 四棱柱生成失败，"
-                        "CPR 回退到过滤主体质心"
-                    )
+                warnings.append(
+                    f"{label_name} 四棱柱生成失败，"
+                    "CPR 回退到过滤主体质心"
+                )
                 centers.append((label_name, body_point))
                 continue
             warnings.append(
@@ -1200,7 +1175,7 @@ def _resolve_cpr_offset_range_extension(
 ) -> SliceRangeExtension:
     """CPR 冠状位定位竖线左右范围沿 offset 轴扩展。"""
 
-    return resolve_slice_range_extension(
+    return resolve_range_extension(
         localization_result,
         "CPR",
         PlaneTypeEnum.冠状位,

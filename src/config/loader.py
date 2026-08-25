@@ -1,7 +1,7 @@
 """
 把默认文件、环境变量和显式参数合并成唯一应用配置。
 
-加载器只负责来源合并和旧字段归一化，不检查目录是否存在；真实环境检查由
+加载器只负责默认文件、环境变量和显式参数的合并，不检查目录是否存在；真实环境检查由
 PreflightValidator 完成，确保配置读取和业务验证职责分离。
 """
 
@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .settings import AppConfig, LoggingConfig, NnUNetConfig, PipelineConfig
+from .study_parts import validate_study_part_config
 
 
 def _first_nonempty(*values: Any, fallback: Any = "") -> Any:
@@ -50,14 +51,14 @@ def load_app_config(
     explicit_nnunet = _section(explicit_data, "nnunet")
     default_nnunet = _section(default_data, "nnunet")
 
-    def nn_value(name: str, legacy_name: str, *, fallback: Any = "") -> Any:
-        """兼容新嵌套字段和旧 JSON 字段名，并应用统一优先级。"""
+    def nn_value(name: str, flat_name: str, *, fallback: Any = "") -> Any:
+        """合并嵌套调用参数、环境变量和当前扁平 JSON 字段。"""
         return _first_nonempty(
             explicit_nnunet.get(name),
-            explicit_data.get(legacy_name),
-            environment.get(legacy_name),
+            explicit_data.get(flat_name),
+            environment.get(flat_name),
             default_nnunet.get(name),
-            default_data.get(legacy_name),
+            default_data.get(flat_name),
             fallback=fallback,
         )
 
@@ -76,9 +77,6 @@ def load_app_config(
         fold=str(nn_value("fold", "_fold", fallback="0")),
         continue_mode=bool(nn_value(
             "continue_mode", "_continue", fallback=True
-        )),
-        model_rules=tuple(nn_value(
-            "model_rules", "_model_rules", fallback=[]
         )),
     )
     logging = LoggingConfig(**{
@@ -101,11 +99,22 @@ def load_app_config(
             "run_preflight": True,
         }.items()
     })
-    return AppConfig(nnunet=nnunet, logging=logging, pipeline=pipeline)
+    study_part_config = explicit_data.get(
+        "study_part_config",
+        default_data.get("study_part_config", {}),
+    )
+    if study_part_config:
+        validate_study_part_config(study_part_config)
+    return AppConfig(
+        nnunet=nnunet,
+        logging=logging,
+        pipeline=pipeline,
+        study_part_config=dict(study_part_config),
+    )
 
 
 def _read_defaults(default_path: Optional[Path]) -> Dict[str, Any]:
-    """读取同一配置目录中的 nnUNet 和日志默认文件并合并。"""
+    """读取同一目录中的 nnUNet、日志和统一部位配置并合并。"""
     path = default_path or Path(__file__).with_name("nnuNet_config.json")
     data: Dict[str, Any] = {}
     if path.exists():
@@ -115,4 +124,8 @@ def _read_defaults(default_path: Optional[Path]) -> Dict[str, Any]:
     if logger_path.exists():
         with logger_path.open("r", encoding="utf-8") as file:
             data["logging"] = json.load(file)
+    study_part_path = path.with_name("study_part_config.json")
+    if study_part_path.exists():
+        with study_part_path.open("r", encoding="utf-8") as file:
+            data["study_part_config"] = json.load(file)
     return data

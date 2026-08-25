@@ -10,7 +10,6 @@ from typing import Any, Dict, Iterable, List
 
 from src.models import AnatomicalFrame, ExtentMM, Point3D, SlicePlan
 from src.models.enums import CutLineExtentModeEnum, PlaneTypeEnum
-from src.planning.slice_policy import localization_profile_for_slice_type
 from src.planning.sampling import ResolvedSampling, resolve_sampling
 from src.planning.geometry import (
     build_plane_stack_slices,
@@ -93,43 +92,37 @@ class SliceRangeExtension:
     """从原始 target_end 沿切片序列正方向向外扩展的距离。"""
 
 
-def resolve_slice_range_extension(
+def resolve_range_extension(
     localization_result: Dict[str, Any],
     slice_type: str,
     plane: PlaneTypeEnum,
 ) -> SliceRangeExtension:
-    """按当前 SliceType 对应的定位范围方案读取可选扩展。
+    """按当前状位和 SliceType 读取统一格式的范围扩展。
 
-    对象形配置可携带按状位配置的扩展距离；椎间隙配置是数组，
-    因而自然按 0mm 处理。配置已由第三阶段校验，这里仍做最小数值检查，保证
-    直接调用规划器时不会把非法距离带入几何计算。
+    MPR、CPR 和椎间隙都从 slice_rules 读取相同结构。椎间隙规则中的距离
+    会在每个 Region 生成计划时分别应用，不再隐式固定为 0mm。
     """
 
-    profile = localization_profile_for_slice_type(slice_type)
-    cut_config: Dict[str, Any] = {}
-    cut_configs = localization_result.get("cut_configs")
-    if isinstance(cut_configs, dict):
-        candidate = cut_configs.get(profile)
-        if isinstance(candidate, dict):
-            cut_config = candidate
-    elif localization_result.get("localization_profile") in (None, profile):
-        candidate = localization_result.get("cut_config")
-        if isinstance(candidate, dict):
-            cut_config = candidate
-
-    plane_extensions = cut_config.get("slice_range_extension", {})
-    if not isinstance(plane_extensions, dict):
+    slice_rules = localization_result.get("slice_rules")
+    if not isinstance(slice_rules, dict):
         return SliceRangeExtension()
-    endpoint_config = plane_extensions.get(plane.value, {})
+    plane_rules = slice_rules.get(plane.value)
+    if not isinstance(plane_rules, dict):
+        return SliceRangeExtension()
+    slice_type_value = str(getattr(slice_type, "value", slice_type))
+    rule = plane_rules.get(slice_type_value)
+    if not isinstance(rule, dict):
+        return SliceRangeExtension()
+    endpoint_config = rule.get("range_extension")
     if not isinstance(endpoint_config, dict):
         return SliceRangeExtension()
 
     start_mm = _non_negative_extension_value(
-        endpoint_config.get("start", 0.0),
+        endpoint_config.get("start_mm", 0.0),
         endpoint="start",
     )
     end_mm = _non_negative_extension_value(
-        endpoint_config.get("end", 0.0),
+        endpoint_config.get("end_mm", 0.0),
         endpoint="end",
     )
     return SliceRangeExtension(start_mm=start_mm, end_mm=end_mm)
@@ -558,7 +551,7 @@ def build_straight_slice_plan(
             target_anchor,
             frame,
         )
-    range_extension = resolve_slice_range_extension(
+    range_extension = resolve_range_extension(
         localization_result,
         slice_type,
         plane_config.plane,

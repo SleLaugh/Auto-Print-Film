@@ -5,7 +5,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, Iterable
 import json
 import math
 import os
@@ -15,6 +15,13 @@ import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
+from src.config import (
+    load_study_part_config,
+    localization_for,
+    localization_profiles_for,
+    slice_rules_for,
+    validate_study_part_config,
+)
 from src.models import (
     AnatomicalGeometryResult,
     CutConfig,
@@ -110,24 +117,28 @@ class LocalizationOperations(BaseStage):
         """
         加载定位/切割范围配置。
 
-        配置只描述“某个部位在某种内部范围方案下，需要哪些定位标签”。
-        层厚、层间距、切几张等采样参数不放在这里，后续由外部请求传入。
+        统一部位配置同时描述模型、定位区域和允许切法。本阶段只消费其中的
+        label_aliases、localization 和 slice_rules。
         """
+        injected_config = self.config.get("study_part_config")
+        if injected_config:
+            validate_study_part_config(injected_config)
+            self._study_part_config = injected_config
+            return
+
         config_paths = [
-            Path.cwd() / "config" / "localization_config.json",
-            Path.cwd() / "localization_config.json",
-            Path(__file__).parent.parent / "config" / "localization_config.json",
+            Path.cwd() / "config" / "study_part_config.json",
+            Path.cwd() / "study_part_config.json",
+            Path(__file__).parent.parent / "config" / "study_part_config.json",
         ]
 
-        self._localization_config = {}
         for config_path in config_paths:
             if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    self._localization_config = json.load(f)
+                self._study_part_config = load_study_part_config(config_path)
                 DebugLog(f"[定位] 加载配置文件: {config_path}")
                 return
 
-        DebugLog("[定位] 未找到 localization_config.json，使用空配置")
+        raise FileNotFoundError("未找到 study_part_config.json")
 
     def _load_nnunet_config(self):
         """
@@ -663,6 +674,7 @@ class LocalizationOperations(BaseStage):
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
+        excluded_labels: Iterable[str] = (),
     ) -> Dict[str, Any]:
         """
         根据目标类型选择横状位角度检测方法。
@@ -673,16 +685,26 @@ class LocalizationOperations(BaseStage):
 
         该方法只估计候选角并生成诊断；是否提升候选空间由第三阶段入口统一决定。
         """
+        excluded_label_set = set(excluded_labels)
         if self._is_vertebrae_targets(label_targets):
             vertebrae_info = self._detect_vertebrae_axial_skew(
                 seg_array,
                 label_targets,
                 label_regions=label_regions,
+                excluded_labels=excluded_label_set,
             )
             if vertebrae_info.get('enough_points'):
                 return vertebrae_info
 
-            fallback_mask = self._build_target_mask(seg_array, label_targets)
+            fallback_targets = {
+                name: target
+                for name, target in label_targets.items()
+                if name not in excluded_label_set
+            }
+            fallback_mask = self._build_target_mask(
+                seg_array,
+                fallback_targets,
+            )
             fallback_info = self._detect_axial_skew(fallback_mask)
             fallback_info.update({
                 'method': 'pca_xy_projection_fallback',
@@ -778,6 +800,14 @@ class LocalizationOperations(BaseStage):
             seg_array,
             label_targets,
             label_regions=label_regions,
+            excluded_labels=(
+                self._resolve_spine_cpr_config(study_part).get(
+                    "excluded_labels",
+                    [],
+                )
+                if study_part
+                else []
+            ),
         )
         abs_angle = float(skew_info.get('abs_angle_degrees', 0.0))
         enough_points = bool(skew_info.get('enough_points'))
@@ -821,6 +851,7 @@ class LocalizationOperations(BaseStage):
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
+        excluded_labels: Iterable[str] = (),
     ) -> Dict[str, Any]:
         """
         对脊柱目标按单椎体角度聚合，避免整块体素 PCA 被椎体形状带偏。
@@ -839,8 +870,9 @@ class LocalizationOperations(BaseStage):
                 label_targets,
             )
 
+        excluded_label_set = set(excluded_labels)
         for label_name in label_targets:
-            if self._vertebra_key(label_name) == "C1":
+            if label_name in excluded_label_set:
                 skipped_label_names.append(label_name)
                 continue
             region = label_regions[label_name]
@@ -1367,6 +1399,7 @@ class LocalizationOperations(BaseStage):
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
         output_path: Path,
+        excluded_labels: Iterable[str] = (),
     ) -> str:
         """
         写出椎体主体候选 overlay，用于人工校验是否能排除后方附件。
@@ -1380,9 +1413,10 @@ class LocalizationOperations(BaseStage):
         overlay_array = np.zeros(reference_array.shape, dtype=np.uint16)
         output_path = Path(output_path)
 
+        excluded_label_set = set(excluded_labels)
         for target in label_targets.values():
             vertebra_key = LocalizationStage._vertebra_key(target.label_name)
-            if vertebra_key == "C1":
+            if target.label_name in excluded_label_set:
                 continue
             if vertebra_key == "S1":
                 body_mask = LocalizationStage._s1_body_candidate_mask(
@@ -1410,6 +1444,7 @@ class LocalizationOperations(BaseStage):
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
         output_path: Path,
+        excluded_labels: Iterable[str] = (),
     ) -> str:
         """写出按主体四边形和左右边界填满的三维四棱柱 Mask。"""
 
@@ -1419,6 +1454,7 @@ class LocalizationOperations(BaseStage):
                 seg_array,
                 label_targets,
                 reference_image,
+                excluded_labels=excluded_labels,
             )
         )
         for label_name, target in label_targets.items():
@@ -1451,6 +1487,7 @@ class LocalizationOperations(BaseStage):
             tuple[np.ndarray, np.ndarray, np.ndarray] | None,
         ] | None = None,
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
+        excluded_labels: Iterable[str] = (),
     ) -> tuple[
         dict[str, np.ndarray],
         dict[str, tuple[np.ndarray, np.ndarray] | None],
@@ -1462,9 +1499,10 @@ class LocalizationOperations(BaseStage):
             str,
             tuple[np.ndarray, np.ndarray] | None,
         ] = {}
+        excluded_label_set = set(excluded_labels)
         for label_name, target in label_targets.items():
             vertebra_key = cls._vertebra_key(label_name)
-            if vertebra_key is None or vertebra_key == "C1":
+            if vertebra_key is None or label_name in excluded_label_set:
                 continue
             label_region = cls._target_label_region(
                 seg_array,
@@ -2139,19 +2177,22 @@ class LocalizationOperations(BaseStage):
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
+        excluded_labels: Iterable[str] = (),
+        interspace_regions: Iterable[Dict[str, Any]] | None = None,
     ) -> Dict[str, Any] | None:
         """
         为第五阶段生成脊柱过滤主体、四棱柱和相邻主体间隙几何。
 
         这里不修改原始 label 的质心和 bbox。完整 label 负责定位及覆盖范围，
-        过滤主体负责 CPR 质心、椎间四棱柱和真实最近间隙参考；颈椎 C1 保留在
-        完整定位中，但不进入这些主体几何。物理坐标直接由当前工作图像转换，
+        过滤主体负责 CPR 质心、椎间四棱柱和真实最近间隙参考；配置排除的标签仍
+        保留在完整定位中，但不进入这些主体几何。物理坐标直接由当前工作图像转换，
         保证与第四阶段定位空间一致。
         """
 
         if study_part not in {"颈椎", "胸椎", "腰椎"}:
             return None
 
+        excluded_label_set = set(excluded_labels)
         sagittal_geometries: dict[
             str,
             tuple[np.ndarray, np.ndarray, np.ndarray] | None,
@@ -2162,12 +2203,13 @@ class LocalizationOperations(BaseStage):
             image,
             sagittal_geometries=sagittal_geometries,
             label_regions=label_regions,
+            excluded_labels=excluded_label_set,
         )
 
         filtered_annotation_centroids: Dict[str, Dict[str, Any]] = {}
         for label_name, target in label_targets.items():
             vertebra_key = cls._vertebra_key(label_name)
-            if vertebra_key is None or vertebra_key == "C1":
+            if vertebra_key is None or label_name in excluded_label_set:
                 continue
 
             indices = body_indices.get(
@@ -2352,37 +2394,61 @@ class LocalizationOperations(BaseStage):
             }
 
         interspace_body_pairs: Dict[str, Dict[str, Any]] = {}
-        ordered_body_labels = sorted(
-            (
-                label_name
-                for label_name, indices in body_indices.items()
-                if indices.size > 0 and cls._vertebra_key(label_name) != "C1"
-            ),
-            key=lambda label_name: cls._vertebra_order_index(label_name),
-        )
-        for upper_label, lower_label in zip(
-            ordered_body_labels,
-            ordered_body_labels[1:],
-        ):
-            upper_index = cls._vertebra_order_index(upper_label)
-            lower_index = cls._vertebra_order_index(lower_label)
+        pair_definitions = []
+        if interspace_regions is None:
+            ordered_body_labels = sorted(
+                (
+                    label_name
+                    for label_name, indices in body_indices.items()
+                    if indices.size > 0
+                ),
+                key=lambda label_name: cls._vertebra_order_index(label_name),
+            )
+            pair_definitions = [
+                (
+                    f"{cls._vertebra_key(upper_label)}_"
+                    f"{cls._vertebra_key(lower_label)}",
+                    upper_label,
+                    lower_label,
+                )
+                for upper_label, lower_label in zip(
+                    ordered_body_labels,
+                    ordered_body_labels[1:],
+                )
+                if (
+                    cls._vertebra_order_index(upper_label) is not None
+                    and cls._vertebra_order_index(lower_label)
+                    == cls._vertebra_order_index(upper_label) + 1
+                )
+            ]
+        else:
+            for interval in interspace_regions:
+                region = interval.get("region")
+                start_labels = interval.get("start_labels") or []
+                end_labels = interval.get("end_labels") or []
+                if not region or not start_labels or not end_labels:
+                    raise ValueError(f"椎间隙区域配置无效: {interval}")
+                pair_definitions.append(
+                    (str(region), str(start_labels[0]), str(end_labels[0]))
+                )
+
+        for group_name, upper_label, lower_label in pair_definitions:
+            upper_indices = body_indices.get(upper_label)
+            lower_indices = body_indices.get(lower_label)
             if (
-                upper_index is None
-                or lower_index is None
-                or lower_index != upper_index + 1
+                upper_indices is None
+                or lower_indices is None
+                or upper_indices.size == 0
+                or lower_indices.size == 0
             ):
                 continue
             geometry = cls._nearest_body_interspace_geometry(
                 image,
-                body_indices[upper_label],
-                body_indices[lower_label],
+                upper_indices,
+                lower_indices,
             )
             if geometry is None:
                 continue
-            group_name = (
-                f"{cls._vertebra_key(upper_label)}_"
-                f"{cls._vertebra_key(lower_label)}"
-            )
             interspace_body_pairs[group_name] = {
                 "upper_label": upper_label,
                 "lower_label": lower_label,
@@ -2398,7 +2464,7 @@ class LocalizationOperations(BaseStage):
             "stage": "stage5_anatomical_analysis",
             "filtered_annotation_centroids": filtered_annotation_centroids,
             "interspace_body_pairs": interspace_body_pairs,
-            "excluded_from_annotation_centroids": ["vertebrae_C1"],
+            "excluded_from_annotation_centroids": sorted(excluded_label_set),
             "full_label_geometry": "coords",
             "full_label_bbox": "coords.*.bbox",
         }
@@ -3983,6 +4049,7 @@ class LocalizationOperations(BaseStage):
         cut_configs: Dict[str, CutConfig],
         resolved_cut_config: Dict[str, Any],
         resolved_cut_configs: Dict[str, Dict[str, Any]],
+        slice_rules: Dict[str, Any],
         label_targets: Dict[str, LabelTarget],
         label_coordinates: Dict[str, LabelCoordinate],
         dataset_json_path: Path,
@@ -4026,6 +4093,7 @@ class LocalizationOperations(BaseStage):
             cut_configs=cut_configs,
             resolved_cut_config=resolved_cut_config,
             resolved_cut_configs=resolved_cut_configs,
+            slice_rules=slice_rules,
             label_targets=label_targets,
             coords=label_coordinates,
             raw_for_reconstruction_path=raw_for_reconstruction_path,
@@ -4088,9 +4156,8 @@ class LocalizationOperations(BaseStage):
         """
         根据请求中的 SliceType 所需定位范围方案查找配置。
 
-        具体范围统一从 localization_config.json 读取。
-        whole_range 使用带 start/end 的对象；interspace 直接使用由多个
-        start/end 对象组成的数组，不再增加 intervals 包装节点。
+        具体范围统一从 study_part_config.json 的 localization.regions 和
+        slice_rules 引用关系整理得到。
         """
         localization_profile = (
             localization_profile
@@ -4109,19 +4176,17 @@ class LocalizationOperations(BaseStage):
     def _resolve_spine_cpr_config(self, study_part: str) -> Dict[str, Any]:
         """从当前脊柱部位配置中读取 CPR 配置，非脊柱部位返回空配置。"""
 
-        target_configs = self._localization_config.get('targets', {})
-        target_config = (
-            target_configs.get(study_part, {})
-            if isinstance(target_configs, dict)
-            else {}
-        )
-        if not isinstance(target_config, dict):
-            return {}
-        config = target_config.get('spine_cpr')
+        localization = localization_for(self._study_part_config, study_part)
+        config = localization.get('spine_cpr')
         if not isinstance(config, dict):
             return {}
-        full_label = config.get('full_label')
-        return {'full_label': full_label if isinstance(full_label, bool) else True}
+        excluded_labels = []
+        for label_name in config.get('excluded_labels', []):
+            excluded_labels.extend(self._label_alias(label_name))
+        return {
+            'full_label': config['full_label'],
+            'excluded_labels': excluded_labels,
+        }
 
     def _resolve_cut_configs(self, request) -> Dict[str, CutConfig]:
         """返回当前部位的全部定位范围配置，并统一校验范围扩展设置。
@@ -4131,19 +4196,13 @@ class LocalizationOperations(BaseStage):
         """
 
         study_part = getattr(request.study_part, 'value', request.study_part)
-        target_configs = self._localization_config.get('targets', {})
-        target_config = target_configs.get(study_part)
-        if not target_config:
-            raise ValueError(f"未找到部位定位配置: {study_part}")
+        return localization_profiles_for(self._study_part_config, study_part)
 
-        cut_configs: Dict[str, CutConfig] = {}
-        for configured_mode in ('whole_range', 'interspace'):
-            if configured_mode not in target_config:
-                continue
-            cut_config = target_config[configured_mode]
-            self._validate_cut_config(configured_mode, cut_config)
-            cut_configs[configured_mode] = cut_config
-        return cut_configs
+    def _resolve_slice_rules(self, request) -> Dict[str, Any]:
+        """返回当前部位经统一校验的状位与切法规则。"""
+
+        study_part = getattr(request.study_part, 'value', request.study_part)
+        return slice_rules_for(self._study_part_config, study_part)
 
     def _resolve_label_aliases(self, cut_config: CutConfig) -> Dict[str, Any]:
         """
@@ -4158,6 +4217,7 @@ class LocalizationOperations(BaseStage):
             return {
                 'intervals': [
                     {
+                        'region': interval['region'],
                         'start': interval['start'],
                         'end': interval['end'],
                         'start_labels': self._label_alias(interval['start']),
@@ -4168,6 +4228,7 @@ class LocalizationOperations(BaseStage):
             }
 
         return {
+            'region': cut_config['region'],
             'start': cut_config['start'],
             'end': cut_config['end'],
             'start_labels': self._label_alias(cut_config['start']),
@@ -4181,87 +4242,11 @@ class LocalizationOperations(BaseStage):
         alias 可以是字符串，也可以是字符串数组。肺部这类由左右肺共同
         构成的整体范围，可以用一个业务名 lung 映射到多个 label。
         """
-        aliases = self._localization_config.get('label_aliases', {})
+        aliases = self._study_part_config.get('label_aliases', {})
         value = aliases.get(name, name)
         if isinstance(value, list):
             return value
         return [value]
-
-    @staticmethod
-    def _validate_cut_config(profile: str, cut_config: CutConfig) -> None:
-        """
-        校验切割配置结构。
-
-        配置统一使用 start/end 表达范围：
-            whole_range: {"start": "L1", "end": "S1"}
-            interspace: [{"start": "L1", "end": "L2"}]
-        """
-        if profile == 'whole_range':
-            if not isinstance(cut_config, dict):
-                raise ValueError(f"whole_range 配置必须是对象: {cut_config}")
-            LocalizationStage._validate_slice_range_extension(cut_config)
-            if not cut_config.get('start') or not cut_config.get('end'):
-                raise ValueError(f"whole_range 配置必须包含 start/end: {cut_config}")
-            return
-
-        if profile == 'interspace':
-            if not isinstance(cut_config, list) or not cut_config:
-                raise ValueError(f"interspace 配置必须是非空数组: {cut_config}")
-            for interval in cut_config:
-                if not isinstance(interval, dict):
-                    raise ValueError(f"interspace 区间必须是对象: {interval}")
-                if not interval.get('start') or not interval.get('end'):
-                    raise ValueError(f"interspace 区间必须包含 start/end: {interval}")
-            return
-
-        raise ValueError(f"未知定位范围方案: {profile}")
-
-    @staticmethod
-    def _validate_slice_range_extension(cut_config: Dict[str, Any]) -> None:
-        """校验按状位配置的切片范围扩展距离。
-
-        JSON 中 `start`、`end` 的单位固定为毫米。字段可以省略，省略端
-        在第三阶段按 0mm 处理；显式值必须是非负有限数字，布尔值不视为
-        数字，避免 JSON 的 true/false 被 Python 当成 1/0。
-        """
-
-        extensions = cut_config.get('slice_range_extension')
-        if extensions is None:
-            return
-        if not isinstance(extensions, dict):
-            raise ValueError("slice_range_extension 必须是对象")
-
-        supported_planes = {plane.value for plane in PlaneTypeEnum}
-        for plane_name, endpoint_config in extensions.items():
-            if plane_name not in supported_planes:
-                raise ValueError(
-                    f"slice_range_extension 不支持的状位: {plane_name}"
-                )
-            if not isinstance(endpoint_config, dict):
-                raise ValueError(
-                    f"slice_range_extension.{plane_name} 必须是对象"
-                )
-            unknown_fields = set(endpoint_config) - {'start', 'end'}
-            if unknown_fields:
-                raise ValueError(
-                    f"slice_range_extension.{plane_name} 仅支持 start/end"
-                )
-            for endpoint_name, value in endpoint_config.items():
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not math.isfinite(float(value))
-                ):
-                    raise ValueError(
-                        f"slice_range_extension.{plane_name}.{endpoint_name} "
-                        "必须是有限数字"
-                    )
-                if float(value) < 0:
-                    raise ValueError(
-                        f"slice_range_extension.{plane_name}.{endpoint_name} "
-                        "不能小于 0"
-                    )
-
 
 class LocalizationStage(LocalizationOperations):
     """第四阶段：在校正阶段选定的空间中计算 label 质心和 bbox。"""
@@ -4327,6 +4312,7 @@ class LocalizationStage(LocalizationOperations):
                 "resolved_cut_configs": correction_result[
                     "resolved_cut_configs"
                 ],
+                "slice_rules": correction_result["slice_rules"],
             }
             context.metadata[_LOCALIZATION_WORKSPACE_KEY] = workspace
 
@@ -4359,6 +4345,7 @@ class LocalizationStage(LocalizationOperations):
             "resolved_cut_configs": correction_result[
                 "resolved_cut_configs"
             ],
+            "slice_rules": correction_result["slice_rules"],
             "spine_cpr_config": self._resolve_spine_cpr_config(
                 context.request.study_part.value,
             ),

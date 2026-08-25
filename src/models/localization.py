@@ -132,6 +132,7 @@ class LocalizationResult:
     resolved_cut_configs: Dict[str, Dict[str, Any]]  # 全部范围方案解析后的内部对象
     label_targets: Dict[str, LabelTarget]  # 本次需要定位的 label 目标
     coords: Dict[str, LabelCoordinate]  # 每个目标 label 的 bbox/centroid 定位结果
+    slice_rules: Dict[str, Any] = field(default_factory=dict)  # 当前部位按状位和切法组织的区域及范围扩展规则
     raw_for_reconstruction_path: str = ""  # 第三阶段选定的工作 raw；候选可用时指向回正 raw
     seg_for_reconstruction_path: str = ""  # 与 raw 同步的分割图；候选可用时指向回正 seg
     correction_applied: bool = False  # 是否已把回正候选切换为本轮定位几何和重建输入
@@ -149,7 +150,7 @@ class LocalizationResult:
     skew_params: Dict[str, Any] = field(default_factory=dict)  # 兼容旧字段；语义等同于 correction_params
     anatomical_geometry: Optional[AnatomicalGeometryResult] = None  # 第五阶段统一解剖坐标；未适配部位为空
     spine_geometry: Optional[Dict[str, Any]] = None  # 仅脊柱生成；标注质心供 CPR，原始 coords/bbox 仍代表全量标注
-    spine_cpr_config: Dict[str, Any] = field(default_factory=dict)  # 脊柱 CPR 业务配置，如 offset 范围来源
+    spine_cpr_config: Dict[str, Any] = field(default_factory=dict)  # CPR 范围模式及脊柱几何排除标签
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化第三至第五阶段的调试汇总结果。"""
@@ -165,6 +166,7 @@ class LocalizationResult:
             'cut_configs': self.cut_configs,
             'resolved_cut_config': self.resolved_cut_config,
             'resolved_cut_configs': self.resolved_cut_configs,
+            'slice_rules': self.slice_rules,
             'label_targets': {
                 name: target.to_dict()
                 for name, target in self.label_targets.items()

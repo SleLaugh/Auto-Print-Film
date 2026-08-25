@@ -10,32 +10,18 @@ from src.planning.base import PlanningResult
 from src.planning.spine_cpr import (
     build_spine_sagittal_cpr_plans,
     configured_spine_cpr_labels,
+    configured_whole_range_spine_labels,
 )
 from src.planning.spine_common import (
     resolve_spine_interspace_segments,
     resolve_spine_localizer_reference,
 )
-from src.planning.spine_interspace import build_spine_interspace_plans
+from src.planning.spine_interspace import (
+    build_spine_interspace_plans,
+    configured_interspace_definitions,
+)
 from src.planning.straight import CutSegment
 from src.planning.whole_range import build_whole_range_plan_from_bbox
-
-
-LUMBAR_LABELS = [
-    "vertebrae_L1",
-    "vertebrae_L2",
-    "vertebrae_L3",
-    "vertebrae_L4",
-    "vertebrae_L5",
-    "vertebrae_S1",
-]
-
-LUMBAR_INTERVALS: List[Tuple[str, str, str]] = [
-    ("L1_L2", "vertebrae_L1", "vertebrae_L2"),
-    ("L2_L3", "vertebrae_L2", "vertebrae_L3"),
-    ("L3_L4", "vertebrae_L3", "vertebrae_L4"),
-    ("L4_L5", "vertebrae_L4", "vertebrae_L5"),
-    ("L5_S1", "vertebrae_L5", "vertebrae_S1"),
-]
 
 
 def resolve_lumbar_interspace_segments(
@@ -45,7 +31,7 @@ def resolve_lumbar_interspace_segments(
 
     return resolve_spine_interspace_segments(
         localization_result,
-        LUMBAR_INTERVALS,
+        configured_interspace_definitions(localization_result),
     )
 
 
@@ -64,14 +50,15 @@ class LumbarWholeRangePlanner:
 
         plans = []
         warnings = []
+        spine_labels = configured_whole_range_spine_labels(
+            localization_result,
+        ) or []
         localizer_reference = resolve_spine_localizer_reference(
             localization_result,
-            LUMBAR_LABELS,
+            spine_labels,
         )
         cpr_labels = configured_spine_cpr_labels(
-            request.study_part.value,
             localization_result,
-            LUMBAR_LABELS,
         )
         for plane_config in request.plane_configs:
             if plane_config.slice_type is SliceType.CPR:
@@ -120,7 +107,5 @@ class LumbarInterspacePlanner:
         return build_spine_interspace_plans(
             request,
             localization_result,
-            label_names=LUMBAR_LABELS,
-            intervals=LUMBAR_INTERVALS,
             planner_name=self.planner_name,
         )

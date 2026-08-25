@@ -1,12 +1,12 @@
 """应用级不可变配置模型，负责描述一次 Pipeline 运行期间不会变化的设置。"""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 
 @dataclass(frozen=True)
 class NnUNetConfig:
-    """nnUNet 目录、推理参数和模型匹配规则。"""
+    """nnUNet 目录和全局推理参数。"""
 
     raw: str = ""
     """nnUNet_raw 目录；空值表示未配置。"""
@@ -20,8 +20,6 @@ class NnUNetConfig:
     """推理使用的训练 fold。"""
     continue_mode: bool = True
     """是否向 nnUNet 推理命令传递 continue 行为。"""
-    model_rules: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
-    """按检查类型、部位和扫描厚度匹配模型 ID 的不可变规则序列。"""
 
 
 @dataclass(frozen=True)
@@ -66,6 +64,8 @@ class AppConfig:
     """日志与调试产物配置。"""
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     """流水线框架行为配置。"""
+    study_part_config: Dict[str, Any] = field(default_factory=dict)
+    """模型选择、定位区域及切法能力共用的统一部位配置。"""
 
     def summary(self) -> Dict[str, Any]:
         """返回不包含机器绝对路径和环境变量的可复现摘要。"""
@@ -75,7 +75,6 @@ class AppConfig:
                 "configuration": self.nnunet.configuration,
                 "fold": self.nnunet.fold,
                 "continue_mode": self.nnunet.continue_mode,
-                "model_rule_count": len(self.nnunet.model_rules),
                 "raw_configured": bool(self.nnunet.raw),
                 "preprocessed_configured": bool(self.nnunet.preprocessed),
                 "results_configured": bool(self.nnunet.results),
@@ -93,5 +92,13 @@ class AppConfig:
                 # manifest 只记录开关，不记录日志绝对路径。
                 "debug_file_enabled": self.logging.debug_file_enabled,
                 "debug_log_file_enabled": self.logging.debug_log_file_enabled,
+            },
+            "study_parts": {
+                "schema_version": self.study_part_config.get("schema_version"),
+                "enabled_count": sum(
+                    1
+                    for part in self.study_part_config.get("study_parts", {}).values()
+                    if part.get("enabled") is True
+                ),
             },
         }

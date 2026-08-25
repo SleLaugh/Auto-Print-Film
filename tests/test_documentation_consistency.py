@@ -4,10 +4,8 @@ import unittest
 from pathlib import Path
 from urllib.parse import unquote
 
-from src.planning.spine_cpr import (
-    SPINE_CPR_LABELS,
-    configured_spine_cpr_labels,
-)
+from src.config import localization_profiles_for
+from src.planning.spine_cpr import configured_spine_cpr_labels
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -19,22 +17,23 @@ class DocumentationConsistencyTests(unittest.TestCase):
     """保证当前文档入口与运行时代码表达同一套业务规则。"""
 
     def test_configured_spine_cpr_ranges_match_runtime_contract(self):
-        """胸腰椎按配置全量使用，只有颈椎从 CPR 中排除 C1。"""
+        """脊柱 CPR 按统一配置展开范围并应用标签排除项。"""
 
-        config_path = PROJECT_ROOT / "src/config/localization_config.json"
+        config_path = PROJECT_ROOT / "src/config/study_part_config.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))
         aliases = config["label_aliases"]
 
-        thoracic_range = config["targets"]["胸椎"]["whole_range"]
+        thoracic_range = localization_profiles_for(config, "胸椎")["whole_range"]
         thoracic_labels = configured_spine_cpr_labels(
-            "胸椎",
             {
-                "resolved_cut_config": {
-                    "start_labels": [aliases[thoracic_range["start"]]],
-                    "end_labels": [aliases[thoracic_range["end"]]],
-                }
+                "resolved_cut_configs": {
+                    "whole_range": {
+                        "start_labels": [aliases[thoracic_range["start"]]],
+                        "end_labels": [aliases[thoracic_range["end"]]],
+                    },
+                },
+                "spine_cpr_config": {"excluded_labels": []},
             },
-            SPINE_CPR_LABELS["胸椎"],
         )
         self.assertEqual(
             thoracic_labels,
@@ -45,16 +44,22 @@ class DocumentationConsistencyTests(unittest.TestCase):
             ),
         )
 
-        cervical_range = config["targets"]["颈椎"]["whole_range"]
+        cervical_range = localization_profiles_for(config, "颈椎")["whole_range"]
+        excluded = config["study_parts"]["颈椎"]["localization"]["spine_cpr"][
+            "excluded_labels"
+        ]
         cervical_labels = configured_spine_cpr_labels(
-            "颈椎",
             {
-                "resolved_cut_config": {
-                    "start_labels": [aliases[cervical_range["start"]]],
-                    "end_labels": [aliases[cervical_range["end"]]],
-                }
+                "resolved_cut_configs": {
+                    "whole_range": {
+                        "start_labels": [aliases[cervical_range["start"]]],
+                        "end_labels": [aliases[cervical_range["end"]]],
+                    },
+                },
+                "spine_cpr_config": {
+                    "excluded_labels": [aliases[name] for name in excluded],
+                },
             },
-            SPINE_CPR_LABELS["颈椎"],
         )
         self.assertEqual(
             cervical_labels,
@@ -97,7 +102,7 @@ class DocumentationConsistencyTests(unittest.TestCase):
                 )
 
     def test_current_spine_summaries_declare_runtime_contract(self):
-        """定位和重建入口必须直接写出配置范围、C1 例外和实际 CPR 状位。"""
+        """定位和重建入口必须写出配置范围、C1 配置和实际 CPR 状位。"""
 
         localization_readme = (
             SUPERPOWERS_ROOT / "modules/localization/README.md"
@@ -106,8 +111,9 @@ class DocumentationConsistencyTests(unittest.TestCase):
             SUPERPOWERS_ROOT / "modules/reconstruction/README.md"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("C1 是唯一固定排除项", localization_readme)
-        self.assertIn("胸椎 C7/L1 等其他配置首尾标签正常参与", localization_readme)
+        self.assertIn("spine_cpr.excluded_labels", localization_readme)
+        self.assertIn("排除项和输出间隙", localization_readme)
+        self.assertIn("不在代码中固定", localization_readme)
         self.assertIn("C7、T1–T12、L1", reconstruction_readme)
         self.assertIn("脊柱冠状位 CPR", reconstruction_readme)
         self.assertIn("脊柱矢状位保持既有直线 MPR", reconstruction_readme)

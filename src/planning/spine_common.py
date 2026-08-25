@@ -22,7 +22,6 @@ _CERVICAL_INTERSPACE_MAX_CENTERLINE_DEVIATION_DEGREES = 10.0
 _CERVICAL_INTERSPACE_LOW_BODY_VOLUME_FRACTION = 0.75
 _INTERSPACE_BODY_PAIR_MIN_SUPPORT_POINTS = 8
 _INTERSPACE_PROJECTED_GAP_UNDERESTIMATE_MM = 1.0
-_CERVICAL_TERMINAL_INTERSPACE = "C6_C7"
 _CERVICAL_TERMINAL_CENTER_OFFSET_TRIGGER_MM = 0.25
 _CERVICAL_TERMINAL_INFERIOR_MARGIN_MM = 0.5
 
@@ -1011,7 +1010,7 @@ def _translate_interspace_to_body_pair(
             f"四棱柱投影范围 {target_length:.1f}mm 小于主体最近间隙 "
             f"{minimum_distance:.1f}mm"
         )
-    elif group_name == _CERVICAL_TERMINAL_INTERSPACE:
+    elif _is_terminal_cervical_interspace(localization_result, group_name):
         annotations = _filtered_spine_annotations(localization_result)
         upper_annotation = annotations.get(
             str(body_pair.get("upper_label", "")),
@@ -1077,6 +1076,31 @@ def _translate_interspace_to_body_pair(
         f"{abs(translation_mm):.1f}mm"
     )
     return translated_start, translated_end, warning
+
+
+def _is_terminal_cervical_interspace(
+    localization_result: Dict[str, Any],
+    group_name: str,
+) -> bool:
+    """判断当前区域是否是配置中的最后一个颈椎间隙。"""
+
+    if localization_result.get("study_part") != "颈椎":
+        return False
+    resolved_configs = localization_result.get("resolved_cut_configs")
+    interspace_config = (
+        resolved_configs.get("interspace")
+        if isinstance(resolved_configs, dict)
+        else None
+    )
+    intervals = (
+        interspace_config.get("intervals")
+        if isinstance(interspace_config, dict)
+        else None
+    )
+    if not isinstance(intervals, list) or not intervals:
+        return False
+    terminal = intervals[-1]
+    return isinstance(terminal, dict) and terminal.get("region") == group_name
 
 
 def _overlapping_convex_polygon_boundary_pair_2d(

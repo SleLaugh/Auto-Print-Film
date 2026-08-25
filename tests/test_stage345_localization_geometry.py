@@ -3,6 +3,7 @@ import math
 import tempfile
 import unittest
 import weakref
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,11 @@ from src.utils.Logger_utils import _logger_manager
 _logger_manager.debug_file_enabled = True
 
 from src.core.context import ProcessingContext
+from src.config import (
+    load_study_part_config,
+    localization_profiles_for,
+    validate_study_part_config,
+)
 from src.models import (
     AnatomicalAnalysisStageResult,
     LabelCoordinate,
@@ -35,79 +41,115 @@ from src.stages.stage_spatial_correction import SpatialCorrectionStage
 class LocalizationGeometryTest(unittest.TestCase):
     """覆盖第三阶段校正、第四阶段定位和第五阶段解剖几何。"""
 
-    def test_slice_range_extension_config_accepts_optional_endpoints(self):
-        """切片范围扩展允许只配置单端，未配置端由第三阶段按零处理。"""
+    @staticmethod
+    def _single_interval_lumbar_config(*, sagittal_start_mm: float = 0.0):
+        """生成只依赖 L1/S1 的完整测试配置，避免夹具要求中间椎体。"""
 
-        LocalizationStage._validate_cut_config("whole_range", {
-            "start": "lung",
-            "end": "lung",
-            "slice_range_extension": {
-                "横状位": {"start": 3.0},
-                "矢状位": {"end": 2.0},
+        config = load_study_part_config()
+        lumbar = config["study_parts"]["腰椎"]
+        lumbar["localization"] = {
+            "spine_cpr": {"full_label": True},
+            "regions": {
+                "default": {
+                    "type": "whole_range",
+                    "start_label": "L1",
+                    "end_label": "S1",
+                },
+                "L1_S1": {
+                    "type": "interspace",
+                    "start_label": "L1",
+                    "end_label": "S1",
+                },
             },
-        })
+        }
+        zero_extension = {"start_mm": 0.0, "end_mm": 0.0}
+        lumbar["slice_rules"] = {
+            "横状位": {
+                "MPR": {
+                    "regions": ["default"],
+                    "range_extension": deepcopy(zero_extension),
+                },
+                "椎间隙": {
+                    "regions": ["L1_S1"],
+                    "range_extension": deepcopy(zero_extension),
+                },
+            },
+            "冠状位": {
+                "MPR": {
+                    "regions": ["default"],
+                    "range_extension": deepcopy(zero_extension),
+                },
+                "CPR": {
+                    "regions": ["default"],
+                    "range_extension": deepcopy(zero_extension),
+                },
+            },
+            "矢状位": {
+                "MPR": {
+                    "regions": ["default"],
+                    "range_extension": {
+                        "start_mm": sagittal_start_mm,
+                        "end_mm": 0.0,
+                    },
+                }
+            },
+        }
+        validate_study_part_config(config)
+        return config
 
-    def test_slice_range_extension_config_rejects_invalid_values(self):
-        """范围扩展仅接受现有状位、start/end 字段和非负有限毫米数。"""
+    def test_range_extension_config_accepts_non_negative_endpoints(self):
+        """统一配置接受切法规则下完整的非负毫米扩展。"""
+
+        config = load_study_part_config()
+        extension = config["study_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"]["range_extension"]
+        extension.update({"start_mm": 3.0, "end_mm": 2.0})
+
+        validate_study_part_config(config)
+
+    def test_range_extension_config_rejects_invalid_values(self):
+        """范围扩展仅接受 start_mm/end_mm 和非负有限毫米数。"""
 
         invalid_extensions = (
-            ({"斜状位": {"start": 1.0}}, "不支持的状位"),
-            ({"横状位": []}, "必须是对象"),
-            ({"横状位": {"before": 1.0}}, "仅支持 start/end"),
-            ({"横状位": {"start": -1.0}}, "不能小于 0"),
-            ({"横状位": {"start": True}}, "必须是有限数字"),
-            ({"横状位": {"end": math.inf}}, "必须是有限数字"),
+            ([], "必须是对象"),
+            ({"before": 1.0, "start_mm": 0.0, "end_mm": 0.0}, "仅支持"),
+            ({"start_mm": -1.0, "end_mm": 0.0}, "必须是非负有限数字"),
+            ({"start_mm": True, "end_mm": 0.0}, "必须是非负有限数字"),
+            ({"start_mm": 0.0, "end_mm": math.inf}, "必须是非负有限数字"),
         )
         for extension, message in invalid_extensions:
             with self.subTest(extension=extension):
+                config = load_study_part_config()
+                config["study_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"]["range_extension"] = extension
                 with self.assertRaisesRegex(ValueError, message):
-                    LocalizationStage._validate_cut_config("whole_range", {
-                        "start": "lung",
-                        "end": "lung",
-                        "slice_range_extension": extension,
-                    })
+                    validate_study_part_config(config)
 
-    def test_interspace_config_uses_direct_interval_array(self):
-        """椎间配置直接使用数组，旧 intervals 包装不再属于有效契约。"""
+    def test_interspace_config_is_derived_from_named_regions(self):
+        """椎间定位数组由切法规则引用的具名区域生成。"""
 
+        config = self._single_interval_lumbar_config()
         stage = LocalizationStage()
-        stage._localization_config = {
-            "label_aliases": {
-                "L1": "vertebrae_L1",
-                "L2": "vertebrae_L2",
-            },
-        }
-        interspace = [{"start": "L1", "end": "L2"}]
-
-        stage._validate_cut_config("interspace", interspace)
+        stage._study_part_config = config
+        interspace = localization_profiles_for(config, "腰椎")["interspace"]
 
         self.assertEqual(stage._resolve_label_aliases(interspace), {
             "intervals": [{
+                "region": "L1_S1",
                 "start": "L1",
-                "end": "L2",
+                "end": "S1",
                 "start_labels": ["vertebrae_L1"],
-                "end_labels": ["vertebrae_L2"],
+                "end_labels": ["vertebrae_S1"],
             }],
         })
-        with self.assertRaisesRegex(ValueError, "必须是非空数组"):
-            stage._validate_cut_config("interspace", {
-                "intervals": interspace,
-            })
 
     def test_spine_cpr_config_is_read_from_spine_study_part_only(self):
         """脊柱 CPR 配置只从对应脊柱部位读取，其他部位不返回该配置。"""
 
         stage = LocalizationStage()
-        stage._localization_config = {
-            "targets": {
-                "腰椎": {"spine_cpr": {"full_label": False}},
-                "肺部": {"whole_range": {"start": "lung", "end": "lung"}},
-            }
-        }
+        stage._study_part_config = load_study_part_config()
 
         self.assertEqual(
             stage._resolve_spine_cpr_config("腰椎"),
-            {"full_label": False},
+            {"full_label": True, "excluded_labels": []},
         )
         self.assertEqual(stage._resolve_spine_cpr_config("肺部"), {})
 
@@ -635,13 +677,12 @@ class LocalizationGeometryTest(unittest.TestCase):
     def test_cervical_whole_range_keeps_c1_for_cut_coverage(self):
         """颈椎切图覆盖仍需保留环形 C1，避免其他状位缺少上端范围。"""
 
-        config = json.loads(
-            Path("src/config/localization_config.json").read_text(encoding="utf-8")
-        )
+        config = load_study_part_config()
 
-        self.assertEqual(config["targets"]["颈椎"]["whole_range"], {
-            "start": "C1",
-            "end": "C7",
+        self.assertEqual(config["study_parts"]["颈椎"]["localization"]["regions"]["default"], {
+            "type": "whole_range",
+            "start_label": "C1",
+            "end_label": "C7",
         })
 
     def test_cervical_interspace_targets_still_include_c1_for_localization(self):
@@ -677,6 +718,30 @@ class LocalizationGeometryTest(unittest.TestCase):
             list(targets),
             [f"vertebrae_C{index}" for index in range(1, 8)],
         )
+
+    def test_cervical_interspace_region_list_is_read_from_unified_config(self):
+        """增加 C1_C2 后，定位范围应直接按配置顺序返回，不依赖代码常量。"""
+
+        config = load_study_part_config()
+        cervical = config["study_parts"]["颈椎"]
+        cervical["localization"]["regions"]["C1_C2"] = {
+            "type": "interspace",
+            "start_label": "C1",
+            "end_label": "C2",
+        }
+        cervical["slice_rules"]["横状位"]["椎间隙"]["regions"].insert(
+            0,
+            "C1_C2",
+        )
+        validate_study_part_config(config)
+
+        intervals = localization_profiles_for(config, "颈椎")["interspace"]
+
+        self.assertEqual(intervals[0], {
+            "region": "C1_C2",
+            "start": "C1",
+            "end": "C2",
+        })
 
     def test_s1_range_prefers_vertebrae_s1_over_sacrum_when_available(self):
         # S1 这个业务名表示第一骶椎。模型同时提供 vertebrae_S1 和 sacrum 时，
@@ -757,7 +822,10 @@ class LocalizationGeometryTest(unittest.TestCase):
             "vertebrae_C5": LabelTarget("vertebrae_C5", [22]),
         }
 
-        skew_info = stage._detect_target_axial_skew(seg_array, label_targets)
+        skew_info = stage._detect_target_axial_skew(
+            seg_array,
+            label_targets,
+        )
 
         self.assertEqual(skew_info["method"], "vertebrae_label_angle_aggregation")
         self.assertAlmostEqual(skew_info["angle_degrees"], 21.0, delta=3.0)
@@ -779,7 +847,11 @@ class LocalizationGeometryTest(unittest.TestCase):
             "vertebrae_C1": LabelTarget("vertebrae_C1", [22]),
         }
 
-        skew_info = stage._detect_target_axial_skew(seg_array, label_targets)
+        skew_info = stage._detect_target_axial_skew(
+            seg_array,
+            label_targets,
+            excluded_labels=["vertebrae_C1"],
+        )
 
         self.assertEqual(skew_info["used_label_names"], ["vertebrae_C2", "vertebrae_C3"])
         self.assertEqual(skew_info["skipped_label_names"], ["vertebrae_C1"])
@@ -1591,6 +1663,7 @@ class LocalizationGeometryTest(unittest.TestCase):
                 seg_array=seg_array,
                 label_targets=label_targets,
                 output_path=overlay_path,
+                excluded_labels=["vertebrae_C1"],
             )
 
             overlay_array = sitk.GetArrayFromImage(sitk.ReadImage(str(overlay_path)))
@@ -2068,6 +2141,7 @@ class LocalizationGeometryTest(unittest.TestCase):
             image=image,
             seg_array=seg_array,
             label_targets=label_targets,
+            excluded_labels=["vertebrae_C1"],
         )
 
         self.assertEqual(
@@ -2921,7 +2995,13 @@ class LocalizationGeometryTest(unittest.TestCase):
                 "seg_path": str(seg_path),
                 "model": {"dataset_id": 1},
             })
-            stage_config = {"correction_angle_threshold_degrees": 3.0}
+            study_part_config = self._single_interval_lumbar_config(
+                sagittal_start_mm=2.0,
+            )
+            stage_config = {
+                "correction_angle_threshold_degrees": 3.0,
+                "study_part_config": study_part_config,
+            }
             stages = [
                 SpatialCorrectionStage(stage_config),
                 LocalizationStage(stage_config),
@@ -2932,27 +3012,8 @@ class LocalizationGeometryTest(unittest.TestCase):
                 "nnUNet_preprocessed": "",
                 "nnUNet_raw": "",
             }
-            localization_config = {
-                "label_aliases": {
-                    "L1": "vertebrae_L1",
-                    "S1": "vertebrae_S1",
-                },
-                "targets": {
-                    "腰椎": {
-                        "whole_range": {
-                            "start": "L1",
-                            "end": "S1",
-                            "slice_range_extension": {
-                                "矢状位": {"start": 2.0},
-                            },
-                        },
-                        "interspace": [{"start": "L1", "end": "S1"}],
-                    }
-                },
-            }
             for stage in stages:
                 stage._nnunet_paths = nnunet_paths
-                stage._localization_config = localization_config
 
             anatomical_debug_messages = []
             for stage_index, stage in enumerate(stages):
@@ -3024,13 +3085,13 @@ class LocalizationGeometryTest(unittest.TestCase):
             self.assertEqual(result["image"], metadata["image"])
             self.assertIn("cut_configs", result)
             self.assertEqual(
-                result["cut_configs"]["whole_range"]
-                ["slice_range_extension"]["矢状位"]["start"],
+                result["slice_rules"]["矢状位"]["MPR"]
+                ["range_extension"]["start_mm"],
                 2.0,
             )
             self.assertEqual(
                 metadata["cut_configs"]["interspace"],
-                [{"start": "L1", "end": "S1"}],
+                [{"region": "L1_S1", "start": "L1", "end": "S1"}],
             )
             self.assertEqual(
                 metadata["resolved_cut_configs"]["whole_range"]
@@ -3188,34 +3249,21 @@ class LocalizationGeometryTest(unittest.TestCase):
                 "seg_path": str(seg_path),
                 "model": {"dataset_id": 1},
             })
+            stage_config = {
+                "study_part_config": self._single_interval_lumbar_config(),
+            }
             stages = [
-                SpatialCorrectionStage(),
-                LocalizationStage(),
-                AnatomicalAnalysisStage(),
+                SpatialCorrectionStage(stage_config),
+                LocalizationStage(stage_config),
+                AnatomicalAnalysisStage(stage_config),
             ]
             nnunet_paths = {
                 "nnUNet_results": str(temp_path / "nnUNet_results"),
                 "nnUNet_preprocessed": "",
                 "nnUNet_raw": "",
             }
-            localization_config = {
-                "label_aliases": {
-                    "L1": "vertebrae_L1",
-                    "S1": "vertebrae_S1",
-                },
-                "targets": {
-                    "腰椎": {
-                        "whole_range": {
-                            "start": "L1",
-                            "end": "S1",
-                        },
-                        "interspace": [{"start": "L1", "end": "S1"}],
-                    }
-                },
-            }
             for stage in stages:
                 stage._nnunet_paths = nnunet_paths
-                stage._localization_config = localization_config
             patched_correction = {
                 "raw_for_reconstruction_path": str(raw_path),
                 "seg_for_reconstruction_path": str(seg_path),

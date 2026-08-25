@@ -32,7 +32,7 @@ class PreflightValidator:
         executable_finder 和 check_model_directories 可在纯单元测试中替换；生产入口使用
         `shutil.which` 并检查真实模型目录。
         """
-        self.registry = registry or CapabilityRegistry.current()
+        self.registry = registry
         """用于判断当前版本是否实现请求组合的能力表。"""
         self.executable_finder = executable_finder
         """外部命令查找函数，默认使用系统 PATH。"""
@@ -45,7 +45,10 @@ class PreflightValidator:
         if not valid:
             raise RequestValidationError(message or "请求参数无效")
 
-        self.registry.validate(request)
+        registry = self.registry or CapabilityRegistry.current(
+            config.study_part_config or None
+        )
+        registry.validate(request)
         input_path = Path(request.dicom_dir).expanduser().resolve()
         output_path = Path(request.output_dir).expanduser().resolve()
         if not input_path.exists() or not input_path.is_dir():

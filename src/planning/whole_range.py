@@ -29,7 +29,7 @@ from src.planning.straight import (
     default_straight_frame,
     recenter_point_in_plane,
     resolve_segment_sampling,
-    resolve_slice_range_extension,
+    resolve_range_extension,
     resolve_projected_extent,
 )
 
@@ -450,7 +450,7 @@ def _build_whole_range_plan_from_anatomical_frame(
 
     # 显式配置的首尾扩展先加入有效范围，再统一计算层厚、层间距和数量，
     # 让首末厚层外缘完整覆盖肺尖、肺底等解剖边界。
-    range_extension = resolve_slice_range_extension(
+    range_extension = resolve_range_extension(
         localization_result,
         plane_config.slice_type.value,
         plane,

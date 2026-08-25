@@ -1,9 +1,14 @@
 import unittest
 import json
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
-from src.config import load_app_config
+from src.config import (
+    load_app_config,
+    load_study_part_config,
+    validate_study_part_config,
+)
 from src.core.pipeline import Pipeline
 from src.stages.stage_localization import LocalizationStage
 from src.stages.stage_segmentation import SegmentationStage
@@ -27,7 +32,7 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertEqual(config.nnunet.results, "/env/results")
 
-    def test_legacy_nnunet_keys_are_normalized(self):
+    def test_nnunet_runtime_keys_are_normalized(self):
         config = load_app_config(
             environ={},
             defaults={
@@ -35,7 +40,6 @@ class ConfigLoaderTest(unittest.TestCase):
                 "_fold": "2",
                 "_continue": False,
                 "nnUNet_raw": "/models/raw",
-                "_model_rules": [{"study_part": "腰椎"}],
             },
         )
 
@@ -43,14 +47,12 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.nnunet.fold, "2")
         self.assertFalse(config.nnunet.continue_mode)
         self.assertEqual(config.nnunet.raw, "/models/raw")
-        self.assertEqual(config.nnunet.model_rules[0]["study_part"], "腰椎")
 
     def test_stages_accept_the_single_loaded_nnunet_configuration(self):
         stage_config = {
             "_configuration": "3d_lowres",
             "_fold": "3",
             "_continue": False,
-            "_model_rules": [{"study_part": "腰椎"}],
             "nnUNet_raw": "/central/raw",
             "nnUNet_preprocessed": "/central/preprocessed",
             "nnUNet_results": "/central/results",
@@ -76,7 +78,6 @@ class ConfigLoaderTest(unittest.TestCase):
             environ={},
             defaults={
                 "nnUNet_results": "/central/results",
-                "_model_rules": [{"study_part": "腰椎"}],
             },
         )
 
@@ -106,6 +107,12 @@ class ConfigLoaderTest(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
+            (root / "study_part_config.json").write_text(
+                Path("src/config/study_part_config.json").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
 
             config = load_app_config(
                 environ={},
@@ -115,6 +122,46 @@ class ConfigLoaderTest(unittest.TestCase):
             self.assertEqual(config.nnunet.fold, "4")
             self.assertTrue(config.logging.debug_file_enabled)
             self.assertFalse(config.logging.debug_log_file_enabled)
+            self.assertIn("腰椎", config.study_part_config["study_parts"])
+
+    def test_study_part_config_rejects_unknown_fields_and_references(self):
+        base_config = load_study_part_config()
+
+        cases = []
+        unknown_field = deepcopy(base_config)
+        unknown_field["study_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"][
+            "slice_range_extension"
+        ] = {}
+        cases.append((unknown_field, "未知字段"))
+
+        unknown_label = deepcopy(base_config)
+        unknown_label["study_parts"]["腰椎"]["localization"]["regions"]["default"][
+            "start_label"
+        ] = "L0"
+        cases.append((unknown_label, "未在 label_aliases 中定义"))
+
+        duplicate_alias = deepcopy(base_config)
+        duplicate_alias["label_aliases"]["duplicate_l1"] = "vertebrae_L1"
+        cases.append((duplicate_alias, "重复引用标签"))
+
+        unused_region = deepcopy(base_config)
+        unused_region["study_parts"]["颈椎"]["localization"]["regions"]["C1_C2"] = {
+            "type": "interspace",
+            "start_label": "C1",
+            "end_label": "C2",
+        }
+        cases.append((unused_region, "未使用区域"))
+
+        missing_full_label = deepcopy(base_config)
+        del missing_full_label["study_parts"]["胸椎"]["localization"]["spine_cpr"][
+            "full_label"
+        ]
+        cases.append((missing_full_label, "缺少 full_label"))
+
+        for config, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    validate_study_part_config(config)
 
 
 if __name__ == "__main__":

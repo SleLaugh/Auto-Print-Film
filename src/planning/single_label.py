@@ -7,7 +7,6 @@ from typing import Any, Dict
 
 from src.models.enums import PlaneTypeEnum, SliceType
 from src.planning.spine_cpr import (
-    SPINE_CPR_LABELS,
     build_spine_sagittal_cpr_plans,
     configured_spine_cpr_labels,
     spine_target_bbox,
@@ -31,18 +30,14 @@ class SingleLabelWholeRangePlanner:
 
         plans = []
         warnings = []
-        spine_labels = SPINE_CPR_LABELS.get(request.study_part.value)
-        if spine_labels is not None:
-            spine_labels = configured_spine_cpr_labels(
-                request.study_part.value,
-                localization_result,
-                spine_labels,
-            )
+        spine_labels = configured_spine_cpr_labels(
+            localization_result,
+        )
         for plane_config in request.plane_configs:
             target_region_bbox = None
             source_labels = None
             if (
-                spine_labels is not None
+                spine_labels
                 and plane_config.slice_type is SliceType.CPR
             ):
                 cpr_plans, cpr_warnings = build_spine_sagittal_cpr_plans(
@@ -57,7 +52,7 @@ class SingleLabelWholeRangePlanner:
                 plans.extend(cpr_plans)
                 continue
             if (
-                spine_labels is not None
+                spine_labels
                 and request.study_part.value == "胸椎"
                 and plane_config.plane == PlaneTypeEnum.冠状位
             ):
@@ -72,7 +67,7 @@ class SingleLabelWholeRangePlanner:
                 source_labels=source_labels,
                 target_region_bbox=target_region_bbox,
             )
-            if spine_labels is not None and plane_config.plane == PlaneTypeEnum.矢状位:
+            if spine_labels and plane_config.plane == PlaneTypeEnum.矢状位:
                 # 脊柱矢状位恢复为普通直线 MPR，定位线继续画在冠状位背景上。
                 plan.localizer_plane = PlaneTypeEnum.冠状位.value
             if (

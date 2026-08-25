@@ -98,6 +98,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 "resolved_cut_configs": localization_result[
                     "resolved_cut_configs"
                 ],
+                "slice_rules": localization_result["slice_rules"],
             }
             context.metadata[_LOCALIZATION_WORKSPACE_KEY] = workspace
 
@@ -110,6 +111,14 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         correction_scope_bbox = workspace["correction_scope_bbox"]
 
         study_part = context.request.study_part.value
+        excluded_spine_labels = localization_result.get(
+            "spine_cpr_config",
+            {},
+        ).get("excluded_labels", [])
+        interspace_regions = localization_result.get(
+            "resolved_cut_configs",
+            {},
+        ).get("interspace", {}).get("intervals", [])
         label_masks: Dict[str, np.ndarray] = {}
         if study_part in {"颈椎", "胸椎", "髋骨"}:
             for label_name, region in label_regions.items():
@@ -140,6 +149,8 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             seg_array=seg_array,
             label_targets=label_targets,
             label_regions=label_regions,
+            excluded_labels=excluded_spine_labels,
+            interspace_regions=interspace_regions,
         )
 
         debug_label_path = ""
@@ -171,6 +182,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 seg_array=seg_array,
                 label_targets=label_targets,
                 output_path=body_path,
+                excluded_labels=excluded_spine_labels,
             )
             DebugLog(
                 "  [调试文件性能] 已生成: "
@@ -186,6 +198,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 seg_array=seg_array,
                 label_targets=label_targets,
                 output_path=prism_path,
+                excluded_labels=excluded_spine_labels,
             )
             DebugLog(
                 "  [调试文件性能] 已生成: "
@@ -204,6 +217,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 resolved_cut_configs=localization_result[
                     "resolved_cut_configs"
                 ],
+                slice_rules=localization_result["slice_rules"],
                 label_targets=label_targets,
                 label_coordinates=label_coordinates,
                 dataset_json_path=Path(localization_result["dataset_json_path"]),

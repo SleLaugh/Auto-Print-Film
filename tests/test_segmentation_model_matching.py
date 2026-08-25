@@ -5,11 +5,11 @@ from pathlib import Path
 from src.stages.stage_segmentation import SegmentationStage
 
 
-CONFIG_PATH = (
+PART_CONFIG_PATH = (
     Path(__file__).resolve().parents[1]
     / "src"
     / "config"
-    / "nnuNet_config.json"
+    / "study_part_config.json"
 )
 
 
@@ -18,8 +18,8 @@ class SegmentationModelMatchingTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        cls.stage = SegmentationStage(cls.config)
+        cls.config = json.loads(PART_CONFIG_PATH.read_text(encoding="utf-8"))
+        cls.stage = SegmentationStage({"study_part_config": cls.config})
 
     def test_lumbar_boundaries_select_expected_models(self):
         cases = (
@@ -59,46 +59,34 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             self.stage._match_model("肺部", "CT", 1.6)
 
     def test_config_no_longer_contains_scan_thickness_categories(self):
-        for rule in self.config["_model_rules"]:
-            for mapper in rule["model_mapper"]:
-                self.assertNotIn("scan_thickness", mapper)
-                self.assertIn("min_scan_thickness", mapper)
-                self.assertIn("max_scan_thickness", mapper)
+        for part in self.config["study_parts"].values():
+            for mappings in part["model_rules"].values():
+                for mapper in mappings:
+                    self.assertNotIn("scan_thickness", mapper)
+                    self.assertIn("scan_thickness_range_mm", mapper)
 
     def test_overlapping_ranges_fail_instead_of_picking_first(self):
-        rule = {
-            "study_part": "腰椎",
-            "study_type": "CT",
-            "model_mapper": [
-                {
-                    "min_scan_thickness": 0,
-                    "max_scan_thickness": 2,
-                    "model_id": 1,
-                },
-                {
-                    "min_scan_thickness": 1,
-                    "max_scan_thickness": 3,
-                    "model_id": 2,
-                },
-            ],
-        }
+        mappings = [
+            {
+                "scan_thickness_range_mm": {"min": 0, "max": 2},
+                "model_id": 1,
+            },
+            {
+                "scan_thickness_range_mm": {"min": 1, "max": 3},
+                "model_id": 2,
+            },
+        ]
 
         for thickness in (0.5, 1.5):
             with self.subTest(thickness=thickness):
                 with self.assertRaisesRegex(ValueError, "区间重叠"):
-                    SegmentationStage._match_model_mapper(rule, thickness)
+                    SegmentationStage._match_model_mapping(mappings, thickness)
 
     def test_removed_category_mapper_is_rejected(self):
-        rule = {
-            "study_part": "腰椎",
-            "study_type": "CT",
-            "model_mapper": [
-                {"scan_thickness": "default", "model_id": 292},
-            ],
-        }
+        mappings = [{"scan_thickness": "default", "model_id": 292}]
 
-        with self.assertRaisesRegex(ValueError, "min_scan_thickness"):
-            SegmentationStage._match_model_mapper(rule, 1.0)
+        with self.assertRaisesRegex(ValueError, "scan_thickness_range_mm"):
+            SegmentationStage._match_model_mapping(mappings, 1.0)
 
     def test_invalid_request_thickness_is_rejected(self):
         for value in (-1, float("nan"), float("inf"), True, "default"):

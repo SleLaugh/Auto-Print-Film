@@ -2,7 +2,7 @@ import unittest
 
 from src.models import PlaneConfig, Request
 from src.models.enums import (
-    StudyPartEnum,
+    SlicePartEnum,
     CutLineExtentModeEnum,
     PlaneTypeEnum,
     SliceType,
@@ -137,7 +137,7 @@ class PlaneConfigRequestTest(unittest.TestCase):
         request = Request.from_dict({
             "dicom_dir": "/tmp/dicom",
             "output_dir": "/tmp/output",
-            "StudyPart": StudyPartEnum.腰椎.value,
+            "SlicePart": SlicePartEnum.腰椎.value,
             "StudyType": "CT",
             "ScanThickness": 1.5,
             "plane_configs": [
@@ -151,8 +151,8 @@ class PlaneConfigRequestTest(unittest.TestCase):
         })
 
         self.assertIs(request.plane_configs[0].plane, PlaneTypeEnum.冠状位)
-        self.assertIs(request.study_part, StudyPartEnum.腰椎)
-        self.assertEqual(request.to_dict()["StudyPart"], "腰椎")
+        self.assertIs(request.slice_part, SlicePartEnum.腰椎)
+        self.assertEqual(request.to_dict()["SlicePart"], "腰椎")
         self.assertEqual(request.to_dict()["StudyType"], "CT")
         self.assertEqual(request.scan_thickness, 1.5)
         self.assertEqual(request.to_dict()["ScanThickness"], 1.5)
@@ -180,11 +180,13 @@ class PlaneConfigRequestTest(unittest.TestCase):
             })
 
     def test_request_rejects_removed_study_field_names(self):
-        """检查类型和部位只接受新的 StudyType/StudyPart 单词。"""
+        """检查类型和切割部位只接受 StudyType/SlicePart 协议字段。"""
 
         for removed_name in (
+            "StudyPart",
             "body_part",
             "check_type",
+            "slice_part",
             "study_part",
             "study_type",
             "target_part",

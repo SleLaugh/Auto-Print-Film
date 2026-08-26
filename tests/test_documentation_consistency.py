@@ -16,10 +16,37 @@ SUPERPOWERS_ROOT = DOCS_ROOT / "superpowers"
 class DocumentationConsistencyTests(unittest.TestCase):
     """保证当前文档入口与运行时代码表达同一套业务规则。"""
 
+    def test_current_docs_use_slice_part_protocol_names(self):
+        """当前文档不得重新使用已移除的检查部位协议名称。"""
+
+        current_documents = [PROJECT_ROOT / "README.md"]
+        current_documents.extend(
+            path
+            for path in SUPERPOWERS_ROOT.rglob("*.md")
+            if path.is_file()
+            and "archive" not in path.relative_to(SUPERPOWERS_ROOT).parts
+        )
+        removed_names = (
+            re.compile(r"(?<![A-Za-z0-9_])StudyPart(?![A-Za-z0-9_])"),
+            re.compile(r"--study_part(?![A-Za-z0-9_])"),
+            re.compile(r"(?<![A-Za-z0-9_])study_part_config(?![A-Za-z0-9_])"),
+            re.compile(r"(?<![A-Za-z0-9_])study_parts(?![A-Za-z0-9_])"),
+        )
+        for path in current_documents:
+            text = path.read_text(encoding="utf-8")
+            for pattern in removed_names:
+                self.assertIsNone(
+                    pattern.search(text),
+                    msg=(
+                        f"{path.relative_to(PROJECT_ROOT)} 仍包含已移除名称: "
+                        f"{pattern.pattern}"
+                    ),
+                )
+
     def test_configured_spine_cpr_ranges_match_runtime_contract(self):
         """脊柱 CPR 按统一配置展开范围并应用标签排除项。"""
 
-        config_path = PROJECT_ROOT / "src/config/study_part_config.json"
+        config_path = PROJECT_ROOT / "src/config/slice_part_config.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))
         aliases = config["label_aliases"]
 
@@ -45,7 +72,7 @@ class DocumentationConsistencyTests(unittest.TestCase):
         )
 
         cervical_range = localization_profiles_for(config, "颈椎")["whole_range"]
-        excluded = config["study_parts"]["颈椎"]["localization"]["spine_cpr"][
+        excluded = config["slice_parts"]["颈椎"]["localization"]["spine_cpr"][
             "excluded_labels"
         ]
         cervical_labels = configured_spine_cpr_labels(

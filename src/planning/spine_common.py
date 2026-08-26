@@ -1084,7 +1084,7 @@ def _is_terminal_cervical_interspace(
 ) -> bool:
     """判断当前区域是否是配置中的最后一个颈椎间隙。"""
 
-    if localization_result.get("study_part") != "颈椎":
+    if localization_result.get("slice_part") != "颈椎":
         return False
     resolved_configs = localization_result.get("resolved_cut_configs")
     interspace_config = (

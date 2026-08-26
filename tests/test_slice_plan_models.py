@@ -7,7 +7,7 @@ class SlicePlanModelsTest(unittest.TestCase):
     def test_slice_plan_to_dict_outputs_json_friendly_values(self):
         plan = SlicePlan(
             plan_id="腰椎_whole_range_横状位",
-            study_part="腰椎",
+            slice_part="腰椎",
             slice_type="MPR",
             plane="横状位",
             group_name="whole_range",
@@ -52,7 +52,7 @@ class SlicePlanModelsTest(unittest.TestCase):
     def test_slice_plan_to_dict_preserves_curved_stack_fields(self):
         plan = SlicePlan(
             plan_id="腰椎_CPR_矢状位",
-            study_part="腰椎",
+            slice_part="腰椎",
             slice_type="CPR",
             plane="矢状位",
             group_name="CPR",

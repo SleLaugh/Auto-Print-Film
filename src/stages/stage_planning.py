@@ -58,7 +58,7 @@ class PlanningStage(BaseStage):
 
         DebugLog("=" * 60)
         DebugLog("【第六阶段】切片规划 - 生成重建执行计划")
-        DebugLog(f"  部位: {request.study_part.value}")
+        DebugLog(f"  切割部位: {request.slice_part.value}")
         DebugLog(
             "  SliceType: "
             + ", ".join(config.slice_type.value for config in request.plane_configs)
@@ -68,7 +68,7 @@ class PlanningStage(BaseStage):
 
         # 规划阶段内部拆成 planner + expander。planner 负责找区间和路径；
         # expander 已在 planner 内部调用，把路径展开成每张图的 slices[]。
-        DebugLog("  [1] select_planner: 选择部位/切法 planner...")
+        DebugLog("  [1] select_planner: 选择切割部位/切法 planner...")
         grouped_configs: Dict[str, list[Any]] = {}
         for plane_config in request.plane_configs:
             grouped_configs.setdefault(
@@ -81,7 +81,7 @@ class PlanningStage(BaseStage):
         all_warnings = []
         planner_names = []
         for slice_type, plane_configs in grouped_configs.items():
-            planner = select_planner(request.study_part.value, slice_type)
+            planner = select_planner(request.slice_part.value, slice_type)
             planner_names.append(planner.planner_name)
             DebugLog(f"    planner: {planner.planner_name}")
             scoped_request = copy(request)

@@ -224,13 +224,13 @@ def build_whole_range_plan_from_bbox(
     # 胸椎横状位按临床要求保持原图默认水平横切；只有胸椎矢状位和冠状位
     # 继续使用 C7-L1 确定的整体脊柱轴。颈椎三状位仍全部使用解剖坐标。
     uses_anatomical_frame = (
-        request.study_part.value in anatomical_frame_parts
+        request.slice_part.value in anatomical_frame_parts
         and not (
-            request.study_part.value == "胸椎"
+            request.slice_part.value == "胸椎"
             and plane_config.plane == PlaneTypeEnum.横状位
         )
         and not (
-            request.study_part.value == "髋骨"
+            request.slice_part.value == "髋骨"
             and plane_config.plane != PlaneTypeEnum.横状位
         )
     )
@@ -253,7 +253,7 @@ def build_whole_range_plan_from_bbox(
         )
         return _apply_localizer_preferences(
             plan,
-            request.study_part.value,
+            request.slice_part.value,
             geometry,
         )
 
@@ -286,14 +286,14 @@ def build_whole_range_plan_from_bbox(
     )
     return _apply_localizer_preferences(
         plan,
-        request.study_part.value,
+        request.slice_part.value,
         geometry,
     )
 
 
 def _apply_localizer_preferences(
     plan: SlicePlan,
-    study_part: str,
+    slice_part: str,
     geometry: AnatomicalGeometryResult | None,
 ) -> SlicePlan:
     """把部位中心和明确的原始参考状位写入通用切片计划。
@@ -302,7 +302,7 @@ def _apply_localizer_preferences(
     识别髋骨或其他具体部位。
     """
 
-    if study_part != "髋骨" or geometry is None:
+    if slice_part != "髋骨" or geometry is None:
         return plan
     plan.localizer_reference = geometry.global_frame.origin
     localizer_planes = {
@@ -475,9 +475,9 @@ def _build_whole_range_plan_from_anatomical_frame(
     )
     return SlicePlan(
         plan_id=(
-            f"{request.study_part.value}_{plane_config.slice_type.value}_{plane.value}"
+            f"{request.slice_part.value}_{plane_config.slice_type.value}_{plane.value}"
         ),
-        study_part=request.study_part.value,
+        slice_part=request.slice_part.value,
         slice_type=plane_config.slice_type.value,
         plane=plane.value,
         group_name="whole_range",

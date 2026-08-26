@@ -53,7 +53,7 @@ class SingleLabelWholeRangePlanner:
                 continue
             if (
                 spine_labels
-                and request.study_part.value == "胸椎"
+                and request.slice_part.value == "胸椎"
                 and plane_config.plane == PlaneTypeEnum.冠状位
             ):
                 target_region_bbox, source_labels = spine_target_bbox(
@@ -71,7 +71,7 @@ class SingleLabelWholeRangePlanner:
                 # 脊柱矢状位恢复为普通直线 MPR，定位线继续画在冠状位背景上。
                 plan.localizer_plane = PlaneTypeEnum.冠状位.value
             if (
-                request.study_part.value == "胸椎"
+                request.slice_part.value == "胸椎"
                 and plane_config.plane == PlaneTypeEnum.冠状位
                 and target_region_bbox is not None
             ):

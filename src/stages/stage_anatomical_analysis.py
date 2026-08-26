@@ -110,7 +110,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         target_mask = workspace["target_mask"]
         correction_scope_bbox = workspace["correction_scope_bbox"]
 
-        study_part = context.request.study_part.value
+        slice_part = context.request.slice_part.value
         excluded_spine_labels = localization_result.get(
             "spine_cpr_config",
             {},
@@ -120,7 +120,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             {},
         ).get("interspace", {}).get("intervals", [])
         label_masks: Dict[str, np.ndarray] = {}
-        if study_part in {"颈椎", "胸椎", "髋骨"}:
+        if slice_part in {"颈椎", "胸椎", "髋骨"}:
             for label_name, region in label_regions.items():
                 label_mask = np.zeros(seg_array.shape, dtype=bool)
                 if region.indices_zyx.size:
@@ -135,7 +135,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         end_labels = anatomical_cut_config.get("end_labels") or []
         anatomical_geometry, anatomical_diagnostics = (
             self._build_anatomical_geometry(
-                study_part=study_part,
+                slice_part=slice_part,
                 target_mask=target_mask,
                 image=image,
                 label_masks=label_masks,
@@ -144,7 +144,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             )
         )
         spine_geometry = self._build_spine_body_geometry(
-            study_part=study_part,
+            slice_part=slice_part,
             image=image,
             seg_array=seg_array,
             label_targets=label_targets,

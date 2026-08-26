@@ -101,7 +101,7 @@ class Pipeline:
             "nnUNet_raw": config.nnunet.raw,
             "nnUNet_preprocessed": config.nnunet.preprocessed,
             "nnUNet_results": config.nnunet.results,
-            "study_part_config": config.study_part_config,
+            "slice_part_config": config.slice_part_config,
         }
         return [
             PreprocessingStage(),

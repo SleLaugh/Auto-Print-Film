@@ -17,9 +17,9 @@ import os
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.config import (
-    load_study_part_config,
+    load_slice_part_config,
     model_mappings_for,
-    validate_study_part_config,
+    validate_slice_part_config,
 )
 from src.models import SegmentationResult
 from src.utils import DebugLog, ErrorLog
@@ -29,7 +29,7 @@ class SegmentationStage(BaseStage):
     """推理分割阶段"""
     
     def __init__(self, config: Dict[str, Any] = None):
-        """初始化分割阶段并加载统一部位配置及 nnUNet 运行配置。"""
+        """初始化分割阶段并加载统一切割部位配置及 nnUNet 运行配置。"""
 
         super().__init__(name="segmentation", config=config)
         self._load_config()
@@ -80,11 +80,11 @@ class SegmentationStage(BaseStage):
         self._configuration = default_config.get('_configuration', "3d_fullres")
         self._fold = str(default_config.get('_fold', "0"))
         self._continue = default_config.get('_continue', True)
-        self._study_part_config = (
-            default_config.get('study_part_config')
-            or load_study_part_config()
+        self._slice_part_config = (
+            default_config.get('slice_part_config')
+            or load_slice_part_config()
         )
-        validate_study_part_config(self._study_part_config)
+        validate_slice_part_config(self._slice_part_config)
         
         # 设置nnUNet环境变量
         self._nnunet_env_vars = {
@@ -127,11 +127,11 @@ class SegmentationStage(BaseStage):
         DebugLog("=" * 60)
         DebugLog("【第二阶段】推理分割 - 模型匹配与推理")
         DebugLog(f"  输入NIfTI: {nifti_path}")
-        study_part = self._enum_value(request.study_part)
+        slice_part = self._enum_value(request.slice_part)
         study_type = self._enum_value(request.study_type)
         scan_thickness = self._normalize_scan_thickness(request.scan_thickness)
 
-        DebugLog(f"  部位: {study_part}")
+        DebugLog(f"  切割部位: {slice_part}")
         DebugLog(f"  检查类型: {study_type}")
         DebugLog(f"  扫描厚度: {scan_thickness:.3f}mm")
         
@@ -144,7 +144,7 @@ class SegmentationStage(BaseStage):
         # [1] match_model: 匹配模型（获取对应的 nnUNet 模型ID）
         DebugLog("  [1] match_model: 匹配模型...")
         model_info = self._match_model(
-            study_part=study_part,
+            slice_part=slice_part,
             study_type=study_type,
             scan_thickness=scan_thickness
         )
@@ -152,7 +152,7 @@ class SegmentationStage(BaseStage):
         configuration = model_info.get('configuration', self._configuration)
         fold = model_info.get('fold', self._fold)
         DebugLog(
-            f"    部位: {study_part}, 检查类型: {study_type}, "
+            f"    切割部位: {slice_part}, 检查类型: {study_type}, "
             f"扫描厚度: {scan_thickness:.3f}mm "
             f"-> 模型ID: {dataset_id}"
         )
@@ -185,17 +185,17 @@ class SegmentationStage(BaseStage):
     
     def _match_model(
         self,
-        study_part: str,
+        slice_part: str,
         study_type: str,
         scan_thickness: float,
     ) -> Dict[str, Any]:
         """
-        根据部位、检查类型和扫描厚度区间匹配对应模型。
+        根据切割部位、检查类型和扫描厚度区间匹配对应模型。
 
-        模型表从统一部位配置读取，再按扫描厚度闭区间匹配 model_id。
+        模型表从统一切割部位配置读取，再按扫描厚度闭区间匹配 model_id。
         
         Args:
-            study_part: 部位名称（如 "腰椎"、"头骨"、"肺部"）
+            slice_part: 切割部位名称（如 "腰椎"、"头骨"、"肺部"）
             study_type: 检查类型（CT、MR）
             scan_thickness: 当前原始扫描层厚，单位 mm
             
@@ -205,14 +205,14 @@ class SegmentationStage(BaseStage):
         normalized_study_type = (study_type or "").strip()
         normalized_scan_thickness = self._normalize_scan_thickness(scan_thickness)
         mappings = model_mappings_for(
-            self._study_part_config,
-            study_part,
+            self._slice_part_config,
+            slice_part,
             normalized_study_type,
         )
         model_mapping = self._match_model_mapping(
             mappings,
             normalized_scan_thickness,
-            study_part=study_part,
+            slice_part=slice_part,
             study_type=normalized_study_type,
         )
         thickness_range = model_mapping['scan_thickness_range_mm']
@@ -228,7 +228,7 @@ class SegmentationStage(BaseStage):
                 self._configuration,
             ),
             'fold': str(model_mapping.get('fold', self._fold)),
-            'matched_by': 'study_part_config',
+            'matched_by': 'slice_part_config',
         }
 
     @staticmethod
@@ -236,7 +236,7 @@ class SegmentationStage(BaseStage):
         mappings,
         scan_thickness: float,
         *,
-        study_part: str = "",
+        slice_part: str = "",
         study_type: str = "",
     ) -> Dict[str, Any]:
         """
@@ -311,7 +311,7 @@ class SegmentationStage(BaseStage):
 
         raise ValueError(
             "未找到匹配的扫描厚度模型: "
-            f"study_part={study_part}, study_type={study_type}, "
+            f"slice_part={slice_part}, study_type={study_type}, "
             f"ScanThickness={scan_thickness}mm"
         )
 

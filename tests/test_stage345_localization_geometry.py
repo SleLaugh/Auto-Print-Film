@@ -15,9 +15,9 @@ _logger_manager.debug_file_enabled = True
 
 from src.core.context import ProcessingContext
 from src.config import (
-    load_study_part_config,
+    load_slice_part_config,
     localization_profiles_for,
-    validate_study_part_config,
+    validate_slice_part_config,
 )
 from src.models import (
     AnatomicalAnalysisStageResult,
@@ -45,8 +45,8 @@ class LocalizationGeometryTest(unittest.TestCase):
     def _single_interval_lumbar_config(*, sagittal_start_mm: float = 0.0):
         """生成只依赖 L1/S1 的完整测试配置，避免夹具要求中间椎体。"""
 
-        config = load_study_part_config()
-        lumbar = config["study_parts"]["腰椎"]
+        config = load_slice_part_config()
+        lumbar = config["slice_parts"]["腰椎"]
         lumbar["localization"] = {
             "spine_cpr": {"full_label": True},
             "regions": {
@@ -94,17 +94,17 @@ class LocalizationGeometryTest(unittest.TestCase):
                 }
             },
         }
-        validate_study_part_config(config)
+        validate_slice_part_config(config)
         return config
 
     def test_range_extension_config_accepts_non_negative_endpoints(self):
         """统一配置接受切法规则下完整的非负毫米扩展。"""
 
-        config = load_study_part_config()
-        extension = config["study_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"]["range_extension"]
+        config = load_slice_part_config()
+        extension = config["slice_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"]["range_extension"]
         extension.update({"start_mm": 3.0, "end_mm": 2.0})
 
-        validate_study_part_config(config)
+        validate_slice_part_config(config)
 
     def test_range_extension_config_rejects_invalid_values(self):
         """范围扩展仅接受 start_mm/end_mm 和非负有限毫米数。"""
@@ -118,17 +118,17 @@ class LocalizationGeometryTest(unittest.TestCase):
         )
         for extension, message in invalid_extensions:
             with self.subTest(extension=extension):
-                config = load_study_part_config()
-                config["study_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"]["range_extension"] = extension
+                config = load_slice_part_config()
+                config["slice_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"]["range_extension"] = extension
                 with self.assertRaisesRegex(ValueError, message):
-                    validate_study_part_config(config)
+                    validate_slice_part_config(config)
 
     def test_interspace_config_is_derived_from_named_regions(self):
         """椎间定位数组由切法规则引用的具名区域生成。"""
 
         config = self._single_interval_lumbar_config()
         stage = LocalizationStage()
-        stage._study_part_config = config
+        stage._slice_part_config = config
         interspace = localization_profiles_for(config, "腰椎")["interspace"]
 
         self.assertEqual(stage._resolve_label_aliases(interspace), {
@@ -141,11 +141,11 @@ class LocalizationGeometryTest(unittest.TestCase):
             }],
         })
 
-    def test_spine_cpr_config_is_read_from_spine_study_part_only(self):
+    def test_spine_cpr_config_is_read_from_spine_slice_part_only(self):
         """脊柱 CPR 配置只从对应脊柱部位读取，其他部位不返回该配置。"""
 
         stage = LocalizationStage()
-        stage._study_part_config = load_study_part_config()
+        stage._slice_part_config = load_slice_part_config()
 
         self.assertEqual(
             stage._resolve_spine_cpr_config("腰椎"),
@@ -164,7 +164,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         image = sitk.GetImageFromArray(mask.astype(np.uint8))
 
         geometry, diagnostics = stage._build_anatomical_geometry(
-            study_part="肺部",
+            slice_part="肺部",
             target_mask=mask,
             image=image,
         )
@@ -183,7 +183,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         image = sitk.GetImageFromArray(mask.astype(np.uint8))
 
         geometry, diagnostics = stage._build_anatomical_geometry(
-            study_part="头骨",
+            slice_part="头骨",
             target_mask=mask,
             image=image,
         )
@@ -197,7 +197,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         stage = LocalizationStage()
         shape = (40, 32, 40)
         image = sitk.GetImageFromArray(np.zeros(shape, dtype=np.uint8))
-        for study_part, start_label, end_label in (
+        for slice_part, start_label, end_label in (
             ("颈椎", "vertebrae_C1", "vertebrae_C7"),
             ("胸椎", "vertebrae_C7", "vertebrae_L1"),
         ):
@@ -210,7 +210,7 @@ class LocalizationGeometryTest(unittest.TestCase):
             target_mask = np.logical_or.reduce(list(label_masks.values()))
 
             geometry, diagnostics = stage._build_anatomical_geometry(
-                study_part=study_part,
+                slice_part=slice_part,
                 target_mask=target_mask,
                 image=image,
                 label_masks=label_masks,
@@ -238,7 +238,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         label_masks["hip_right"][6:24, 5:15, 26:36] = True
 
         geometry, diagnostics = stage._build_anatomical_geometry(
-            study_part="髋骨",
+            slice_part="髋骨",
             target_mask=np.logical_or.reduce(list(label_masks.values())),
             image=image,
             label_masks=label_masks,
@@ -432,7 +432,7 @@ class LocalizationGeometryTest(unittest.TestCase):
                 "vertebrae_C4": LabelTarget("vertebrae_C4", [4]),
                 "vertebrae_C5": LabelTarget("vertebrae_C5", [5]),
             },
-            study_part="颈椎",
+            slice_part="颈椎",
         )
 
         self.assertEqual(candidate["correction_status"], "rejected")
@@ -460,7 +460,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         candidate = stage._build_xy_correction_candidate(
             seg_array,
             {"skull": LabelTarget("skull", [1])},
-            study_part="头骨",
+            slice_part="头骨",
         )
 
         self.assertEqual(candidate["correction_status"], "rejected")
@@ -489,7 +489,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         candidate = stage._build_xy_correction_candidate(
             seg_array,
             {"skull": LabelTarget("skull", [1])},
-            study_part="头骨",
+            slice_part="头骨",
         )
 
         self.assertEqual(candidate["correction_status"], "candidate")
@@ -677,9 +677,9 @@ class LocalizationGeometryTest(unittest.TestCase):
     def test_cervical_whole_range_keeps_c1_for_cut_coverage(self):
         """颈椎切图覆盖仍需保留环形 C1，避免其他状位缺少上端范围。"""
 
-        config = load_study_part_config()
+        config = load_slice_part_config()
 
-        self.assertEqual(config["study_parts"]["颈椎"]["localization"]["regions"]["default"], {
+        self.assertEqual(config["slice_parts"]["颈椎"]["localization"]["regions"]["default"], {
             "type": "whole_range",
             "start_label": "C1",
             "end_label": "C7",
@@ -722,8 +722,8 @@ class LocalizationGeometryTest(unittest.TestCase):
     def test_cervical_interspace_region_list_is_read_from_unified_config(self):
         """增加 C1_C2 后，定位范围应直接按配置顺序返回，不依赖代码常量。"""
 
-        config = load_study_part_config()
-        cervical = config["study_parts"]["颈椎"]
+        config = load_slice_part_config()
+        cervical = config["slice_parts"]["颈椎"]
         cervical["localization"]["regions"]["C1_C2"] = {
             "type": "interspace",
             "start_label": "C1",
@@ -733,7 +733,7 @@ class LocalizationGeometryTest(unittest.TestCase):
             0,
             "C1_C2",
         )
-        validate_study_part_config(config)
+        validate_slice_part_config(config)
 
         intervals = localization_profiles_for(config, "颈椎")["interspace"]
 
@@ -1474,7 +1474,7 @@ class LocalizationGeometryTest(unittest.TestCase):
             wraps=LocalizationStage._sagittal_body_quadrilateral,
         ) as quadrilateral:
             geometry = LocalizationStage._build_spine_body_geometry(
-                study_part="腰椎",
+                slice_part="腰椎",
                 image=image,
                 seg_array=seg_array,
                 label_targets={
@@ -1595,7 +1595,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         seg_array = np.zeros((12, 16, 20), dtype=np.uint8)
         seg_array[2:10, 4:12, 5:15] = 7
         geometry = LocalizationStage._build_spine_body_geometry(
-            study_part="腰椎",
+            slice_part="腰椎",
             image=image,
             seg_array=seg_array,
             label_targets={"vertebrae_L1": LabelTarget("vertebrae_L1", [7])},
@@ -1617,7 +1617,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         seg_array = np.zeros((12, 16, 20), dtype=np.uint8)
         seg_array[2:10, 4:12, 5:15] = 7
         geometry = LocalizationStage._build_spine_body_geometry(
-            study_part="腰椎",
+            slice_part="腰椎",
             image=image,
             seg_array=seg_array,
             label_targets={"vertebrae_L1": LabelTarget("vertebrae_L1", [7])},
@@ -2137,7 +2137,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         }
 
         geometry = stage._build_spine_body_geometry(
-            study_part="颈椎",
+            slice_part="颈椎",
             image=image,
             seg_array=seg_array,
             label_targets=label_targets,
@@ -2781,7 +2781,7 @@ class LocalizationGeometryTest(unittest.TestCase):
 
         image = sitk.Image(4, 4, 4, sitk.sitkUInt8)
         geometry = LocalizationStage._build_spine_body_geometry(
-            study_part="肺部",
+            slice_part="肺部",
             image=image,
             seg_array=np.zeros((4, 4, 4), dtype=np.uint8),
             label_targets={},
@@ -2995,12 +2995,12 @@ class LocalizationGeometryTest(unittest.TestCase):
                 "seg_path": str(seg_path),
                 "model": {"dataset_id": 1},
             })
-            study_part_config = self._single_interval_lumbar_config(
+            slice_part_config = self._single_interval_lumbar_config(
                 sagittal_start_mm=2.0,
             )
             stage_config = {
                 "correction_angle_threshold_degrees": 3.0,
-                "study_part_config": study_part_config,
+                "slice_part_config": slice_part_config,
             }
             stages = [
                 SpatialCorrectionStage(stage_config),
@@ -3250,7 +3250,7 @@ class LocalizationGeometryTest(unittest.TestCase):
                 "model": {"dataset_id": 1},
             })
             stage_config = {
-                "study_part_config": self._single_interval_lumbar_config(),
+                "slice_part_config": self._single_interval_lumbar_config(),
             }
             stages = [
                 SpatialCorrectionStage(stage_config),

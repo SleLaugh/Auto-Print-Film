@@ -9,7 +9,7 @@ import math
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from .enums import (
-    StudyPartEnum,
+    SlicePartEnum,
     StudyTypeEnum,
     PlaneTypeEnum,
     CutLineExtentModeEnum,
@@ -192,8 +192,8 @@ class Request:
     dicom_dir: str
     # 本次任务的输出根目录。
     output_dir: str
-    # 目标部位决定模型匹配和定位配置。
-    study_part: StudyPartEnum = StudyPartEnum.腰椎
+    # 切割部位决定模型匹配和定位配置。
+    slice_part: SlicePartEnum = SlicePartEnum.腰椎
     # 检查类型当前主要用于模型规则匹配。
     study_type: StudyTypeEnum = StudyTypeEnum.CT
     # 当前原始扫描层厚，单位 mm；模型选择按配置区间匹配。
@@ -215,7 +215,7 @@ class Request:
         return {
             'dicom_dir': self.dicom_dir,
             'output_dir': self.output_dir,
-            'StudyPart': self.study_part.value,
+            'SlicePart': self.slice_part.value,
             'StudyType': self.study_type.value,
             'ScanThickness': self.scan_thickness,
             'plane_configs': [
@@ -229,12 +229,14 @@ class Request:
         """
         从外部字典创建请求对象。
 
-        外部传入的部位和三平面配置都是字符串；这里统一转成枚举和
+        外部传入的切割部位和三平面配置都是字符串；这里统一转成枚举和
         PlaneConfig，让后续 Pipeline 阶段处理的是强约束结构。
         """
         removed_fields = {
+            'StudyPart',
             'body_part',
             'check_type',
+            'slice_part',
             'study_part',
             'study_type',
             'target_part',
@@ -251,8 +253,8 @@ class Request:
         return cls(
             dicom_dir=data['dicom_dir'],
             output_dir=data['output_dir'],
-            study_part=StudyPartEnum(
-                data.get('StudyPart', StudyPartEnum.腰椎.value)
+            slice_part=SlicePartEnum(
+                data.get('SlicePart', SlicePartEnum.腰椎.value)
             ),
             study_type=StudyTypeEnum(
                 data.get('StudyType', StudyTypeEnum.CT.value)

@@ -248,7 +248,7 @@ class PipelineFrameworkTest(unittest.TestCase):
         self.assertFalse(response.success)
         self.assertFalse(report["Success"])
         self.assertEqual(report["Message"], "boom")
-        self.assertEqual(report["StudyPart"], "腰椎")
+        self.assertEqual(report["SlicePart"], "腰椎")
         self.assertEqual(report["PlaneList"], [])
 
     def test_preflight_failure_writes_failure_report_before_pipeline_starts(self):

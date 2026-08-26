@@ -42,7 +42,7 @@ from .stage_results import (
     ReportingStageResult,
 )
 from .enums import (
-    StudyPartEnum,
+    SlicePartEnum,
     StudyTypeEnum,
     SliceType,
     PlaneTypeEnum,
@@ -70,7 +70,7 @@ __all__ = [
     'AnatomicalGeometryResult',
     'WindowPreset',
     'get_window_preset',
-    'StudyPartEnum',
+    'SlicePartEnum',
     'StudyTypeEnum',
     'SliceType',
     'PlaneTypeEnum',

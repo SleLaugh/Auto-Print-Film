@@ -44,7 +44,7 @@ class SpatialCorrectionStage(LocalizationOperations):
         DebugLog("【第三阶段】空间校正 - 选择后续工作图像")
         DebugLog(f"  输入原图: {raw_path}")
         DebugLog(f"  输入分割: {seg_path}")
-        DebugLog(f"  部位: {request.study_part.value}")
+        DebugLog(f"  切割部位: {request.slice_part.value}")
 
         localization_profile = self._resolve_request_localization_profile(request)
         cut_configs = self._resolve_cut_configs(request)
@@ -52,7 +52,7 @@ class SpatialCorrectionStage(LocalizationOperations):
         cut_config = cut_configs.get(localization_profile)
         if not cut_config:
             raise ValueError(
-                f"未找到定位范围配置: study_part={request.study_part.value}, "
+                f"未找到定位范围配置: slice_part={request.slice_part.value}, "
                 f"profile={localization_profile}"
             )
         resolved_cut_configs = {
@@ -86,7 +86,7 @@ class SpatialCorrectionStage(LocalizationOperations):
         candidate = self._build_xy_correction_candidate(
             seg_array,
             label_targets,
-            study_part=request.study_part.value,
+            slice_part=request.slice_part.value,
             label_regions=label_regions,
         )
         DebugLog(

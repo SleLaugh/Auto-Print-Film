@@ -46,7 +46,7 @@ class PreflightValidator:
             raise RequestValidationError(message or "请求参数无效")
 
         registry = self.registry or CapabilityRegistry.current(
-            config.study_part_config or None
+            config.slice_part_config or None
         )
         registry.validate(request)
         input_path = Path(request.dicom_dir).expanduser().resolve()

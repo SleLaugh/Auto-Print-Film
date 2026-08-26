@@ -71,7 +71,7 @@ class SlicePlan:
     """一组已经展开好的切片规划，供第七阶段直接执行。"""
 
     plan_id: str
-    study_part: str
+    slice_part: str
     slice_type: str
     plane: str
     group_name: str
@@ -116,7 +116,7 @@ class SlicePlan:
 
         data = {
             "plan_id": self.plan_id,
-            "study_part": self.study_part,
+            "slice_part": self.slice_part,
             "slice_type": self.slice_type,
             "plane": self.plane,
             "group_name": self.group_name,

@@ -16,11 +16,11 @@ import SimpleITK as sitk
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.config import (
-    load_study_part_config,
+    load_slice_part_config,
     localization_for,
     localization_profiles_for,
     slice_rules_for,
-    validate_study_part_config,
+    validate_slice_part_config,
 )
 from src.models import (
     AnatomicalGeometryResult,
@@ -117,28 +117,28 @@ class LocalizationOperations(BaseStage):
         """
         加载定位/切割范围配置。
 
-        统一部位配置同时描述模型、定位区域和允许切法。本阶段只消费其中的
+        统一切割部位配置同时描述模型、定位区域和允许切法。本阶段只消费其中的
         label_aliases、localization 和 slice_rules。
         """
-        injected_config = self.config.get("study_part_config")
+        injected_config = self.config.get("slice_part_config")
         if injected_config:
-            validate_study_part_config(injected_config)
-            self._study_part_config = injected_config
+            validate_slice_part_config(injected_config)
+            self._slice_part_config = injected_config
             return
 
         config_paths = [
-            Path.cwd() / "config" / "study_part_config.json",
-            Path.cwd() / "study_part_config.json",
-            Path(__file__).parent.parent / "config" / "study_part_config.json",
+            Path.cwd() / "config" / "slice_part_config.json",
+            Path.cwd() / "slice_part_config.json",
+            Path(__file__).parent.parent / "config" / "slice_part_config.json",
         ]
 
         for config_path in config_paths:
             if config_path.exists():
-                self._study_part_config = load_study_part_config(config_path)
+                self._slice_part_config = load_slice_part_config(config_path)
                 DebugLog(f"[定位] 加载配置文件: {config_path}")
                 return
 
-        raise FileNotFoundError("未找到 study_part_config.json")
+        raise FileNotFoundError("未找到 slice_part_config.json")
 
     def _load_nnunet_config(self):
         """
@@ -189,7 +189,7 @@ class LocalizationOperations(BaseStage):
     
     @staticmethod
     def _build_anatomical_geometry(
-        study_part: str,
+        slice_part: str,
         target_mask: np.ndarray,
         image: sitk.Image,
         label_masks: Dict[str, np.ndarray] | None = None,
@@ -198,18 +198,18 @@ class LocalizationOperations(BaseStage):
     ) -> tuple[AnatomicalGeometryResult | None, Dict[str, Any]]:
         """只为已经适配的部位计算统一解剖坐标，其余部位保持旧行为。"""
 
-        if study_part == "肺部":
+        if slice_part == "肺部":
             return estimate_lung_frame_with_diagnostics(target_mask, image)
-        if study_part in {"颈椎", "胸椎"}:
+        if slice_part in {"颈椎", "胸椎"}:
             if not label_masks or not start_label or not end_label:
-                raise ValueError(f"{study_part} 解剖坐标缺少首尾椎体标签信息")
+                raise ValueError(f"{slice_part} 解剖坐标缺少首尾椎体标签信息")
             return estimate_spine_frame_with_diagnostics(
                 label_masks=label_masks,
                 start_label=start_label,
                 end_label=end_label,
                 image=image,
             )
-        if study_part == "髋骨":
+        if slice_part == "髋骨":
             if not label_masks or not start_label or not end_label:
                 raise ValueError("髋骨解剖坐标缺少左右髋骨标签信息")
             if start_label not in label_masks:
@@ -746,7 +746,7 @@ class LocalizationOperations(BaseStage):
         self,
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
-        study_part: str | None = None,
+        slice_part: str | None = None,
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
     ) -> Dict[str, Any]:
         """估计横状位 XY 回正候选角，但不执行主流程回正。
@@ -793,7 +793,7 @@ class LocalizationOperations(BaseStage):
                     self.correction_non_spine_angle_threshold_degrees
                 ),
                 'should_correct': should_correct,
-                'study_part': study_part,
+                'slice_part': slice_part,
                 'reason': reason,
             }
         skew_info = self._detect_target_axial_skew(
@@ -801,11 +801,11 @@ class LocalizationOperations(BaseStage):
             label_targets,
             label_regions=label_regions,
             excluded_labels=(
-                self._resolve_spine_cpr_config(study_part).get(
+                self._resolve_spine_cpr_config(slice_part).get(
                     "excluded_labels",
                     [],
                 )
-                if study_part
+                if slice_part
                 else []
             ),
         )
@@ -2172,7 +2172,7 @@ class LocalizationOperations(BaseStage):
     @classmethod
     def _build_spine_body_geometry(
         cls,
-        study_part: str,
+        slice_part: str,
         image: sitk.Image,
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
@@ -2189,7 +2189,7 @@ class LocalizationOperations(BaseStage):
         保证与第四阶段定位空间一致。
         """
 
-        if study_part not in {"颈椎", "胸椎", "腰椎"}:
+        if slice_part not in {"颈椎", "胸椎", "腰椎"}:
             return None
 
         excluded_label_set = set(excluded_labels)
@@ -4076,7 +4076,7 @@ class LocalizationOperations(BaseStage):
     ) -> None:
         """写出定位结果，供后续映射、MPR 和调试使用。"""
         localization_result = LocalizationResult(
-            study_part=request.study_part.value,
+            slice_part=request.slice_part.value,
             localization_profile=(
                 LocalizationStage._resolve_request_localization_profile(request)
             ),
@@ -4156,27 +4156,27 @@ class LocalizationOperations(BaseStage):
         """
         根据请求中的 SliceType 所需定位范围方案查找配置。
 
-        具体范围统一从 study_part_config.json 的 localization.regions 和
+        具体范围统一从 slice_part_config.json 的 localization.regions 和
         slice_rules 引用关系整理得到。
         """
         localization_profile = (
             localization_profile
             or self._resolve_request_localization_profile(request)
         )
-        study_part = getattr(request.study_part, 'value', request.study_part)
+        slice_part = getattr(request.slice_part, 'value', request.slice_part)
         cut_configs = self._resolve_cut_configs(request)
         cut_config = cut_configs.get(localization_profile)
         if cut_config is None:
             raise ValueError(
-                f"未找到定位范围配置: study_part={study_part}, "
+                f"未找到定位范围配置: slice_part={slice_part}, "
                 f"profile={localization_profile}"
             )
         return cut_config
 
-    def _resolve_spine_cpr_config(self, study_part: str) -> Dict[str, Any]:
+    def _resolve_spine_cpr_config(self, slice_part: str) -> Dict[str, Any]:
         """从当前脊柱部位配置中读取 CPR 配置，非脊柱部位返回空配置。"""
 
-        localization = localization_for(self._study_part_config, study_part)
+        localization = localization_for(self._slice_part_config, slice_part)
         config = localization.get('spine_cpr')
         if not isinstance(config, dict):
             return {}
@@ -4195,14 +4195,14 @@ class LocalizationOperations(BaseStage):
         让第六阶段在一次混合请求中为 MPR/CPR 和椎间隙读取各自范围配置。
         """
 
-        study_part = getattr(request.study_part, 'value', request.study_part)
-        return localization_profiles_for(self._study_part_config, study_part)
+        slice_part = getattr(request.slice_part, 'value', request.slice_part)
+        return localization_profiles_for(self._slice_part_config, slice_part)
 
     def _resolve_slice_rules(self, request) -> Dict[str, Any]:
         """返回当前部位经统一校验的状位与切法规则。"""
 
-        study_part = getattr(request.study_part, 'value', request.study_part)
-        return slice_rules_for(self._study_part_config, study_part)
+        slice_part = getattr(request.slice_part, 'value', request.slice_part)
+        return slice_rules_for(self._slice_part_config, slice_part)
 
     def _resolve_label_aliases(self, cut_config: CutConfig) -> Dict[str, Any]:
         """
@@ -4242,7 +4242,7 @@ class LocalizationOperations(BaseStage):
         alias 可以是字符串，也可以是字符串数组。肺部这类由左右肺共同
         构成的整体范围，可以用一个业务名 lung 映射到多个 label。
         """
-        aliases = self._study_part_config.get('label_aliases', {})
+        aliases = self._slice_part_config.get('label_aliases', {})
         value = aliases.get(name, name)
         if isinstance(value, list):
             return value
@@ -4347,7 +4347,7 @@ class LocalizationStage(LocalizationOperations):
             ],
             "slice_rules": correction_result["slice_rules"],
             "spine_cpr_config": self._resolve_spine_cpr_config(
-                context.request.study_part.value,
+                context.request.slice_part.value,
             ),
             "label_targets": self._label_targets_to_dict(label_targets),
             "dataset_json_path": correction_result["dataset_json_path"],

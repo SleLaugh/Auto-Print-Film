@@ -6,8 +6,8 @@
 from enum import Enum
 
 
-class StudyPartEnum(Enum):
-    """部位枚举"""
+class SlicePartEnum(Enum):
+    """切割部位枚举。"""
     头骨 = "头骨"
     颈椎 = "颈椎"
     胸椎 = "胸椎"

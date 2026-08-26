@@ -76,8 +76,8 @@ class BatchTestPlanScriptTest(unittest.TestCase):
             if line.strip()
         ]
         mapping = {
-            (study_part, plane): slice_type
-            for study_part, plane, slice_type in (
+            (slice_part, plane): slice_type
+            for slice_part, plane, slice_type in (
                 entry.split("|") for entry in entries
             )
         }
@@ -85,8 +85,8 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         self.assertEqual(
             set(mapping),
             {
-                (study_part, plane)
-                for study_part in ("颈椎", "胸椎", "腰椎", "肺部", "髋骨")
+                (slice_part, plane)
+                for slice_part in ("颈椎", "胸椎", "腰椎", "肺部", "髋骨")
                 for plane in ("横状位", "矢状位", "冠状位")
             },
         )

@@ -25,7 +25,7 @@ SegmentResolver = Callable[
 def configured_interspace_definitions(
     localization_result: Dict[str, Any],
 ) -> List[Tuple[str, str, str]]:
-    """从统一部位配置的解析结果读取椎间隙名称和端点标签。"""
+    """从统一切割部位配置的解析结果读取椎间隙名称和端点标签。"""
 
     resolved_configs = localization_result.get("resolved_cut_configs")
     interspace_config = (
@@ -86,7 +86,7 @@ def build_spine_interspace_plans(
         for plane_config in request.plane_configs:
             if plane_config.plane != PlaneTypeEnum.横状位:
                 warnings.append(
-                    f"暂不支持{request.study_part.value}椎间隙状位: "
+                    f"暂不支持{request.slice_part.value}椎间隙状位: "
                     f"{plane_config.plane.value}"
                 )
                 continue

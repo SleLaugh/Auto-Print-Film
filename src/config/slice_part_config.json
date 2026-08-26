@@ -31,7 +31,7 @@
         "hip_left": "hip_left",
         "hip_right": "hip_right"
     },
-    "study_parts": {
+    "slice_parts": {
         "头骨": {
             "enabled": true,
             "model_rules": {

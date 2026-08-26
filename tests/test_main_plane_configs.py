@@ -68,6 +68,8 @@ class MainPlaneConfigsTest(unittest.TestCase):
                 "/tmp/dicom",
                 "-o",
                 "/tmp/output",
+                "--slice_part",
+                "颈椎",
                 "--scan_thickness",
                 "1.5",
                 "--plane_configs",
@@ -81,6 +83,7 @@ class MainPlaneConfigsTest(unittest.TestCase):
                 '[{"Plane":"冠状位","SliceThickness":5,"SliceSpacing":10,"WindowPresets":["骨窗"]}]',
             )
             self.assertEqual(args.scan_thickness, 1.5)
+            self.assertEqual(args.slice_part, "颈椎")
         finally:
             # 测试结束后恢复 argv，避免污染同进程里的其他测试。
             sys.argv = original_argv
@@ -91,7 +94,8 @@ class MainPlaneConfigsTest(unittest.TestCase):
         original_argv = sys.argv
         try:
             for removed_name in (
-                "--study-part",
+                "--study_part",
+                "--slice-part",
                 "--study-type",
                 "--scan-thickness",
                 "--plane-configs",
@@ -117,7 +121,7 @@ class MainPlaneConfigsTest(unittest.TestCase):
                 "main.py",
                 "-i", "/tmp/dicom",
                 "-o", temp_dir,
-                "--study_part", "颈椎",
+                "--slice_part", "颈椎",
                 "--scan_thickness", "1.5",
                 "--plane_configs", "not-json",
             ]
@@ -137,7 +141,7 @@ class MainPlaneConfigsTest(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertFalse(report["Success"])
         self.assertIn("plane_configs 不是合法 JSON", report["Message"])
-        self.assertEqual(report["StudyPart"], "颈椎")
+        self.assertEqual(report["SlicePart"], "颈椎")
         self.assertEqual(report["ScanThickness"], 1.5)
         self.assertEqual(report["PlaneList"], [])
 
@@ -172,7 +176,7 @@ class MainPlaneConfigsTest(unittest.TestCase):
                 "main.py",
                 "-i", "/tmp/dicom",
                 "-o", temp_dir,
-                "--study_part", "颈椎",
+                "--slice_part", "颈椎",
                 "--scan_thickness", "1.0",
             ]
             with (
@@ -189,7 +193,7 @@ class MainPlaneConfigsTest(unittest.TestCase):
         self.assertEqual(exit_code, 130)
         self.assertFalse(report["Success"])
         self.assertEqual(report["Message"], "任务被中断")
-        self.assertEqual(report["StudyPart"], "颈椎")
+        self.assertEqual(report["SlicePart"], "颈椎")
         self.assertEqual(report["PlaneList"], [])
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .settings import AppConfig, LoggingConfig, NnUNetConfig, PipelineConfig
-from .study_parts import validate_study_part_config
+from .slice_parts import validate_slice_part_config
 
 
 def _first_nonempty(*values: Any, fallback: Any = "") -> Any:
@@ -46,8 +46,14 @@ def load_app_config(
     """
 
     explicit_data = dict(explicit or {})
+    if "study_part_config" in explicit_data:
+        raise ValueError("应用配置包含已移除字段: study_part_config")
     environment = os.environ if environ is None else environ
-    default_data = dict(defaults or _read_defaults(default_path))
+    default_data = dict(
+        _read_defaults(default_path) if defaults is None else defaults
+    )
+    if "study_part_config" in default_data:
+        raise ValueError("默认配置包含已移除字段: study_part_config")
     explicit_nnunet = _section(explicit_data, "nnunet")
     default_nnunet = _section(default_data, "nnunet")
 
@@ -99,22 +105,22 @@ def load_app_config(
             "run_preflight": True,
         }.items()
     })
-    study_part_config = explicit_data.get(
-        "study_part_config",
-        default_data.get("study_part_config", {}),
+    slice_part_config = explicit_data.get(
+        "slice_part_config",
+        default_data.get("slice_part_config", {}),
     )
-    if study_part_config:
-        validate_study_part_config(study_part_config)
+    if slice_part_config:
+        validate_slice_part_config(slice_part_config)
     return AppConfig(
         nnunet=nnunet,
         logging=logging,
         pipeline=pipeline,
-        study_part_config=dict(study_part_config),
+        slice_part_config=dict(slice_part_config),
     )
 
 
 def _read_defaults(default_path: Optional[Path]) -> Dict[str, Any]:
-    """读取同一目录中的 nnUNet、日志和统一部位配置并合并。"""
+    """读取同一目录中的 nnUNet、日志和统一切割部位配置并合并。"""
     path = default_path or Path(__file__).with_name("nnuNet_config.json")
     data: Dict[str, Any] = {}
     if path.exists():
@@ -124,8 +130,8 @@ def _read_defaults(default_path: Optional[Path]) -> Dict[str, Any]:
     if logger_path.exists():
         with logger_path.open("r", encoding="utf-8") as file:
             data["logging"] = json.load(file)
-    study_part_path = path.with_name("study_part_config.json")
-    if study_part_path.exists():
-        with study_part_path.open("r", encoding="utf-8") as file:
-            data["study_part_config"] = json.load(file)
+    slice_part_path = path.with_name("slice_part_config.json")
+    if slice_part_path.exists():
+        with slice_part_path.open("r", encoding="utf-8") as file:
+            data["slice_part_config"] = json.load(file)
     return data

@@ -583,9 +583,9 @@ def build_straight_slice_plan(
         plan_key = f"{plan_key}_{segment.group_name}"
     return SlicePlan(
         plan_id=(
-            f"{request.study_part.value}_{plan_key}_{plane_config.plane.value}"
+            f"{request.slice_part.value}_{plan_key}_{plane_config.plane.value}"
         ),
-        study_part=request.study_part.value,
+        slice_part=request.slice_part.value,
         slice_type=slice_type,
         plane=plane_config.plane.value,
         group_name=segment.group_name,

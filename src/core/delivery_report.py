@@ -14,7 +14,7 @@ def build_status_report(
     success: bool,
     message: str,
     request: Any = None,
-    study_part: Any = None,
+    slice_part: Any = None,
     study_type: Any = None,
     scan_thickness: Any = None,
     plane_list: Optional[list[Dict[str, Any]]] = None,
@@ -23,14 +23,14 @@ def build_status_report(
 
     if request is not None:
         request_data = request.to_dict()
-        study_part = request_data.get("StudyPart")
+        slice_part = request_data.get("SlicePart")
         study_type = request_data.get("StudyType")
         scan_thickness = request_data.get("ScanThickness")
 
     return {
         "Success": bool(success),
         "Message": str(message or ""),
-        "StudyPart": _enum_value(study_part),
+        "SlicePart": _enum_value(slice_part),
         "StudyType": _enum_value(study_type),
         "ScanThickness": _finite_float_or_none(scan_thickness),
         "PlaneList": list(plane_list or []),
@@ -64,7 +64,7 @@ def write_failure_report(
     message: str,
     *,
     request: Any = None,
-    study_part: Any = None,
+    slice_part: Any = None,
     study_type: Any = None,
     scan_thickness: Any = None,
 ) -> Path:
@@ -76,7 +76,7 @@ def write_failure_report(
             success=False,
             message=message,
             request=request,
-            study_part=study_part,
+            slice_part=slice_part,
             study_type=study_type,
             scan_thickness=scan_thickness,
         ),

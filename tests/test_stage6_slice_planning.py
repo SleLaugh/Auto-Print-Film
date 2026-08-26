@@ -14,12 +14,12 @@ _logger_manager.debug_file_enabled = True
 from src.core.context import ProcessingContext
 from src.config import (
     localization_profiles_for,
-    load_study_part_config,
+    load_slice_part_config,
     slice_rules_for,
 )
 from src.models import PlaneConfig, Point3D, Request
 from src.models.enums import CutLineExtentModeEnum
-from src.models.enums import StudyPartEnum, PlaneTypeEnum, SliceType
+from src.models.enums import SlicePartEnum, PlaneTypeEnum, SliceType
 from src.planning.base import select_planner
 from src.planning.cervical import CervicalInterspacePlanner
 from src.planning.geometry import normalize_vector, subtract_points
@@ -54,12 +54,12 @@ class Stage6SlicePlanningTest(unittest.TestCase):
     }
 
     @staticmethod
-    def _configured_localization_contract(study_part):
+    def _configured_localization_contract(slice_part):
         """从正式统一配置生成规划测试使用的定位配置契约。"""
 
-        config = load_study_part_config()
+        config = load_slice_part_config()
         aliases = config["label_aliases"]
-        cut_configs = localization_profiles_for(config, study_part)
+        cut_configs = localization_profiles_for(config, slice_part)
 
         def alias_values(name):
             value = aliases.get(name, name)
@@ -85,7 +85,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     "end_labels": alias_values(cut_config["end"]),
                 }
 
-        cpr_config = config["study_parts"][study_part]["localization"].get(
+        cpr_config = config["slice_parts"][slice_part]["localization"].get(
             "spine_cpr",
             {},
         )
@@ -94,7 +94,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             "cut_configs": cut_configs,
             "resolved_cut_config": resolved_cut_configs.get("whole_range"),
             "resolved_cut_configs": resolved_cut_configs,
-            "slice_rules": slice_rules_for(config, study_part),
+            "slice_rules": slice_rules_for(config, slice_part),
             "spine_cpr_config": {
                 "full_label": cpr_config.get("full_label", True),
                 "excluded_labels": [
@@ -243,7 +243,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             request = Request(
                 dicom_dir="/tmp/dicom",
                 output_dir=temp_dir,
-                study_part=StudyPartEnum.腰椎,
+                slice_part=SlicePartEnum.腰椎,
                 plane_configs=[
                     PlaneConfig(
                         PlaneTypeEnum.横状位, 1.0, 3.0,
@@ -295,7 +295,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
@@ -507,7 +507,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
@@ -545,7 +545,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
@@ -1293,7 +1293,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
@@ -1648,7 +1648,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"],
@@ -1702,7 +1702,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"],
@@ -1743,7 +1743,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
@@ -1809,7 +1809,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
@@ -1856,7 +1856,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
@@ -1899,7 +1899,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0,
@@ -2088,7 +2088,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 1.0,
@@ -2149,7 +2149,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.颈椎,
+            slice_part=SlicePartEnum.颈椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.横状位, 1.0, 3.0,
@@ -2203,7 +2203,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.颈椎,
+            slice_part=SlicePartEnum.颈椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=2.0,
@@ -2253,14 +2253,14 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertIsInstance(planner, CervicalInterspacePlanner)
 
-    def test_select_planner_supports_configured_whole_range_study_parts(self):
-        """验证 `test_select_planner_supports_configured_whole_range_study_parts` 场景符合预期。"""
+    def test_select_planner_supports_configured_whole_range_slice_parts(self):
+        """验证 `test_select_planner_supports_configured_whole_range_slice_parts` 场景符合预期。"""
 
-        config_path = Path("src/config/study_part_config.json")
+        config_path = Path("src/config/slice_part_config.json")
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        whole_range_study_parts = [
-            study_part
-            for study_part, part_config in config["study_parts"].items()
+        whole_range_slice_parts = [
+            slice_part
+            for slice_part, part_config in config["slice_parts"].items()
             if part_config["enabled"]
             and any(
                 region["type"] == "whole_range"
@@ -2268,14 +2268,14 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             )
         ]
 
-        self.assertEqual(set(whole_range_study_parts), {
+        self.assertEqual(set(whole_range_slice_parts), {
             "颈椎", "胸椎", "腰椎", "肺部", "头骨", "髋骨",
         })
 
-        for study_part in whole_range_study_parts:
-            with self.subTest(study_part=study_part):
-                planner = select_planner(study_part, SliceType.MPR.value)
-                if study_part == StudyPartEnum.腰椎.value:
+        for slice_part in whole_range_slice_parts:
+            with self.subTest(slice_part=slice_part):
+                planner = select_planner(slice_part, SliceType.MPR.value)
+                if slice_part == SlicePartEnum.腰椎.value:
                     self.assertIsInstance(planner, LumbarWholeRangePlanner)
                 else:
                     self.assertIsInstance(planner, SingleLabelWholeRangePlanner)
@@ -2283,11 +2283,11 @@ class Stage6SlicePlanningTest(unittest.TestCase):
     def test_checked_in_range_extension_keeps_configured_defaults(self):
         """验证当前默认值，不限制后续按需增加其他部位或状位。"""
 
-        config_path = Path("src/config/study_part_config.json")
+        config_path = Path("src/config/slice_part_config.json")
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        for study_part in ("肺部", "髋骨"):
-            with self.subTest(study_part=study_part):
-                rule = config["study_parts"][study_part]["slice_rules"][
+        for slice_part in ("肺部", "髋骨"):
+            with self.subTest(slice_part=slice_part):
+                rule = config["slice_parts"][slice_part]["slice_rules"][
                     "横状位"
                 ]["MPR"]
                 self.assertEqual(
@@ -2299,12 +2299,12 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         """椎间隙输出名称、顺序和端点统一由区域及切法引用决定。"""
 
         config = json.loads(
-            Path("src/config/study_part_config.json").read_text(encoding="utf-8")
+            Path("src/config/slice_part_config.json").read_text(encoding="utf-8")
         )
         expected_counts = {"颈椎": 5, "腰椎": 5}
-        for study_part, expected_count in expected_counts.items():
-            with self.subTest(study_part=study_part):
-                part = config["study_parts"][study_part]
+        for slice_part, expected_count in expected_counts.items():
+            with self.subTest(slice_part=slice_part):
+                part = config["slice_parts"][slice_part]
                 selected = part["slice_rules"]["横状位"]["椎间隙"]["regions"]
                 self.assertEqual(len(selected), expected_count)
                 self.assertTrue(all(
@@ -2312,7 +2312,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     for name in selected
                 ))
         self.assertEqual(
-            config["study_parts"]["颈椎"]["slice_rules"]["横状位"]
+            config["slice_parts"]["颈椎"]["slice_rules"]["横状位"]
             ["椎间隙"]["regions"],
             [f"C{index}_C{index + 1}" for index in range(2, 7)],
         )
@@ -2323,7 +2323,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -2334,7 +2334,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             ],
         )
         localization_result = {
-            "study_part": "肺部",
+            "slice_part": "肺部",
             "localization_profile": "whole_range",
             "correction_scope_bbox": {
                 "z_min": 0,
@@ -2383,7 +2383,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -2395,7 +2395,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
         localization_result = {
             **self._configured_localization_contract("肺部"),
-            "study_part": "肺部",
+            "slice_part": "肺部",
             "localization_profile": "whole_range",
             "correction_scope_bbox": {
                 "z_min": 103,
@@ -2502,7 +2502,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=4.0,
@@ -2511,7 +2511,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             )],
         )
         localization_result = {
-            "study_part": "肺部",
+            "slice_part": "肺部",
             "correction_scope_bbox": {
                 "z_min": 0, "z_max": 40,
                 "y_min": 0, "y_max": 60,
@@ -2599,7 +2599,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.颈椎,
+            slice_part=SlicePartEnum.颈椎,
             plane_configs=[
                 PlaneConfig(plane, 4.0, 10.0, ["骨窗"])
                 for plane in (
@@ -2610,7 +2610,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             ],
         )
         localization_result = {
-            "study_part": "颈椎",
+            "slice_part": "颈椎",
             "correction_scope_bbox": {
                 "z_min": 10, "z_max": 70,
                 "y_min": 10, "y_max": 70,
@@ -2710,7 +2710,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.头骨,
+            slice_part=SlicePartEnum.头骨,
             plane_configs=[PlaneConfig(
                 PlaneTypeEnum.横状位, 1.0, 5.0, ["骨窗"]
             )],
@@ -2742,14 +2742,14 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.胸椎,
+            slice_part=SlicePartEnum.胸椎,
             plane_configs=[
                 PlaneConfig(PlaneTypeEnum.横状位, 2.0, 5.0, ["骨窗"]),
                 PlaneConfig(PlaneTypeEnum.矢状位, 2.0, 5.0, ["骨窗"]),
             ],
         )
         localization_result = self._lumbar_localization_result()
-        localization_result["study_part"] = "胸椎"
+        localization_result["slice_part"] = "胸椎"
         localization_result["image"]["size_xyz"] = [120, 120, 120]
         localization_result["anatomical_geometry"] = {
             "global_frame": {
@@ -2794,7 +2794,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.胸椎,
+            slice_part=SlicePartEnum.胸椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 2.0, 5.0, ["骨窗"],
@@ -2828,7 +2828,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.胸椎,
+            slice_part=SlicePartEnum.胸椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 2.0, 5.0, ["骨窗"],
@@ -2937,7 +2937,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.胸椎,
+            slice_part=SlicePartEnum.胸椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 2.0, 5.0, ["骨窗"],
@@ -3034,7 +3034,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             request = Request(
                 dicom_dir="/tmp/dicom",
                 output_dir="/tmp/output",
-                study_part=StudyPartEnum.胸椎,
+                slice_part=SlicePartEnum.胸椎,
                 plane_configs=[
                     PlaneConfig(
                         PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"],
@@ -3156,7 +3156,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"],
@@ -3341,7 +3341,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             request = Request(
                 dicom_dir="/tmp/dicom",
                 output_dir="/tmp/output",
-                study_part=StudyPartEnum.腰椎,
+                slice_part=SlicePartEnum.腰椎,
                 plane_configs=[
                     PlaneConfig(
                         PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"],
@@ -3372,36 +3372,36 @@ class Stage6SlicePlanningTest(unittest.TestCase):
     def test_checked_in_spine_cpr_full_label_config_lives_under_spine_targets(self):
         """CPR 范围配置只放在三个脊柱部位下，且必须使用 bool。"""
 
-        config_path = Path("src/config/study_part_config.json")
+        config_path = Path("src/config/slice_part_config.json")
         config = json.loads(config_path.read_text(encoding="utf-8"))
 
         self.assertNotIn("spine_cpr", config)
-        for study_part in ("颈椎", "胸椎", "腰椎"):
-            with self.subTest(study_part=study_part):
+        for slice_part in ("颈椎", "胸椎", "腰椎"):
+            with self.subTest(slice_part=slice_part):
                 self.assertIsInstance(
-                    config["study_parts"][study_part]["localization"]
+                    config["slice_parts"][slice_part]["localization"]
                     ["spine_cpr"].get("full_label"),
                     bool,
                 )
-        for study_part in ("肺部", "头骨", "髋骨"):
-            with self.subTest(study_part=study_part):
+        for slice_part in ("肺部", "头骨", "髋骨"):
+            with self.subTest(slice_part=slice_part):
                 self.assertNotIn(
                     "spine_cpr",
-                    config["study_parts"][study_part]["localization"],
+                    config["slice_parts"][slice_part]["localization"],
                 )
 
     def test_checked_in_spine_cpr_uses_full_label_range(self):
         """当前脊柱 CPR 配置统一覆盖完整标注范围。"""
 
-        config_path = Path("src/config/study_part_config.json")
+        config_path = Path("src/config/slice_part_config.json")
         config = json.loads(config_path.read_text(encoding="utf-8"))
 
         self.assertTrue(
-            config["study_parts"]["胸椎"]["localization"]
+            config["slice_parts"]["胸椎"]["localization"]
             ["spine_cpr"]["full_label"],
         )
         self.assertTrue(
-            config["study_parts"]["腰椎"]["localization"]
+            config["slice_parts"]["腰椎"]["localization"]
             ["spine_cpr"]["full_label"],
         )
 
@@ -3416,7 +3416,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"],
@@ -3447,7 +3447,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 4.0, 5.0, ["骨窗"],
@@ -3471,7 +3471,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"],
@@ -3509,7 +3509,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"],
@@ -3553,7 +3553,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.髋骨,
+            slice_part=SlicePartEnum.髋骨,
             plane_configs=[
                 PlaneConfig(plane, 2.0, 5.0, ["骨窗"])
                 for plane in (
@@ -3564,7 +3564,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             ],
         )
         localization_result = self._lumbar_localization_result()
-        localization_result["study_part"] = "髋骨"
+        localization_result["slice_part"] = "髋骨"
         localization_result["image"]["size_xyz"] = [100, 100, 100]
         localization_result["correction_scope_bbox"] = {
             "z_min": 10, "z_max": 70,
@@ -3626,7 +3626,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.矢状位,
                 slice_thickness=3.0,
@@ -3650,7 +3650,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[
                 PlaneConfig(
                     PlaneTypeEnum.横状位,
@@ -3731,7 +3731,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=3.0,
@@ -3840,7 +3840,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=3.0,
@@ -3896,7 +3896,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=1.0,
@@ -4122,7 +4122,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             },
         }
         localization_result = {
-            "study_part": "颈椎",
+            "slice_part": "颈椎",
             "spine_geometry": {
                 "filtered_annotation_centroids": annotations,
             },
@@ -4192,7 +4192,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         localization_result = {
             **self._configured_localization_contract("颈椎"),
-            "study_part": "颈椎",
+            "slice_part": "颈椎",
             "spine_geometry": {
                 "interspace_body_pairs": {
                     "C6_C7": {
@@ -4263,7 +4263,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         localization_result = {
             **self._configured_localization_contract("颈椎"),
-            "study_part": "颈椎",
+            "slice_part": "颈椎",
             "spine_geometry": {
                 "interspace_body_pairs": {
                     "C6_C7": {
@@ -4789,7 +4789,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=2.0,
@@ -4861,7 +4861,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=3.0,
@@ -4887,7 +4887,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         request = Request(
             dicom_dir="/tmp/dicom", output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位, slice_thickness=3.0,
                 slice_spacing=5.0, window_presets=["肺窗"],
@@ -4906,7 +4906,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         request = Request(
             dicom_dir="/tmp/dicom", output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位, slice_thickness=3.0,
                 slice_spacing=5.0, window_presets=["肺窗"],
@@ -4927,7 +4927,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -4938,7 +4938,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             ],
         )
         localization_result = {
-            "study_part": "肺部",
+            "slice_part": "肺部",
             "localization_profile": "whole_range",
             "correction_scope_bbox": {
                 "z_min": 0,
@@ -4981,7 +4981,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -5013,7 +5013,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -5043,7 +5043,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -5079,7 +5079,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -5110,7 +5110,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     plane=plane,
@@ -5143,7 +5143,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.矢状位,
                 slice_thickness=3.0,
@@ -5181,7 +5181,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,
@@ -5213,7 +5213,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=2.0,
@@ -5239,7 +5239,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=5.0,
@@ -5266,7 +5266,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.冠状位,
                 slice_thickness=2.0,
@@ -5292,7 +5292,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[
                 PlaneConfig(PlaneTypeEnum.横状位, 5.0, 5.0, ["肺窗"]),
                 PlaneConfig(
@@ -5359,7 +5359,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=2.0,
@@ -5638,7 +5638,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=1.0,
@@ -5788,7 +5788,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位,
                 slice_thickness=0.5,
@@ -5836,7 +5836,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             request = Request(
                 dicom_dir="/tmp/dicom",
                 output_dir=temp_dir,
-                study_part=StudyPartEnum.肺部,
+                slice_part=SlicePartEnum.肺部,
                 plane_configs=[
                     PlaneConfig(
                         plane=PlaneTypeEnum.横状位,
@@ -5923,7 +5923,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             request = Request(
                 dicom_dir="/tmp/dicom",
                 output_dir=temp_dir,
-                study_part=StudyPartEnum.腰椎,
+                slice_part=SlicePartEnum.腰椎,
                 plane_configs=[
                     PlaneConfig(
                         PlaneTypeEnum.横状位, 3.0, 5.0, ["骨窗"],
@@ -5972,7 +5972,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             )
 
     @staticmethod
-    def _spine_localization_result(labels, study_part):
+    def _spine_localization_result(labels, slice_part):
         """生成最小脊柱定位结果，供 CPR planner 测试使用。"""
 
         coords = {}
@@ -5996,9 +5996,9 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         return {
             **Stage6SlicePlanningTest._configured_localization_contract(
-                study_part
+                slice_part
             ),
-            "study_part": study_part,
+            "slice_part": slice_part,
             "localization_profile": "whole_range",
             "correction_scope_bbox": {
                 "z_min": 0,
@@ -6144,7 +6144,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         return {
             **Stage6SlicePlanningTest._configured_localization_contract("腰椎"),
-            "study_part": "腰椎",
+            "slice_part": "腰椎",
             "localization_profile": "whole_range",
             "correction_scope_bbox": {
                 "z_min": 0,

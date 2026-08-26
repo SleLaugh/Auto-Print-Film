@@ -18,7 +18,7 @@
 - `CPR`：颈椎、胸椎、腰椎的冠状位。
 - `椎间隙`：颈椎、腰椎横状位。
 
-`study_part_config.json` 是能力组合的唯一配置事实源，`CapabilityRegistry` 在启动时
+`slice_part_config.json` 是能力组合的唯一配置事实源，`CapabilityRegistry` 在启动时
 从中生成能力表。调用方传入未注册组合时，预检在输出目录清理前失败；planner
 不再自行猜测或替换切法。
 

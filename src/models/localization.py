@@ -120,7 +120,7 @@ class NiftiImageInfo:
 @dataclass
 class LocalizationResult:
     """第三至第五阶段调试汇总实体，对应 metadata/localization_result.json。"""
-    study_part: str  # 请求处理的部位，如 头骨、腰椎、肺部
+    slice_part: str  # 请求处理的切割部位，如 头骨、腰椎、肺部
     localization_profile: str  # 定位范围方案，如 whole_range 或 interspace
     seg_path: str  # 当前用于定位的分割文件路径
     model: Dict[str, Any]  # 分割阶段匹配到的模型信息
@@ -156,7 +156,7 @@ class LocalizationResult:
         """序列化第三至第五阶段的调试汇总结果。"""
 
         data = {
-            'study_part': self.study_part,
+            'slice_part': self.slice_part,
             'localization_profile': self.localization_profile,
             'seg_path': self.seg_path,
             'model': self.model,

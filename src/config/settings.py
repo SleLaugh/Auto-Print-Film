@@ -64,8 +64,8 @@ class AppConfig:
     """日志与调试产物配置。"""
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     """流水线框架行为配置。"""
-    study_part_config: Dict[str, Any] = field(default_factory=dict)
-    """模型选择、定位区域及切法能力共用的统一部位配置。"""
+    slice_part_config: Dict[str, Any] = field(default_factory=dict)
+    """模型选择、定位区域及切法能力共用的统一切割部位配置。"""
 
     def summary(self) -> Dict[str, Any]:
         """返回不包含机器绝对路径和环境变量的可复现摘要。"""
@@ -93,11 +93,11 @@ class AppConfig:
                 "debug_file_enabled": self.logging.debug_file_enabled,
                 "debug_log_file_enabled": self.logging.debug_log_file_enabled,
             },
-            "study_parts": {
-                "schema_version": self.study_part_config.get("schema_version"),
+            "slice_parts": {
+                "schema_version": self.slice_part_config.get("schema_version"),
                 "enabled_count": sum(
                     1
-                    for part in self.study_part_config.get("study_parts", {}).values()
+                    for part in self.slice_part_config.get("slice_parts", {}).values()
                     if part.get("enabled") is True
                 ),
             },

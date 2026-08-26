@@ -183,7 +183,7 @@ class ReportingStage(BaseStage):
         return {
             'Success': True,
             'Message': '',
-            'StudyPart': request_data['StudyPart'],
+            'SlicePart': request_data['SlicePart'],
             'StudyType': request_data['StudyType'],
             'ScanThickness': float(request_data['ScanThickness']),
             'PlaneList': plane_list,
@@ -380,7 +380,7 @@ class ReportingStage(BaseStage):
 
         return {
             'plan_id': plan.get('plan_id', ''),
-            'study_part': plan.get('study_part', ''),
+            'slice_part': plan.get('slice_part', ''),
             'slice_type': plan.get('slice_type', ''),
             'plane': plan.get('plane', ''),
             'group_name': plan.get('group_name', ''),

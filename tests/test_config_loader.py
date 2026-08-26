@@ -6,8 +6,8 @@ from pathlib import Path
 
 from src.config import (
     load_app_config,
-    load_study_part_config,
-    validate_study_part_config,
+    load_slice_part_config,
+    validate_slice_part_config,
 )
 from src.core.pipeline import Pipeline
 from src.stages.stage_localization import LocalizationStage
@@ -31,6 +31,29 @@ class ConfigLoaderTest(unittest.TestCase):
         )
 
         self.assertEqual(config.nnunet.results, "/env/results")
+
+    def test_explicit_empty_defaults_do_not_read_repository_files(self):
+        """显式空默认配置必须保持为空，不得回退读取仓库文件。"""
+
+        config = load_app_config(environ={}, defaults={})
+
+        self.assertEqual(config.slice_part_config, {})
+
+    def test_removed_study_part_config_is_rejected(self):
+        """旧切割部位配置入口不得被任何配置来源静默忽略。"""
+
+        cases = (
+            ({"study_part_config": {}}, {"nnunet": {}}),
+            ({}, {"study_part_config": {}}),
+        )
+        for explicit, defaults in cases:
+            with self.subTest(explicit=explicit, defaults=defaults):
+                with self.assertRaisesRegex(ValueError, "study_part_config"):
+                    load_app_config(
+                        explicit=explicit,
+                        environ={},
+                        defaults=defaults,
+                    )
 
     def test_nnunet_runtime_keys_are_normalized(self):
         config = load_app_config(
@@ -107,8 +130,8 @@ class ConfigLoaderTest(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
-            (root / "study_part_config.json").write_text(
-                Path("src/config/study_part_config.json").read_text(
+            (root / "slice_part_config.json").write_text(
+                Path("src/config/slice_part_config.json").read_text(
                     encoding="utf-8"
                 ),
                 encoding="utf-8",
@@ -122,20 +145,24 @@ class ConfigLoaderTest(unittest.TestCase):
             self.assertEqual(config.nnunet.fold, "4")
             self.assertTrue(config.logging.debug_file_enabled)
             self.assertFalse(config.logging.debug_log_file_enabled)
-            self.assertIn("腰椎", config.study_part_config["study_parts"])
+            self.assertIn("腰椎", config.slice_part_config["slice_parts"])
 
-    def test_study_part_config_rejects_unknown_fields_and_references(self):
-        base_config = load_study_part_config()
+    def test_slice_part_config_rejects_unknown_fields_and_references(self):
+        base_config = load_slice_part_config()
 
         cases = []
+        old_root = deepcopy(base_config)
+        old_root["study_parts"] = old_root.pop("slice_parts")
+        cases.append((old_root, "未知字段"))
+
         unknown_field = deepcopy(base_config)
-        unknown_field["study_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"][
+        unknown_field["slice_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"][
             "slice_range_extension"
         ] = {}
         cases.append((unknown_field, "未知字段"))
 
         unknown_label = deepcopy(base_config)
-        unknown_label["study_parts"]["腰椎"]["localization"]["regions"]["default"][
+        unknown_label["slice_parts"]["腰椎"]["localization"]["regions"]["default"][
             "start_label"
         ] = "L0"
         cases.append((unknown_label, "未在 label_aliases 中定义"))
@@ -145,7 +172,7 @@ class ConfigLoaderTest(unittest.TestCase):
         cases.append((duplicate_alias, "重复引用标签"))
 
         unused_region = deepcopy(base_config)
-        unused_region["study_parts"]["颈椎"]["localization"]["regions"]["C1_C2"] = {
+        unused_region["slice_parts"]["颈椎"]["localization"]["regions"]["C1_C2"] = {
             "type": "interspace",
             "start_label": "C1",
             "end_label": "C2",
@@ -153,7 +180,7 @@ class ConfigLoaderTest(unittest.TestCase):
         cases.append((unused_region, "未使用区域"))
 
         missing_full_label = deepcopy(base_config)
-        del missing_full_label["study_parts"]["胸椎"]["localization"]["spine_cpr"][
+        del missing_full_label["slice_parts"]["胸椎"]["localization"]["spine_cpr"][
             "full_label"
         ]
         cases.append((missing_full_label, "缺少 full_label"))
@@ -161,7 +188,13 @@ class ConfigLoaderTest(unittest.TestCase):
         for config, message in cases:
             with self.subTest(message=message):
                 with self.assertRaisesRegex(ValueError, message):
-                    validate_study_part_config(config)
+                    validate_slice_part_config(config)
+
+    def test_removed_study_part_config_files_do_not_exist(self):
+        """旧切割部位配置文件和模块不再保留。"""
+
+        self.assertFalse(Path("src/config/study_part_config.json").exists())
+        self.assertFalse(Path("src/config/study_parts.py").exists())
 
 
 if __name__ == "__main__":

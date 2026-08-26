@@ -18,9 +18,9 @@ class PlanningResult:
     planner_name: str = ""
 
 
-def select_planner(study_part: str, slice_type: str) -> Any:
+def select_planner(slice_part: str, slice_type: str) -> Any:
     """
-    根据部位和外部指定的 SliceType 选择第六阶段 planner。
+    根据切割部位和外部指定的 SliceType 选择第六阶段 planner。
 
     planner 的输出结构保持一致，差异只留在“从哪里切、怎么生成路径”的
     业务逻辑里。第七阶段只看 SlicePlan，不关心这里选中了哪个 planner。
@@ -43,10 +43,10 @@ def select_planner(study_part: str, slice_type: str) -> Any:
         ("头骨", "MPR"): SingleLabelWholeRangePlanner,
         ("髋骨", "MPR"): SingleLabelWholeRangePlanner,
     }
-    key = (study_part, slice_type)
+    key = (slice_part, slice_type)
     if key not in planner_types:
         raise ValueError(
-            f"未找到第六阶段 planner: study_part={study_part}, "
+            f"未找到第六阶段 planner: slice_part={slice_part}, "
             f"SliceType={slice_type}"
         )
     return planner_types[key]()

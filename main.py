@@ -20,7 +20,7 @@ sys.path.insert(0, str(project_root))
 from src.core import Pipeline
 from src.core.delivery_report import write_failure_report
 from src.config import load_app_config
-from src.models import Request, StudyPartEnum, StudyTypeEnum, PlaneConfig
+from src.models import Request, SlicePartEnum, StudyTypeEnum, PlaneConfig
 from src.utils import RunLog, ErrorLog, DebugLog, configure_logging
 
 
@@ -44,7 +44,7 @@ class ReportArgumentParser(argparse.ArgumentParser):
 def parse_arguments():
     """
     解析命令行参数函数
-    作用：让用户通过命令行指定输入输出路径和部位类型
+    作用：让用户通过命令行指定输入输出路径和切割部位
     返回值：解析后的参数对象
     """
     # 创建参数解析器，description是脚本功能的简短描述
@@ -69,17 +69,17 @@ def parse_arguments():
         help='输出目录'
     )
     
-    # 添加 --study_part 参数
+    # 添加 --slice_part 参数
     # default='腰椎' 表示如果不指定，默认处理腰椎
     # choices 限制了只能从列表中选一个值，输入其他会报错
-    study_part_choices = [e.value for e in StudyPartEnum]
+    slice_part_choices = [e.value for e in SlicePartEnum]
     parser.add_argument(
-        '--study_part',
-        dest='study_part',
+        '--slice_part',
+        dest='slice_part',
         type=str,
         default='腰椎',
-        choices=study_part_choices,
-        help=f'部位，可选值: {", ".join(study_part_choices)}'
+        choices=slice_part_choices,
+        help=f'切割部位，可选值: {", ".join(slice_part_choices)}'
     )
 
     parser.add_argument(
@@ -109,7 +109,7 @@ def parse_arguments():
     )
 
     # 解析命令行输入的参数
-    # 比如运行：python script.py -i /path/to/dicom -o /path/to/output --study_part 颈椎
+    # 比如运行：python script.py -i /path/to/dicom -o /path/to/output --slice_part 颈椎
     # 就会把参数解析成对象返回
     return parser.parse_args()
 
@@ -143,14 +143,14 @@ def main():
     # SimpleITK/GDCM 等原生扩展触发 SIGABRT 时，至少保留 Python 调用栈。
     faulthandler.enable(all_threads=True)
     output_dir = _cli_value(sys.argv[1:], "-o", "--output")
-    study_part = _cli_value(sys.argv[1:], "--study_part") or "腰椎"
+    slice_part = _cli_value(sys.argv[1:], "--slice_part") or "腰椎"
     study_type = _cli_value(sys.argv[1:], "--study_type") or StudyTypeEnum.CT.value
     scan_thickness = _cli_value(sys.argv[1:], "--scan_thickness")
     request = None
     try:
         args = parse_arguments()
         output_dir = args.output
-        study_part = args.study_part
+        slice_part = args.slice_part
         study_type = args.study_type
         scan_thickness = args.scan_thickness
 
@@ -164,7 +164,7 @@ def main():
         request_kwargs = {
             'dicom_dir': args.input,
             'output_dir': args.output,
-            'study_part': StudyPartEnum(args.study_part),
+            'slice_part': SlicePartEnum(args.slice_part),
             'study_type': StudyTypeEnum(args.study_type),
             'scan_thickness': args.scan_thickness,
         }
@@ -179,7 +179,7 @@ def main():
         
         DebugLog(f"输入路径: {request.dicom_dir}")
         DebugLog(f"输出路径: {request.output_dir}")
-        DebugLog(f"部位: {request.study_part.value}")
+        DebugLog(f"切割部位: {request.slice_part.value}")
         DebugLog(f"检查类型: {request.study_type.value}")
         DebugLog(f"扫描厚度: {request.scan_thickness}mm")
         DebugLog(f"三平面参数: {request.to_dict()['plane_configs']}")
@@ -202,7 +202,7 @@ def main():
             _try_write_failure_report(
                 output_dir,
                 e.message,
-                study_part=study_part,
+                slice_part=slice_part,
                 study_type=study_type,
                 scan_thickness=scan_thickness,
             )
@@ -213,7 +213,7 @@ def main():
                 output_dir,
                 "任务被中断",
                 request=request,
-                study_part=study_part,
+                slice_part=slice_part,
                 study_type=study_type,
                 scan_thickness=scan_thickness,
             )
@@ -225,7 +225,7 @@ def main():
                 output_dir,
                 f"程序主动退出，退出码: {e.code}",
                 request=request,
-                study_part=study_part,
+                slice_part=slice_part,
                 study_type=study_type,
                 scan_thickness=scan_thickness,
             )
@@ -236,7 +236,7 @@ def main():
                 output_dir,
                 str(e) or type(e).__name__,
                 request=request,
-                study_part=study_part,
+                slice_part=slice_part,
                 study_type=study_type,
                 scan_thickness=scan_thickness,
             )
@@ -245,7 +245,7 @@ def main():
 
 
 def _cli_value(arguments, *names):
-    """在 argparse 失败前尽早提取报告目录和检查信息。"""
+    """在 argparse 失败前尽早提取报告目录和请求信息。"""
 
     for index, argument in enumerate(arguments):
         if argument in names and index + 1 < len(arguments):
@@ -262,7 +262,7 @@ def _try_write_failure_report(
     message,
     *,
     request=None,
-    study_part=None,
+    slice_part=None,
     study_type=None,
     scan_thickness=None,
 ):
@@ -273,7 +273,7 @@ def _try_write_failure_report(
             output_dir,
             message,
             request=request,
-            study_part=study_part,
+            slice_part=slice_part,
             study_type=study_type,
             scan_thickness=scan_thickness,
         )

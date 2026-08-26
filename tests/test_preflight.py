@@ -8,7 +8,7 @@ from src.core.errors import CapabilityError, DependencyError, RequestValidationE
 from src.core.preflight import PreflightValidator
 from src.models import PlaneConfig, Request
 from src.models.enums import (
-    StudyPartEnum,
+    SlicePartEnum,
     PlaneTypeEnum,
     SliceType,
 )
@@ -26,13 +26,13 @@ class SlicePolicyTest(unittest.TestCase):
         self.assertEqual(localization_profile_for_slice_type("椎间隙"), "interspace")
 
 
-def make_request(study_part, slice_type, plane, input_dir="/tmp/dicom", output_dir="/tmp/output"):
+def make_request(slice_part, slice_type, plane, input_dir="/tmp/dicom", output_dir="/tmp/output"):
     """为测试准备 `make_request` 所需的数据或记录行为。"""
 
     return Request(
         dicom_dir=input_dir,
         output_dir=output_dir,
-        study_part=StudyPartEnum(study_part),
+        slice_part=SlicePartEnum(slice_part),
         plane_configs=[PlaneConfig(
             PlaneTypeEnum(plane),
             1.0,
@@ -50,11 +50,11 @@ class PreflightTest(unittest.TestCase):
         """所有已支持部位都应对外声明三个基础 MPR 状位。"""
 
         combinations = set(CapabilityRegistry.current().combinations())
-        for study_part in ("颈椎", "胸椎", "腰椎", "肺部", "头骨", "髋骨"):
+        for slice_part in ("颈椎", "胸椎", "腰椎", "肺部", "头骨", "髋骨"):
             for plane in ("横状位", "矢状位", "冠状位"):
-                with self.subTest(study_part=study_part, plane=plane):
+                with self.subTest(slice_part=slice_part, plane=plane):
                     self.assertIn(
-                        (study_part, "MPR", plane),
+                        (slice_part, "MPR", plane),
                         combinations,
                     )
 

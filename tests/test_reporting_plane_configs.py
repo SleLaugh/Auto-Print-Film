@@ -44,7 +44,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
                 {
                     "Success",
                     "Message",
-                    "StudyPart",
+                    "SlicePart",
                     "StudyType",
                     "ScanThickness",
                     "PlaneList",
@@ -52,7 +52,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             )
             self.assertTrue(report["Success"])
             self.assertEqual(report["Message"], "")
-            self.assertEqual(report["StudyPart"], "腰椎")
+            self.assertEqual(report["SlicePart"], "腰椎")
             self.assertEqual(report["StudyType"], "CT")
             self.assertEqual(report["ScanThickness"], 1.5)
             self.assertEqual(report["PlaneList"], [
@@ -154,7 +154,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             request = Request.from_dict({
                 "dicom_dir": "/tmp/dicom",
                 "output_dir": temp_dir,
-                "StudyPart": "腰椎",
+                "SlicePart": "腰椎",
                 "StudyType": "CT",
                 "ScanThickness": 1.0,
                 "plane_configs": [{
@@ -267,7 +267,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
         request = Request.from_dict({
             "dicom_dir": "/tmp/dicom",
             "output_dir": "/tmp/output",
-            "StudyPart": "腰椎",
+            "SlicePart": "腰椎",
             "StudyType": "CT",
             "ScanThickness": 1.0,
             "plane_configs": [
@@ -500,7 +500,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             )
             self.assertFalse(failure_report["Success"])
             self.assertIn("期望 2 张，实际 1 张", failure_report["Message"])
-            self.assertEqual(failure_report["StudyPart"], "腰椎")
+            self.assertEqual(failure_report["SlicePart"], "腰椎")
             self.assertEqual(failure_report["StudyType"], "CT")
             self.assertEqual(failure_report["ScanThickness"], 1.0)
             self.assertEqual(failure_report["PlaneList"], [])

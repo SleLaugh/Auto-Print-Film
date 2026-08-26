@@ -14,7 +14,7 @@ import SimpleITK as sitk
 
 from src.core.context import ProcessingContext
 from src.models import (
-    StudyPartEnum,
+    SlicePartEnum,
     PlaneConfig,
     PlaneTypeEnum,
     Request,
@@ -1683,7 +1683,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            study_part=StudyPartEnum.肺部,
+            slice_part=SlicePartEnum.肺部,
             plane_configs=[
                 PlaneConfig(
                     plane=plane,
@@ -2421,7 +2421,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
         centers = [2.0 + 2.0 * index for index in range(slice_count)]
         plan = {
             "plan_id": "测试_整切_横状位",
-            "study_part": "腰椎",
+            "slice_part": "腰椎",
             "slice_type": "MPR",
             "plane": "横状位",
             "group_name": "whole_range",
@@ -2453,7 +2453,7 @@ class Stage7ReconstructionTest(unittest.TestCase):
         request = Request(
             dicom_dir=dicom_dir,
             output_dir=str(output_dir),
-            study_part=StudyPartEnum.腰椎,
+            slice_part=SlicePartEnum.腰椎,
             plane_configs=[
                 PlaneConfig(
                     plane=PlaneTypeEnum.横状位,

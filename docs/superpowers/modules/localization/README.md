@@ -11,7 +11,7 @@
   `spine_geometry.filtered_annotation_centroids`（沟通简称“标注质心”）。
 - 脊柱整切按配置首尾标签展开完整解剖范围；胸椎默认 `C7 → L1`，腰椎按实际配置，
   不固定裁掉配置首尾椎体。
-- `study_part_config.json` 中 `localization.regions` 使用具名区域描述首尾标签；
+- `slice_part_config.json` 中 `localization.regions` 使用具名区域描述首尾标签；
   `slice_rules` 决定每种状位和切法使用哪些区域。阶段内部把整体区域整理为
   `whole_range`，把椎间区域整理为 `interspace` 数组，解析结果才使用 `intervals` 字段。
 - 混合请求通过 `resolved_cut_configs` 同时转交整切和椎间定位范围；MPR/CPR 使用

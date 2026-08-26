@@ -9,7 +9,7 @@ PART_CONFIG_PATH = (
     Path(__file__).resolve().parents[1]
     / "src"
     / "config"
-    / "study_part_config.json"
+    / "slice_part_config.json"
 )
 
 
@@ -19,7 +19,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.config = json.loads(PART_CONFIG_PATH.read_text(encoding="utf-8"))
-        cls.stage = SegmentationStage({"study_part_config": cls.config})
+        cls.stage = SegmentationStage({"slice_part_config": cls.config})
 
     def test_lumbar_boundaries_select_expected_models(self):
         cases = (
@@ -59,7 +59,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             self.stage._match_model("肺部", "CT", 1.6)
 
     def test_config_no_longer_contains_scan_thickness_categories(self):
-        for part in self.config["study_parts"].values():
+        for part in self.config["slice_parts"].values():
             for mappings in part["model_rules"].values():
                 for mapper in mappings:
                     self.assertNotIn("scan_thickness", mapper)

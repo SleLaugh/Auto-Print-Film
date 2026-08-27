@@ -48,6 +48,8 @@
 - 定位阶段的配置解析、结果序列化与医学几何保持职责分离：
   `stages/localization_contracts.py` 负责共享契约，`stage_localization.py` 保留阶段编排
   和几何算法；原有 `LocalizationOperations` 方法名及导入路径继续兼容。
+- 脊柱几何基础工具（包围盒、凸包、四边形和点面判断）集中在
+  `stages/localization_geometry.py`，通过 mixin 注入定位操作类。
 
 ## 推荐阅读
 

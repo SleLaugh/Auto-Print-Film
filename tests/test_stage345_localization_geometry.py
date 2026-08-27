@@ -21,13 +21,11 @@ from src.config import (
 )
 from src.models import (
     AnatomicalAnalysisStageResult,
-    LabelCoordinate,
     LabelTarget,
     LocalizationStageResult,
     Request,
     SpatialCorrectionStageResult,
     VoxelBBox,
-    VoxelPoint,
 )
 from src.stages.stage_anatomical_analysis import AnatomicalAnalysisStage
 from src.stages.stage_localization import (

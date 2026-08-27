@@ -441,11 +441,6 @@ def resolve_segment_sampling(
         target_start.y - direction.y * start_extension_mm,
         target_start.z - direction.z * start_extension_mm,
     )
-    effective_end = Point3D(
-        target_end.x + direction.x * end_extension_mm,
-        target_end.y + direction.y * end_extension_mm,
-        target_end.z + direction.z * end_extension_mm,
-    )
     # 第一张中心向内半个层厚，若总范围超过有效范围，再向外移动均分后的距离。
     symmetric_range_difference = (
         sampling.total_range_mm - effective_length

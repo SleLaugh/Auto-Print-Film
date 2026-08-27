@@ -19,6 +19,11 @@ from src.planning.geometry import (
 from src.planning.sampling import ResolvedSampling, resolve_sampling
 from src.planning.spine_common import get_label_center, union_bboxes
 from src.planning.straight import SliceRangeExtension, resolve_range_extension
+from src.planning.spine_cpr_math import add as _add
+from src.planning.spine_cpr_math import cross as _cross
+from src.planning.spine_cpr_math import dot as _dot
+from src.planning.spine_cpr_math import midpoint as _midpoint
+from src.planning.spine_cpr_math import scale as _scale
 from src.utils import DebugLog
 
 
@@ -2036,38 +2041,3 @@ def _minimum_image_spacing(image_info: Dict[str, Any]) -> float:
     """读取图像最小体素间距，作为 CPR 默认像素间距。"""
 
     return min(float(value) for value in image_info["spacing_xyz"])
-
-
-def _midpoint(points: List[Point3D]) -> Point3D:
-    """返回曲线采样点物理中心。"""
-
-    middle = np.mean([[point.x, point.y, point.z] for point in points], axis=0)
-    return Point3D(float(middle[0]), float(middle[1]), float(middle[2]))
-
-
-def _dot(left: Point3D, right: Point3D) -> float:
-    """计算两个 Point3D 的点积。"""
-
-    return left.x * right.x + left.y * right.y + left.z * right.z
-
-
-def _scale(vector: Point3D, factor: float) -> Point3D:
-    """缩放三维向量。"""
-
-    return Point3D(vector.x * factor, vector.y * factor, vector.z * factor)
-
-
-def _add(left: Point3D, right: Point3D) -> Point3D:
-    """相加三维点或向量。"""
-
-    return Point3D(left.x + right.x, left.y + right.y, left.z + right.z)
-
-
-def _cross(left: Point3D, right: Point3D) -> Point3D:
-    """计算三维叉积。"""
-
-    return Point3D(
-        left.y * right.z - left.z * right.y,
-        left.z * right.x - left.x * right.z,
-        left.x * right.y - left.y * right.x,
-    )

@@ -17,27 +17,23 @@ from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.config import (
     load_slice_part_config,
-    localization_for,
-    localization_profiles_for,
-    slice_rules_for,
     validate_slice_part_config,
 )
 from src.models import (
     AnatomicalGeometryResult,
-    CutConfig,
     LabelCoordinate,
     LabelTarget,
-    LocalizationResult,
     LocalizationStageResult,
     NiftiImageInfo,
     VoxelBBox,
     VoxelPoint,
 )
-from src.models.enums import PlaneTypeEnum
 from src.anatomy.lung import estimate_lung_frame_with_diagnostics
 from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 from src.utils import DebugLog, is_debug_file_enabled
+
+from .localization_contracts import LocalizationContractMixin
 
 
 @dataclass(frozen=True)
@@ -56,7 +52,7 @@ _PRISM_SEPARATOR_MAXIMUM_PROJECTION_INTRUSION_FRACTION = 0.05
 _LOCALIZATION_WORKSPACE_KEY = "localization_workspace_v1"
 
 
-class LocalizationOperations(BaseStage):
+class LocalizationOperations(LocalizationContractMixin, BaseStage):
     """校正、定位和解剖分析共用的已验证算法集合。"""
     
     def __init__(
@@ -4039,214 +4035,6 @@ class LocalizationOperations(BaseStage):
                 -len(run),
             ),
         )
-
-    @staticmethod
-    def _write_localization_result(
-        output_path: Path,
-        request,
-        model_info: Dict[str, Any],
-        cut_config: CutConfig,
-        cut_configs: Dict[str, CutConfig],
-        resolved_cut_config: Dict[str, Any],
-        resolved_cut_configs: Dict[str, Dict[str, Any]],
-        slice_rules: Dict[str, Any],
-        label_targets: Dict[str, LabelTarget],
-        label_coordinates: Dict[str, LabelCoordinate],
-        dataset_json_path: Path,
-        image: sitk.Image,
-        seg_path: str,
-        raw_for_reconstruction_path: str,
-        seg_for_reconstruction_path: str,
-        correction_applied: bool,
-        correction_angle_degrees: float,
-        correction_scope_bbox: VoxelBBox,
-        correction_params: Dict[str, Any],
-        corrected_raw_path: str,
-        corrected_seg_path: str,
-        candidate_raw_path: str,
-        candidate_seg_path: str,
-        debug_label_mask_overlay_path: str,
-        debug_vertebral_body_mask_overlay_path: str,
-        debug_vertebral_body_prism_mask_overlay_path: str,
-        spine_geometry: Dict[str, Any] | None,
-        is_skewed: bool,
-        skew_params: Dict[str, Any],
-        anatomical_geometry: AnatomicalGeometryResult | None = None,
-        spine_cpr_config: Dict[str, Any] | None = None,
-    ) -> None:
-        """写出定位结果，供后续映射、MPR 和调试使用。"""
-        localization_result = LocalizationResult(
-            slice_part=request.slice_part.value,
-            localization_profile=(
-                LocalizationStage._resolve_request_localization_profile(request)
-            ),
-            seg_path=str(seg_path),
-            model=model_info,
-            dataset_json_path=str(dataset_json_path),
-            image=NiftiImageInfo(
-                size_xyz=list(image.GetSize()),
-                spacing_xyz=list(image.GetSpacing()),
-                origin_xyz=list(image.GetOrigin()),
-                direction=list(image.GetDirection()),
-            ),
-            cut_config=cut_config,
-            cut_configs=cut_configs,
-            resolved_cut_config=resolved_cut_config,
-            resolved_cut_configs=resolved_cut_configs,
-            slice_rules=slice_rules,
-            label_targets=label_targets,
-            coords=label_coordinates,
-            raw_for_reconstruction_path=raw_for_reconstruction_path,
-            seg_for_reconstruction_path=seg_for_reconstruction_path,
-            correction_applied=correction_applied,
-            correction_angle_degrees=correction_angle_degrees,
-            correction_scope_bbox=correction_scope_bbox,
-            correction_params=correction_params,
-            corrected_raw_path=corrected_raw_path,
-            corrected_seg_path=corrected_seg_path,
-            candidate_raw_path=candidate_raw_path,
-            candidate_seg_path=candidate_seg_path,
-            debug_label_mask_overlay_path=debug_label_mask_overlay_path,
-            debug_vertebral_body_mask_overlay_path=debug_vertebral_body_mask_overlay_path,
-            debug_vertebral_body_prism_mask_overlay_path=(
-                debug_vertebral_body_prism_mask_overlay_path
-            ),
-            spine_geometry=spine_geometry,
-            spine_cpr_config=spine_cpr_config or {},
-            is_skewed=is_skewed,
-            skew_params=skew_params,
-            anatomical_geometry=anatomical_geometry,
-        )
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(localization_result.to_dict(), f, ensure_ascii=False, indent=2)
-
-    @staticmethod
-    def _label_targets_to_dict(label_targets: Dict[str, LabelTarget]) -> Dict[str, Dict[str, Any]]:
-        """把按名称索引的标签目标实体转换为可写 JSON 的字典。"""
-
-        return {
-            name: target.to_dict()
-            for name, target in label_targets.items()
-        }
-
-    @staticmethod
-    def _coordinates_to_dict(label_coordinates: Dict[str, LabelCoordinate]) -> Dict[str, Dict[str, Any]]:
-        """把按名称索引的标签定位结果转换为可写 JSON 的字典。"""
-
-        return {
-            name: coord.to_dict()
-            for name, coord in label_coordinates.items()
-        }
-
-    @staticmethod
-    def _resolve_request_localization_profile(request) -> str:
-        """根据全部 SliceType 选择第三阶段需要加载的定位范围方案。"""
-
-        from src.planning.slice_policy import localization_profile_for_request
-
-        return localization_profile_for_request(
-            config.slice_type for config in request.plane_configs
-        )
-
-    def _resolve_cut_config(
-        self,
-        request,
-        localization_profile: str | None = None,
-    ) -> CutConfig:
-        """
-        根据请求中的 SliceType 所需定位范围方案查找配置。
-
-        具体范围统一从 slice_part_config.json 的 localization.regions 和
-        slice_rules 引用关系整理得到。
-        """
-        localization_profile = (
-            localization_profile
-            or self._resolve_request_localization_profile(request)
-        )
-        slice_part = getattr(request.slice_part, 'value', request.slice_part)
-        cut_configs = self._resolve_cut_configs(request)
-        cut_config = cut_configs.get(localization_profile)
-        if cut_config is None:
-            raise ValueError(
-                f"未找到定位范围配置: slice_part={slice_part}, "
-                f"profile={localization_profile}"
-            )
-        return cut_config
-
-    def _resolve_spine_cpr_config(self, slice_part: str) -> Dict[str, Any]:
-        """从当前脊柱部位配置中读取 CPR 配置，非脊柱部位返回空配置。"""
-
-        localization = localization_for(self._slice_part_config, slice_part)
-        config = localization.get('spine_cpr')
-        if not isinstance(config, dict):
-            return {}
-        excluded_labels = []
-        for label_name in config.get('excluded_labels', []):
-            excluded_labels.extend(self._label_alias(label_name))
-        return {
-            'full_label': config['full_label'],
-            'excluded_labels': excluded_labels,
-        }
-
-    def _resolve_cut_configs(self, request) -> Dict[str, CutConfig]:
-        """返回当前部位的全部定位范围配置，并统一校验范围扩展设置。
-
-        第三阶段选择标签时使用主定位范围；全部解析结果由第四阶段写入定位契约，
-        让第六阶段在一次混合请求中为 MPR/CPR 和椎间隙读取各自范围配置。
-        """
-
-        slice_part = getattr(request.slice_part, 'value', request.slice_part)
-        return localization_profiles_for(self._slice_part_config, slice_part)
-
-    def _resolve_slice_rules(self, request) -> Dict[str, Any]:
-        """返回当前部位经统一校验的状位与切法规则。"""
-
-        slice_part = getattr(request.slice_part, 'value', request.slice_part)
-        return slice_rules_for(self._slice_part_config, slice_part)
-
-    def _resolve_label_aliases(self, cut_config: CutConfig) -> Dict[str, Any]:
-        """
-        把业务短名解析成模型/数据集中的标准 label 名。
-
-        例如配置中可以写 L1、C7、skull；这里会根据 label_aliases
-        转成 vertebrae_L1、vertebrae_C7、skull。后续再用这些标准名
-        去 dataset.json 中查 label id。原始 interspace 数组在解析后放入
-        内部 intervals 字段，让后续阶段能与 whole_range 对象明确区分。
-        """
-        if isinstance(cut_config, list):
-            return {
-                'intervals': [
-                    {
-                        'region': interval['region'],
-                        'start': interval['start'],
-                        'end': interval['end'],
-                        'start_labels': self._label_alias(interval['start']),
-                        'end_labels': self._label_alias(interval['end'])
-                    }
-                    for interval in cut_config
-                ]
-            }
-
-        return {
-            'region': cut_config['region'],
-            'start': cut_config['start'],
-            'end': cut_config['end'],
-            'start_labels': self._label_alias(cut_config['start']),
-            'end_labels': self._label_alias(cut_config['end'])
-        }
-
-    def _label_alias(self, name: str) -> list[str]:
-        """
-        获取一个定位名称对应的标准 label 名列表。
-
-        alias 可以是字符串，也可以是字符串数组。肺部这类由左右肺共同
-        构成的整体范围，可以用一个业务名 lung 映射到多个 label。
-        """
-        aliases = self._slice_part_config.get('label_aliases', {})
-        value = aliases.get(name, name)
-        if isinstance(value, list):
-            return value
-        return [value]
 
 class LocalizationStage(LocalizationOperations):
     """第四阶段：在校正阶段选定的空间中计算 label 质心和 bbox。"""

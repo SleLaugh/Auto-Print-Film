@@ -4,7 +4,6 @@ import unittest
 from pathlib import Path
 
 from src.core.artifacts import ArtifactManager
-from src.core.errors import ArtifactError
 
 
 class ArtifactManagerTest(unittest.TestCase):

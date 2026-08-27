@@ -71,6 +71,42 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertFalse(config.nnunet.continue_mode)
         self.assertEqual(config.nnunet.raw, "/models/raw")
 
+    def test_string_false_is_parsed_as_false(self):
+        """环境变量形式的字符串 false 不能被 Python bool 规则误判为 True。"""
+        config = load_app_config(
+            environ={"_continue": "false"},
+            defaults={},
+        )
+
+        self.assertFalse(config.nnunet.continue_mode)
+
+    def test_invalid_boolean_text_is_rejected(self):
+        """拼写错误的布尔配置应在启动时失败，而不是静默启用。"""
+        with self.assertRaisesRegex(ValueError, "布尔值"):
+            load_app_config(
+                environ={},
+                defaults={"_continue": "no"},
+            )
+
+    def test_logging_and_pipeline_boolean_text_is_normalized(self):
+        """日志和流水线配置同样支持 JSON/调用方常见的 true/false 文本。"""
+        config = load_app_config(
+            environ={},
+            defaults={
+                "logging": {
+                    "console_enabled": "false",
+                    "error_log_file_enabled": "false",
+                },
+                "pipeline": {
+                    "run_preflight": "false",
+                },
+            },
+        )
+
+        self.assertFalse(config.logging.console_enabled)
+        self.assertFalse(config.logging.error_log_file_enabled)
+        self.assertFalse(config.pipeline.run_preflight)
+
     def test_stages_accept_the_single_loaded_nnunet_configuration(self):
         stage_config = {
             "_configuration": "3d_lowres",

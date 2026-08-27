@@ -1,0 +1,5 @@
+# 开发与 CI 依赖；运行时依赖仍统一来自 requirements.txt
+-r requirements.txt
+
+pytest>=8.0,<10
+ruff>=0.6,<1

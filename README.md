@@ -153,11 +153,13 @@ Windows PowerShell：
 python main.py -i D:\data\dicom_dir -o D:\data\output_dir --slice_part 腰椎 --study_type CT --scan_thickness 3.0
 ```
 
-支持的 `--slice_part`：
+命令行可识别的 `--slice_part` 值：
 
 ```text
 头骨, 颈椎, 胸椎, 腰椎, 肺部, 骶骨, 髋骨
 ```
+
+当前已启用：头骨、颈椎、胸椎、腰椎、肺部、髋骨；骶骨目前保留协议值但由预检拒绝。
 
 查看命令帮助：
 
@@ -410,6 +412,8 @@ Windows PowerShell：
 
 ## PyTorch / CUDA 说明
 
-`requirements.txt` 会安装项目运行所需的 Python 包，包括 `nnunetv2`。如果需要 GPU 推理，建议先按照本机 CUDA 版本安装 PyTorch，再运行依赖安装命令。PyTorch 安装命令以官方选择器为准。
+`requirements.txt` 会安装项目运行所需的 Python 包，包括 `nnunetv2`。开发和 CI 检查使用
+`requirements-dev.txt`，其中额外包含 pytest 和 Ruff。如果需要 GPU 推理，建议先按照本机
+CUDA 版本安装 PyTorch，再运行依赖安装命令。PyTorch 安装命令以官方选择器为准。
 
 CPU 环境也可以安装依赖，但 nnUNet 推理速度会明显慢。

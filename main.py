@@ -118,7 +118,7 @@ def parse_plane_configs(value):
     """
     解析命令行传入的三平面配置 JSON。
 
-    返回 None 表示调用方没有显式传参，此时 Request 使用默认三平面骨窗配置。
+    返回 None 表示调用方没有显式传参，此时 Request 使用默认横状位骨窗配置。
     """
     if value is None:
         return None
@@ -160,7 +160,7 @@ def main():
 
         plane_configs = parse_plane_configs(args.plane_configs)
         # 先组装基础参数，再按需放入 plane_configs。这样未传该参数时仍使用
-        # Request 的默认三平面骨窗配置，保持老命令兼容。
+        # Request 的默认横状位骨窗配置，保持老命令兼容。
         request_kwargs = {
             'dicom_dir': args.input,
             'output_dir': args.output,

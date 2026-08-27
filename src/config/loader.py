@@ -28,6 +28,20 @@ def _section(data: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _coerce_bool(value: Any, field_name: str) -> bool:
+    """严格解析配置布尔值，避免 ``bool('false')`` 被误判为 True。"""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    raise ValueError(f"{field_name} 必须是布尔值 true/false")
+
+
 def load_app_config(
     *,
     explicit: Optional[Mapping[str, Any]] = None,
@@ -81,11 +95,11 @@ def load_app_config(
             "configuration", "_configuration", fallback="3d_fullres"
         )),
         fold=str(nn_value("fold", "_fold", fallback="0")),
-        continue_mode=bool(nn_value(
+        continue_mode=_coerce_bool(nn_value(
             "continue_mode", "_continue", fallback=True
-        )),
+        ), "nnunet.continue_mode"),
     )
-    logging = LoggingConfig(**{
+    logging_values = {
         key: explicit_logging.get(key, default_logging.get(key, default))
         for key, default in {
             "debug_file_enabled": False,
@@ -95,8 +109,17 @@ def load_app_config(
             "error_log_file_enabled": True,
             "base_dir": "Log",
         }.items()
-    })
-    pipeline = PipelineConfig(**{
+    }
+    for key in (
+        "debug_file_enabled",
+        "console_enabled",
+        "run_log_file_enabled",
+        "debug_log_file_enabled",
+        "error_log_file_enabled",
+    ):
+        logging_values[key] = _coerce_bool(logging_values[key], f"logging.{key}")
+    logging = LoggingConfig(**logging_values)
+    pipeline_values = {
         key: explicit_pipeline.get(key, default_pipeline.get(key, default))
         for key, default in {
             "fail_fast": True,
@@ -104,7 +127,15 @@ def load_app_config(
             "keep_intermediate_on_failure": True,
             "run_preflight": True,
         }.items()
-    })
+    }
+    for key in (
+        "fail_fast",
+        "keep_intermediate_on_success",
+        "keep_intermediate_on_failure",
+        "run_preflight",
+    ):
+        pipeline_values[key] = _coerce_bool(pipeline_values[key], f"pipeline.{key}")
+    pipeline = PipelineConfig(**pipeline_values)
     slice_part_config = explicit_data.get(
         "slice_part_config",
         default_data.get("slice_part_config", {}),

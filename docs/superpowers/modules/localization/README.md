@@ -46,10 +46,12 @@
   肺部、髋骨等非脊柱目标使用整体 mask PCA，但必须超过更高的 8° 高置信阈值。
 - 切片规划依赖第四/五阶段输出的目标范围和几何，不应在重建阶段重新定位。
 - 定位阶段的配置解析、结果序列化与医学几何保持职责分离：
-  `stages/localization_contracts.py` 负责共享契约，`stage_localization.py` 保留阶段编排
+  `stages/localization_contracts.py` 负责共享契约，`stage_localization.py` 保留阶段类型入口
   和几何算法；原有 `LocalizationOperations` 方法名及导入路径继续兼容。
 - 脊柱几何基础工具（包围盒、凸包、四边形和点面判断）集中在
   `stages/localization_geometry.py`，通过 mixin 注入定位操作类。
+- `LocalizationStage.execute` 的上下文编排集中在 `stages/localization_execution.py`；
+  `LocalizationOperations` 继续提供配置解析和医学计算，阶段入口保持不变。
 
 ## 推荐阅读
 

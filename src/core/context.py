@@ -55,7 +55,6 @@ class ErrorInfo:
 class ProcessingContext:
     """
     处理上下文类
-        results: 各阶段结果字典 {阶段名: 结果数据}
         metadata: 元数据字典（用于存储额外信息，如文件大小、版本等）
     
     贯穿整个 Pipeline 执行过程的数据容器。
@@ -136,8 +135,6 @@ class ProcessingContext:
     def set_current_stage(self, stage_name: str) -> None:
         """
         设置当前正在执行的阶段（由 Pipeline 调用）
-        results: 各阶段结果字典 {阶段名: 结果数据}
-        metadata: 元数据字典（用于存储额外信息，如文件大小、版本等）
         
         此方法会记录阶段开始时间，用于后续计算耗时。
         

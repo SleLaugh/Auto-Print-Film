@@ -232,6 +232,17 @@ log/ErrorLog.txt
 log/BatchLog.txt
 ```
 
+对比两次批量执行的交付报告（会忽略不同结果目录造成的绝对路径差异）：
+
+```bash
+python scripts/compare_results.py \
+  /home/peng/03_data/demo/Image/result/基准病例 \
+  /home/peng/03_data/demo/Image/result/待比较病例
+```
+
+报告一致时退出码为 `0`；发现状态、部位、层厚、状位或切片数量差异时，输出差异路径并以
+退出码 `1` 结束。
+
 单 GPU 环境建议先从 `--jobs 2` 试起；如果 nnUNet 显存不足或出现 OOM，
 降回 `--jobs 1`。
 

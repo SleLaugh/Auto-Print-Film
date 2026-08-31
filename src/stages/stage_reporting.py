@@ -17,7 +17,11 @@ from pydicom.errors import InvalidDicomError
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
-from src.core.delivery_report import write_failure_report, write_report
+from src.core.delivery_report import (
+    build_status_report,
+    write_failure_report,
+    write_report,
+)
 from src.core.errors import OutputValidationError
 from src.models import ReportingStageResult
 from src.utils import DebugLog, is_debug_file_enabled
@@ -118,7 +122,6 @@ class ReportingStage(BaseStage):
     def _build_delivery_report(self, context: ProcessingContext) -> Dict[str, Any]:
         """按状位配置、窗位和重建区域汇总请求值及实际输出。"""
 
-        request_data = context.request.to_dict()
         reconstruction = context.get_result('reconstruction') or {}
         outputs = list(reconstruction.get('outputs', []))
 
@@ -180,14 +183,12 @@ class ReportingStage(BaseStage):
             }
             plane_list.append(item)
 
-        return {
-            'Success': True,
-            'Message': '',
-            'SlicePart': request_data['SlicePart'],
-            'StudyType': request_data['StudyType'],
-            'ScanThickness': float(request_data['ScanThickness']),
-            'PlaneList': plane_list,
-        }
+        return build_status_report(
+            success=True,
+            message='',
+            request=context.request,
+            plane_list=plane_list,
+        )
 
     @staticmethod
     def _output_matches_config(

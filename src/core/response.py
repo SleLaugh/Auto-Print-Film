@@ -27,8 +27,8 @@
     result_dict = response.to_dict()
 """
 
-from typing import Any, Optional, Dict, List
 from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 from .context import ProcessingContext
 
@@ -50,6 +50,8 @@ class Response:
         output_dir: 输出目录路径
         errors: 错误列表（格式化的字典列表）
         timings: 各阶段耗时字典
+        status: 任务生命周期状态
+        warnings: 结构化警告列表
     """
     
     success: bool
@@ -173,7 +175,7 @@ class Response:
         便于序列化为 JSON，用于 API 响应或日志输出。
         
         Returns:
-            包含所有关键信息的字典
+            包含状态、错误、警告、耗时和各状位数量的稳定字段字典
         """
         return {
             'success': self.success,

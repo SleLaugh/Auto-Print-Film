@@ -16,6 +16,7 @@ from .delivery_report import (
     write_failure_report,
     write_report,
 )
+from .result_compare import compare_result_reports, load_delivery_report
 
 __all__ = [
     'BaseStage',
@@ -29,4 +30,6 @@ __all__ = [
     'build_status_report',
     'write_failure_report',
     'write_report',
+    'compare_result_reports',
+    'load_delivery_report',
 ]

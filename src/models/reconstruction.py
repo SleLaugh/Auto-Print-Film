@@ -107,7 +107,7 @@ class SlicePlan:
     config_id: str = ""
     """当前计划对应的状位配置标识，用于同状位多配置结果关联。"""
     output_plane: str = ""
-    """用于报告和输出目录的唯一状位名称，例如横状位、横状位1。"""
+    """用于隔离输出目录的唯一名称，例如横状位、横状位1。"""
     sampling_details: Dict[str, Any] | None = None
     """实际层厚、层间距、数量、有效范围和总范围的计算详情。"""
 

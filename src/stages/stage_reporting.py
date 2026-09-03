@@ -161,7 +161,8 @@ class ReportingStage(BaseStage):
             }
             item = {
                 'ConfigId': config_id,
-                'Plane': output_plane,
+                # Plane 表示医学状位；带序号的 output_plane 只用于隔离输出目录。
+                'Plane': plane,
                 'SliceType': self._single_actual_or_requested_value(
                     actual_slice_types,
                     config['SliceType'],

@@ -405,8 +405,8 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             20,
         )
 
-    def test_same_plane_sampling_configs_match_their_own_outputs(self):
-        """同状位多份配置必须按配置编号关联各自的实际参数和目录。"""
+    def test_same_plane_sampling_configs_keep_base_plane_and_own_outputs(self):
+        """同状位多份配置在报告中保持基础状位，并关联各自参数和目录。"""
 
         request = Request.from_dict({
             "dicom_dir": "/tmp/dicom",
@@ -459,7 +459,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             "/tmp/横状位/骨窗",
         )
         self.assertEqual(second["ConfigId"], "配置02")
-        self.assertEqual(second["Plane"], "横状位1")
+        self.assertEqual(second["Plane"], "横状位")
         self.assertEqual(second["SliceThickness"], 3.0)
         self.assertEqual(
             second["WindowPresetList"][0]["RegionList"][0]["Path"],

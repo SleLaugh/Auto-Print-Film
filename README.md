@@ -278,7 +278,8 @@ python scripts/compare_results.py \
 给其他间隙。
 同一请求允许存在多份相同状位但采样参数不同的配置。所有配置按请求顺序获得全局
 唯一的 `配置01`、`配置02` 等 `ConfigId`。重复状位按出现顺序使用 `横状位`、
-`横状位1`、`横状位2` 这样的唯一输出名称，直接隔离各自目录。
+`横状位1`、`横状位2` 这样的唯一输出名称，直接隔离各自目录；`report.json` 中各项
+`Plane` 仍返回基础医学状位 `横状位`，具体目录由 `RegionList.Path` 返回。
 
 `report.json` 是每次任务的固定完成标记，顶层返回布尔值 `Success`、文本 `Message`、
 `SlicePart`、`StudyType`、数值类型的 `ScanThickness` 和 `PlaneList`。成功时

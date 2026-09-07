@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import subprocess
 import sys
 import unittest
@@ -66,6 +67,43 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         self.assertIn("椎间隙", result.stdout)
         self.assertNotIn("full_plane", result.stdout)
 
+    def test_cervical_dry_run_keeps_both_axial_configs(self):
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "--dry-run"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0)
+        command_line = next(
+            line.removeprefix("命令:")
+            for line in result.stdout.splitlines()
+            if line.startswith("命令:") and "--slice_part 颈椎" in line
+        )
+        command = shlex.split(command_line)
+        payload = json.loads(command[command.index("--plane_configs") + 1])
+
+        self.assertEqual(
+            [
+                (
+                    config["Plane"],
+                    config["SliceType"],
+                    config["SliceThickness"],
+                    config["SliceSpacing"],
+                )
+                for config in payload
+            ],
+            [
+                ("横状位", "MPR", 5.0, 5.0),
+                ("横状位", "椎间隙", 3.0, 3.0),
+                ("矢状位", "MPR", 5.0, 5.0),
+                ("冠状位", "CPR", 5.0, 5.0),
+            ],
+        )
+
     def test_slice_type_configs_cover_batch_parts_and_planes(self):
         script_text = SCRIPT.read_text(encoding="utf-8")
         start = script_text.index("SLICE_TYPE_CONFIGS=(")
@@ -75,12 +113,12 @@ class BatchTestPlanScriptTest(unittest.TestCase):
             for line in script_text[start:end].splitlines()[1:]
             if line.strip()
         ]
-        mapping = {
-            (slice_part, plane): slice_type
-            for slice_part, plane, slice_type in (
-                entry.split("|") for entry in entries
+        mapping = {}
+        for entry in entries:
+            slice_part, plane, slice_type, thickness, spacing = entry.split("|")
+            mapping.setdefault((slice_part, plane), []).append(
+                (slice_type, float(thickness), float(spacing))
             )
-        }
 
         self.assertEqual(
             set(mapping),
@@ -90,13 +128,19 @@ class BatchTestPlanScriptTest(unittest.TestCase):
                 for plane in ("横状位", "矢状位", "冠状位")
             },
         )
-        self.assertEqual(mapping[("颈椎", "横状位")], "椎间隙")
-        self.assertEqual(mapping[("颈椎", "冠状位")], "CPR")
-        self.assertEqual(mapping[("腰椎", "横状位")], "椎间隙")
-        self.assertEqual(mapping[("腰椎", "冠状位")], "CPR")
-        self.assertEqual(mapping[("胸椎", "冠状位")], "CPR")
-        self.assertEqual(mapping[("肺部", "冠状位")], "MPR")
-        self.assertEqual(mapping[("髋骨", "冠状位")], "MPR")
+        self.assertEqual(
+            mapping[("颈椎", "横状位")],
+            [("MPR", 5.0, 5.0), ("椎间隙", 3.0, 3.0)],
+        )
+        self.assertEqual(mapping[("颈椎", "冠状位")], [("CPR", 5.0, 5.0)])
+        self.assertEqual(
+            mapping[("腰椎", "横状位")],
+            [("MPR", 5.0, 5.0), ("椎间隙", 5.0, 5.0)],
+        )
+        self.assertEqual(mapping[("腰椎", "冠状位")], [("CPR", 5.0, 5.0)])
+        self.assertEqual(mapping[("胸椎", "冠状位")], [("CPR", 5.0, 5.0)])
+        self.assertEqual(mapping[("肺部", "冠状位")], [("MPR", 5.0, 5.0)])
+        self.assertEqual(mapping[("髋骨", "冠状位")], [("MPR", 5.0, 5.0)])
 
     def test_chinese_extent_mode_parses_under_c_locale_with_utf8_mode(self):
         """精简 Linux 的 C locale 下，显式 UTF-8 模式仍应正确解析中文请求。"""

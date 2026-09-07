@@ -6,23 +6,27 @@ cd "$(dirname "$0")/.."
 DICOM_ROOT="/home/peng/03_data/demo/Image/dicom"
 RESULT_ROOT="/home/peng/03_data/demo/Image/result"
 PYTHON_BIN=".venv/bin/python"
-# 每条批量用例按“切割部位 + 状位”查找切割方式；范围模式省略时默认整平面。
+# 格式: "切割部位|状位|切割方式|层厚(mm)|层间距(mm)"
+# 同一部位和状位可以配置多条，批量请求会按此处顺序全部保留。
+# 范围模式省略时默认整平面。
 SLICE_TYPE_CONFIGS=(
-    "颈椎|横状位|椎间隙"
-    "颈椎|矢状位|MPR"
-    "颈椎|冠状位|CPR"
-    "胸椎|横状位|MPR"
-    "胸椎|矢状位|MPR"
-    "胸椎|冠状位|CPR"
-    "腰椎|横状位|椎间隙"
-    "腰椎|矢状位|MPR"
-    "腰椎|冠状位|CPR"
-    "肺部|横状位|MPR"
-    "肺部|矢状位|MPR"
-    "肺部|冠状位|MPR"
-    "髋骨|横状位|MPR"
-    "髋骨|矢状位|MPR"
-    "髋骨|冠状位|MPR"
+    "颈椎|横状位|MPR|5|5"
+    "颈椎|横状位|椎间隙|3|3"
+    "颈椎|矢状位|MPR|5|5"
+    "颈椎|冠状位|CPR|5|5"
+    "胸椎|横状位|MPR|5|5"
+    "胸椎|矢状位|MPR|5|5"
+    "胸椎|冠状位|CPR|5|5"
+    "腰椎|横状位|MPR|5|5"
+    "腰椎|横状位|椎间隙|5|5"
+    "腰椎|矢状位|MPR|5|5"
+    "腰椎|冠状位|CPR|5|5"
+    "肺部|横状位|MPR|5|5"
+    "肺部|矢状位|MPR|5|5"
+    "肺部|冠状位|MPR|5|5"
+    "髋骨|横状位|MPR|5|5"
+    "髋骨|矢状位|MPR|5|5"
+    "髋骨|冠状位|MPR|5|5"
 )
 # 中文请求值依赖 UTF-8 argv；显式开启可避免精简 Linux 环境使用 C/ASCII locale。
 export PYTHONUTF8=1
@@ -76,23 +80,32 @@ fi
 build_plane_configs() {
     local slice_part="$1"
     local plane item configured_part configured_plane configured_slice_type
-    local slice_type
+    local configured_thickness configured_spacing matched
     local config_args=()
 
     for plane in "横状位" "矢状位" "冠状位"; do
-        slice_type=""
+        matched=0
         for item in "${SLICE_TYPE_CONFIGS[@]}"; do
-            IFS='|' read -r configured_part configured_plane configured_slice_type <<< "$item"
+            IFS='|' read -r \
+                configured_part \
+                configured_plane \
+                configured_slice_type \
+                configured_thickness \
+                configured_spacing <<< "$item"
             if [[ "$configured_part" == "$slice_part" && "$configured_plane" == "$plane" ]]; then
-                slice_type="$configured_slice_type"
-                break
+                config_args+=(
+                    "$plane"
+                    "$configured_slice_type"
+                    "$configured_thickness"
+                    "$configured_spacing"
+                )
+                matched=1
             fi
         done
-        if [[ -z "$slice_type" ]]; then
+        if [[ "$matched" -eq 0 ]]; then
             printf '缺少切割方式配置: %s-%s\n' "$slice_part" "$plane" >&2
             return 1
         fi
-        config_args+=("$plane" "$slice_type")
     done
 
     "$PYTHON_BIN" -c '
@@ -100,12 +113,12 @@ import json
 import sys
 
 configs = []
-for index in range(1, len(sys.argv), 2):
-    plane, slice_type = sys.argv[index:index + 2]
+for index in range(1, len(sys.argv), 4):
+    plane, slice_type, slice_thickness, slice_spacing = sys.argv[index:index + 4]
     configs.append({
         "Plane": plane,
-        "SliceThickness": 5,
-        "SliceSpacing": 5,
+        "SliceThickness": float(slice_thickness),
+        "SliceSpacing": float(slice_spacing),
         "WindowPresets": ["骨窗", "肺窗", "纵隔窗", "软组织窗"],
         "SliceType": slice_type,
     })

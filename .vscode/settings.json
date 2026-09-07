@@ -3,16 +3,5 @@
   "python.analysis.extraPaths": [
     "${workspaceFolder}"
   ],
-  "python.terminal.activateEnvironment": true,
-  "vs-yuedu.readingList": [
-      {
-          "filePath": "/home/peng/03_data/demo/code/Accountin/1/罪军.txt",
-          "displayName": "reader",
-          "lastReadChapter": "",
-          "lastReadLine": 0
-      },
-      {
-          "filePath": "/Users/username/Documents/technical-book.md"
-      }
-  ]
+  "python.terminal.activateEnvironment": true
 }

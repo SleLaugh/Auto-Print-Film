@@ -153,16 +153,16 @@ Windows PowerShell：
 python main.py -i D:\data\dicom_dir -o D:\data\output_dir --slice_part 腰椎 --study_type CT --scan_thickness 3.0
 ```
 
-可以通过 `-s` 指定持久化分割缓存根目录。第一阶段写入并复用 `-s/nifti/`，第二阶段
-按模型 ID 写入并复用 `-s/<model_id>/segmentation/`。例如颈椎 CT 选中模型 `292` 时，
-分割结果位于 `<s>/292/segmentation/`；第三阶段及之后的所有产物（包括报告、调试/测试
+可以通过 `-c`（cache）指定持久化缓存根目录。第一阶段写入并复用 `-c/nifti/`，第二阶段
+按模型 ID 写入并复用 `-c/<model_id>/segmentation/`。例如颈椎 CT 选中模型 `292` 时，
+分割结果位于 `<cache>/292/segmentation/`；第三阶段及之后的所有产物（包括报告、调试/测试
 文件和日志）仍按原逻辑写入 `-o/`：
 
 ```text
 <output>/
 └── ...                    # 第三阶段及之后的本次输出
 
-<segmentation-cache>/
+<cache>/
 ├── nifti/                 # 第一阶段缓存，可复用
 └── 292/
     └── segmentation/      # 第二阶段缓存，可复用
@@ -172,7 +172,7 @@ python main.py -i D:\data\dicom_dir -o D:\data\output_dir --slice_part 腰椎 --
 
 ```bash
 python main.py -i /path/to/dicom_dir -o /path/to/output_dir \
-  -s /path/to/segmentation-cache --slice_part 颈椎 \
+  -c /path/to/cache --slice_part 颈椎 \
   --study_type CT --scan_thickness 1.0
 ```
 
@@ -407,12 +407,12 @@ DICOM 的 `SliceThickness` 和 `SpacingBetweenSlices`，确保查看器读取到
 ### 输出目录安全
 
 请求和环境预检通过后，程序会清理 `-o/` 中旧的业务结果，并重新执行第三阶段及后续阶段。
-`-s/nifti/` 和 `-s/<model_id>/segmentation/` 属于持久化阶段缓存，不会被 `-o` 清理。
+`-c/nifti/` 和 `-c/<model_id>/segmentation/` 属于持久化阶段缓存，不会被 `-o` 清理。
 `report.json`、`manifest.json`（调试模式）、调试 NIfTI、调试元数据、`Localizer.png`、
 测试文件和 `log/` 均继续写入 `-o/`。
 只有 `debug_file_enabled=true` 时才生成并保留 `manifest.json`、调试 NIfTI、调试元数据、
 `Localizer.png` 以及成功任务的中间现场。`debug_log_file_enabled` 只控制
-`log/DebugLog.txt`，不再影响任何调试文件。`-s` 下的第一、二阶段缓存不会因输出清理删除。
+`log/DebugLog.txt`，不再影响任何调试文件。`-c` 下的第一、二阶段缓存不会因输出清理删除。
 metadata 中的调试 NIfTI 只保留第五阶段
 生成的标签、椎体主体和椎体四棱柱三张掩膜，写出时会在 DebugLog 中逐文件记录完整
 路径和生成耗时；第六阶段只写 `slice_plans.json`，不再生成规划 NIfTI。

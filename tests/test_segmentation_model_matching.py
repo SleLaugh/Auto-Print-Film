@@ -99,21 +99,21 @@ class SegmentationModelMatchingTest(unittest.TestCase):
                     self.stage._normalize_scan_thickness(value)
 
     def test_existing_segmentation_cache_is_reused_without_running_inference(self):
-        """-s/模型ID/segmentation 下已有分割时跳过 nnUNet。"""
+        """-c/模型ID/segmentation 下已有分割时跳过 nnUNet。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             nifti_path = root / "nifti" / "raw_0000.nii.gz"
             nifti_path.parent.mkdir()
             nifti_path.touch()
-            cached_path = root / "segmentation-cache" / "292" / "segmentation" / "seg.nii.gz"
+            cached_path = root / "cache" / "292" / "segmentation" / "seg.nii.gz"
             cached_path.parent.mkdir(parents=True)
             cached_path.touch()
             request = Request(
                 dicom_dir=str(root / "dicom"),
                 output_dir=str(root / "output"),
                 scan_thickness=1.0,
-                segmentation_dir=str(root / "segmentation-cache"),
+                cache_dir=str(root / "cache"),
             )
             context = ProcessingContext(request)
             context.set_result("preprocessing", {"nifti_path": str(nifti_path)})
@@ -130,7 +130,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             self.assertEqual(request.output_dir, str(root / "output"))
 
     def test_missing_segmentation_cache_writes_under_model_directory(self):
-        """-s 未命中时推理写入 -s/模型ID/segmentation。"""
+        """-c 未命中时推理写入 -c/模型ID/segmentation。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -141,7 +141,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
                 dicom_dir=str(root / "dicom"),
                 output_dir=str(root / "output"),
                 scan_thickness=1.0,
-                segmentation_dir=str(root / "segmentation-cache"),
+                cache_dir=str(root / "cache"),
             )
             context = ProcessingContext(request)
             context.set_result("preprocessing", {"nifti_path": str(nifti_path)})
@@ -157,7 +157,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
                 self.stage.execute(context)
 
             result = context.get_result("segmentation")
-            expected = root / "segmentation-cache" / "292" / "segmentation" / "seg.nii.gz"
+            expected = root / "cache" / "292" / "segmentation" / "seg.nii.gz"
             self.assertEqual(result["seg_path"], str(expected))
             self.assertTrue(expected.exists())
             self.assertEqual(run_inference.call_args.kwargs["output_path"], expected)
@@ -177,7 +177,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
                 dicom_dir=str(root / "dicom"),
                 output_dir=str(root / "output"),
                 scan_thickness=1.0,
-                segmentation_dir=str(root / "segmentation-cache"),
+                cache_dir=str(root / "cache"),
             )
             context = ProcessingContext(request)
             context.set_result("preprocessing", {"nifti_path": str(nifti_path)})
@@ -193,7 +193,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             self.assertEqual(request.output_dir, str(root / "output"))
 
     def test_without_segmentation_cache_keeps_original_output_behavior(self):
-        """未传 -s 时仍将第二阶段结果写入 -o/segmentation。"""
+        """未传 -c 时仍将第二阶段结果写入 -o/segmentation。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

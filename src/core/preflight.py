@@ -62,12 +62,12 @@ class PreflightValidator:
         if output_path.is_relative_to(input_path):
             raise RequestValidationError("输出目录不能位于输入目录内")
 
-        segmentation_dir = getattr(request, "segmentation_dir", "")
-        if segmentation_dir:
-            segmentation_path = Path(segmentation_dir).expanduser().resolve()
-            if segmentation_path.is_relative_to(output_path):
+        cache_dir = getattr(request, "cache_dir", "")
+        if cache_dir:
+            cache_path = Path(cache_dir).expanduser().resolve()
+            if cache_path.is_relative_to(output_path):
                 raise RequestValidationError(
-                    "分割缓存目录不能位于输出目录内，否则会被 -o 清理"
+                    "缓存目录不能位于输出目录内，否则会被 -o 清理"
                 )
 
         parent = output_path.parent

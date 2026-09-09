@@ -26,7 +26,7 @@ from src.utils import DebugLog, ErrorLog
 
 
 class SegmentationStage(BaseStage):
-    """推理分割阶段；在 ``-s/<模型ID>/segmentation`` 持久化分割结果。"""
+    """推理分割阶段；在 ``-c/<模型ID>/segmentation`` 持久化分割结果。"""
     
     def __init__(self, config: Dict[str, Any] = None):
         """初始化分割阶段并加载统一切割部位配置及 nnUNet 运行配置。"""
@@ -153,14 +153,14 @@ class SegmentationStage(BaseStage):
             f"-> 模型ID: {dataset_id}"
         )
 
-        if request.segmentation_dir:
+        if request.cache_dir:
             output_dir = (
-                Path(request.segmentation_dir)
+                Path(request.cache_dir)
                 / str(dataset_id)
                 / "segmentation"
             )
         else:
-            # 未传 -s 时保留原有行为，分割结果写入 -o/segmentation。
+            # 未传 -c 时保留原有行为，分割结果写入 -o/segmentation。
             output_dir = Path(request.output_dir) / "segmentation"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "seg.nii.gz"
@@ -235,7 +235,7 @@ class SegmentationStage(BaseStage):
 
     @staticmethod
     def _write_model_marker(output_dir: Path, dataset_id: Any) -> None:
-        """记录模型分割缓存对应的模型，避免模型切换时误复用。"""
+        """记录模型缓存对应的模型，避免模型切换时误复用。"""
 
         marker = output_dir / "model.json"
         temporary = output_dir / ".model.json.tmp"
@@ -514,7 +514,7 @@ class SegmentationStage(BaseStage):
         """
         将 nnUNet 输出整理成固定文件名。
 
-        第二阶段统一在 -s/<模型ID>/segmentation/seg.nii.gz 生成或复用结果。
+        第二阶段统一在 -c/<模型ID>/segmentation/seg.nii.gz 生成或复用结果。
         nnUNet 原始输出通常是 {case_id}.nii.gz，所以这里先找预期输出；如果
         不同版本或不同参数导致文件名不一致，再在输出目录中寻找唯一的 nii.gz 结果。
         """

@@ -90,8 +90,8 @@ class MainPlaneConfigsTest(unittest.TestCase):
                 "颈椎",
                 "--scan_thickness",
                 "1.5",
-                "-s",
-                "/tmp/segmentation-cache",
+                "-c",
+                "/tmp/cache",
                 "--plane_configs",
                 '[{"Plane":"冠状位","SliceThickness":5,"SliceSpacing":10,"WindowPresets":["骨窗"]}]',
             ]
@@ -104,7 +104,7 @@ class MainPlaneConfigsTest(unittest.TestCase):
             )
             self.assertEqual(args.scan_thickness, 1.5)
             self.assertEqual(args.slice_part, "颈椎")
-            self.assertEqual(args.segmentation_dir, "/tmp/segmentation-cache")
+            self.assertEqual(args.cache_dir, "/tmp/cache")
         finally:
             # 测试结束后恢复 argv，避免污染同进程里的其他测试。
             sys.argv = original_argv

@@ -106,11 +106,11 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        '-s', '--segmentation_dir',
-        dest='segmentation_dir',
+        '-c', '--cache_dir',
+        dest='cache_dir',
         type=str,
         default=None,
-        help='分割缓存根目录；第一阶段写入 nifti，第二阶段按模型 ID 保存',
+        help='缓存根目录；第一阶段写入 nifti，第二阶段按模型 ID 保存',
     )
 
     parser.add_argument(
@@ -207,8 +207,8 @@ def main():
             request_kwargs['plane_configs'] = plane_configs
         if window_presets:
             request_kwargs['window_presets'] = window_presets
-        if args.segmentation_dir is not None:
-            request_kwargs['segmentation_dir'] = args.segmentation_dir
+        if args.cache_dir is not None:
+            request_kwargs['cache_dir'] = args.cache_dir
         request = Request(**request_kwargs)
 
         is_valid, error_message = request.validate()
@@ -220,8 +220,8 @@ def main():
         DebugLog(f"切割部位: {request.slice_part.value}")
         DebugLog(f"检查类型: {request.study_type.value}")
         DebugLog(f"扫描厚度: {request.scan_thickness}mm")
-        if request.segmentation_dir:
-            DebugLog(f"分割缓存根目录: {request.segmentation_dir}")
+        if request.cache_dir:
+            DebugLog(f"缓存根目录: {request.cache_dir}")
         DebugLog(f"三平面参数: {request.to_dict()['plane_configs']}")
         
         pipeline = Pipeline(config=app_config)

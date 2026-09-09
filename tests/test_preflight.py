@@ -155,8 +155,8 @@ class PreflightTest(unittest.TestCase):
                     check_model_directories=False,
                 ).validate(request, AppConfig())
 
-    def test_preflight_rejects_segmentation_cache_inside_output(self):
-        """分割缓存放在输出目录内会被 -o 清理，必须提前拒绝。"""
+    def test_preflight_rejects_cache_inside_output(self):
+        """缓存放在输出目录内会被 -o 清理，必须提前拒绝。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -167,9 +167,9 @@ class PreflightTest(unittest.TestCase):
                 "腰椎", "MPR", "横状位",
                 str(input_dir), str(output_dir),
             )
-            request.segmentation_dir = str(output_dir / "segmentation-cache")
+            request.cache_dir = str(output_dir / "cache")
 
-            with self.assertRaisesRegex(RequestValidationError, "分割缓存目录"):
+            with self.assertRaisesRegex(RequestValidationError, "缓存目录"):
                 PreflightValidator(
                     executable_finder=lambda _: "/bin/true",
                     check_model_directories=False,

@@ -25,7 +25,7 @@ class WindowPresetsTest(unittest.TestCase):
     }
 
     def test_all_presets_have_expected_width_and_center(self):
-        # 配置文件是支持名称和数值的唯一来源。
+        # 默认配置文件是未被本次请求覆盖时的名称和值来源。
         """验证 `test_all_presets_have_expected_width_and_center` 场景符合预期。"""
 
         get_window_preset = getattr(models, "get_window_preset", None)
@@ -38,6 +38,34 @@ class WindowPresetsTest(unittest.TestCase):
                 self.assertEqual(preset.name, name)
                 self.assertEqual(preset.window_width, width)
                 self.assertEqual(preset.window_center, center)
+
+    def test_custom_presets_override_defaults_and_fallback_by_name(self):
+        """本次列表按名称覆盖默认值，未覆盖名称继续使用默认值。"""
+
+        custom = models.parse_window_presets([
+            {"Name": "骨窗", "windowWidth": 50, "windowLevel": 60},
+            {"Name": "骨窗1", "windowWidth": 80, "windowLevel": 70},
+        ])
+
+        overridden = models.get_window_preset("骨窗", custom)
+        fallback = models.get_window_preset("脑窗", custom)
+        self.assertEqual(
+            (overridden.window_width, overridden.window_center),
+            (50, 60),
+        )
+        self.assertEqual(
+            (fallback.window_width, fallback.window_center),
+            self.EXPECTED_PRESETS["脑窗"],
+        )
+
+    def test_custom_presets_unknown_name_still_fails(self):
+        """自定义列表和默认配置都没有的名称必须报错。"""
+
+        custom = models.parse_window_presets([
+            {"Name": "骨窗1", "windowWidth": 80, "windowLevel": 70},
+        ])
+        with self.assertRaisesRegex(ValueError, "不支持的窗宽窗位预设"):
+            models.get_window_preset("骨窗2", custom)
 
     def test_query_accepts_chinese_name(self):
         # 简单调用可以直接使用中文名称，查询结果仍来自同一份内部预设表。

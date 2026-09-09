@@ -15,7 +15,11 @@ from .enums import (
     CutLineExtentModeEnum,
     SliceType,
 )
-from .window import get_window_preset
+from .window import (
+    WindowPreset,
+    get_window_preset,
+    parse_window_presets,
+)
 
 
 def _parse_scan_thickness(value: Any) -> float:
@@ -200,6 +204,12 @@ class Request:
     scan_thickness: float = 1.0
     # 三平面重建参数；调用方不传时使用 default_plane_configs。
     plane_configs: List[PlaneConfig] = field(default_factory=default_plane_configs)
+    # 本次任务的窗宽窗位覆盖列表；同名项优先于默认配置。
+    window_presets: List[WindowPreset] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # 兼容代码内直接传入字典的调用方，同时确保后续阶段拿到统一实体。
+        self.window_presets = parse_window_presets(self.window_presets)
 
     # ===== 后续扩展字段（取消注释即可使用）=====
     # patient_name: str = ""
@@ -210,9 +220,10 @@ class Request:
         """
         将 Request 转成 JSON 友好的字典。
 
-        报告阶段和后续调试都走这个方法，避免新增请求字段后只在部分地方遗漏。
+        报告阶段和后续调试都走这个方法；传入的窗宽窗位覆盖列表只在非空时
+        写入，避免改变未传参数时的既有请求结构。
         """
-        return {
+        data = {
             'dicom_dir': self.dicom_dir,
             'output_dir': self.output_dir,
             'SlicePart': self.slice_part.value,
@@ -223,6 +234,11 @@ class Request:
                 for plane_config in self.plane_configs
             ]
         }
+        if self.window_presets:
+            data['window_presets'] = [
+                preset.to_dict() for preset in self.window_presets
+            ]
+        return data
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Request':
@@ -230,7 +246,8 @@ class Request:
         从外部字典创建请求对象。
 
         外部传入的切割部位和三平面配置都是字符串；这里统一转成枚举和
-        PlaneConfig，让后续 Pipeline 阶段处理的是强约束结构。
+        PlaneConfig，让后续 Pipeline 阶段处理的是强约束结构。顶层
+        ``window_presets``（或兼容的 ``WindowPresets``）用于本次任务覆盖默认窗位。
         """
         removed_fields = {
             'StudyPart',
@@ -250,6 +267,9 @@ class Request:
         if 'ScanThickness' not in data:
             raise ValueError("外部请求缺少必填字段: ScanThickness")
 
+        custom_window_presets = parse_window_presets(
+            data.get('window_presets', data.get('WindowPresets'))
+        )
         return cls(
             dicom_dir=data['dicom_dir'],
             output_dir=data['output_dir'],
@@ -267,7 +287,8 @@ class Request:
                     plane_config.to_dict()
                     for plane_config in default_plane_configs()
                 ])
-            ]
+            ],
+            window_presets=custom_window_presets,
         )
 
     def validate(self) -> tuple[bool, Optional[str]]:
@@ -337,7 +358,7 @@ class Request:
                 return False, f"{plane_value} 窗宽窗位不能为空"
             for window_name in plane_config.window_presets:
                 try:
-                    get_window_preset(window_name)
+                    get_window_preset(window_name, self.window_presets)
                 except ValueError as exc:
                     return False, str(exc)
 

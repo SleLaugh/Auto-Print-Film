@@ -57,6 +57,24 @@ class MainPlaneConfigsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "plane_configs 必须是 JSON 数组"):
             main.parse_plane_configs('{"Plane":"冠状位"}')
 
+    def test_parse_window_presets_json_array(self):
+        """CLI 窗宽窗位参数应解析为可供请求使用的预设实体列表。"""
+
+        presets = main.parse_window_presets_argument(
+            '[{"Name":"骨窗1","windowWidth":50,"windowLevel":60}]'
+        )
+
+        self.assertEqual(len(presets), 1)
+        self.assertEqual(presets[0].name, "骨窗1")
+        self.assertEqual(presets[0].window_width, 50)
+        self.assertEqual(presets[0].window_center, 60)
+
+    def test_parse_window_presets_rejects_non_array_json(self):
+        """窗宽窗位参数顶层必须是 JSON 数组。"""
+
+        with self.assertRaisesRegex(ValueError, "window_presets 必须是 JSON 数组"):
+            main.parse_window_presets_argument('{"Name":"骨窗"}')
+
     def test_parse_arguments_accepts_underscore_protocol(self):
         """CLI 参数统一使用小写下划线命名。"""
 

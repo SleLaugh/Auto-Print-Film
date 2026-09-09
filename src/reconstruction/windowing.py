@@ -1,6 +1,6 @@
 """第七阶段窗宽窗位解析。"""
 
-from typing import Iterable, List
+from typing import Iterable, List, Mapping
 
 import numpy as np
 import SimpleITK as sitk
@@ -8,13 +8,18 @@ import SimpleITK as sitk
 from src.models import WindowPreset, get_window_preset
 
 
-def unique_window_presets(names: Iterable[str]) -> List[WindowPreset]:
-    """按请求顺序去重并解析窗宽窗位预设。"""
+def unique_window_presets(
+    names: Iterable[str],
+    custom_presets: (
+        Iterable[WindowPreset] | Mapping[str, WindowPreset] | None
+    ) = None,
+) -> List[WindowPreset]:
+    """按请求顺序去重，并按本次覆盖列表优先、默认配置回退的规则解析。"""
 
     result = []
     seen = set()
     for name in names:
-        preset = get_window_preset(name)
+        preset = get_window_preset(name, custom_presets)
         if preset.name in seen:
             continue
         seen.add(preset.name)

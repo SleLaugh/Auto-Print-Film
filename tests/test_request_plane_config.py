@@ -169,6 +169,55 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self.assertNotIn("cut_mode", request.to_dict())
         self.assertFalse(hasattr(request, "cut_mode"))
 
+    def test_request_uses_custom_window_presets_for_plane_config(self):
+        """plane config 可引用自定义名称，未传入的名称仍回退默认配置。"""
+
+        request = Request.from_dict({
+            "dicom_dir": "/tmp/dicom",
+            "output_dir": "/tmp/output",
+            "ScanThickness": 1.5,
+            "window_presets": [
+                {"Name": "骨窗1", "windowWidth": 50, "windowLevel": 60},
+            ],
+            "plane_configs": [
+                {
+                    "Plane": "横状位",
+                    "SliceThickness": 1,
+                    "SliceSpacing": 1,
+                    "WindowPresets": ["骨窗1", "脑窗"],
+                }
+            ],
+        })
+
+        self.assertEqual(request.validate(), (True, None))
+        self.assertEqual(request.to_dict()["window_presets"], [
+            {"Name": "骨窗1", "windowWidth": 50, "windowLevel": 60},
+        ])
+
+    def test_request_rejects_window_name_missing_from_custom_and_default(self):
+        """plane config 引用两处都不存在的窗位时请求校验失败。"""
+
+        request = Request.from_dict({
+            "dicom_dir": "/tmp/dicom",
+            "output_dir": "/tmp/output",
+            "ScanThickness": 1.5,
+            "window_presets": [
+                {"Name": "骨窗1", "windowWidth": 50, "windowLevel": 60},
+            ],
+            "plane_configs": [
+                {
+                    "Plane": "横状位",
+                    "SliceThickness": 1,
+                    "SliceSpacing": 1,
+                    "WindowPresets": ["骨窗2"],
+                }
+            ],
+        })
+
+        is_valid, message = request.validate()
+        self.assertFalse(is_valid)
+        self.assertIn("不支持的窗宽窗位预设: 骨窗2", message)
+
     def test_request_requires_pascal_case_scan_thickness(self):
         """外部扫描厚度只接受必填的 PascalCase 数值字段。"""
 

@@ -20,7 +20,13 @@ sys.path.insert(0, str(project_root))
 from src.core import Pipeline
 from src.core.delivery_report import write_failure_report
 from src.config import load_app_config
-from src.models import Request, SlicePartEnum, StudyTypeEnum, PlaneConfig
+from src.models import (
+    Request,
+    SlicePartEnum,
+    StudyTypeEnum,
+    PlaneConfig,
+    parse_window_presets,
+)
 from src.utils import RunLog, ErrorLog, DebugLog, configure_logging
 
 
@@ -108,6 +114,14 @@ def parse_arguments():
         help='三平面重建参数 JSON 数组，层厚、层间距、数量至少传两项，值为 0 表示未配置，例如: [{"Plane":"冠状位","SliceThickness":5,"SliceImageCount":20,"WindowPresets":["骨窗"],"SliceType":"MPR"}]'
     )
 
+    parser.add_argument(
+        '--window_presets',
+        dest='window_presets',
+        type=str,
+        default=None,
+        help='本次任务窗宽窗位 JSON 数组，例如: [{"Name":"骨窗","windowWidth":50,"windowLevel":60}]',
+    )
+
     # 解析命令行输入的参数
     # 比如运行：python script.py -i /path/to/dicom -o /path/to/output --slice_part 颈椎
     # 就会把参数解析成对象返回
@@ -139,6 +153,18 @@ def parse_plane_configs(value):
     ]
 
 
+def parse_window_presets_argument(value):
+    """解析命令行窗宽窗位覆盖列表。"""
+
+    if value is None:
+        return []
+    try:
+        raw_presets = json.loads(value)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"window_presets 不是合法 JSON: {e}") from e
+    return parse_window_presets(raw_presets)
+
+
 def main():
     # SimpleITK/GDCM 等原生扩展触发 SIGABRT 时，至少保留 Python 调用栈。
     faulthandler.enable(all_threads=True)
@@ -159,6 +185,7 @@ def main():
         RunLog("SpineMPRProcessor v1.0.0 启动")
 
         plane_configs = parse_plane_configs(args.plane_configs)
+        window_presets = parse_window_presets_argument(args.window_presets)
         # 先组装基础参数，再按需放入 plane_configs。这样未传该参数时仍使用
         # Request 的默认横状位骨窗配置，保持老命令兼容。
         request_kwargs = {
@@ -170,6 +197,8 @@ def main():
         }
         if plane_configs is not None:
             request_kwargs['plane_configs'] = plane_configs
+        if window_presets:
+            request_kwargs['window_presets'] = window_presets
 
         request = Request(**request_kwargs)
 

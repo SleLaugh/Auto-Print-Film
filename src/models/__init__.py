@@ -29,7 +29,12 @@ from .anatomy import (
     AnatomicalFrame,
     AnatomicalGeometryResult,
 )
-from .window import WindowPreset, get_window_preset
+from .window import (
+    WindowPreset,
+    get_window_preset,
+    parse_window_preset,
+    parse_window_presets,
+)
 from .stage_results import (
     StageResult,
     PreprocessingResult,
@@ -70,6 +75,8 @@ __all__ = [
     'AnatomicalGeometryResult',
     'WindowPreset',
     'get_window_preset',
+    'parse_window_preset',
+    'parse_window_presets',
     'SlicePartEnum',
     'StudyTypeEnum',
     'SliceType',

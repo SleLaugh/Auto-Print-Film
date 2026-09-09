@@ -23,7 +23,7 @@ import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
-from src.models import ReconstructionStageResult
+from src.models import ReconstructionStageResult, WindowPreset
 from src.reconstruction import CurvedStackResampler, PlaneStackResampler
 from src.reconstruction.dicom import (
     new_uid,
@@ -145,6 +145,7 @@ class ReconstructionStage(BaseStage):
                         output_root=output_root,
                         study_uid=study_uid,
                         source_metadata=source_metadata,
+                        custom_window_presets=getattr(request, "window_presets", None),
                     )
                 )
             DebugLog(f"  状位处理完成: {plane}")
@@ -167,12 +168,14 @@ class ReconstructionStage(BaseStage):
         study_uid: str,
         source_metadata: Dict[str, str],
         localizer_image: sitk.Image | None = None,
+        custom_window_presets: list[WindowPreset] | None = None,
     ) -> Dict[str, Any]:
         """
         执行一个切片计划。
 
-        第一步把计划中的所有位置采样成 HU 图像；第二步再按窗位处理整套采样结果。
-        先完整采样能保证窗位线程不触碰重采样器，也符合“先采集、后显示处理”的流程。
+        窗位按请求级覆盖列表优先、默认配置回退解析。第一步把计划中的所有位置
+        采样成 HU 图像；第二步再按窗位处理整套采样结果。先完整采样能保证窗位
+        线程不触碰重采样器，也符合“先采集、后显示处理”的流程。
         """
         localizer_render: _LocalizerRender | None = None
         if localizer_image is None and isinstance(image, sitk.Image):
@@ -198,7 +201,10 @@ class ReconstructionStage(BaseStage):
                 )),
             )
 
-        windows = unique_window_presets(plan["window_presets"])
+        windows = unique_window_presets(
+            plan["window_presets"],
+            custom_presets=custom_window_presets,
+        )
         series_uids = {window.name: new_uid() for window in windows}
         localizer_series_uids = {window.name: new_uid() for window in windows}
         region_name = self._plan_region_name(plan)

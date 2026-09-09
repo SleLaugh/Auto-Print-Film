@@ -153,6 +153,16 @@ Windows PowerShell：
 python main.py -i D:\data\dicom_dir -o D:\data\output_dir --slice_part 腰椎 --study_type CT --scan_thickness 3.0
 ```
 
+如需为本次任务覆盖窗宽窗位，可传入 `--window_presets` JSON 数组。列表中按
+`Name` 匹配 `plane_configs` 使用的窗位名称；未覆盖的名称继续从
+`src/config/window_presets.json` 查找。列表可以包含本次 `plane_configs` 未使用的
+额外项；如果引用的名称在两个位置都找不到，任务失败并生成 `report.json`：
+
+```bash
+python main.py -i /path/to/dicom_dir -o /path/to/output_dir --scan_thickness 3.0 \
+  --window_presets '[{"Name":"骨窗","windowWidth":50,"windowLevel":60}]'
+```
+
 命令行可识别的 `--slice_part` 值：
 
 ```text

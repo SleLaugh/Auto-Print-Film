@@ -7,6 +7,7 @@ src/utils/logs/
 data/
 output/
 outputs/
+服务端/
 Plant/设计.txt
 .gitignore
 Plant/需求.docx

@@ -87,7 +87,7 @@ class PreprocessingStage(BaseStage):
         
         input_dir = Path(request.dicom_dir) # 原始路径
         
-        output_root = Path(request.output_dir)
+        output_root = Path(request.segmentation_dir or request.output_dir)
         output_file = output_root / 'nifti' / 'raw_0000.nii.gz' # nnUNet 输入必须以 _0000 结尾
         metadata_file = output_root / 'metadata' / 'dicom_metadata.json'
 
@@ -98,6 +98,20 @@ class PreprocessingStage(BaseStage):
         
         
         output_file.parent.mkdir(parents=True, exist_ok=True) # 确保目标路径存在
+        if output_file.is_file():
+            # 第一阶段缓存位于 -s/nifti，存在时直接复用，避免再次读取和转换 DICOM。
+            source_metadata = read_source_dicom_metadata(input_dir)
+            metadata_path = str(metadata_file) if metadata_file.is_file() else ""
+            context.set_stage_result(PreprocessingResult(
+                nifti_path=str(output_file),
+                metadata_path=metadata_path,
+                source_dicom_metadata=source_metadata,
+            ))
+            DebugLog(f"  已找到现成NIfTI，跳过转换: {output_file}")
+            DebugLog("  第一阶段完成")
+            DebugLog("=" * 60)
+            return context
+
         if is_debug_file_enabled():
             metadata_file.parent.mkdir(parents=True, exist_ok=True)
         try:

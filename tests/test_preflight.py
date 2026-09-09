@@ -155,6 +155,25 @@ class PreflightTest(unittest.TestCase):
                     check_model_directories=False,
                 ).validate(request, AppConfig())
 
+    def test_preflight_rejects_segmentation_cache_inside_output(self):
+        """分割缓存放在输出目录内会被 -o 清理，必须提前拒绝。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_dir = root / "dicom"
+            input_dir.mkdir()
+            output_dir = root / "output"
+            request = make_request(
+                "腰椎", "MPR", "横状位",
+                str(input_dir), str(output_dir),
+            )
+            request.segmentation_dir = str(output_dir / "segmentation-cache")
+
+            with self.assertRaisesRegex(RequestValidationError, "分割缓存目录"):
+                PreflightValidator(
+                    executable_finder=lambda _: "/bin/true",
+                    check_model_directories=False,
+                ).validate(request, AppConfig())
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,7 @@
 """
 
 import math
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from .enums import (
@@ -206,10 +207,14 @@ class Request:
     plane_configs: List[PlaneConfig] = field(default_factory=default_plane_configs)
     # 本次任务的窗宽窗位覆盖列表；同名项优先于默认配置。
     window_presets: List[WindowPreset] = field(default_factory=list)
+    # 分割缓存根目录；第一阶段放在 nifti/，第二阶段按模型 ID 分目录。
+    segmentation_dir: str = ""
 
     def __post_init__(self) -> None:
         # 兼容代码内直接传入字典的调用方，同时确保后续阶段拿到统一实体。
         self.window_presets = parse_window_presets(self.window_presets)
+        if self.segmentation_dir is None:
+            self.segmentation_dir = ""
 
     # ===== 后续扩展字段（取消注释即可使用）=====
     # patient_name: str = ""
@@ -238,6 +243,8 @@ class Request:
             data['window_presets'] = [
                 preset.to_dict() for preset in self.window_presets
             ]
+        if self.segmentation_dir:
+            data['segmentation_dir'] = str(self.segmentation_dir)
         return data
     
     @classmethod
@@ -289,6 +296,10 @@ class Request:
                 ])
             ],
             window_presets=custom_window_presets,
+            segmentation_dir=data.get(
+                'segmentation_dir',
+                data.get('SegmentationDir', ''),
+            ),
         )
 
     def validate(self) -> tuple[bool, Optional[str]]:
@@ -302,7 +313,8 @@ class Request:
             return False, "dicom_dir 不能为空"
         if not self.output_dir:
             return False, "output_dir 不能为空"
-
+        if not isinstance(self.segmentation_dir, (str, Path)):
+            return False, "segmentation_dir 必须是路径字符串"
         if isinstance(self.scan_thickness, bool):
             return False, "ScanThickness 必须是非负有限数值"
         try:

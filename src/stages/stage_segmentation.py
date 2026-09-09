@@ -26,7 +26,7 @@ from src.utils import DebugLog, ErrorLog
 
 
 class SegmentationStage(BaseStage):
-    """推理分割阶段"""
+    """推理分割阶段；在 ``-s/<模型ID>/segmentation`` 持久化分割结果。"""
     
     def __init__(self, config: Dict[str, Any] = None):
         """初始化分割阶段并加载统一切割部位配置及 nnUNet 运行配置。"""
@@ -110,7 +110,7 @@ class SegmentationStage(BaseStage):
         if not path.is_absolute():
             path = project_root / path
         return str(path)
-    
+
     def execute(self, context: ProcessingContext) -> ProcessingContext:
         """匹配请求对应的 nnUNet 模型，执行推理并登记标准化分割输出。"""
 
@@ -135,18 +135,14 @@ class SegmentationStage(BaseStage):
         DebugLog(f"  检查类型: {study_type}")
         DebugLog(f"  扫描厚度: {scan_thickness:.3f}mm")
         
-        # 构建输出路径：统一整理为 seg.nii.gz，方便后续阶段读取
         input_path = Path(nifti_path)
-        output_dir = Path(request.output_dir) / "segmentation"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / "seg.nii.gz"
-        
+
         # [1] match_model: 匹配模型（获取对应的 nnUNet 模型ID）
         DebugLog("  [1] match_model: 匹配模型...")
         model_info = self._match_model(
             slice_part=slice_part,
             study_type=study_type,
-            scan_thickness=scan_thickness
+            scan_thickness=scan_thickness,
         )
         dataset_id = model_info['model_id']
         configuration = model_info.get('configuration', self._configuration)
@@ -156,19 +152,52 @@ class SegmentationStage(BaseStage):
             f"扫描厚度: {scan_thickness:.3f}mm "
             f"-> 模型ID: {dataset_id}"
         )
-        
+
+        if request.segmentation_dir:
+            output_dir = (
+                Path(request.segmentation_dir)
+                / str(dataset_id)
+                / "segmentation"
+            )
+        else:
+            # 未传 -s 时保留原有行为，分割结果写入 -o/segmentation。
+            output_dir = Path(request.output_dir) / "segmentation"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "seg.nii.gz"
+
+        cached_path = output_path if self._can_reuse_segmentation(
+            output_dir, output_path, dataset_id
+        ) else None
+        if cached_path is not None:
+            DebugLog(f"    已找到现成分割结果，跳过推理: {cached_path}")
+        else:
+            if output_path.exists() or (output_dir / "model.json").exists():
+                # 旧缓存属于其他模型时，清理第二阶段目录后重新推理。
+                for child in output_dir.iterdir():
+                    if child.is_dir() and not child.is_symlink():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            DebugLog(f"    未找到现成分割结果，将写入: {output_path}")
+
         # [2] run_nnunet_inference: 执行推理
-        DebugLog("  [2] run_nnunet_inference: 执行nnUNet推理...")
-        self._run_nnunet_inference(
-            input_dir=input_path.parent,
-            input_path=input_path,
-            output_path=output_path,
-            dataset_id=dataset_id,
-            configuration=configuration,
-            fold=fold,
-            continue_mode=self._continue
-        )
-        
+        if cached_path is None:
+            DebugLog("  [2] run_nnunet_inference: 执行nnUNet推理...")
+            self._run_nnunet_inference(
+                input_dir=input_path.parent,
+                input_path=input_path,
+                output_path=output_path,
+                dataset_id=dataset_id,
+                configuration=configuration,
+                fold=fold,
+                continue_mode=self._continue
+            )
+        else:
+            DebugLog("  [2] run_nnunet_inference: 复用现有分割结果")
+
+        self._write_model_marker(output_dir, dataset_id)
+
         result = {
             'seg_path': str(output_path),
             'input_nifti': nifti_path,
@@ -176,12 +205,43 @@ class SegmentationStage(BaseStage):
         }
         
         context.set_stage_result(SegmentationResult(**result))
+        context.metadata["model_id"] = str(dataset_id)
         
         DebugLog(f"  分割结果保存至: {output_path}")
         DebugLog("  第二阶段完成")
         DebugLog("=" * 60)
         
         return context
+
+    @staticmethod
+    def _can_reuse_segmentation(
+        output_dir: Path,
+        output_path: Path,
+        dataset_id: Any,
+    ) -> bool:
+        """按模型目录中的分割文件和标记判断第二阶段缓存是否可复用。"""
+
+        if not output_path.is_file():
+            return False
+        marker = output_dir / "model.json"
+        if not marker.is_file():
+            # 兼容没有模型标记的历史缓存：文件存在即可复用。
+            return True
+        try:
+            with marker.open("r", encoding="utf-8") as file:
+                return str(json.load(file).get("model_id")) == str(dataset_id)
+        except (OSError, ValueError, TypeError):
+            return False
+
+    @staticmethod
+    def _write_model_marker(output_dir: Path, dataset_id: Any) -> None:
+        """记录模型分割缓存对应的模型，避免模型切换时误复用。"""
+
+        marker = output_dir / "model.json"
+        temporary = output_dir / ".model.json.tmp"
+        with temporary.open("w", encoding="utf-8") as file:
+            json.dump({"model_id": str(dataset_id)}, file, ensure_ascii=False)
+        temporary.replace(marker)
     
     def _match_model(
         self,
@@ -454,9 +514,9 @@ class SegmentationStage(BaseStage):
         """
         将 nnUNet 输出整理成固定文件名。
 
-        当前后续阶段统一读取 segmentation/seg.nii.gz。nnUNet 原始输出
-        通常是 {case_id}.nii.gz，所以这里先找预期输出；如果不同版本或
-        不同参数导致文件名不一致，再在输出目录中寻找唯一的 nii.gz 结果。
+        第二阶段统一在 -s/<模型ID>/segmentation/seg.nii.gz 生成或复用结果。
+        nnUNet 原始输出通常是 {case_id}.nii.gz，所以这里先找预期输出；如果
+        不同版本或不同参数导致文件名不一致，再在输出目录中寻找唯一的 nii.gz 结果。
         """
         if expected_output.exists():
             if expected_output != output_path:

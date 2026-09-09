@@ -1,7 +1,11 @@
 import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from src.core.context import ProcessingContext
+from src.models import Request
 from src.stages.stage_segmentation import SegmentationStage
 
 
@@ -93,6 +97,126 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, "ScanThickness"):
                     self.stage._normalize_scan_thickness(value)
+
+    def test_existing_segmentation_cache_is_reused_without_running_inference(self):
+        """-s/模型ID/segmentation 下已有分割时跳过 nnUNet。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            nifti_path = root / "nifti" / "raw_0000.nii.gz"
+            nifti_path.parent.mkdir()
+            nifti_path.touch()
+            cached_path = root / "segmentation-cache" / "292" / "segmentation" / "seg.nii.gz"
+            cached_path.parent.mkdir(parents=True)
+            cached_path.touch()
+            request = Request(
+                dicom_dir=str(root / "dicom"),
+                output_dir=str(root / "output"),
+                scan_thickness=1.0,
+                segmentation_dir=str(root / "segmentation-cache"),
+            )
+            context = ProcessingContext(request)
+            context.set_result("preprocessing", {"nifti_path": str(nifti_path)})
+
+            with patch.object(
+                self.stage,
+                "_run_nnunet_inference",
+                side_effect=AssertionError("已有分割时不应再次推理"),
+            ):
+                self.stage.execute(context)
+
+            result = context.get_result("segmentation")
+            self.assertEqual(result["seg_path"], str(cached_path))
+            self.assertEqual(request.output_dir, str(root / "output"))
+
+    def test_missing_segmentation_cache_writes_under_model_directory(self):
+        """-s 未命中时推理写入 -s/模型ID/segmentation。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            nifti_path = root / "nifti" / "raw_0000.nii.gz"
+            nifti_path.parent.mkdir()
+            nifti_path.touch()
+            request = Request(
+                dicom_dir=str(root / "dicom"),
+                output_dir=str(root / "output"),
+                scan_thickness=1.0,
+                segmentation_dir=str(root / "segmentation-cache"),
+            )
+            context = ProcessingContext(request)
+            context.set_result("preprocessing", {"nifti_path": str(nifti_path)})
+
+            def write_fake_segmentation(**kwargs):
+                kwargs["output_path"].touch()
+
+            with patch.object(
+                self.stage,
+                "_run_nnunet_inference",
+                side_effect=write_fake_segmentation,
+            ) as run_inference:
+                self.stage.execute(context)
+
+            result = context.get_result("segmentation")
+            expected = root / "segmentation-cache" / "292" / "segmentation" / "seg.nii.gz"
+            self.assertEqual(result["seg_path"], str(expected))
+            self.assertTrue(expected.exists())
+            self.assertEqual(run_inference.call_args.kwargs["output_path"], expected)
+
+    def test_output_directory_remains_the_original_output_root(self):
+        """第三阶段输出根目录仍是 -o，不会切换到模型目录。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            nifti_path = root / "nifti" / "raw_0000.nii.gz"
+            nifti_path.parent.mkdir()
+            nifti_path.touch()
+            old_file = root / "output" / "report.json"
+            old_file.parent.mkdir(parents=True)
+            old_file.write_text("old", encoding="utf-8")
+            request = Request(
+                dicom_dir=str(root / "dicom"),
+                output_dir=str(root / "output"),
+                scan_thickness=1.0,
+                segmentation_dir=str(root / "segmentation-cache"),
+            )
+            context = ProcessingContext(request)
+            context.set_result("preprocessing", {"nifti_path": str(nifti_path)})
+
+            with patch.object(
+                self.stage,
+                "_run_nnunet_inference",
+                side_effect=lambda **kwargs: kwargs["output_path"].touch(),
+            ):
+                self.stage.execute(context)
+
+            self.assertTrue(old_file.exists())
+            self.assertEqual(request.output_dir, str(root / "output"))
+
+    def test_without_segmentation_cache_keeps_original_output_behavior(self):
+        """未传 -s 时仍将第二阶段结果写入 -o/segmentation。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            nifti_path = root / "nifti" / "raw_0000.nii.gz"
+            nifti_path.parent.mkdir()
+            nifti_path.touch()
+            request = Request(
+                dicom_dir=str(root / "dicom"),
+                output_dir=str(root / "output"),
+                scan_thickness=1.0,
+            )
+            context = ProcessingContext(request)
+            context.set_result("preprocessing", {"nifti_path": str(nifti_path)})
+
+            with patch.object(
+                self.stage,
+                "_run_nnunet_inference",
+                side_effect=lambda **kwargs: kwargs["output_path"].touch(),
+            ):
+                self.stage.execute(context)
+
+            expected = root / "output" / "segmentation" / "seg.nii.gz"
+            self.assertEqual(context.get_result("segmentation")["seg_path"], str(expected))
 
 
 if __name__ == "__main__":

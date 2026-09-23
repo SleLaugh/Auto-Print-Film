@@ -103,7 +103,6 @@ def build_spine_interspace_plans(
                 segment=segment,
                 frame=frame,
             )
-            plan.localizer_plane = PlaneTypeEnum.矢状位.value
             plan.localizer_reference = localizer_reference
             plans.append(plan)
 

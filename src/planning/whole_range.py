@@ -28,6 +28,7 @@ from src.planning.straight import (
     cover_segment_range,
     default_straight_frame,
     recenter_point_in_plane,
+    resolve_localizer_plane,
     resolve_segment_sampling,
     resolve_range_extension,
     resolve_projected_extent,
@@ -296,21 +297,15 @@ def _apply_localizer_preferences(
     slice_part: str,
     geometry: AnatomicalGeometryResult | None,
 ) -> SlicePlan:
-    """把部位中心和明确的原始参考状位写入通用切片计划。
+    """把部位中心写入通用切片计划，定位图状位由统一配置决定。
 
-    这些字段只描述第六阶段已经决定好的展示几何；第七阶段按字段执行，不需要
+    该字段只描述第六阶段已经决定好的展示几何；第七阶段按字段执行，不需要
     识别髋骨或其他具体部位。
     """
 
     if slice_part != "髋骨" or geometry is None:
         return plan
     plan.localizer_reference = geometry.global_frame.origin
-    localizer_planes = {
-        PlaneTypeEnum.横状位.value: PlaneTypeEnum.冠状位.value,
-        PlaneTypeEnum.矢状位.value: PlaneTypeEnum.冠状位.value,
-        PlaneTypeEnum.冠状位.value: PlaneTypeEnum.矢状位.value,
-    }
-    plan.localizer_plane = localizer_planes[plan.plane]
     return plan
 
 
@@ -498,6 +493,11 @@ def _build_whole_range_plan_from_anatomical_frame(
         target_start=centered_target_start,
         target_end=centered_target_end,
         localizer_reference=localizer_reference,
+        localizer_plane=resolve_localizer_plane(
+            localization_result,
+            plane_config.slice_type.value,
+            plane,
+        ),
         warnings=list(anatomical_frame.warnings),
         confidence=anatomical_frame.confidence,
         config_id=plane_config.config_id,

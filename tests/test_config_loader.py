@@ -197,6 +197,24 @@ class ConfigLoaderTest(unittest.TestCase):
         ] = {}
         cases.append((unknown_field, "未知字段"))
 
+        missing_localizer_plane = deepcopy(base_config)
+        del missing_localizer_plane["slice_parts"]["肺部"]["slice_rules"][
+            "横状位"
+        ]["MPR"]["localizer_plane"]
+        cases.append((missing_localizer_plane, "localizer_plane"))
+
+        unknown_localizer_plane = deepcopy(base_config)
+        unknown_localizer_plane["slice_parts"]["肺部"]["slice_rules"][
+            "横状位"
+        ]["MPR"]["localizer_plane"] = "斜位"
+        cases.append((unknown_localizer_plane, "localizer_plane"))
+
+        same_localizer_plane = deepcopy(base_config)
+        same_localizer_plane["slice_parts"]["肺部"]["slice_rules"][
+            "横状位"
+        ]["MPR"]["localizer_plane"] = "横状位"
+        cases.append((same_localizer_plane, "不能与重建状位相同"))
+
         unknown_label = deepcopy(base_config)
         unknown_label["slice_parts"]["腰椎"]["localization"]["regions"]["default"][
             "start_label"

@@ -66,20 +66,24 @@ class LocalizationGeometryTest(unittest.TestCase):
                 "MPR": {
                     "regions": ["default"],
                     "range_extension": deepcopy(zero_extension),
+                    "localizer_plane": "矢状位",
                 },
                 "椎间隙": {
                     "regions": ["L1_S1"],
                     "range_extension": deepcopy(zero_extension),
+                    "localizer_plane": "矢状位",
                 },
             },
             "冠状位": {
                 "MPR": {
                     "regions": ["default"],
                     "range_extension": deepcopy(zero_extension),
+                    "localizer_plane": "矢状位",
                 },
                 "CPR": {
                     "regions": ["default"],
                     "range_extension": deepcopy(zero_extension),
+                    "localizer_plane": "矢状位",
                 },
             },
             "矢状位": {
@@ -89,6 +93,7 @@ class LocalizationGeometryTest(unittest.TestCase):
                         "start_mm": sagittal_start_mm,
                         "end_mm": 0.0,
                     },
+                    "localizer_plane": "冠状位",
                 }
             },
         }

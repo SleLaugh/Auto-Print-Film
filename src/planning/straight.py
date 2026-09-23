@@ -128,6 +128,40 @@ def resolve_range_extension(
     return SliceRangeExtension(start_mm=start_mm, end_mm=end_mm)
 
 
+def resolve_localizer_plane(
+    localization_result: Dict[str, Any],
+    slice_type: str,
+    plane: PlaneTypeEnum,
+) -> str | None:
+    """读取当前状位与切法显式配置的定位图状位。
+
+    缺少 ``slice_rules`` 时返回 ``None``，兼容不经过统一配置构造的旧阶段结果；
+    正式配置会在应用启动时保证该字段存在且与重建状位不同。
+    """
+
+    slice_rules = localization_result.get("slice_rules")
+    if not isinstance(slice_rules, dict):
+        return None
+    plane_rules = slice_rules.get(plane.value)
+    if not isinstance(plane_rules, dict):
+        return None
+    slice_type_value = str(getattr(slice_type, "value", slice_type))
+    rule = plane_rules.get(slice_type_value)
+    if not isinstance(rule, dict):
+        return None
+    localizer_plane = rule.get("localizer_plane")
+    if localizer_plane is None:
+        return None
+    if (
+        not isinstance(localizer_plane, str)
+        or localizer_plane not in {item.value for item in PlaneTypeEnum}
+    ):
+        raise ValueError(f"不支持的定位图参考状位: {localizer_plane}")
+    if localizer_plane == plane.value:
+        raise ValueError(f"定位图参考状位不能与重建状位相同: {localizer_plane}")
+    return localizer_plane
+
+
 def _non_negative_extension_value(value: Any, endpoint: str) -> float:
     """把单端扩展值规范成非负有限浮点毫米数。"""
 
@@ -600,6 +634,11 @@ def build_straight_slice_plan(
         source_labels=list(segment.source_labels),
         target_start=centered_target_start,
         target_end=centered_target_end,
+        localizer_plane=resolve_localizer_plane(
+            localization_result,
+            slice_type,
+            plane_config.plane,
+        ),
         config_id=plane_config.config_id,
         output_plane=plane_config.output_plane,
         sampling_details=sampling.to_dict(),

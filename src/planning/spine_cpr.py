@@ -18,7 +18,11 @@ from src.planning.geometry import (
 )
 from src.planning.sampling import ResolvedSampling, resolve_sampling
 from src.planning.spine_common import get_label_center, union_bboxes
-from src.planning.straight import SliceRangeExtension, resolve_range_extension
+from src.planning.straight import (
+    SliceRangeExtension,
+    resolve_localizer_plane,
+    resolve_range_extension,
+)
 from src.planning.spine_cpr_math import add as _add
 from src.planning.spine_cpr_math import cross as _cross
 from src.planning.spine_cpr_math import dot as _dot
@@ -181,7 +185,11 @@ def build_spine_sagittal_cpr_plans(
             target_start=curve_points[0],
             target_end=curve_points[-1],
             localizer_reference=center,
-            localizer_plane="矢状位",
+            localizer_plane=resolve_localizer_plane(
+                localization_result,
+                "CPR",
+                plane_config.plane,
+            ),
             confidence=1.0,
             warnings=center_warnings,
             config_id=plane_config.config_id,

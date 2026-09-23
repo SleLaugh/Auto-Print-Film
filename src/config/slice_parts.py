@@ -295,7 +295,18 @@ def _validate_slice_rule(
         raise ValueError(f"{prefix} 包含未知切法")
     if not isinstance(rule, Mapping):
         raise ValueError(f"{prefix} 切法规则必须是对象")
-    _reject_unknown_fields(rule, {"regions", "range_extension"}, prefix)
+    _reject_unknown_fields(
+        rule,
+        {"regions", "range_extension", "localizer_plane"},
+        prefix,
+    )
+    localizer_plane = rule.get("localizer_plane")
+    if not isinstance(localizer_plane, str) or localizer_plane not in _PLANES:
+        raise ValueError(
+            f"{prefix}.localizer_plane 必须是横状位、冠状位或矢状位"
+        )
+    if localizer_plane == plane:
+        raise ValueError(f"{prefix}.localizer_plane 不能与重建状位相同")
     region_names = rule.get("regions")
     if not isinstance(region_names, list) or not region_names:
         raise ValueError(f"{prefix}.regions 必须是非空数组")

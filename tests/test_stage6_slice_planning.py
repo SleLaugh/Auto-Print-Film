@@ -2295,6 +2295,29 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     {"start_mm": 3.0, "end_mm": 3.0},
                 )
 
+    def test_checked_in_localizer_planes_cover_every_slice_rule(self):
+        """每个状位与切法都应显式配置不同于重建面的定位图状位。"""
+
+        config = load_slice_part_config()
+        for slice_part, part in config["slice_parts"].items():
+            for plane, type_rules in part["slice_rules"].items():
+                for slice_type, rule in type_rules.items():
+                    with self.subTest(
+                        slice_part=slice_part,
+                        plane=plane,
+                        slice_type=slice_type,
+                    ):
+                        self.assertIn(
+                            rule["localizer_plane"],
+                            {"横状位", "矢状位", "冠状位"},
+                        )
+                        self.assertNotEqual(rule["localizer_plane"], plane)
+        self.assertEqual(
+            config["slice_parts"]["肺部"]["slice_rules"]["横状位"]
+            ["MPR"]["localizer_plane"],
+            "冠状位",
+        )
+
     def test_checked_in_interspace_regions_are_selected_by_slice_rules(self):
         """椎间隙输出名称、顺序和端点统一由区域及切法引用决定。"""
 
@@ -2354,6 +2377,12 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 ],
             },
         }
+        localization_result.update(
+            self._configured_localization_contract("肺部")
+        )
+        localization_result["slice_rules"]["横状位"]["MPR"][
+            "range_extension"
+        ] = {"start_mm": 0.0, "end_mm": 0.0}
 
         result = SingleLabelWholeRangePlanner().build_plans(
             request,
@@ -2370,6 +2399,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             [10.0, 5.0, 0.0],
         )
         self.assertEqual(plan.window_presets, ["肺窗"])
+        self.assertEqual(plan.localizer_plane, "冠状位")
 
     def test_lung_axial_slice_centers_cover_real_mask_bounds(self):
         """真实肺部层间距和原点下，首末成片中心必须越过掩膜上下边界。"""
@@ -3564,6 +3594,9 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             ],
         )
         localization_result = self._lumbar_localization_result()
+        localization_result.update(
+            self._configured_localization_contract("髋骨")
+        )
         localization_result["slice_part"] = "髋骨"
         localization_result["image"]["size_xyz"] = [100, 100, 100]
         localization_result["correction_scope_bbox"] = {

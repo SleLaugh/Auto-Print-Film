@@ -32,6 +32,7 @@ from src.reconstruction.dicom import (
     write_localizer_dicom,
 )
 from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
+from src.reconstruction.framing import TargetFramer, frame_curved_slice, curved_group_bounds
 from src.utils import DebugLog, is_debug_file_enabled
 
 
@@ -125,6 +126,14 @@ class ReconstructionStage(BaseStage):
             return context
 
         image = sitk.ReadImage(str(image_path))
+        segmentation_path = (
+            loc_result.get("seg_for_reconstruction_path")
+            or loc_result.get("corrected_seg_path")
+            or loc_result.get("seg_path")
+        )
+        if not segmentation_path:
+            raise ValueError("整组居中需要 seg_for_reconstruction_path")
+        segmentation = sitk.ReadImage(str(segmentation_path))
         preprocessing_result = context.get_result("preprocessing") or {}
         source_metadata = dict(preprocessing_result.get("source_dicom_metadata") or {})
         if not source_metadata:
@@ -146,6 +155,7 @@ class ReconstructionStage(BaseStage):
                         study_uid=study_uid,
                         source_metadata=source_metadata,
                         custom_window_presets=getattr(request, "window_presets", None),
+                        target_framer=TargetFramer(segmentation, loc_result.get("coords", {}), plan),
                     )
                 )
             DebugLog(f"  状位处理完成: {plane}")
@@ -169,6 +179,7 @@ class ReconstructionStage(BaseStage):
         source_metadata: Dict[str, str],
         localizer_image: sitk.Image | None = None,
         custom_window_presets: list[WindowPreset] | None = None,
+        target_framer: TargetFramer | None = None,
     ) -> Dict[str, Any]:
         """
         执行一个切片计划。
@@ -228,16 +239,38 @@ class ReconstructionStage(BaseStage):
         DebugLog(f"    [1] MPR采样: 共 {len(plan['slices'])} 张")
         sampling_start = time.perf_counter()
         sampled_slices = []
+        curved_masks = []
         slowest_slice_index = None
         slowest_slice_elapsed = 0.0
         for planned_slice in plan["slices"]:
             single_start = time.perf_counter()
-            sampled_image = resampler.sample_slice(image, plan, planned_slice)
+            sampling_plan = plan
+            if target_framer is not None:
+                if plan.get("geometry_type") == "curved_stack":
+                    curved_masks.append(resampler.sample_slice(
+                        target_framer.mask, plan, planned_slice, is_mask=True,
+                    ))
+                else:
+                    sampling_plan, planned_slice = target_framer.plane_geometry(plan, planned_slice)
+            sampled_image = resampler.sample_slice(image, sampling_plan, planned_slice)
             single_elapsed = time.perf_counter() - single_start
             if single_elapsed > slowest_slice_elapsed:
                 slowest_slice_elapsed = single_elapsed
                 slowest_slice_index = planned_slice.get("index")
             sampled_slices.append((planned_slice, sampled_image))
+        if curved_masks:
+            group_bounds = curved_group_bounds(curved_masks)
+            framed_slices = []
+            for (planned_slice, sampled_image), mask in zip(sampled_slices, curved_masks):
+                sampled_image, framing = frame_curved_slice(
+                    sampled_image, mask, plan.get("fill_percent"), group_bounds,
+                )
+                framed_slices.append(({**planned_slice, "framing": framing}, sampled_image))
+            sampled_slices = framed_slices
+        if target_framer is not None and sampled_slices:
+            framing = sampled_slices[0][0]["framing"]
+            DebugLog(f"    [整组取景] plan={plan['plan_id']}, FillPercent={plan.get('fill_percent')}, "
+                     f"目标范围mm={framing['target_size_mm']}, 统一倍率={framing['scale']:.6f}")
         sampling_elapsed = time.perf_counter() - sampling_start
         average_elapsed = (
             sampling_elapsed / len(sampled_slices)
@@ -283,6 +316,10 @@ class ReconstructionStage(BaseStage):
             "slice_count": len(plan["slices"]),
             "slice_image_count": len(plan["slices"]),
             "sampling_details": dict(plan.get("sampling_details") or {}),
+            "framing": [
+                {"index": planned_slice["index"], **planned_slice["framing"]}
+                for planned_slice, _ in sampled_slices if "framing" in planned_slice
+            ],
             "image_count": len(plan["slices"]) * len(windows),
             "window_outputs": {
                 name: str(path)

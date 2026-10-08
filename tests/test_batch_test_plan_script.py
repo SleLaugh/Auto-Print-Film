@@ -65,6 +65,11 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         self.assertIn("MPR", result.stdout)
         self.assertIn("CPR", result.stdout)
         self.assertIn("椎间隙", result.stdout)
+        for line in result.stdout.splitlines():
+            if line.startswith("命令:"):
+                command = shlex.split(line.removeprefix("命令:"))
+                configs = json.loads(command[command.index("--plane_configs") + 1])
+                self.assertTrue(all(config["FillPercent"] == 80 for config in configs))
         self.assertNotIn("full_plane", result.stdout)
 
     def test_cervical_dry_run_keeps_both_axial_configs(self):
@@ -115,7 +120,8 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         ]
         mapping = {}
         for entry in entries:
-            slice_part, plane, slice_type, thickness, spacing = entry.split("|")
+            slice_part, plane, slice_type, thickness, spacing, fill = entry.split("|")
+            self.assertEqual(float(fill), 80)
             mapping.setdefault((slice_part, plane), []).append(
                 (slice_type, float(thickness), float(spacing))
             )
@@ -142,7 +148,32 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         self.assertEqual(mapping[("肺部", "冠状位")], [("MPR", 5.0, 5.0)])
         self.assertEqual(mapping[("髋骨", "冠状位")], [("MPR", 5.0, 5.0)])
 
-    def test_chinese_extent_mode_parses_under_c_locale_with_utf8_mode(self):
+    def test_optional_fill_percent_is_forwarded_per_config(self):
+        definitions = SCRIPT.read_text(encoding="utf-8").split('# 格式: "dicom目录名')[0]
+        definitions = definitions.replace('|80"', '"')
+        definitions = definitions.replace('"腰椎|横状位|MPR|5|5"', '"腰椎|横状位|MPR|5|5|80"')
+        result = subprocess.run(
+            ["bash", "-c", definitions + '\nbuild_plane_configs "腰椎"', str(SCRIPT)],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        configs = json.loads(result.stdout)
+        self.assertEqual(configs[0]["FillPercent"], 80)
+        self.assertTrue(all("FillPercent" not in config for config in configs[1:]))
+
+    def test_zero_fill_percent_is_forwarded_without_defaulting_to_eighty(self):
+        definitions = SCRIPT.read_text(encoding="utf-8").split('# 格式: "dicom目录名')[0]
+        definitions = definitions.replace('|80"', '|0"')
+        result = subprocess.run(
+            ["bash", "-c", definitions + '\nbuild_plane_configs "腰椎"', str(SCRIPT)],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        configs = json.loads(result.stdout)
+        self.assertTrue(configs)
+        self.assertTrue(all(config["FillPercent"] == 0 for config in configs))
+
+    def test_chinese_plane_parses_under_c_locale_with_utf8_mode(self):
         """精简 Linux 的 C locale 下，显式 UTF-8 模式仍应正确解析中文请求。"""
 
         payload = json.dumps({
@@ -150,7 +181,7 @@ class BatchTestPlanScriptTest(unittest.TestCase):
             "SliceThickness": 5,
             "SliceSpacing": 5,
             "WindowPresets": ["骨窗"],
-            "line_extent_mode": "整平面",
+            "FillPercent": 80,
         }, ensure_ascii=False)
         environment = dict(os.environ)
         environment.update({
@@ -166,7 +197,7 @@ class BatchTestPlanScriptTest(unittest.TestCase):
                     "import json, sys; "
                     "from src.models import PlaneConfig; "
                     "print(PlaneConfig.from_dict(json.loads(sys.argv[1]))"
-                    ".line_extent_mode.value)"
+                    ".plane.value)"
                 ),
                 payload,
             ],
@@ -179,7 +210,7 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "整平面")
+        self.assertEqual(result.stdout.strip(), "横状位")
         self.assertIn(
             "export PYTHONUTF8=1",
             SCRIPT.read_text(encoding="utf-8"),

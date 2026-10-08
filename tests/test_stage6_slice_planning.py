@@ -18,7 +18,6 @@ from src.config import (
     slice_rules_for,
 )
 from src.models import PlaneConfig, Point3D, Request
-from src.models.enums import CutLineExtentModeEnum
 from src.models.enums import SlicePartEnum, PlaneTypeEnum, SliceType
 from src.planning.base import select_planner
 from src.planning.cervical import CervicalInterspacePlanner
@@ -39,7 +38,7 @@ from src.planning.spine_cpr import (
 )
 from src.planning.whole_range import (
     build_whole_range_plan_from_bbox,
-    plane_extent_mm,
+    plane_bbox_extent_mm,
 )
 from src.stages.stage_planning import PlanningStage
 
@@ -2600,18 +2599,17 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                         + (current.center.z - previous.center.z) ** 2) ** 0.5
             self.assertAlmostEqual(distance, 10.0, places=6)
 
-        request.plane_configs[0].line_extent_mode = CutLineExtentModeEnum.部位范围
+        request.plane_configs[0].fill_percent = 100
         target_plan = SingleLabelWholeRangePlanner().build_plans(
             request,
             localization_result,
         ).plans[0]
         self.assertEqual(
             target_plan.extent_mm.to_dict(),
-            {"width": 100.0, "height": 60.0},
+            plan.extent_mm.to_dict(),
         )
-        self.assertAlmostEqual(target_plan.range_start.x, 4.0, places=6)
-        self.assertAlmostEqual(target_plan.range_start.y, 40.0, places=6)
-        self.assertAlmostEqual(target_plan.range_start.z, 78.0, places=6)
+        # FillPercent 由第七阶段按整组应用，不改第六阶段采样平面。
+        self.assertEqual(target_plan.range_start, plan.range_start)
 
     def test_cervical_three_planes_follow_complete_spine_axis(self):
         """颈椎三状位应沿脊柱轴切割，矢状画面按原图头脚方向摆正。"""
@@ -3811,11 +3809,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         for plane, expected in expected_extents.items():
             with self.subTest(plane=plane.value):
-                extent = plane_extent_mm(
+                extent = plane_bbox_extent_mm(
                     bbox,
                     image_info,
                     plane,
-                    CutLineExtentModeEnum.部位范围,
                 )
                 self.assertEqual(extent.to_dict(), expected)
 
@@ -3825,6 +3822,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         from src.planning.straight import (
             default_straight_frame,
             resolve_projected_extent,
+            project_region_extent,
+            bbox_physical_corners,
         )
 
         localization_result = self._lumbar_localization_result()
@@ -3835,15 +3834,12 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
 
         full_extent = resolve_projected_extent(
-            CutLineExtentModeEnum.整平面,
             localization_result,
             localization_result["correction_scope_bbox"],
             frame,
         )
-        target_extent = resolve_projected_extent(
-            CutLineExtentModeEnum.部位范围,
-            localization_result,
-            localization_result["correction_scope_bbox"],
+        target_extent = project_region_extent(
+            bbox_physical_corners(localization_result["correction_scope_bbox"], localization_result["image"]),
             frame,
         )
 
@@ -4828,7 +4824,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 slice_thickness=2.0,
                 slice_spacing=2.0,
                 window_presets=["骨窗"],
-                line_extent_mode=CutLineExtentModeEnum.部位范围,
+                fill_percent=100,
             )],
         )
         localization_result = self._lumbar_localization_result()
@@ -4934,8 +4930,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(plan.extent_mm.to_dict(), {"width": 99.0, "height": 238.0})
 
-    def test_axial_whole_range_can_limit_extent_to_target_bbox(self):
-        """验证 `test_axial_whole_range_can_limit_extent_to_target_bbox` 场景符合预期。"""
+    def test_fill_percent_leaves_base_sampling_extent_unchanged(self):
+        """取景比例由重建整组应用，规划仍保留原始采样视野。"""
 
         request = Request(
             dicom_dir="/tmp/dicom", output_dir="/tmp/output",
@@ -4943,7 +4939,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             plane_configs=[PlaneConfig(
                 plane=PlaneTypeEnum.横状位, slice_thickness=3.0,
                 slice_spacing=5.0, window_presets=["肺窗"],
-                line_extent_mode=CutLineExtentModeEnum.部位范围,
+                fill_percent=100,
             )],
         )
         loc = self._lumbar_localization_result()
@@ -4952,7 +4948,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         plan = SingleLabelWholeRangePlanner().build_plans(request, loc).plans[0]
 
-        self.assertEqual(plan.extent_mm.to_dict(), {"width": 10.0, "height": 20.0})
+        self.assertEqual(plan.extent_mm.to_dict(), {"width": 99.0, "height": 238.0})
+        self.assertEqual(plan.to_dict()["fill_percent"], 100)
 
     def test_axial_whole_range_symmetrically_expands_to_cover_both_ends(self):
         """不能整除间距的整切范围应增加一张并在首尾对称外扩。"""
@@ -5677,7 +5674,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 slice_thickness=1.0,
                 slice_spacing=1.0,
                 window_presets=["骨窗"],
-                line_extent_mode=CutLineExtentModeEnum.部位范围,
+                fill_percent=100,
             )],
         )
 
@@ -5827,7 +5824,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 slice_thickness=0.5,
                 slice_spacing=1.0,
                 window_presets=["骨窗"],
-                line_extent_mode=CutLineExtentModeEnum.部位范围,
+                fill_percent=100,
             )],
         )
         localization_result = self._lumbar_localization_result()

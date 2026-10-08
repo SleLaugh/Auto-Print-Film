@@ -167,7 +167,6 @@ class ReportingStage(BaseStage):
                     actual_slice_types,
                     config['SliceType'],
                 ),
-                'line_extent_mode': config['line_extent_mode'],
                 'SliceThickness': self._optional_float(
                     plane_config.requested_slice_thickness,
                 ),
@@ -182,6 +181,8 @@ class ReportingStage(BaseStage):
                     matching_outputs,
                 ),
             }
+            if 'FillPercent' in config:
+                item['FillPercent'] = config['FillPercent']
             plane_list.append(item)
 
         return build_status_report(

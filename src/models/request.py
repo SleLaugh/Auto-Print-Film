@@ -13,7 +13,6 @@ from .enums import (
     SlicePartEnum,
     StudyTypeEnum,
     PlaneTypeEnum,
-    CutLineExtentModeEnum,
     SliceType,
 )
 from .window import (
@@ -65,6 +64,21 @@ def _parse_optional_positive_integer(value: Any, name: str) -> int | None:
     return int(value)
 
 
+def parse_fill_percent(value: Any) -> float | None:
+    """None 或 0 仅整组居中、不缩放；百分比为 [0, 100] 内的 JSON 数字。"""
+
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not 0 <= value <= 100
+        or not math.isfinite(value)
+    ):
+        raise ValueError("FillPercent 必须是 0 到 100 之间的有限数字；0 表示不缩放")
+    return float(value)
+
+
 @dataclass
 class PlaneConfig:
     """单个重建状位的采样和显示配置。"""
@@ -76,7 +90,8 @@ class PlaneConfig:
     slice_spacing: Optional[float]
     # 一个状位可以同时输出多套窗宽窗位图像，例如骨窗和纵隔窗。
     window_presets: List[str]
-    line_extent_mode: CutLineExtentModeEnum = CutLineExtentModeEnum.整平面
+    # 整组目标包围框宽/高的最大占比；None 或 0 仅整组居中、不缩放。
+    fill_percent: Optional[float] = None
     # 切片方式由调用方显式选择；普通直线重建默认使用 MPR。
     slice_type: SliceType = SliceType.MPR
     # 每个实际切割计划的切片数量；椎间隙会对每个间隙分别应用该数量。
@@ -136,6 +151,8 @@ class PlaneConfig:
         thickness = data.get('SliceThickness')
         spacing = data.get('SliceSpacing')
         image_count = data.get('SliceImageCount')
+        if 'line_extent_mode' in data:
+            raise ValueError("line_extent_mode 已移除，请使用 FillPercent；省略时只居中")
         return cls(
             plane=PlaneTypeEnum(data['Plane']),
             slice_thickness=_parse_optional_positive_float(
@@ -148,9 +165,7 @@ class PlaneConfig:
             ),
             window_presets=[str(value) for value in data.get('WindowPresets', [])],
             slice_type=SliceType(data.get('SliceType', SliceType.MPR.value)),
-            line_extent_mode=CutLineExtentModeEnum(
-                data.get('line_extent_mode', CutLineExtentModeEnum.整平面.value)
-            ),
+            fill_percent=parse_fill_percent(data.get('FillPercent')),
             slice_image_count=_parse_optional_positive_integer(
                 image_count,
                 "数量",
@@ -168,7 +183,6 @@ class PlaneConfig:
             'Plane': self.plane.value,
             'WindowPresets': list(self.window_presets),
             'SliceType': self.slice_type.value,
-            'line_extent_mode': self.line_extent_mode.value,
         }
         if self.slice_thickness is not None:
             data['SliceThickness'] = self.slice_thickness
@@ -176,6 +190,8 @@ class PlaneConfig:
             data['SliceSpacing'] = self.slice_spacing
         if self.slice_image_count is not None:
             data['SliceImageCount'] = self.slice_image_count
+        if self.fill_percent is not None:
+            data['FillPercent'] = self.fill_percent
         return data
 
 
@@ -328,6 +344,10 @@ class Request:
             return False, "plane_configs 不能为空"
 
         for plane_config in self.plane_configs:
+            try:
+                parse_fill_percent(plane_config.fill_percent)
+            except ValueError as exc:
+                return False, str(exc)
             plane_value = plane_config.plane.value
             sampling_values = (
                 plane_config.slice_thickness,

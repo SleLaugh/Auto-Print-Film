@@ -29,8 +29,10 @@ class CurvedStackResampler:
         image: sitk.Image,
         plan: Dict[str, Any],
         planned_slice: Dict[str, Any],
+        *,
+        is_mask: bool = False,
     ) -> sitk.Image:
-        """采样一张 CPR HU 图，返回 size=(cols, rows, 1) 的图像。"""
+        """采样 CPR HU 图或二值目标掩膜，返回 size=(cols, rows, 1) 的图像。"""
 
         perf_start = time.perf_counter()
         curve_spacing = float(plan["curve_spacing_mm"])
@@ -83,6 +85,7 @@ class CurvedStackResampler:
             offset_directions=slab_directions,
             in_plane_offsets=in_plane_offsets,
             slab_offsets=slab_offsets,
+            is_mask=is_mask,
         )
 
         output = sitk.GetImageFromArray(sampled[np.newaxis, ...])
@@ -101,6 +104,7 @@ class CurvedStackResampler:
         )
         DebugLog(
             "    [CPR采样性能] "
+            f"数据={'目标掩膜' if is_mask else 'HU'}, "
             f"plan={plan.get('plan_id', '')}, "
             f"slice_index={planned_slice.get('index', '')}, "
             f"offset_mm={offset_mm:.3f}, "
@@ -546,8 +550,9 @@ class CurvedStackResampler:
         offset_directions: np.ndarray,
         in_plane_offsets: np.ndarray,
         slab_offsets: list[float],
+        is_mask: bool = False,
     ) -> np.ndarray:
-        """采样一个 CPR 厚层 slab，并对多个子曲面做算术平均。"""
+        """采样 CPR 厚层：HU 线性插值后平均，二值掩膜最近邻采样后取并集。"""
 
         rows = len(curve_samples)
         columns = len(in_plane_offsets)
@@ -557,12 +562,29 @@ class CurvedStackResampler:
             + in_plane_directions[:, np.newaxis, :]
             * in_plane_offsets[np.newaxis, :, np.newaxis]
         )
+        if is_mask:
+            direction = np.asarray(image.GetDirection()).reshape(3, 3)
+            inverse_direction = np.linalg.inv(direction).T
+            origin = np.asarray(image.GetOrigin())
+            spacing = np.asarray(image.GetSpacing())
+            size = np.asarray(image.GetSize())
         for slab_offset in slab_offsets:
             points = (
                 surface_points
                 + offset_directions[:, np.newaxis, :] * slab_offset
             )
-            accumulated += self._sample_linear_grid(image, source, points)
+            if is_mask:
+                # 二值标签用最近邻采样；厚层取并集，避免把标签当 HU 平均。
+                continuous = ((points - origin) @ inverse_direction) / spacing
+                indices = np.floor(continuous + 0.5).astype(np.intp)
+                valid = np.all((indices >= 0) & (indices < size), axis=-1)
+                indices = np.clip(indices, 0, size - 1)
+                values = source[indices[..., 2], indices[..., 1], indices[..., 0]]
+                np.maximum(accumulated, np.where(valid, values, 0), out=accumulated)
+            else:
+                accumulated += self._sample_linear_grid(image, source, points)
+        if is_mask:
+            return accumulated
         return accumulated / float(len(slab_offsets))
 
     @staticmethod

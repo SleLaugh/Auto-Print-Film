@@ -3,7 +3,6 @@ import unittest
 from src.models import PlaneConfig, Request
 from src.models.enums import (
     SlicePartEnum,
-    CutLineExtentModeEnum,
     PlaneTypeEnum,
     SliceType,
 )
@@ -55,11 +54,8 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self.assertIs(config.plane, PlaneTypeEnum.冠状位)
         self.assertEqual(config.slice_thickness, 5.0)
         self.assertEqual(config.slice_spacing, 10.0)
-        self.assertIs(
-            config.line_extent_mode,
-            CutLineExtentModeEnum.整平面,
-        )
-        self.assertEqual(config.line_extent_mode.value, "整平面")
+        self.assertIsNone(config.fill_percent)
+        self.assertNotIn("FillPercent", config.to_dict())
         self.assertEqual(config.window_presets, ["骨窗", "肺窗", "纵隔窗"])
         self.assertIs(config.slice_type, SliceType.MPR)
 
@@ -99,27 +95,43 @@ class PlaneConfigRequestTest(unittest.TestCase):
                         "SliceType": removed_value,
                     })
 
-    def test_plane_config_parses_chinese_target_line_extent_mode(self):
-        """外部请求应直接使用中文部位范围协议值。"""
+    def test_plane_config_parses_fill_percent(self):
+        """百分比保持 JSON 数字，省略时不写入报告。"""
 
         config = PlaneConfig.from_dict({
             "Plane": "横状位",
             "SliceThickness": 3,
             "SliceSpacing": 5,
             "WindowPresets": ["骨窗"],
-            "line_extent_mode": "部位范围",
+            "FillPercent": 80,
         })
 
-        self.assertIs(
-            config.line_extent_mode,
-            CutLineExtentModeEnum.部位范围,
-        )
-        self.assertEqual(config.line_extent_mode.value, "部位范围")
+        self.assertEqual(config.fill_percent, 80)
+        self.assertEqual(config.to_dict()["FillPercent"], 80)
 
-    def test_plane_config_rejects_removed_english_line_extent_mode(self):
-        """一次性迁移后不再接受旧英文范围协议值。"""
+    def test_invalid_fill_percent_is_rejected(self):
+        for value in (-1, 101, 10 ** 400, True, False, "0", "80", float("nan"), float("inf")):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "FillPercent"):
+                    PlaneConfig.from_dict({"Plane": "横状位", "FillPercent": value})
+                request = Request("/tmp/dicom", "/tmp/output")
+                request.plane_configs[0].fill_percent = value
+                self.assertFalse(request.validate()[0])
 
-        for removed_value in ("full_plane", "target_bbox"):
+    def test_zero_fill_percent_is_preserved_and_valid(self):
+        for value in (0, 0.0):
+            with self.subTest(value=value):
+                config = PlaneConfig.from_dict({"Plane": "横状位", "FillPercent": value})
+                self.assertEqual(config.fill_percent, 0.0)
+                self.assertEqual(config.to_dict()["FillPercent"], 0.0)
+                request = Request("/tmp/dicom", "/tmp/output")
+                request.plane_configs[0].fill_percent = value
+                self.assertTrue(request.validate()[0])
+
+    def test_plane_config_rejects_removed_line_extent_mode(self):
+        """旧范围字段已移除，不再接受其中文或英文协议值。"""
+
+        for removed_value in ("full_plane", "target_bbox", "整平面", "部位范围"):
             with self.subTest(removed_value=removed_value):
                 with self.assertRaises(ValueError):
                     PlaneConfig.from_dict({
@@ -163,7 +175,6 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 "SliceSpacing": 10.0,
                 "WindowPresets": ["骨窗", "肺窗"],
                 "SliceType": "MPR",
-                "line_extent_mode": "整平面",
             }
         ])
         self.assertNotIn("cut_mode", request.to_dict())
@@ -288,7 +299,6 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 "SliceSpacing": 1.0,
                 "WindowPresets": ["骨窗"],
                 "SliceType": "MPR",
-                "line_extent_mode": "整平面",
             },
         ])
 

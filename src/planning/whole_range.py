@@ -15,7 +15,7 @@ from src.models import (
     Point3D,
     SlicePlan,
 )
-from src.models.enums import PlaneTypeEnum, CutLineExtentModeEnum
+from src.models.enums import PlaneTypeEnum
 from src.planning.geometry import (
     build_plane_stack_slices,
     voxel_index_to_physical,
@@ -23,6 +23,7 @@ from src.planning.geometry import (
 from src.planning.straight import (
     anatomical_straight_frame,
     bbox_physical_corners,
+    project_region_extent,
     CutSegment,
     build_straight_slice_plan,
     cover_segment_range,
@@ -182,25 +183,18 @@ def plane_bbox_extent_mm(
     """从目标 bbox 计算指定状位平面内的物理宽度和高度。"""
 
     frame = default_straight_frame(plane, image_info)
-    return resolve_projected_extent(
-        CutLineExtentModeEnum.部位范围,
-        {"image": image_info},
-        bbox,
-        frame,
-    ).extent_mm
+    return project_region_extent(bbox_physical_corners(bbox, image_info), frame).extent_mm
 
 
 def plane_extent_mm(
     bbox: Dict[str, float],
     image_info: Dict[str, Any],
     plane: PlaneTypeEnum,
-    mode: CutLineExtentModeEnum = CutLineExtentModeEnum.整平面,
 ) -> ExtentMM:
     """计算切割线所在平面的横向/纵向物理范围。"""
 
     frame = default_straight_frame(plane, image_info)
     return resolve_projected_extent(
-        mode,
         {"image": image_info},
         bbox,
         frame,
@@ -412,12 +406,11 @@ def _build_whole_range_plan_from_anatomical_frame(
         centered_target_start = target_start
         centered_target_end = target_end
         extent = target_extent
-    elif plane_config.line_extent_mode == CutLineExtentModeEnum.整平面:
+    else:
         target_bbox = localization_result.get("correction_scope_bbox")
         if not target_bbox:
             raise ValueError("定位结果缺少 correction_scope_bbox")
         projected_extent = resolve_projected_extent(
-            CutLineExtentModeEnum.整平面,
             localization_result,
             target_bbox,
             straight_frame,
@@ -434,14 +427,6 @@ def _build_whole_range_plan_from_anatomical_frame(
             straight_frame,
         )
         extent = projected_extent.extent_mm
-    elif plane_config.line_extent_mode == CutLineExtentModeEnum.部位范围:
-        centered_target_start = target_start
-        centered_target_end = target_end
-        extent = target_extent
-    else:
-        raise ValueError(
-            f"不支持的切割线范围模式: {plane_config.line_extent_mode}"
-        )
 
     # 显式配置的首尾扩展先加入有效范围，再统一计算层厚、层间距和数量，
     # 让首末厚层外缘完整覆盖肺尖、肺底等解剖边界。
@@ -490,6 +475,7 @@ def _build_whole_range_plan_from_anatomical_frame(
         slice_spacing=sampling.slice_spacing,
         window_presets=list(plane_config.window_presets),
         source_labels=list(source_labels or ["anatomical_geometry.global_frame"]),
+        fill_percent=plane_config.fill_percent,
         target_start=centered_target_start,
         target_end=centered_target_end,
         localizer_reference=localizer_reference,

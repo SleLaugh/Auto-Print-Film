@@ -5,7 +5,8 @@
 重建规划模型
 
 这些实体是第六阶段输出给第七阶段的稳定契约。第六阶段负责把切割路径展开成
-具体切片清单；第七阶段只按这些切片逐张采样，不再反推切多少张或每张在哪里。
+具体切片清单；第七阶段保持切面、层厚、层间距和张数，仅按整组目标范围
+调整面内中心与取景比例，再执行采样。
 """
 
 from dataclasses import dataclass, field
@@ -110,6 +111,8 @@ class SlicePlan:
     """用于隔离输出目录的唯一名称，例如横状位、横状位1。"""
     sampling_details: Dict[str, Any] | None = None
     """实际层厚、层间距、数量、有效范围和总范围的计算详情。"""
+    fill_percent: float | None = None
+    """第七阶段整组目标取景占比；None 或 0 仅整组居中、不缩放。"""
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化第七阶段可直接执行的一组完整切片计划。"""
@@ -134,6 +137,8 @@ class SlicePlan:
             "confidence": self.confidence,
             "warnings": self.warnings,
         }
+        if self.fill_percent is not None:
+            data["fill_percent"] = self.fill_percent
         if self.target_start is not None:
             data["target_start"] = self.target_start.to_dict()
         if self.target_end is not None:

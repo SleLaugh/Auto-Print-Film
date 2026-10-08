@@ -1827,11 +1827,14 @@ class Stage7ReconstructionTest(unittest.TestCase):
             class RecordingCurvedResampler:
                 """记录第七阶段是否选择 CPR 重采样器。"""
 
-                def sample_slice(self, image, current_plan, planned_slice):
+                def sample_slice(self, image, current_plan, planned_slice, *, is_mask=False):
                     """返回一张最小 HU 图像，并记录 geometry_type。"""
 
-                    sampled_geometry_types.append(current_plan["geometry_type"])
-                    return sitk.Image(1, 1, 1, sitk.sitkFloat32)
+                    if not is_mask:
+                        sampled_geometry_types.append(current_plan["geometry_type"])
+                    output = sitk.Image(1, 1, 1, sitk.sitkFloat32)
+                    output[0, 0, 0] = 1 if is_mask else 0
+                    return output
 
             with mock.patch(
                 "src.stages.stage_reconstruction.CurvedStackResampler",
@@ -1895,9 +1898,10 @@ class Stage7ReconstructionTest(unittest.TestCase):
             self.assertEqual(int(dataset.InstanceNumber), 1)
             self.assertEqual(float(dataset.SliceThickness), 1.0)
             self.assertEqual(float(dataset.SpacingBetweenSlices), 2.0)
-            self.assertEqual(
+            np.testing.assert_allclose(
                 [float(value) for value in dataset.ImageOrientationPatient],
-                [0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                [0.0, 2 / np.sqrt(5), -1 / np.sqrt(5), 0.0, 1 / np.sqrt(5), 2 / np.sqrt(5)],
+                atol=1e-8,
             )
             self.assertIn("冠状位-骨窗", dataset.SeriesDescription)
             localizer = pydicom.dcmread(str(localizer_path))
@@ -1975,6 +1979,9 @@ class Stage7ReconstructionTest(unittest.TestCase):
             )
             raw_image.SetSpacing((1.0, 1.0, 1.0))
             sitk.WriteImage(raw_image, str(raw_path))
+            segmentation = sitk.Image(raw_image.GetSize(), sitk.sitkUInt8) + 1
+            segmentation.CopyInformation(raw_image)
+            sitk.WriteImage(segmentation, context.get_result("localization")["seg_for_reconstruction_path"])
 
             plan = context.get_result("planning")["plans"][0]
             plan["slice_thickness"] = 3.0
@@ -2418,6 +2425,13 @@ class Stage7ReconstructionTest(unittest.TestCase):
         ))
         sitk.WriteImage(raw_image, str(raw_path))
 
+        seg_path = output_dir / "seg.nii.gz"
+        labels = np.zeros((8, 8, 8), dtype=np.uint8)
+        labels[:, 1:4, 1:4] = 1
+        segmentation = sitk.GetImageFromArray(labels)
+        segmentation.CopyInformation(raw_image)
+        sitk.WriteImage(segmentation, str(seg_path))
+
         centers = [2.0 + 2.0 * index for index in range(slice_count)]
         plan = {
             "plan_id": "测试_整切_横状位",
@@ -2466,6 +2480,8 @@ class Stage7ReconstructionTest(unittest.TestCase):
         context = ProcessingContext(request)
         context.set_result("localization", {
             "raw_for_reconstruction_path": str(raw_path),
+            "seg_for_reconstruction_path": str(seg_path),
+            "coords": {"target": {"label_ids": [1], "found": True}},
         })
         context.set_result("planning", {"plans": [plan]})
         return context

@@ -22,7 +22,7 @@
 
   <rect width="1100" height="1450" rx="28" fill="url(#background)"/>
   <text x="550" y="55" text-anchor="middle" class="title">直线切割：从请求到 DICOM 的完整流程</text>
-  <text x="550" y="88" text-anchor="middle" class="subtitle">整面切和范围切只在“选择覆盖范围”处分叉，之后共用同一套切割流程</text>
+  <text x="550" y="88" text-anchor="middle" class="subtitle">历史流程：旧范围模式已移除；当前整组 FillPercent 取景规则见同目录设计文档</text>
 
   <!-- 步骤 1：接收外部参数。 -->
   <rect x="210" y="120" width="680" height="120" rx="20" fill="#eaf4ff" stroke="#6d9dcb" stroke-width="2"/>

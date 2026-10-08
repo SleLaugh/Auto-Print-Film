@@ -140,7 +140,9 @@ def write_ct_dicom(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     first_pixel = image.GetOrigin()
     image_2d = _extract_2d_image(image)
-    output_spacing = plan["output_spacing_mm"]
+    output_spacing = planned_slice.get("framing", {}).get(
+        "output_spacing_mm", plan["output_spacing_mm"]
+    )
     image_2d.SetSpacing((
         float(output_spacing["x"]),
         float(output_spacing["y"]),
@@ -170,6 +172,18 @@ def write_ct_dicom(
     normal = _normalize(planned_slice["normal"])
     row_dir = _normalize(planned_slice["row_dir"])
     col_dir = _normalize(planned_slice["col_dir"])
+    if "framing" in planned_slice:
+        # 使用实际成片方向；CPR 展开图的方向可能不同于规划参考平面。
+        direction = image.GetDirection()
+        row_dir = (direction[0], direction[3], direction[6])
+        col_dir = (direction[1], direction[4], direction[7])
+        normal = (
+            row_dir[1] * col_dir[2] - row_dir[2] * col_dir[1],
+            row_dir[2] * col_dir[0] - row_dir[0] * col_dir[2],
+            row_dir[0] * col_dir[1] - row_dir[1] * col_dir[0],
+        )
+        # 同一平面任一点的法向投影相同，避免 SliceLocation 沿用旧中心/法向。
+        center = dict(zip("xyz", first_pixel))
 
     image_2d.SetMetaData("0008|0016", "1.2.840.10008.5.1.4.1.1.2")
     image_2d.SetMetaData("0008|0018", new_uid())

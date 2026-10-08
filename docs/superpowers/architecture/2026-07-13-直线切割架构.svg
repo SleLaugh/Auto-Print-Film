@@ -21,7 +21,7 @@
 
   <rect width="1400" height="900" rx="28" fill="url(#bg)"/>
   <text x="700" y="55" text-anchor="middle" class="title">直线切割统一设计（暂不考虑曲线）</text>
-  <text x="700" y="88" text-anchor="middle" class="subtitle">切哪几层、以什么角度切、每张图切多大——三个维度独立组合</text>
+  <text x="700" y="88" text-anchor="middle" class="subtitle">历史架构：旧范围模式已移除；当前采用第七阶段整组 FillPercent 取景，详见 README</text>
 
   <!-- 第一层：三个相互独立的输入维度。 -->
   <rect x="55" y="125" width="385" height="190" rx="20" fill="#eaf4ff" stroke="#6ea3d5" stroke-width="2"/>

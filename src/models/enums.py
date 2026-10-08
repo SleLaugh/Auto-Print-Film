@@ -39,12 +39,6 @@ class PlaneTypeEnum(Enum):
     冠状位 = "冠状位"
 
 
-class CutLineExtentModeEnum(Enum):
-    """切割线在每张平面内的横向范围。"""
-    整平面 = "整平面"
-    部位范围 = "部位范围"
-
-
 class ProcessingStatusEnum(Enum):
     """处理状态枚举"""
     待处理 = "pending"

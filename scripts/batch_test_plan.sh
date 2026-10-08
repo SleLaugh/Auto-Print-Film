@@ -6,27 +6,28 @@ cd "$(dirname "$0")/.."
 DICOM_ROOT="/home/peng/03_data/demo/Image/dicom"
 RESULT_ROOT="/home/peng/03_data/demo/Image/result"
 PYTHON_BIN=".venv/bin/python"
-# 格式: "切割部位|状位|切割方式|层厚(mm)|层间距(mm)"
+# 格式: "切割部位|状位|切割方式|层厚(mm)|层间距(mm)[|FillPercent]"
 # 同一部位和状位可以配置多条，批量请求会按此处顺序全部保留。
-# 范围模式省略时默认整平面。
+# 整组统一居中/缩放；末尾 |80 表示本组目标整体范围占画面 80%，第六项填 0 或省略则不缩放。
+# 本脚本不读取 .vscode/launch.json；层厚/层间距由第四、五项决定。
 SLICE_TYPE_CONFIGS=(
-    "颈椎|横状位|MPR|5|5"
-    "颈椎|横状位|椎间隙|3|3"
-    "颈椎|矢状位|MPR|5|5"
-    "颈椎|冠状位|CPR|5|5"
-    "胸椎|横状位|MPR|5|5"
-    "胸椎|矢状位|MPR|5|5"
-    "胸椎|冠状位|CPR|5|5"
-    "腰椎|横状位|MPR|5|5"
-    "腰椎|横状位|椎间隙|5|5"
-    "腰椎|矢状位|MPR|5|5"
-    "腰椎|冠状位|CPR|5|5"
-    "肺部|横状位|MPR|5|5"
-    "肺部|矢状位|MPR|5|5"
-    "肺部|冠状位|MPR|5|5"
-    "髋骨|横状位|MPR|5|5"
-    "髋骨|矢状位|MPR|5|5"
-    "髋骨|冠状位|MPR|5|5"
+    "颈椎|横状位|MPR|5|5|80"
+    "颈椎|横状位|椎间隙|3|3|80"
+    "颈椎|矢状位|MPR|5|5|80"
+    "颈椎|冠状位|CPR|5|5|80"
+    "胸椎|横状位|MPR|5|5|80"
+    "胸椎|矢状位|MPR|5|5|80"
+    "胸椎|冠状位|CPR|5|5|80"
+    "腰椎|横状位|MPR|5|5|80"
+    "腰椎|横状位|椎间隙|5|5|80"
+    "腰椎|矢状位|MPR|5|5|80"
+    "腰椎|冠状位|CPR|5|5|80"
+    "肺部|横状位|MPR|5|5|80"
+    "肺部|矢状位|MPR|5|5|80"
+    "肺部|冠状位|MPR|5|5|80"
+    "髋骨|横状位|MPR|5|5|80"
+    "髋骨|矢状位|MPR|5|5|80"
+    "髋骨|冠状位|MPR|5|5|80"
 )
 # 中文请求值依赖 UTF-8 argv；显式开启可避免精简 Linux 环境使用 C/ASCII locale。
 export PYTHONUTF8=1
@@ -80,7 +81,7 @@ fi
 build_plane_configs() {
     local slice_part="$1"
     local plane item configured_part configured_plane configured_slice_type
-    local configured_thickness configured_spacing matched
+    local configured_thickness configured_spacing configured_fill matched
     local config_args=()
 
     for plane in "横状位" "矢状位" "冠状位"; do
@@ -91,13 +92,15 @@ build_plane_configs() {
                 configured_plane \
                 configured_slice_type \
                 configured_thickness \
-                configured_spacing <<< "$item"
+                configured_spacing \
+                configured_fill <<< "$item"
             if [[ "$configured_part" == "$slice_part" && "$configured_plane" == "$plane" ]]; then
                 config_args+=(
                     "$plane"
                     "$configured_slice_type"
                     "$configured_thickness"
                     "$configured_spacing"
+                    "$configured_fill"
                 )
                 matched=1
             fi
@@ -113,8 +116,8 @@ import json
 import sys
 
 configs = []
-for index in range(1, len(sys.argv), 4):
-    plane, slice_type, slice_thickness, slice_spacing = sys.argv[index:index + 4]
+for index in range(1, len(sys.argv), 5):
+    plane, slice_type, slice_thickness, slice_spacing, fill_percent = sys.argv[index:index + 5]
     configs.append({
         "Plane": plane,
         "SliceThickness": float(slice_thickness),
@@ -122,6 +125,8 @@ for index in range(1, len(sys.argv), 4):
         "WindowPresets": ["骨窗", "肺窗", "纵隔窗", "软组织窗"],
         "SliceType": slice_type,
     })
+    if fill_percent:
+        configs[-1]["FillPercent"] = float(fill_percent)
 print(json.dumps(configs, ensure_ascii=False, separators=(",", ":")))
 ' "${config_args[@]}"
 }

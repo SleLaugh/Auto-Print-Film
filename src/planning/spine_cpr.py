@@ -177,6 +177,7 @@ def build_spine_sagittal_cpr_plans(
             slice_spacing=sampling.slice_spacing,
             window_presets=list(plane_config.window_presets),
             source_labels=source_labels,
+            fill_percent=plane_config.fill_percent,
             curve_points=curve_points,
             curve_spacing_mm=_minimum_image_spacing(image_info),
             offset_axis=offset_axis,

@@ -30,6 +30,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
                         "Plane": "冠状位",
                         "SliceThickness": 5,
                         "SliceSpacing": 10,
+                        "FillPercent": 80,
                         "WindowPresets": ["骨窗", "纵隔窗"],
                     }
                 ],
@@ -63,7 +64,7 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
                     "SliceThickness": 5.0,
                     "SliceSpacing": 10.0,
                     "SliceImageCount": None,
-                    "line_extent_mode": "整平面",
+                    "FillPercent": 80,
                     "WindowPresetList": [
                         {"Name": "骨窗", "RegionList": []},
                         {"Name": "纵隔窗", "RegionList": []},

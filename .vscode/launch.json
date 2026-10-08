@@ -14,7 +14,7 @@
                 "--slice_part", "颈椎",
                 "--study_type", "CT",
                 "--scan_thickness", "1.0",
-                "--plane_configs", "[{\"Plane\":\"横状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\",\"SliceType\":\"MPR\"},{\"Plane\":\"矢状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\",\"SliceType\":\"MPR\"},{\"Plane\":\"冠状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"line_extent_mode\":\"整平面\",\"SliceType\":\"MPR\"}]"
+                "--plane_configs", "[{\"Plane\":\"横状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"FillPercent\":100,\"SliceType\":\"MPR\"},{\"Plane\":\"矢状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"FillPercent\":100,\"SliceType\":\"MPR\"},{\"Plane\":\"冠状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"FillPercent\":100,\"SliceType\":\"MPR\"}]"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"

@@ -9,7 +9,7 @@ import math
 from typing import Any, Dict, Iterable, List
 
 from src.models import AnatomicalFrame, ExtentMM, Point3D, SlicePlan
-from src.models.enums import CutLineExtentModeEnum, PlaneTypeEnum
+from src.models.enums import PlaneTypeEnum
 from src.planning.sampling import ResolvedSampling, resolve_sampling
 from src.planning.geometry import (
     build_plane_stack_slices,
@@ -353,24 +353,17 @@ def project_region_extent(
 
 
 def resolve_projected_extent(
-    mode: CutLineExtentModeEnum,
     localization_result: Dict[str, Any],
     target_region_bbox: Dict[str, float],
     frame: StraightPlaneFrame,
 ) -> ProjectedExtent:
-    """按整平面或当前目标 bbox 选择三维范围并完成统一投影。"""
+    """计算原始采样视野；最终整组居中和占比由重建阶段处理。"""
 
     image_info = localization_result["image"]
-    if mode == CutLineExtentModeEnum.部位范围:
-        points = bbox_physical_corners(target_region_bbox, image_info)
-    elif mode == CutLineExtentModeEnum.整平面:
-        # 旧测试数据可能没有 size_xyz，此时保持原有回退到目标 bbox 的行为。
-        if image_info.get("size_xyz"):
-            points = image_physical_corners(image_info)
-        else:
-            points = bbox_physical_corners(target_region_bbox, image_info)
+    if image_info.get("size_xyz"):
+        points = image_physical_corners(image_info)
     else:
-        raise ValueError(f"不支持的切割线范围模式: {mode}")
+        points = bbox_physical_corners(target_region_bbox, image_info)
     return project_region_extent(points, frame)
 
 
@@ -549,7 +542,6 @@ def build_straight_slice_plan(
     """把待切区间、直线方向和图像范围组装成第七阶段可执行计划。"""
 
     projected_extent = resolve_projected_extent(
-        plane_config.line_extent_mode,
         localization_result,
         segment.target_region_bbox,
         frame,
@@ -632,6 +624,7 @@ def build_straight_slice_plan(
         slice_spacing=sampling.slice_spacing,
         window_presets=list(plane_config.window_presets),
         source_labels=list(segment.source_labels),
+        fill_percent=plane_config.fill_percent,
         target_start=centered_target_start,
         target_end=centered_target_end,
         localizer_plane=resolve_localizer_plane(

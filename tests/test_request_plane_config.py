@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from src.models import PlaneConfig, Request
@@ -108,6 +109,33 @@ class PlaneConfigRequestTest(unittest.TestCase):
 
         self.assertEqual(config.fill_percent, 80)
         self.assertEqual(config.to_dict()["FillPercent"], 80)
+
+    def test_integral_fill_percent_serializes_as_json_integer(self):
+        """整数及整数浮点值都回显整数，直接构造配置也遵守同一协议。"""
+
+        for value in (0, 0.0, 80, 80.0, 100, 100.0):
+            with self.subTest(value=value):
+                configs = (
+                    PlaneConfig.from_dict({"Plane": "横状位", "FillPercent": value}),
+                    PlaneConfig(
+                        plane=PlaneTypeEnum.横状位,
+                        slice_thickness=3,
+                        slice_spacing=3,
+                        window_presets=["骨窗"],
+                        fill_percent=value,
+                    ),
+                )
+                for config in configs:
+                    payload = json.loads(json.dumps(config.to_dict()))
+                    self.assertIs(type(payload["FillPercent"]), int)
+                    self.assertEqual(payload["FillPercent"], value)
+
+    def test_fractional_fill_percent_is_not_truncated(self):
+        """小数比例保留精度，不为了整数调用方悄悄改变实际取景值。"""
+
+        config = PlaneConfig.from_dict({"Plane": "横状位", "FillPercent": 80.5})
+        self.assertEqual(config.fill_percent, 80.5)
+        self.assertEqual(json.loads(json.dumps(config.to_dict()))["FillPercent"], 80.5)
 
     def test_invalid_fill_percent_is_rejected(self):
         for value in (-1, 101, 10 ** 400, True, False, "0", "80", float("nan"), float("inf")):

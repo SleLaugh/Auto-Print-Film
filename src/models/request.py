@@ -191,7 +191,9 @@ class PlaneConfig:
         if self.slice_image_count is not None:
             data['SliceImageCount'] = self.slice_image_count
         if self.fill_percent is not None:
-            data['FillPercent'] = self.fill_percent
+            # 整数比例以 JSON 整数回显，兼容调用方的整数属性；真实小数不截断。
+            percent = parse_fill_percent(self.fill_percent)
+            data['FillPercent'] = int(percent) if percent.is_integer() else percent
         return data
 
 

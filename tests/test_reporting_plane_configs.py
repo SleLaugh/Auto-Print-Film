@@ -72,6 +72,37 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
                 }
             ])
 
+    def test_delivery_report_preserves_fill_percent_json_number_type(self):
+        """真实落盘报告中的整数比例不能带 .0，省略/null 不新增字段。"""
+
+        for value in (0, 0.0, 80, 80.0, 100, 100.0, 80.5, None, "omitted"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temp_dir:
+                config = {
+                    "Plane": "横状位",
+                    "SliceType": "椎间隙",
+                    "SliceThickness": 3,
+                    "SliceSpacing": 3,
+                    "SliceImageCount": 4,
+                    "WindowPresets": ["骨窗"],
+                }
+                if value != "omitted":
+                    config["FillPercent"] = value
+                request = Request.from_dict({
+                    "dicom_dir": "/tmp/dicom",
+                    "output_dir": temp_dir,
+                    "ScanThickness": 1,
+                    "plane_configs": [config],
+                })
+                report_path = ReportingStage()._generate_report(ProcessingContext(request))
+                report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+                plane = report["PlaneList"][0]
+                if value is None or value == "omitted":
+                    self.assertNotIn("FillPercent", plane)
+                else:
+                    self.assertEqual(plane["FillPercent"], value)
+                    expected_type = int if float(value).is_integer() else float
+                    self.assertIs(type(plane["FillPercent"]), expected_type)
+
     def test_delivery_report_adds_region_count_and_window_path(self):
         """窗位下的重建区域返回实际数量和目录。"""
 

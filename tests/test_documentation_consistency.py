@@ -105,6 +105,9 @@ class DocumentationConsistencyTests(unittest.TestCase):
             "不再执行额外 Hermite 平滑",
             "debug_artifacts_enabled=true",
             "CPR 曲面厚层融合尚未实现",
+            "当前实现应观测到多个写入器重叠",
+            "CPR 规划是否降级由第六阶段决定",
+            "任一计划失败时不应发布该计划的半成品正式 DICOM",
         )
         current_documents = [PROJECT_ROOT / "README.md"]
         current_documents.extend(
@@ -284,6 +287,51 @@ class DocumentationConsistencyTests(unittest.TestCase):
             ):
                 misplaced.append(str(path.relative_to(PROJECT_ROOT)))
         self.assertEqual(misplaced, [])
+
+    def test_archive_replacement_index_covers_all_plans_and_old_specs(self):
+        """每份历史计划和旧规范都应在替代索引中有独立入口。"""
+
+        archive = SUPERPOWERS_ROOT / "archive"
+        index = (archive / "2026-10-08-历史文档替代索引.md").read_text(
+            encoding="utf-8"
+        )
+        for folder in ("plans", "specs_old"):
+            for path in (archive / folder).glob("*.md"):
+                if path.name == "README.md":
+                    continue
+                self.assertIn(f"]({folder}/{path.name})", index, msg=str(path))
+
+    def test_archived_documents_open_with_history_and_current_design_links(self):
+        """搜索直接打开历史文件时，开头必须提示历史属性及当前替代规则。"""
+
+        archive = SUPERPOWERS_ROOT / "archive"
+        for folder in ("plans", "specs_old"):
+            for path in (archive / folder).glob("*.md"):
+                if path.name == "README.md":
+                    continue
+                intro = "\n".join(path.read_text(encoding="utf-8").splitlines()[:12])
+                self.assertIn("历史", intro, msg=str(path))
+                self.assertRegex(
+                    intro,
+                    r"\]\(\.\./\.\./(?:architecture|modules)/[^)]+\.md\)",
+                    msg=str(path),
+                )
+
+    def test_fill_percent_design_distinguishes_group_framing_from_display(self):
+        """占比规范必须说明分组、0 值和屏幕显示的区别。"""
+
+        design = (
+            SUPERPOWERS_ROOT
+            / "modules/reconstruction/2026-10-08-整组居中与FillPercent取景设计.md"
+        ).read_text(encoding="utf-8")
+        for statement in (
+            "省略、null、0 均仅按整组目标范围居中",
+            "占比的参照物是输出图像，不是屏幕",
+            "不是只挑面积最大的一层",
+            "定位图不应用取景",
+            "不能承诺与原 CT 精确三维联动",
+        ):
+            self.assertIn(statement, design)
 
     def test_all_markdown_relative_links_exist(self):
         """全部当前和历史文档的相对 Markdown 链接都必须解析到真实目标。"""

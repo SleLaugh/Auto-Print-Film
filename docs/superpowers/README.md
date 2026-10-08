@@ -8,6 +8,10 @@
 | --- | --- | --- |
 | 框架、八阶段流水线、任务状态、预检、产物管理 | `architecture/README.md` | 改跨阶段契约时继续读八阶段拆分设计 |
 | 请求参数、状位配置、外部接口契约 | `architecture/README.md` | 重点读状位配置请求设计 |
+| 持久缓存、按模型复用分割、缓存失效边界 | `architecture/2026-10-08-预处理与分割缓存设计.md` | 缓存不是整任务断点续跑 |
+| 交付报告、Python Response、重复状位、报告对比 | `architecture/2026-10-08-交付报告与响应契约设计.md` | 区分医学状位与输出目录名 |
+| 批量脚本、并发病例、FillPercent 配置透传 | `architecture/2026-10-08-批量执行与配置透传设计.md` | 不读取 launch.json |
+| 整组居中、0/80/100、目标占图比例 | `modules/reconstruction/2026-10-08-整组居中与FillPercent取景设计.md` | 不是逐张拉满或屏幕缩放 |
 | GDCM、SimpleITK、DICOM 写盘并发安全 | `architecture/README.md` + `modules/dicom/README.md` | 写盘锁属于跨模块约束 |
 | DICOM 文件名、定位图、InstanceNumber | `modules/dicom/README.md` | 不涉及 MPR 几何时不读 reconstruction |
 | 第三至五阶段校正、label/bbox、解剖几何 | `modules/localization/README.md` | 只处理目标范围或四棱柱时从这里开始 |
@@ -18,6 +22,11 @@
 | 追溯历史实施或审阅过程 | `archive/plans/`、`archive/reviews/` | 默认不要读取 |
 
 ## 当前事实源
+
+截至 2026-10-08，近期缺失设计和历史文档中的过时说明已进行补录核对。缺口与提交对应关系见
+[近期变更文档补录审阅记录](archive/reviews/2026-10-08-近期变更文档补录审阅记录.md)。
+新增设计均注明补录日期，不把补录冒充为开发前已存在的方案。
+全部旧计划与旧规范的对应关系见[历史文档替代索引](archive/2026-10-08-历史文档替代索引.md)。
 
 文档与实现发生冲突时，按以下顺序确认当前行为：
 
@@ -79,3 +88,5 @@
 - 实施计划完成后移入 `archive/plans/`。
 - 被新设计取代的规范移入 `archive/specs_old/`，并在旧文件内保留替代关系说明。
 - 图片跟随对应设计目录，不单独散落在顶层。
+- 变更请求字段、阶段输入输出、缓存、配置或可观察结果时，同轮更新对应设计与入口索引；
+  只更新根 README 或提交说明不算补齐模块设计。审阅时逐项对照代码、测试与文档。

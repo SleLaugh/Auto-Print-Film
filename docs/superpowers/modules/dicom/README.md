@@ -7,6 +7,9 @@
 - 重建切片文件名使用数字序号，如 `1.dcm`、`2.dcm`。
 - `Localizer.dcm` 放在对应窗位 series 旁边，第八阶段计数时不应把它当作普通切片。
 - `InstanceNumber` 仍表达 DICOM 内部序号，文件名变化不应改变重建几何。
+- 定位图背景状位由各部位 `slice_rules.<重建状位>.<切法>.localizer_plane` 显式配置，
+  不得与重建状位相同；FillPercent 不改变定位图背景或原计划的定位线。
+- 成片空间标签使用实际取景几何，CPR 展开图不能视为原始解剖结构的规则三维体。
 - GDCM 写盘必须经由串行保护入口，具体跨模块约束读 `../../architecture/2026-07-20-GDCM写盘串行保护设计.md`。
 - 同一计划各窗 Localizer 必须使用主线程冻结的同一份 `ImagePositionPatient` 和
   `ImageOrientationPatient` 串行写出；窗位只改变灰度和序列标识。
@@ -25,6 +28,8 @@
 | 任务 | 先读文件 |
 | --- | --- |
 | 数字命名、定位图、第八阶段计数 | `2026-07-14-DICOM数字命名与定位图设计.md` |
+| 定位图背景状位配置、参考点与取景隔离 | [定位图状位配置与取景隔离设计](2026-10-08-定位图状位配置与取景隔离设计.md) |
+| 取景后的 PixelSpacing、方向和 CPR 限制 | [整组取景设计](../reconstruction/2026-10-08-整组居中与FillPercent取景设计.md) |
 | GDCM 并发写盘保护 | `../../architecture/2026-07-20-GDCM写盘串行保护设计.md` |
 
 ## 少读原则

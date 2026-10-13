@@ -20,8 +20,8 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Compile Python sources
-        run: python -m compileall -q main.py src tests
+        run: python -m compileall -q main.py src scripts tests
       - name: Ruff
-        run: python -m ruff check main.py src tests
+        run: python -m ruff check dev main.py src tests scripts
       - name: Tests
         run: python -m pytest -q

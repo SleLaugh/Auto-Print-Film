@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable
 import json
 import math
-import os
 
 import numpy as np
 import SimpleITK as sitk
@@ -29,6 +28,7 @@ from src.anatomy.lung import estimate_lung_frame_with_diagnostics
 from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 from src.utils import DebugLog
+from src.runtime import config_candidates, resolve_application_path
 
 from .localization_contracts import LocalizationContractMixin
 from .localization_execution import LocalizationExecutionMixin
@@ -99,18 +99,6 @@ class LocalizationOperations(
         )
         self._load_config()
         self._load_nnunet_config()
-        self._apply_injected_nnunet_config()
-
-    def _apply_injected_nnunet_config(self):
-        """用 Pipeline 注入的统一配置覆盖阶段内读取的本地配置。"""
-
-        project_root = Path(__file__).resolve().parents[2]
-        for key in ('nnUNet_raw', 'nnUNet_preprocessed', 'nnUNet_results'):
-            if key in self.config:
-                self._nnunet_paths[key] = self._resolve_config_path(
-                    self.config.get(key, ''),
-                    project_root,
-                )
 
     def _load_config(self):
         """
@@ -125,11 +113,7 @@ class LocalizationOperations(
             self._slice_part_config = injected_config
             return
 
-        config_paths = [
-            Path.cwd() / "config" / "slice_part_config.json",
-            Path.cwd() / "slice_part_config.json",
-            Path(__file__).parent.parent / "config" / "slice_part_config.json",
-        ]
+        config_paths = config_candidates("slice_part_config.json")
 
         for config_path in config_paths:
             if config_path.exists():
@@ -146,20 +130,15 @@ class LocalizationOperations(
         定位阶段不重新匹配模型，只复用 segmentation 阶段得到的 model_id。
         这里读取路径配置，是为了把 label 名称转换成真实 label id。
         """
-        project_root = Path(__file__).resolve().parents[2]
         injected_keys = ('nnUNet_raw', 'nnUNet_preprocessed', 'nnUNet_results')
         if any(key in self.config for key in injected_keys):
             self._nnunet_paths = {
-                key: self._resolve_config_path(self.config.get(key, ''), project_root)
+                key: resolve_application_path(self.config.get(key, ''))
                 for key in injected_keys
             }
             return
 
-        config_paths = [
-            Path.cwd() / "config" / "nnuNet_config.json",
-            Path.cwd() / "nnuNet_config.json",
-            Path(__file__).parent.parent / "config" / "nnuNet_config.json",
-        ]
+        config_paths = config_candidates("nnuNet_config.json")
 
         self._nnunet_paths = {}
         for config_path in config_paths:
@@ -168,23 +147,10 @@ class LocalizationOperations(
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
             self._nnunet_paths = {
-                'nnUNet_results': self._resolve_config_path(config.get('nnUNet_results', ''), project_root),
-                'nnUNet_preprocessed': self._resolve_config_path(config.get('nnUNet_preprocessed', ''), project_root),
-                'nnUNet_raw': self._resolve_config_path(config.get('nnUNet_raw', ''), project_root),
+                key: resolve_application_path(config.get(key, ''))
+                for key in injected_keys
             }
             return
-
-    @staticmethod
-    def _resolve_config_path(value: str, project_root: Path) -> str:
-        """展开环境变量和用户目录，并按项目根目录解析相对配置路径。"""
-
-        if not value:
-            return ""
-        expanded = os.path.expanduser(os.path.expandvars(str(value)))
-        path = Path(expanded)
-        if not path.is_absolute():
-            path = project_root / path
-        return str(path)
     
     @staticmethod
     def _build_anatomical_geometry(

@@ -11,9 +11,11 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from src.config import AppConfig
+from src.runtime import resolve_application_path
 
 from .capabilities import CapabilityRegistry
 from .errors import DependencyError, RequestValidationError
+from .nnunet_command import validate_nnunet_command
 
 
 class PreflightValidator:
@@ -77,8 +79,11 @@ class PreflightValidator:
         if not existing_parent.is_dir() or not os.access(existing_parent, os.W_OK):
             raise RequestValidationError(f"输出目录父级不可写: {existing_parent}")
 
-        if self.executable_finder("nnUNetv2_predict") is None:
-            raise DependencyError("未找到 nnUNetv2_predict 可执行命令")
+        validate_nnunet_command(
+            self.executable_finder,
+            predict_command=config.nnunet.predict_command,
+            python_executable=config.nnunet.python_executable,
+        )
 
         if self.check_model_directories:
             self._validate_model_directories(config)
@@ -94,7 +99,7 @@ class PreflightValidator:
         for name, value in values.items():
             if not value:
                 raise DependencyError(f"未配置 {name}")
-            if not Path(value).expanduser().is_dir():
+            if not Path(resolve_application_path(value)).is_dir():
                 raise DependencyError(
                     f"{name} 目录不存在",
                     details={"setting": name},

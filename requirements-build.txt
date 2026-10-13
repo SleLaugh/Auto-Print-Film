@@ -1,0 +1,3 @@
+# 构建工具只安装到 .build-cache，不属于外部 nnUNet 环境。
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8

@@ -1,4 +1,14 @@
 .venv/
+/dist/
+/.build-cache/
+/production/
+/.vscode/settings.json
+/.aws/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 __pycache__/
 Log/
 *.py[cod]
@@ -9,5 +19,4 @@ output/
 outputs/
 服务端/
 Plant/设计.txt
-.gitignore
 Plant/需求.docx

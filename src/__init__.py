@@ -1,6 +1,1 @@
-#!/src/__init__.py
-# -*- coding: utf-8 -*-
-
-"""
-SpineMPRProcessor 源码包
-"""
+"""AutoPrintFilm 医学影像处理应用包。"""

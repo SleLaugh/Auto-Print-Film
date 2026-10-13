@@ -1,0 +1,5 @@
+# 独立 NRRD/NIfTI 转换工具 src/utils/OKT-convert2nii.py 的额外依赖。
+-r requirements.txt
+
+nibabel>=5.0.0
+pynrrd>=1.0.0

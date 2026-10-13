@@ -11,10 +11,33 @@
 
 ## 环境要求
 
-- Python 3.10 或 3.11
-- pip
-- 可选但推荐：CUDA + 对应版本的 PyTorch，用于 nnUNet GPU 推理
+- 源码开发：Python 3.10 或 3.11、pip；发布程序已自带应用运行时
+- 外部 nnUNet 推理环境；GPU 推理所需的 PyTorch / CUDA 在该外部环境中维护
 - nnUNet 模型文件：需要放在本机可访问的目录，并通过环境变量或配置文件指定
+
+## 生产发布
+
+在项目根目录执行 `dev build`，用 PyInstaller onedir 生成带基础依赖的 Linux x86_64
+可执行程序发布包：
+
+```bash
+dev build
+```
+
+直接入口为 `dist/AutoPrintFilm/AutoPrintFilm`，压缩包为
+`dist/AutoPrintFilm-linux-x64.tar.gz`。整体移动应用目录，保留 `_internal/` 和符号链接；
+生产端无需安装应用 Python 或运行 `main.py`，包内不交付应用源码脚本。
+JSON 配置外置于产物的 `src/config/`，可直接编辑；重复构建默认保留已修改的发布配置。
+nnUNet、PyTorch 和模型继续使用外部环境，通过 `nnuNet_config.json` 配置路径，不打入包。
+新机器克隆项目后先运行一次 `./dev install-command`，或直接使用 `./dev build`。
+支持 `ExecutablePath` 的 .NET Worker 直接启动程序，未设置时保留
+`PythonExecutablePath` + `MainScriptPath` 兼容方式。当前服务调用路径为
+`/home/peng/03_data/demo/Project/发布/AutoSliceServer/AutoPrintFilm`；移动目录后同步调整
+服务配置中的 `ExecutablePath`。只有使用尚未支持该字段的旧 Worker 时，才需先改造并
+重新发布 Worker。
+解压、Worker 构建和配置步骤见 [发布部署手册](docs/production.md)。当前构建基线为
+Ubuntu 22.04 Linux x86_64，其他平台需另行验证兼容性。
+下文安装、开发测试与批量运行脚本仅提供于源码仓库。
 
 ## Linux / macOS 安装依赖
 
@@ -56,9 +79,13 @@ python -m pip install -r requirements.txt
 
 如果系统没有 `py` 命令，把 `py -3` 换成 `python`。
 
-## 配置 nnUNet 模型路径
+独立转换工具 `src/OKT-convert2nii.py` 另需安装 `requirements-tools.txt` 中的依赖；
+这些工具依赖不随主应用发布。
 
-分割阶段会调用 `nnUNetv2_predict`。依赖安装完成后，还需要准备 nnUNet 的模型目录。
+## 配置外部 nnUNet
+
+分割阶段调用外部 `nnUNetv2_predict`。应用依赖安装不会安装 nnUNet，还需配置已有的
+外部命令入口和模型目录。
 
 默认配置文件是：
 
@@ -66,7 +93,21 @@ python -m pip install -r requirements.txt
 src/config/nnuNet_config.json
 ```
 
-默认这三个配置项为空：
+此文件同时配置外部推理入口和模型目录。本机外部入口为：
+
+```json
+{
+  "nnUNet_predict_command": "/home/peng/opt/fsl/bin/nnUNetv2_predict",
+  "nnUNet_python": ""
+}
+```
+
+`nnUNet_predict_command` 指向外部可执行命令。上面的入口自带外部 Python 路径，
+所以 `nnUNet_python` 留空。下面三个字段只配置模型目录；它们不能代替命令路径。
+服务启动时的 PATH 可能与开发终端不同，生产配置应填写命令的完整路径。
+发布程序已读取这些 JSON 字段，修改后下一次任务启动生效，无需重新打包。
+
+下面是这三个配置项的空值示例；当前配置保留本机已有的路径，首次发布也会沿用：
 
 ```json
 {
@@ -76,7 +117,7 @@ src/config/nnuNet_config.json
 }
 ```
 
-为空时，程序不会覆盖系统已有的 nnUNet 环境变量。也就是说，如果你已经在系统里设置好了 `nnUNet_raw`、`nnUNet_preprocessed`、`nnUNet_results`，直接运行即可。
+模型路径为空时，程序沿用系统已有的 `nnUNet_raw`、`nnUNet_preprocessed`、`nnUNet_results` 环境变量。外部命令入口仍由 `nnUNet_predict_command` 指定。
 
 Linux / macOS 临时设置示例：
 
@@ -475,32 +516,35 @@ fail-fast 被跳过的后续阶段。默认主链中的
 显式调用参数 > 环境变量 > 本机配置 > 仓库默认配置
 ```
 
-仓库中的 nnUNet 路径默认为空，不绑定开发者电脑。推荐通过
-`nnUNet_raw`、`nnUNet_preprocessed`、`nnUNet_results` 环境变量配置模型目录。
+当前 `nnuNet_config.json` 保留已有的模型目录。迁移到其他机器时按实际位置调整，
+也可以将这些项设为空，再通过 `nnUNet_raw`、`nnUNet_preprocessed`、
+`nnUNet_results` 环境变量配置模型目录。
 
 程序启动后会先检查请求能力、输入目录、输出目录关系、nnUNet 命令和模型目录；
-预检失败不会创建或清空输出目录。
+预检失败不会清理旧业务结果；入口仍会尽力写入失败 `report.json`，因此可能创建输出目录。
 
 ## 运行测试
 
 Linux / macOS：
 
 ```bash
+.venv/bin/python -m pip install -r requirements-dev.txt
 bash scripts/test.sh
 ```
 
 Windows PowerShell：
 
 ```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\scripts\test.ps1
 ```
 
-测试脚本固定使用项目 `.venv`，避免系统 Python、FSL Python 或 Conda Python 混用。
+测试脚本固定使用项目 `.venv`，统一运行 `pytest`，同时收集业务、外部命令与可执行发布的
+回归测试。可在脚本后传入 pytest 参数，例如 `bash scripts/test.sh tests/test_frozen_runtime.py`。
 
-## PyTorch / CUDA 说明
+## 外部 nnUNet 推理环境
 
-`requirements.txt` 会安装项目运行所需的 Python 包，包括 `nnunetv2`。开发和 CI 检查使用
-`requirements-dev.txt`，其中额外包含 pytest 和 Ruff。如果需要 GPU 推理，建议先按照本机
-CUDA 版本安装 PyTorch，再运行依赖安装命令。PyTorch 安装命令以官方选择器为准。
-
-CPU 环境也可以安装依赖，但 nnUNet 推理速度会明显慢。
+`requirements.txt` 只安装本程序的基础影像处理依赖。nnUNet、PyTorch、CUDA 和模型由
+现有外部推理环境提供，本程序通过子进程调用。外部命令或外部 Python 路径可在
+`src/config/nnuNet_config.json` 中设置；详见 [发布部署手册](docs/production.md)。
+开发和 CI 检查使用 `requirements-dev.txt`，其中额外包含 pytest 和 Ruff。

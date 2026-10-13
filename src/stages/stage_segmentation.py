@@ -10,18 +10,21 @@ from pathlib import Path
 from typing import Dict, Any
 import json
 import math
+import re
 import subprocess
 import shutil
-import os
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
+from src.core.errors import ExternalProcessError
+from src.core.nnunet_command import nnunet_command_prefix
 from src.config import (
     load_slice_part_config,
     model_mappings_for,
     validate_slice_part_config,
 )
 from src.models import SegmentationResult
+from src.runtime import config_candidates, external_process_environment, resolve_application_path
 from src.utils import DebugLog, ErrorLog
 
 
@@ -40,7 +43,6 @@ class SegmentationStage(BaseStage):
         优先加载外部JSON配置文件，如果不存在则使用默认配置
         """
         # 默认配置
-        project_root = Path(__file__).resolve().parents[2]
         default_config = {
             "_configuration": "3d_fullres",  # 模型配置：使用哪种网络架构配置
             "_fold": "0",  # 训练折数（fold）：使用哪个折的模型权重
@@ -48,7 +50,9 @@ class SegmentationStage(BaseStage):
             # nnUNet环境变量。为空时沿用系统环境变量；相对路径按项目根目录解析。
             "nnUNet_raw": "",
             "nnUNet_preprocessed": "",
-            "nnUNet_results": ""
+            "nnUNet_results": "",
+            "nnUNet_predict_command": "nnUNetv2_predict",
+            "nnUNet_python": "",
         }
         
         if self.config:
@@ -56,11 +60,7 @@ class SegmentationStage(BaseStage):
             default_config.update(self.config)
         else:
             # 未通过 Pipeline 注入配置时，直接构造 Stage 仍从标准路径加载配置。
-            config_paths = [
-                Path.cwd() / "config" / "nnuNet_config.json",
-                Path.cwd() / "nnuNet_config.json",
-                Path(__file__).parent.parent / "config" / "nnuNet_config.json",
-            ]
+            config_paths = config_candidates("nnuNet_config.json")
             config_loaded = False
             for config_path in config_paths:
                 if not config_path.exists():
@@ -80,6 +80,8 @@ class SegmentationStage(BaseStage):
         self._configuration = default_config.get('_configuration', "3d_fullres")
         self._fold = str(default_config.get('_fold', "0"))
         self._continue = default_config.get('_continue', True)
+        self._predict_command = default_config.get('nnUNet_predict_command', 'nnUNetv2_predict')
+        self._predict_python = default_config.get('nnUNet_python', '')
         self._slice_part_config = (
             default_config.get('slice_part_config')
             or load_slice_part_config()
@@ -88,28 +90,9 @@ class SegmentationStage(BaseStage):
         
         # 设置nnUNet环境变量
         self._nnunet_env_vars = {
-            'nnUNet_raw': self._resolve_config_path(default_config.get('nnUNet_raw', ''), project_root),
-            'nnUNet_preprocessed': self._resolve_config_path(default_config.get('nnUNet_preprocessed', ''), project_root),
-            'nnUNet_results': self._resolve_config_path(default_config.get('nnUNet_results', ''), project_root)
+            key: resolve_application_path(default_config.get(key, ''))
+            for key in ('nnUNet_raw', 'nnUNet_preprocessed', 'nnUNet_results')
         }
-
-    @staticmethod
-    def _resolve_config_path(value: str, project_root: Path) -> str:
-        """
-        解析配置中的 nnUNet 路径
-        
-        规则：
-            1. 配置为空字符串时，不覆盖系统环境变量
-            2. 支持 ~ 和环境变量展开，例如 ~/model 或 $HOME/model
-            3. 相对路径会按项目根目录解析，方便跨电脑迁移项目
-        """
-        if not value:
-            return ""
-        expanded = os.path.expanduser(os.path.expandvars(str(value)))
-        path = Path(expanded)
-        if not path.is_absolute():
-            path = project_root / path
-        return str(path)
 
     def execute(self, context: ProcessingContext) -> ProcessingContext:
         """匹配请求对应的 nnUNet 模型，执行推理并登记标准化分割输出。"""
@@ -438,8 +421,7 @@ class SegmentationStage(BaseStage):
             continue_mode: 是否启用继续模式
         """
         # 构建命令
-        cmd = [
-            "nnUNetv2_predict",
+        cmd = nnunet_command_prefix(self._predict_command, self._predict_python) + [
             "-i", str(input_dir),
             "-o", str(output_path.parent),  # 输出目录
             "-d", str(dataset_id),
@@ -452,7 +434,7 @@ class SegmentationStage(BaseStage):
             cmd.append("--continue")
         
         # 设置环境变量（合并当前环境变量和nnUNet环境变量）
-        env = os.environ.copy()
+        env = external_process_environment()
         for key, value in self._nnunet_env_vars.items():
             if value:  # 如果值不为空
                 env[key] = value
@@ -466,15 +448,23 @@ class SegmentationStage(BaseStage):
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
                 env=env  # 传入自定义环境变量
             )
             
             # 检查执行结果
             if result.returncode != 0:
-                DebugLog("    ❌ nnUNet推理失败!")
-                DebugLog(f"    错误输出: {result.stderr}")
-                raise RuntimeError(f"nnUNet推理失败: {result.stderr}")
+                # 报告只携带可读摘要，原始输出走错误日志，不依赖调试日志开关。
+                ErrorLog(
+                    f"nnUNet 推理失败：模型 {dataset_id}，退出码 {result.returncode}\n"
+                    f"标准错误输出:\n{result.stderr or ''}\n"
+                    f"标准输出:\n{result.stdout or ''}"
+                )
+                raise self._describe_inference_failure(
+                    dataset_id, result.returncode, result.stderr or '', env,
+                )
             
             DebugLog("    ✅ nnUNet推理完成")
             if result.stdout:
@@ -484,12 +474,51 @@ class SegmentationStage(BaseStage):
             expected_output = output_path.parent / f"{case_id}.nii.gz"
             self._normalize_output_file(expected_output, output_path)
             
-        except subprocess.CalledProcessError as e:
-            ErrorLog("    ❌ nnUNet命令执行失败", e)
+        except ExternalProcessError:
+            # 失败进程的原始输出已记录，避免再把业务摘要和堆栈重复写入日志。
             raise
         except Exception as e:
             ErrorLog("    ❌ nnUNet推理过程中发生错误", e)
             raise
+
+    @staticmethod
+    def _describe_inference_failure(
+        dataset_id: str | int,
+        returncode: int,
+        stderr: str,
+        env: Dict[str, str],
+    ) -> ExternalProcessError:
+        """根据 nnUNet 明确的失败原因生成报告消息；不硬编码模型号或本机路径。"""
+
+        model_id = int(dataset_id)
+        directories = {
+            key: env.get(key) or "未配置"
+            for key in ("nnUNet_results", "nnUNet_raw", "nnUNet_preprocessed")
+        }
+        details = {"model_id": model_id, "returncode": returncode}
+        missing = re.search(r"Could not find a dataset with the ID (\d+)\b", stderr)
+        if missing and int(missing.group(1)) == model_id:
+            # 只翻译 nnUNet 已确认的当前数据集缺失，不把权重缺失或其他异常混为一谈。
+            locations = "；".join(f"{key}={value}" for key, value in directories.items())
+            message = (
+                f"nnUNet 推理失败：未找到模型 {model_id}"
+                f"（未找到 Dataset{model_id:03d}* 数据集目录）。"
+                f"查找目录：{locations}。"
+                "请检查 nnUNet 路径配置，或部署该模型对应的完整训练结果。"
+            )
+            details.update(reason="dataset_not_found", directories=directories)
+        else:
+            # 未识别的错误保留末条异常摘要，限制长度，避免堆栈淹没业务消息。
+            lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+            reason = lines[-1] if lines else "外部进程未提供错误说明"
+            if len(reason) > 300:
+                reason = reason[:300] + "…"
+            message = (
+                f"nnUNet 推理失败（模型 {model_id}，退出码 {returncode}）：{reason}。"
+                "详细输出请查看错误日志。"
+            )
+            details["reason"] = "inference_failed"
+        return ExternalProcessError(message, stage="segmentation", details=details)
 
     @staticmethod
     def _get_case_id(input_path: Path) -> str:
@@ -525,18 +554,19 @@ class SegmentationStage(BaseStage):
                 shutil.move(str(expected_output), str(output_path))
             return
 
+        if output_path.exists():
+            return
+
         possible_outputs = [
             path for path in output_path.parent.glob("*.nii.gz")
             if path != output_path
         ]
-        if possible_outputs:
+        if len(possible_outputs) == 1:
             found_file = possible_outputs[0]
-            if output_path.exists():
-                output_path.unlink()
             shutil.move(str(found_file), str(output_path))
             return
 
-        if output_path.exists():
-            return
+        if len(possible_outputs) > 1:
+            raise RuntimeError(f"nnUNet 输出目录包含多个候选结果，无法确定当前病例: {output_path.parent}")
 
         raise FileNotFoundError(f"未找到nnUNet输出文件: {output_path.parent}")

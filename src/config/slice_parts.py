@@ -6,6 +6,8 @@ import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence, Tuple
 
+from src.runtime import config_path
+
 
 _PLANES = {"横状位", "冠状位", "矢状位"}
 _SLICE_TYPES = {"MPR", "CPR", "椎间隙"}
@@ -15,7 +17,7 @@ _REGION_TYPES = {"whole_range", "interspace"}
 def default_slice_part_config_path() -> Path:
     """返回仓库内统一切割部位配置的标准路径。"""
 
-    return Path(__file__).with_name("slice_part_config.json")
+    return config_path("slice_part_config.json")
 
 
 def load_slice_part_config(path: Path | None = None) -> Dict[str, Any]:

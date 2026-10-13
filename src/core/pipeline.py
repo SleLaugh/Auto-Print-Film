@@ -101,6 +101,8 @@ class Pipeline:
             "nnUNet_raw": config.nnunet.raw,
             "nnUNet_preprocessed": config.nnunet.preprocessed,
             "nnUNet_results": config.nnunet.results,
+            "nnUNet_predict_command": config.nnunet.predict_command,
+            "nnUNet_python": config.nnunet.python_executable,
             "slice_part_config": config.slice_part_config,
         }
         return [

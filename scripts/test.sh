@@ -8,4 +8,4 @@ if [[ ! -x .venv/bin/python ]]; then
     exit 1
 fi
 
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m pytest -q "$@"

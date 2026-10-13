@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from src.runtime import config_path
+
 
 @dataclass(frozen=True)
 class WindowPreset:
@@ -27,17 +29,14 @@ class WindowPreset:
         }
 
 
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "window_presets.json"
-
-
 def load_window_presets(path: Path | None = None) -> dict[str, WindowPreset]:
     """加载并校验窗宽窗位配置。"""
 
-    config_path = path or _DEFAULT_CONFIG_PATH
+    preset_path = path or config_path("window_presets.json")
     try:
-        data: Any = json.loads(config_path.read_text(encoding="utf-8"))
+        data: Any = json.loads(preset_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"无法读取窗宽窗位配置: {config_path}") from exc
+        raise ValueError(f"无法读取窗宽窗位配置: {preset_path}") from exc
     if not isinstance(data, list):
         raise ValueError("窗宽窗位配置顶层必须是数组")
 

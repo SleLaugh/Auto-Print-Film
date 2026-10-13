@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from src.runtime import config_path
+
 from .settings import AppConfig, LoggingConfig, NnUNetConfig, PipelineConfig
 from .slice_parts import validate_slice_part_config
 
@@ -40,6 +42,12 @@ def _coerce_bool(value: Any, field_name: str) -> bool:
         if normalized == "false":
             return False
     raise ValueError(f"{field_name} 必须是布尔值 true/false")
+
+
+def _coerce_path(value: Any, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} 必须是命令或解释器路径字符串")
+    return value
 
 
 def load_app_config(
@@ -98,6 +106,12 @@ def load_app_config(
         continue_mode=_coerce_bool(nn_value(
             "continue_mode", "_continue", fallback=True
         ), "nnunet.continue_mode"),
+        predict_command=_coerce_path(nn_value(
+            "predict_command", "nnUNet_predict_command", fallback="nnUNetv2_predict"
+        ), "nnunet.predict_command"),
+        python_executable=_coerce_path(nn_value(
+            "python_executable", "nnUNet_python"
+        ), "nnunet.python_executable"),
     )
     logging_values = {
         key: explicit_logging.get(key, default_logging.get(key, default))
@@ -152,7 +166,7 @@ def load_app_config(
 
 def _read_defaults(default_path: Optional[Path]) -> Dict[str, Any]:
     """读取同一目录中的 nnUNet、日志和统一切割部位配置并合并。"""
-    path = default_path or Path(__file__).with_name("nnuNet_config.json")
+    path = default_path or config_path("nnuNet_config.json")
     data: Dict[str, Any] = {}
     if path.exists():
         with path.open("r", encoding="utf-8") as file:

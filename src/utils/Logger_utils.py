@@ -25,6 +25,8 @@ import sys
 import json
 import traceback
 
+from src.runtime import config_candidates
+
 
 class LoggerManager:
     """
@@ -79,11 +81,7 @@ class LoggerManager:
         }
         
         # 尝试加载外部配置文件
-        config_paths = [
-            Path.cwd() / "config" / "logger_config.json",
-            Path.cwd() / "logger_config.json",
-            Path(__file__).parent.parent / "config" / "logger_config.json",
-        ]
+        config_paths = config_candidates("logger_config.json")
         
         config_loaded = False
         for config_path in config_paths:

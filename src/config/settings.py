@@ -20,6 +20,10 @@ class NnUNetConfig:
     """推理使用的训练 fold。"""
     continue_mode: bool = True
     """是否向 nnUNet 推理命令传递 continue 行为。"""
+    predict_command: str = "nnUNetv2_predict"
+    """外部 nnUNet 命令；默认从 PATH 查找，也可配置可执行文件或 Python 脚本路径。"""
+    python_executable: str = ""
+    """可选外部推理 Python；为空时直接执行 predict_command。"""
 
 
 @dataclass(frozen=True)

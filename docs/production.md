@@ -150,6 +150,30 @@ systemctl is-active "$WORKER_UNIT"
 
 此时由该外部 Python 调用 nnUNet 入口，其 nnUNet/PyTorch 安装和版本保持原样。两个字段均未配置时沿用原来的 PATH 命令调用。`nnUNet_python` 必须指向外部 Python，不能指向本包的 `AutoPrintFilm` 可执行程序。
 
+`nnuNet_config.json` 还支持以下顶层推理速度参数。将字段合并到原 JSON，保留其他字段；
+省略时保持原来的推理行为：
+
+```json
+{
+  "disable_tta": false,
+  "step_size": 0.5
+}
+```
+
+- `disable_tta`：JSON 使用布尔值，默认 `false`；设为 `true` 关闭镜像增强、减少重复推理。
+- `step_size`：JSON 使用数值，范围为 `0 < step_size <= 1`，默认 `0.5`；增大后减少滑窗重叠。
+
+环境变量也可使用同名字段，接受 `true`/`false` 和数值文本，优先于 JSON。
+
+提速时先测试 `disable_tta=true`、`step_size=0.5`，再按效果测试 `step_size=0.75`。
+这些设置可能影响分割及自动切割定位，需要比较实际病例的耗时和切割结果。
+分割缓存仍按模型 ID 复用，不区分这些参数；测试时使用新的 `-c` 目录，或清理对应的
+`<cache>/<model_id>/segmentation/`，否则会复用旧分割、跳过推理。
+
+首次加入这两个字段的支持涉及应用代码变更，已有 PyInstaller 发布程序须重新执行
+`dev build`，按第 3 节更新完整应用目录。升级后只改外置 JSON，下一次任务启动生效，
+无需再次打包；模型无需重新训练，外部 nnUNet 环境无需重新安装，当前 Worker 无需改造。
+
 在 Linux 下，外部推理子进程会恢复 PyInstaller 启动前的动态库搜索路径；父进程仍使用自己的打包库。[PyInstaller 外部程序调用说明](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#launching-external-programs-from-the-frozen-application)
 
 首次构建沿用源码配置；重复 `dev build` 默认保留上次 `dist/AutoPrintFilm/src/config/` 中的 JSON 修改。独立生产目录的配置不会被构建命令修改。若明确要让构建产物改用当前源码配置：

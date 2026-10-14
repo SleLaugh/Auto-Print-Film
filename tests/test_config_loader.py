@@ -7,6 +7,7 @@ from pathlib import Path
 from src.config import (
     load_app_config,
     load_slice_part_config,
+    NnUNetConfig,
     validate_slice_part_config,
 )
 from src.core.pipeline import Pipeline
@@ -80,6 +81,61 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertFalse(config.nnunet.continue_mode)
 
+    def test_inference_options_preserve_defaults_for_existing_config(self):
+        config = load_app_config(environ={}, defaults={"_fold": "0"})
+
+        self.assertFalse(config.nnunet.disable_tta)
+        self.assertEqual(config.nnunet.step_size, 0.5)
+        self.assertFalse(config.summary()["nnunet"]["disable_tta"])
+        self.assertEqual(config.summary()["nnunet"]["step_size"], 0.5)
+
+    def test_inference_options_follow_configuration_precedence(self):
+        config = load_app_config(
+            explicit={"nnunet": {"disable_tta": False, "step_size": 0.75}},
+            environ={"disable_tta": "true", "step_size": "1"},
+            defaults={"disable_tta": True, "step_size": 0.25},
+        )
+
+        self.assertFalse(config.nnunet.disable_tta)
+        self.assertEqual(config.nnunet.step_size, 0.75)
+
+    def test_inference_options_accept_environment_text(self):
+        config = load_app_config(
+            environ={"disable_tta": "false", "step_size": "0.75"},
+            defaults={"disable_tta": True, "step_size": 0.5},
+        )
+
+        self.assertFalse(config.nnunet.disable_tta)
+        self.assertEqual(config.nnunet.step_size, 0.75)
+
+    def test_invalid_inference_options_fail_during_config_loading(self):
+        cases = (
+            ("disable_tta", "no"),
+            ("disable_tta", 1),
+            ("step_size", 0),
+            ("step_size", -0.5),
+            ("step_size", 1.1),
+            ("step_size", True),
+            ("step_size", "nan"),
+            ("step_size", "inf"),
+            ("step_size", "fast"),
+        )
+        for key, value in cases:
+            with self.subTest(key=key, value=value):
+                with self.assertRaisesRegex(ValueError, key):
+                    load_app_config(environ={}, defaults={key: value})
+
+    def test_typed_inference_options_also_reject_invalid_values(self):
+        for kwargs in (
+            {"disable_tta": "false"},
+            {"step_size": True},
+            {"step_size": 0},
+            {"step_size": 10 ** 1000},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    NnUNetConfig(**kwargs)
+
     def test_invalid_boolean_text_is_rejected(self):
         """拼写错误的布尔配置应在启动时失败，而不是静默启用。"""
         with self.assertRaisesRegex(ValueError, "布尔值"):
@@ -137,6 +193,8 @@ class ConfigLoaderTest(unittest.TestCase):
             environ={},
             defaults={
                 "nnUNet_results": "/central/results",
+                "disable_tta": True,
+                "step_size": 0.75,
             },
         )
 
@@ -150,6 +208,8 @@ class ConfigLoaderTest(unittest.TestCase):
             segmentation._nnunet_env_vars["nnUNet_results"],
             "/central/results",
         )
+        self.assertTrue(segmentation._disable_tta)
+        self.assertEqual(segmentation._step_size, 0.75)
 
     def test_default_loader_combines_nnunet_and_logger_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:

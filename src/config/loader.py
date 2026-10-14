@@ -50,6 +50,17 @@ def _coerce_path(value: Any, field_name: str) -> str:
     return value
 
 
+def _coerce_float(value: Any, field_name: str) -> float:
+    """接受 JSON 数值或环境变量中的数值文本，拒绝布尔值。"""
+
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} 必须是数值")
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(f"{field_name} 必须是数值") from error
+
+
 def load_app_config(
     *,
     explicit: Optional[Mapping[str, Any]] = None,
@@ -112,6 +123,12 @@ def load_app_config(
         python_executable=_coerce_path(nn_value(
             "python_executable", "nnUNet_python"
         ), "nnunet.python_executable"),
+        disable_tta=_coerce_bool(nn_value(
+            "disable_tta", "disable_tta", fallback=False
+        ), "nnunet.disable_tta"),
+        step_size=_coerce_float(nn_value(
+            "step_size", "step_size", fallback=0.5
+        ), "nnunet.step_size"),
     )
     logging_values = {
         key: explicit_logging.get(key, default_logging.get(key, default))

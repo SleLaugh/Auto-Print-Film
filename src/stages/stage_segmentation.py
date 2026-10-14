@@ -1,13 +1,10 @@
-#!/src/stages/stage_segmentation.py
-# -*- coding: utf-8 -*-
-
 """
 第二阶段：推理分割
 模型匹配与推理
 """
 
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Mapping
 import json
 import math
 import re
@@ -19,6 +16,7 @@ from src.core.context import ProcessingContext
 from src.core.errors import ExternalProcessError
 from src.core.nnunet_command import nnunet_command_prefix
 from src.config import (
+    load_app_config,
     load_slice_part_config,
     model_mappings_for,
     validate_slice_part_config,
@@ -38,16 +36,15 @@ class SegmentationStage(BaseStage):
         self._load_config()
     
     def _load_config(self):
-        """
-        加载配置文件
-        优先加载外部JSON配置文件，如果不存在则使用默认配置
-        """
+        """优先使用注入配置；未注入时读取候选 JSON，并用内置默认值补齐。"""
         # 默认配置
         default_config = {
             "_configuration": "3d_fullres",  # 模型配置：使用哪种网络架构配置
             "_fold": "0",  # 训练折数（fold）：使用哪个折的模型权重
-            "_continue": True,  # 继续模式：如果输出文件已存在则跳过，避免重复预测
-            # nnUNet环境变量。为空时沿用系统环境变量；相对路径按项目根目录解析。
+            "_continue": True,  # 外部 nnUNet 跳过已有输出；阶段缓存另行判断
+            "disable_tta": False,  # 是否关闭推理时的镜像增强
+            "step_size": 0.5,  # 滑窗步长比例，范围为 (0, 1]
+            # nnUNet 环境变量。为空时沿用系统环境变量；相对路径按应用根目录解析。
             "nnUNet_raw": "",
             "nnUNet_preprocessed": "",
             "nnUNet_results": "",
@@ -82,6 +79,17 @@ class SegmentationStage(BaseStage):
         self._continue = default_config.get('_continue', True)
         self._predict_command = default_config.get('nnUNet_predict_command', 'nnUNetv2_predict')
         self._predict_python = default_config.get('nnUNet_python', '')
+        # 仅校验新增推理选项，避免解析独立 Stage 调用方的其他应用配置。
+        inference_keys = ("disable_tta", "step_size")
+        inference_options = {key: default_config[key] for key in inference_keys}
+        nested_config = default_config.get("nnunet")
+        if isinstance(nested_config, Mapping):
+            inference_options["nnunet"] = {
+                key: nested_config[key] for key in inference_keys if key in nested_config
+            }
+        inference_config = load_app_config(defaults=inference_options, environ={}).nnunet
+        self._disable_tta = inference_config.disable_tta
+        self._step_size = inference_config.step_size
         self._slice_part_config = (
             default_config.get('slice_part_config')
             or load_slice_part_config()
@@ -426,12 +434,15 @@ class SegmentationStage(BaseStage):
             "-o", str(output_path.parent),  # 输出目录
             "-d", str(dataset_id),
             "-c", configuration,
-            "-f", fold
+            "-f", fold,
+            "-step_size", str(self._step_size),
         ]
+        if self._disable_tta:
+            cmd.append("--disable_tta")
         
-        # 如果启用continue模式，添加--continue参数
+        # 只控制 nnUNet 的已有输出；本阶段的分割缓存由 execute() 独立判断。
         if continue_mode:
-            cmd.append("--continue")
+            cmd.append("--continue_prediction")
         
         # 设置环境变量（合并当前环境变量和nnUNet环境变量）
         env = external_process_environment()

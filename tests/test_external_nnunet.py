@@ -130,7 +130,8 @@ class ExternalNnUNetTest(unittest.TestCase):
             )
         self.assertEqual(run.call_args.args[0], [
             str(self.command), "-i", str(input_dir), "-o", str(output.parent),
-            "-d", "292", "-c", "3d_fullres", "-f", "0", "--continue",
+            "-d", "292", "-c", "3d_fullres", "-f", "0",
+            "-step_size", "0.5", "--continue_prediction",
         ])
         self.assertEqual(run.call_args.kwargs["env"]["nnUNet_results"], "/external/models")
 
@@ -148,7 +149,7 @@ class ExternalNnUNetTest(unittest.TestCase):
         environment = os.environ.copy()
         environment.pop("PYTHONHOME", None)
         environment["PYTHONPATH"] = str(package.parents[1])
-        arguments = ["-i", "中文 DICOM", "-o", "output path", "--continue"]
+        arguments = ["-i", "中文 DICOM", "-o", "output path", "--continue_prediction"]
         prefix = nnunet_command.nnunet_command_prefix(python_executable=sys.executable)
         # Only a stub entry runs; no real nnUNet/torch imports or model inference.
         result = subprocess.run(

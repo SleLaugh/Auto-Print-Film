@@ -98,6 +98,8 @@ class Pipeline:
             "_configuration": config.nnunet.configuration,
             "_fold": config.nnunet.fold,
             "_continue": config.nnunet.continue_mode,
+            "disable_tta": config.nnunet.disable_tta,
+            "step_size": config.nnunet.step_size,
             "nnUNet_raw": config.nnunet.raw,
             "nnUNet_preprocessed": config.nnunet.preprocessed,
             "nnUNet_results": config.nnunet.results,

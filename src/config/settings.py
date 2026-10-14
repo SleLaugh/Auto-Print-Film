@@ -1,5 +1,6 @@
 """应用级不可变配置模型，负责描述一次 Pipeline 运行期间不会变化的设置。"""
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict
 
@@ -19,11 +20,27 @@ class NnUNetConfig:
     fold: str = "0"
     """推理使用的训练 fold。"""
     continue_mode: bool = True
-    """是否向 nnUNet 推理命令传递 continue 行为。"""
+    """是否传递 --continue_prediction；不控制应用自身的阶段缓存。"""
     predict_command: str = "nnUNetv2_predict"
     """外部 nnUNet 命令；默认从 PATH 查找，也可配置可执行文件或 Python 脚本路径。"""
     python_executable: str = ""
     """可选外部推理 Python；为空时直接执行 predict_command。"""
+    disable_tta: bool = False
+    """是否关闭推理时的镜像增强；默认保留 nnUNet 的增强行为。"""
+    step_size: float = 0.5
+    """滑窗步长比例，范围为 0 < step_size <= 1；增大可能影响分割精度。"""
+
+    def __post_init__(self) -> None:
+        """在构造配置时拒绝非法推理选项，避免启动外部推理后才失败。"""
+        if not isinstance(self.disable_tta, bool):
+            raise ValueError("nnunet.disable_tta 必须是布尔值 true/false")
+        if (
+            isinstance(self.step_size, bool)
+            or not isinstance(self.step_size, (int, float))
+            or not 0 < self.step_size <= 1
+            or not math.isfinite(self.step_size)
+        ):
+            raise ValueError("nnunet.step_size 必须是有限数值，范围为 0 < step_size <= 1")
 
 
 @dataclass(frozen=True)
@@ -79,6 +96,8 @@ class AppConfig:
                 "configuration": self.nnunet.configuration,
                 "fold": self.nnunet.fold,
                 "continue_mode": self.nnunet.continue_mode,
+                "disable_tta": self.nnunet.disable_tta,
+                "step_size": self.nnunet.step_size,
                 "raw_configured": bool(self.nnunet.raw),
                 "preprocessed_configured": bool(self.nnunet.preprocessed),
                 "results_configured": bool(self.nnunet.results),

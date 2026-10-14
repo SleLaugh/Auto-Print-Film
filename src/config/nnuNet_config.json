@@ -2,6 +2,8 @@
     "_configuration": "3d_fullres",
     "_fold": "0",
     "_continue": true,
+    "disable_tta": false,
+    "step_size": 0.5,
     "nnUNet_raw": "/home/peng/03_data/00_nnUnet/model/nnUNet_raw",
     "nnUNet_preprocessed": "/home/peng/03_data/00_nnUnet/model/nnUNet_preprocessed",
     "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",

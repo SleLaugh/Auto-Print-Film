@@ -103,11 +103,34 @@ src/config/nnuNet_config.json
 ```
 
 `nnUNet_predict_command` 指向外部可执行命令。上面的入口自带外部 Python 路径，
-所以 `nnUNet_python` 留空。下面三个字段只配置模型目录；它们不能代替命令路径。
+所以 `nnUNet_python` 留空。`nnUNet_raw`、`nnUNet_preprocessed`、`nnUNet_results`
+只配置模型目录，不能代替命令路径。
 服务启动时的 PATH 可能与开发终端不同，生产配置应填写命令的完整路径。
 发布程序已读取这些 JSON 字段，修改后下一次任务启动生效，无需重新打包。
 
-下面是这三个配置项的空值示例；当前配置保留本机已有的路径，首次发布也会沿用：
+推理速度可以通过同一 JSON 的顶层字段调整。将以下字段合并到原 JSON，保留其他字段；
+省略时保持原来的推理行为：
+
+```json
+{
+  "disable_tta": false,
+  "step_size": 0.5
+}
+```
+
+JSON 中 `disable_tta` 使用布尔值，默认 `false`，设为 `true` 会关闭镜像增强、减少重复推理。
+`step_size` 使用数值，范围为 `0 < step_size <= 1`，默认 `0.5`；增大步长可以减少
+滑窗重叠。环境变量也可使用同名字段，接受 `true`/`false` 和数值文本。
+提速时先试 `disable_tta=true`、保持 `step_size=0.5`，再按效果测试 `0.75`。
+这些调整可能影响分割及自动切割定位，应比较实际病例的耗时和切割结果。
+分割缓存仍按模型 ID 复用；测试参数变化时使用新的 `-c` 目录，或清理对应的
+`<cache>/<model_id>/segmentation/`，否则会跳过推理。
+
+已有 PyInstaller 发布程序需要先重新执行 `dev build` 并更新完整应用包，才能支持新增的
+这两个字段。升级后直接修改外置 `src/config/nnuNet_config.json`，下一次任务启动生效，
+无需再次打包；模型无需重新训练，外部 nnUNet 环境无需重新安装。
+
+下面是模型目录配置项的空值示例；当前配置保留本机已有的路径，首次发布也会沿用：
 
 ```json
 {

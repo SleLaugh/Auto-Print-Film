@@ -1,7 +1,7 @@
 {
     "debug_file_enabled": false,
     "console_enabled": true,
-    "run_log_file_enabled": false,
+    "run_log_file_enabled": true,
     "debug_log_file_enabled": false,
     "error_log_file_enabled": true,
     "log_encoding": "utf-8",

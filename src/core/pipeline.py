@@ -27,6 +27,7 @@ from .errors import FrameworkError
 from .lifecycle import JobStatus, StageStatus
 from .preflight import PreflightValidator
 from .response import Response
+from .resources import resource_usage_summary
 
 
 _STAGE_LOG_LABELS = {
@@ -174,6 +175,7 @@ class Pipeline:
                     f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 开始: "
                     f"{stage.name}（{stage_label}）"
                 )
+                RunLog(f"[资源] stage={stage.name} phase=start {resource_usage_summary()}")
                 context.set_current_stage(stage.name)
                 self._write_manifest(context, artifacts)
                 context = stage.execute(context)
@@ -184,8 +186,10 @@ class Pipeline:
                     f"{stage.name}（{stage_label}），"
                     f"耗时 {record.duration_seconds or 0.0:.3f}s"
                 )
+                RunLog(f"[资源] stage={stage.name} phase=complete {resource_usage_summary()}")
                 self._write_manifest(context, artifacts)
             except Exception as error:
+                RunLog(f"[资源] stage={stage.name} phase=failed {resource_usage_summary()}")
                 ErrorLog(
                     f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 执行失败\n"
                     f"阶段标识: {stage.name}\n"

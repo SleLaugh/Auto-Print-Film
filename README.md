@@ -357,6 +357,36 @@ python scripts/compare_results.py \
 单 GPU 环境建议先从 `--jobs 2` 试起；如果 nnUNet 显存不足或出现 OOM，
 降回 `--jobs 1`。
 
+命中分割缓存后，空间校正、定位和重建仍会执行 CPU 运算。源码 CLI 和发布程序在
+加载影像库前，默认将每次 ITK 滤镜运算的线程数限制为 `min(4, CPU 亲和性允许的逻辑 CPU 数)`，
+OMP、OpenBLAS、MKL、NumExpr 默认各为 1；已有的对应环境变量会保留。
+窗位线程池默认上限为 2。需要调整时，在启动任务前设置：
+
+```bash
+AUTOPRINTFILM_NATIVE_THREADS=4 AUTOPRINTFILM_WINDOW_WORKERS=1 \
+  bash scripts/batch_test_plan.sh --jobs 3
+```
+
+`AUTOPRINTFILM_NATIVE_THREADS` 调整未显式配置的 ITK 线程数；例如已经设置
+`ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS` 时，仍以该原生环境变量为准。
+`AUTOPRINTFILM_WINDOW_WORKERS` 调整窗位线程池上限；Python 显式构造
+`ReconstructionStage` 时的 `max_window_workers` 优先。两项应用环境变量均须为正整数。
+这些限制分别控制 ITK 运算和窗位任务，并非整个进程的总线程硬上限；窗位任务内仍可能
+调用 ITK，主线程及库的辅助线程也会计入系统线程数。限制不能代替外部任务并发数和
+内存限制，也不改变分割缓存。非法应用线程配置会终止任务，并在指定的 `-o` 下尽力写入
+失败 `report.json`。无法读取 CPU 亲和性的平台使用系统逻辑 CPU 数计算默认值。
+子进程会继承这些环境变量，因此未命中缓存时，外部 nnUNet 的 OMP/BLAS 等线程默认值
+也会受影响，除非其启动器自行覆盖；nnUNet 的 `-npp`、`-nps` 进程数仍由原配置控制。
+普通 `import main` 不修改调用方的线程环境；嵌入式调用应在加载 NumPy/SimpleITK 前
+显式调用 `src.runtime.bootstrap_native_threads()`，或由宿主设置原生线程变量。
+
+仓库日志配置已开启 `run_log_file_enabled`，将诊断信息保存到每个任务的
+`log/RunLog.txt`；发布环境保留的日志开关仍以外置配置为准。
+`RunLog` 的 `[资源]` 行记录每个阶段开始、完成或失败时的进程资源快照。Linux 下包含
+PID、当前 RSS、进程整个运行期间的峰值 RSS、线程数、系统可用内存和已用 swap，
+内存单位为 MiB。快照用于对照停在哪个阶段；它不是阶段内部的持续采样，不能仅凭
+缺少 OOM 日志或一次低内存读数排除系统问题。已有发布包需重新构建后才包含这些改动。
+
 ### 当前能力范围
 
 每项 `plane_configs` 可选传入 `"FillPercent": 80`。省略该字段、传 `null` 或 `0` 时
@@ -554,8 +584,9 @@ S1 使用独立的左右支撑筛选，并在主体上缘局部补回一层与�
 不应把当前输出视为已经完成临床级泛化验证。
 
 第七阶段对每个切片计划先完成全部 MPR HU 图像采样，再按窗位使用线程池处理整套图像。
-不同窗位不会重复执行 MPR，默认最多同时运行 4 个窗位线程；第七阶段会等待所有窗位
-写出完成后再进入报告阶段。正式切片按窗位分别生成灰度并写入实际显示标签，SimpleITK/GDCM 原生写盘使用
+不同窗位不会重复执行 MPR，默认最多同时运行 2 个窗位线程；第七阶段会等待所有窗位
+任务完成。窗位计算可能调用原生库，2 个 worker 不代表整个进程只有 2 个线程。
+全部窗位写出完成后再进入报告阶段。正式切片按窗位分别生成灰度并写入实际显示标签，SimpleITK/GDCM 原生写盘使用
 进程内互斥锁串行执行，避免多线程写 DICOM 触发内存竞态。正式切片写出后会校正
 DICOM 的 `SliceThickness` 和 `SpacingBetweenSlices`，确保查看器读取到的层厚、
 层间距与第六阶段计划一致。

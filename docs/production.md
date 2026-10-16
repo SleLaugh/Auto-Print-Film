@@ -184,8 +184,24 @@ Python 显式配置支持顶层字段和 `nnunet` 嵌套段，优先于环境变
 其中记录实际命令和完整 stdout/stderr，报告摘要会优先显示更具体的异常。该提示本身
 不能证明主机内存不足，后台进程也可能因 Python 异常退出；没有具体异常时再结合系统的
 内存终止记录排查。两个进程数设为 1 只能减少并发资源占用，不能保证解决所有失败。
-仓库默认 `logger_config.json` 开启 `error_log_file_enabled`，其余日志开关保持原值；
+仓库默认 `logger_config.json` 开启 `error_log_file_enabled` 和 `run_log_file_enabled`；
 升级时保留的旧配置或显式配置仍优先，若旧配置关闭错误日志，须设为 `true` 后重跑以收集详情。
+
+多个 Worker 任务同时运行时，应用默认限制每次 ITK 滤镜运算线程数为
+`min(4, CPU 亲和性允许的逻辑 CPU 数)`；不支持亲和性查询的平台使用系统逻辑 CPU 数。
+OMP/BLAS/NumExpr 默认各为 1，窗位线程池默认上限为 2；已有原生线程环境变量优先。
+可在 Worker 的启动环境中设置 `AUTOPRINTFILM_NATIVE_THREADS=4` 和
+`AUTOPRINTFILM_WINDOW_WORKERS=1`，由子进程继承。两项均须为正整数；前者只设置
+未显式配置的 ITK 线程数。服务端最大同时任务数仍由 Worker 自己控制。
+分割缓存命中后仍会进行校正和重建，因此这些上限也适用于缓存任务。
+这些是 ITK 运算和窗位任务的上限，并非进程总线程硬上限；窗位任务仍可能调用 ITK，
+原生库也可能有辅助线程。环境变量会传给子进程，未命中缓存时外部 nnUNet 的
+OMP/BLAS 等线程默认值也会继承，除非其启动器自行覆盖；`-npp`、`-nps` 配置保持独立。
+非法应用线程配置仍会在指定的输出目录下尽力生成失败 `report.json`。
+阶段资源快照写入 `RunLog` 的 `[资源]` 行；需要外置 `logger_config.json` 中的
+`run_log_file_enabled=true` 才保存到文件，仓库配置已开启此项。Linux 下记录 RSS、进程累计峰值 RSS、
+线程数、系统可用内存和 swap，内存单位 MiB。快照只发生在阶段边界。
+这部分涉及应用代码，已有程序须重新构建并更新完整应用包后生效。
 
 在 Linux 下，外部推理子进程会恢复 PyInstaller 启动前的动态库搜索路径；父进程仍使用自己的打包库。[PyInstaller 外部程序调用说明](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#launching-external-programs-from-the-frozen-application)
 

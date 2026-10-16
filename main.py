@@ -10,11 +10,29 @@ import sys
 import argparse
 import faulthandler
 import json
+import os
 from pathlib import Path
 
 # ===== 添加项目根目录到Python路径（必须在import之前）=====
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+
+# Native libraries read their thread defaults while importing. Keep this an
+# explicit executable bootstrap: callers importing main retain their own policy.
+from src.runtime import (
+    NATIVE_THREAD_VARIABLES,
+    bootstrap_native_threads,
+    window_worker_count,
+)
+
+_thread_bootstrap_error = None
+if __name__ == "__main__":
+    try:
+        bootstrap_native_threads()
+    except ValueError as error:
+        # Defer configuration errors to main's report/logging boundary. No
+        # processing may start, but the caller still needs a failure report.
+        _thread_bootstrap_error = error
 
 # ===== 导入（在 sys.path 操作之后）=====
 from src.core import Pipeline
@@ -173,7 +191,9 @@ def parse_window_presets_argument(value):
     return parse_window_presets(raw_presets)
 
 
-def main():
+def main(*, startup_error=None):
+    """Execute a request and report errors, including pre-import bootstrap failures."""
+
     # SimpleITK/GDCM 等原生扩展触发 SIGABRT 时，至少保留 Python 调用栈。
     faulthandler.enable(all_threads=True)
     output_dir = _cli_value(sys.argv[1:], "-o", "--output")
@@ -191,6 +211,16 @@ def main():
         app_config = load_app_config()
         configure_logging(app_config.logging, output_dir=args.output)
         RunLog("SpineMPRProcessor v1.0.0 启动")
+        if startup_error is not None:
+            raise startup_error
+        thread_limits = ", ".join(
+            f"{name}={os.environ.get(name, '未设置')}"
+            for name in NATIVE_THREAD_VARIABLES
+        )
+        RunLog(
+            f"进程线程配置: PID={os.getpid()}, {thread_limits}, "
+            f"窗口线程上限={window_worker_count()}"
+        )
 
         plane_configs = parse_plane_configs(args.plane_configs)
         window_presets = parse_window_presets_argument(args.window_presets)
@@ -322,4 +352,4 @@ def _try_write_failure_report(
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(startup_error=_thread_bootstrap_error))

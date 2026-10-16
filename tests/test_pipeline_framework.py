@@ -193,6 +193,14 @@ class PipelineFrameworkTest(unittest.TestCase):
 
         self.assertTrue(response.success)
         messages = [call.args[0] for call in self.run_log.call_args_list]
+        self.assertTrue(any(
+            message.startswith("[资源] stage=one phase=start pid=")
+            for message in messages
+        ))
+        self.assertTrue(any(
+            message.startswith("[资源] stage=two phase=complete pid=")
+            for message in messages
+        ))
         self.assertIn("Pipeline 开始执行，共 2 个阶段", messages)
         self.assertIn(
             "[Pipeline] 阶段 1/2 开始: one（自定义阶段）",

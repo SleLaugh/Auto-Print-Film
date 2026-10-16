@@ -40,6 +40,7 @@ from src.reconstruction.framing import (
     prepare_interspace_framing,
 )
 from src.utils import DebugLog, is_debug_file_enabled
+from src.runtime import window_worker_count
 
 
 @dataclass(frozen=True)
@@ -72,16 +73,14 @@ class ReconstructionStage(BaseStage):
 
         Args:
             config: 阶段配置。`parallel` 控制是否并行处理不同窗位；
-                `max_window_workers` 限制同一 plan 的最大窗位线程数。
+                `max_window_workers` 限制同一 plan 的最大窗位任务数，优先于
+                AUTOPRINTFILM_WINDOW_WORKERS，未配置时默认为 2。
         """
         super().__init__(name="reconstruction", config=config)
         self.parallel = config.get('parallel', True) if config else True
         """是否为同一 plan 的不同窗位启用线程池。"""
-        self.max_window_workers = max(
-            1,
-            int(config.get('max_window_workers', 4) if config else 4),
-        )
-        """窗位线程池上限；实际线程数不会超过当前窗位数量。"""
+        self.max_window_workers = window_worker_count(config)
+        """窗位线程池上限；worker 数不超过窗位数量，不包含原生辅助线程。"""
     
     def execute(self, context: ProcessingContext) -> ProcessingContext:
         """

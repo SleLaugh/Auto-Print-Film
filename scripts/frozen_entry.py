@@ -7,6 +7,16 @@ from pathlib import Path
 import sys
 import tempfile
 
+from src.runtime import bootstrap_native_threads
+
+_thread_bootstrap_error = None
+if __name__ == "__main__":
+    try:
+        bootstrap_native_threads()
+    except ValueError as error:
+        # The normal request entry writes report.json after configuring logs.
+        _thread_bootstrap_error = error
+
 from main import main
 
 
@@ -67,5 +77,7 @@ def check_packaging():
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--_build-check"]:
+        if _thread_bootstrap_error is not None:
+            raise _thread_bootstrap_error
         sys.exit(check_packaging())
-    sys.exit(main())
+    sys.exit(main(startup_error=_thread_bootstrap_error))

@@ -32,6 +32,7 @@ from src.reconstruction.dicom import (
     write_localizer_dicom,
 )
 from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
+from src.reconstruction.framing_context import load_framing_context
 from src.reconstruction.framing import (
     TargetFramer,
     frame_curved_slice,
@@ -139,6 +140,9 @@ class ReconstructionStage(BaseStage):
         if not segmentation_path:
             raise ValueError("整组居中需要 seg_for_reconstruction_path")
         segmentation = sitk.ReadImage(str(segmentation_path))
+        framing_context = load_framing_context(
+            loc_result.get("dataset_json_path"), loc_result.get("coords", {}),
+        ) if any(plan.get("fill_percent") for plan in plans) else None
         preprocessing_result = context.get_result("preprocessing") or {}
         source_metadata = dict(preprocessing_result.get("source_dicom_metadata") or {})
         if not source_metadata:
@@ -159,6 +163,7 @@ class ReconstructionStage(BaseStage):
             for key, group in interspace_groups.items():
                 geometry = prepare_interspace_framing(
                     segmentation, loc_result.get("coords", {}), group,
+                    context=framing_context,
                 )
                 shared_geometries[key] = geometry
                 DebugLog(
@@ -180,6 +185,7 @@ class ReconstructionStage(BaseStage):
                             segmentation,
                             loc_result.get("coords", {}),
                             plan,
+                            context=framing_context,
                             shared_geometry=shared_geometries.get(
                                 self._interspace_framing_key(plan),
                             ),
@@ -262,7 +268,7 @@ class ReconstructionStage(BaseStage):
 
         resampler = self._resampler_for_plan(plan)
 
-        # 第一步：只做 MPR 和层厚采样，保留原始 float32 HU 图像。
+        # 第一步：按计划完成 HU 厚层采样与取景，保留未窗化的 float32 图像。
         # 所有采样完成之前不会开始任何窗宽窗位映射。
         DebugLog(f"    [1] MPR采样: 共 {len(plan['slices'])} 张")
         sampling_start = time.perf_counter()
@@ -293,12 +299,20 @@ class ReconstructionStage(BaseStage):
                 sampled_image, framing = frame_curved_slice(
                     sampled_image, mask, plan.get("fill_percent"), group_bounds,
                 )
+                framing["context_label_ids"] = list(target_framer.context_label_ids)
                 framed_slices.append(({**planned_slice, "framing": framing}, sampled_image))
             sampled_slices = framed_slices
         if target_framer is not None and sampled_slices:
             framing = sampled_slices[0][0]["framing"]
-            DebugLog(f"    [整组取景] plan={plan['plan_id']}, FillPercent={plan.get('fill_percent')}, "
-                     f"目标范围mm={framing['target_size_mm']}, 统一倍率={framing['scale']:.6f}")
+            scale_target_size = framing.get("shared_target_size_mm")
+            if scale_target_size is None:
+                scale_target_size = framing.get("framing_target_size_mm", framing["target_size_mm"])
+            DebugLog(
+                f"    [整组取景] plan={plan['plan_id']}, FillPercent={plan.get('fill_percent')}, "
+                f"目标范围mm={framing['target_size_mm']}, "
+                f"倍率依据mm={scale_target_size}, "
+                f"上下文标签={framing['context_label_ids']}, 统一倍率={framing['scale']:.6f}"
+            )
         sampling_elapsed = time.perf_counter() - sampling_start
         average_elapsed = (
             sampling_elapsed / len(sampled_slices)

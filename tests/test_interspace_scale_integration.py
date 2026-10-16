@@ -167,9 +167,15 @@ def test_interspace_config_preserves_physical_scale_across_all_gaps_and_windows(
                 assert float(dataset.SpacingBetweenSlices) == 2.0
                 normal = np.array(list(planned_slice["normal"].values()))
                 offset = -1.0 if planned_slice["index"] == 1 else 1.0
-                np.testing.assert_allclose(
-                    _dicom_center(dataset), anchors[name] + normal * offset, atol=1e-5,
-                )
+                center = _dicom_center(dataset)
+                if fill_percent == 0:
+                    np.testing.assert_allclose(center, anchors[name] + normal * offset, atol=1e-5)
+                else:
+                    # 正 Fill 可逐层平移取景中心，原切平面的法向位置必须保持。
+                    assert float((center - anchors[name]) @ normal) == pytest.approx(offset, abs=1e-5)
+                    np.testing.assert_allclose(
+                        center, [framing["center"][axis] for axis in "xyz"], atol=1e-5,
+                    )
                 expected_direction = [
                     *planned_slice["row_dir"].values(), *planned_slice["col_dir"].values(),
                 ]

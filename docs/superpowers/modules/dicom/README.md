@@ -9,7 +9,9 @@
 - `InstanceNumber` 仍表达 DICOM 内部序号，文件名变化不应改变重建几何。
 - 定位图背景状位由各部位 `slice_rules.<重建状位>.<切法>.localizer_plane` 显式配置，
   不得与重建状位相同；FillPercent 不改变定位图背景或原计划的定位线。
-- 成片空间标签使用实际取景几何，CPR 展开图不能视为原始解剖结构的规则三维体。
+- 成片空间标签逐张使用实际取景几何；正数 FillPercent 按当前层目标居中，矩阵与
+  PixelSpacing 共用，但相邻切片可有面内 ImagePositionPatient 平移，不能假定为固定
+  面内原点的规则直角三维体。CPR 展开图不能视为原始解剖结构的规则三维体。
 - 正式切片按实际窗宽窗位将未取整的重建 HU 映射为 uint16 灰度；GDCM 写盘后补入实际
   `WindowWidth`、`WindowCenter`、`LINEAR_EXACT` 以及对应 Rescale 标签，`RescaleType=HU`。
   这些派生显示片的窗外数值已截断，定量数据应读取原始 CT 序列。

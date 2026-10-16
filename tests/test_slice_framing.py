@@ -1,4 +1,4 @@
-"""整组居中/占比的物理几何与 DICOM 端到端契约。"""
+"""统一占比、逐层目标居中的物理几何与 DICOM 端到端契约。"""
 
 import copy
 import tempfile
@@ -49,13 +49,12 @@ class SliceFramingTest(unittest.TestCase):
         self.plan["range_end"] = self.plan["slices"][-1]["center"]
         self.plan["path_points"] = [self.plan["range_start"], self.plan["range_end"]]
 
-    def test_group_union_is_centered_and_filled_without_distortion(self):
+    def test_slice_targets_are_centered_with_common_group_scale_without_distortion(self):
         framer = TargetFramer(self.seg, self.coords, self.plan)
         original = copy.deepcopy(self.plan)
         actual_spacing = []
-        visible_points = []
-        for item in self.plan["slices"]:
-            center = [19.75, 32.0, item["center"]["z"]]
+        for item, xy in zip(self.plan["slices"], ((12.25, 19.5), (32.25, 39.5))):
+            center = [*xy, item["center"]["z"]]
             target_size = [30, 35]
             plan, framed = framer.plane_geometry(self.plan, item)
             image = PlaneStackResampler().sample_slice(self.raw, plan, framed)
@@ -68,13 +67,13 @@ class SliceFramingTest(unittest.TestCase):
             self.assertTrue(np.all(occupancy <= 0.8 + 1e-12))
             # 独立检查实际重采样像素，不能只验证取景元数据自身。
             visible = np.argwhere(sitk.GetArrayViewFromImage(image)[0] > 0)
-            visible_points.extend(visible)
+            lower, upper = visible.min(axis=0), visible.max(axis=0)
+            np.testing.assert_allclose((lower + upper) / 2, [29.5, 49.5], atol=0.5)
+            self.assertTrue(np.all(lower > 0))
+            self.assertTrue(np.all(upper < [59, 99]))
+            self.assertEqual(framed["framing"]["center_source"], "slice_target")
             self.assertEqual(framed["center"]["z"], item["center"]["z"])
             actual_spacing.append(tuple(spacing))
-        visible = np.array(visible_points)
-        lower, upper = visible.min(axis=0), visible.max(axis=0)
-        np.testing.assert_allclose((lower + upper) / 2, [29.5, 49.5], atol=0.5)
-        self.assertAlmostEqual(max((upper - lower + 1) / [60, 100]), 0.8, delta=0.025)
         self.assertEqual(*actual_spacing)
         self.assertEqual(self.plan, original)
 
@@ -84,6 +83,7 @@ class SliceFramingTest(unittest.TestCase):
         self.assertEqual(plan["output_spacing_mm"], self.plan["output_spacing_mm"])
         self.assertEqual(plan["extent_mm"], self.plan["extent_mm"])
         self.assertEqual(item["center"], {"x": 19.75, "y": 32.0, "z": 4.0})
+        self.assertEqual(item["framing"]["center_source"], "group_target")
 
     def test_hundred_percent_touches_one_edge_pair(self):
         self.plan["fill_percent"] = 100
@@ -153,6 +153,7 @@ class SliceFramingTest(unittest.TestCase):
         item["center"]["z"] = 100
         _, framed = TargetFramer(self.seg, self.coords, self.plan).plane_geometry(self.plan, item)
         self.assertEqual(framed["framing"]["source"], "group_target")
+        self.assertEqual(framed["framing"]["center_source"], "group_fallback")
         self.assertEqual(framed["center"], {"x": 19.75, "y": 32.0, "z": 100.0})
 
     def test_oblique_framing_preserves_cut_plane_and_voxel_geometry(self):
@@ -166,7 +167,7 @@ class SliceFramingTest(unittest.TestCase):
             item[key] = dict(zip("xyz", vector))
         _, framed = TargetFramer(self.seg, self.coords, self.plan).plane_geometry(self.plan, item)
         final = np.array(list(framed["center"].values()))
-        np.testing.assert_allclose(final, axes @ [19.75, 32.0, 4] + self.seg.GetOrigin())
+        np.testing.assert_allclose(final, axes @ [12.25, 19.5, 4] + self.seg.GetOrigin())
         self.assertAlmostEqual(np.dot(final - center, axes[:, 2]), 0)
 
     def test_missing_target_is_not_silently_treated_as_background(self):
@@ -193,8 +194,9 @@ class SliceFramingTest(unittest.TestCase):
             frame_curved_slice(image, mask, 80)
         _, details = frame_curved_slice(image, mask, 80, (np.array([9.5, 14.5]), np.array([39.5, 24.5])))
         self.assertEqual(details["source"], "group_target")
+        self.assertEqual(details["center_source"], "group_fallback")
 
-    def test_tiny_end_slice_does_not_change_scale_or_in_plane_origin(self):
+    def test_tiny_end_slice_keeps_group_scale_and_centers_its_own_target(self):
         labels = sitk.GetArrayFromImage(self.seg)
         labels[8, 20, 20] = 1
         segmentation = sitk.GetImageFromArray(labels)
@@ -206,7 +208,8 @@ class SliceFramingTest(unittest.TestCase):
         tip_plan, tip = framer.plane_geometry(self.plan, tip)
         self.assertEqual(first_plan["output_spacing_mm"], tip_plan["output_spacing_mm"])
         self.assertEqual(first["framing"]["scale"], tip["framing"]["scale"])
-        self.assertEqual(tip["center"], {"x": 19.75, "y": 32.0, "z": 16.0})
+        self.assertEqual(tip["center"], {"x": 10.0, "y": 20.0, "z": 16.0})
+        self.assertEqual(tip["framing"]["slice_target_size_mm"], [0.5, 1.0])
 
     def test_interspace_groups_only_use_their_own_labels(self):
         other_plan = {**self.plan, "source_labels": ["other"], "slice_type": "椎间隙"}
@@ -215,7 +218,7 @@ class SliceFramingTest(unittest.TestCase):
         self.assertNotEqual(first["framing"]["target_size_mm"], other["framing"]["target_size_mm"])
         self.assertNotEqual(first["center"], other["center"])
 
-    def test_curved_group_uses_union_even_for_nonempty_and_empty_slices(self):
+    def test_curved_group_shares_scale_but_centers_each_nonempty_slice(self):
         masks = [sitk.Cast(self.seg[:, :, z:z+1] == 1, sitk.sitkUInt8) for z in (2, 5, 8)]
         bounds = curved_group_bounds(masks)
         spacings, centers = [], []
@@ -226,7 +229,7 @@ class SliceFramingTest(unittest.TestCase):
             self.assertEqual(details["target_size_mm"], [30, 35])
         self.assertEqual(spacings[0], spacings[1])
         self.assertEqual(spacings[1], spacings[2])
-        np.testing.assert_allclose(centers, [[19.75, 32.0]] * 3)
+        np.testing.assert_allclose(centers, [[12.25, 19.5], [32.25, 39.5], [19.75, 32.0]])
 
     def test_curved_mask_sampling_uses_nearest_neighbor_and_slab_union(self):
         labels = sitk.GetImageFromArray(np.array([[[0]], [[1]], [[0]]], np.uint8))
@@ -238,7 +241,7 @@ class SliceFramingTest(unittest.TestCase):
         )
         self.assertEqual(float(sampled[0, 0]), 1.0)
 
-    def test_dicom_round_trip_keeps_group_spacing_and_loads_as_regular_volume(self):
+    def test_dicom_round_trip_keeps_common_spacing_and_actual_slice_planes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             sitk.WriteImage(self.raw, str(root / "raw.nii.gz"))
@@ -254,7 +257,7 @@ class SliceFramingTest(unittest.TestCase):
             context.set_result("planning", {"plans": [self.plan]})
             ReconstructionStage(config={"parallel": True}).execute(context)
             result = context.get_result("reconstruction")
-            for index, expected_center in enumerate(([19.75, 32.0, 4], [19.75, 32.0, 10]), 1):
+            for index, expected_center in enumerate(([12.25, 19.5, 4], [32.25, 39.5, 10]), 1):
                 bone = pydicom.dcmread(root / "横状位" / "骨窗" / f"{index}.dcm")
                 soft = pydicom.dcmread(root / "横状位" / "软组织窗" / f"{index}.dcm")
                 for field in ("ImagePositionPatient", "PixelSpacing", "ImageOrientationPatient", "Rows", "Columns"):
@@ -270,12 +273,11 @@ class SliceFramingTest(unittest.TestCase):
                 np.testing.assert_allclose(list(map(float, bone.PixelSpacing)), [expected["y"], expected["x"]])
             directory = root / "横状位" / "骨窗"
             files = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(str(directory), str(bone.SeriesInstanceUID))
-            reader = sitk.ImageSeriesReader()
-            reader.SetFileNames(files)
-            volume = reader.Execute()
-            np.testing.assert_allclose(volume.GetSpacing(), [expected["x"], expected["y"], 6.0])
             positions = np.array([pydicom.dcmread(f).ImagePositionPatient for f in files], float)
-            np.testing.assert_allclose(np.diff(positions, axis=0), [[0, 0, 6]], atol=1e-7)
+            directions = np.asarray(bone.ImageOrientationPatient, float).reshape(2, 3)
+            normal = np.cross(*directions)
+            np.testing.assert_allclose(np.diff(positions, axis=0) @ normal, [6], atol=1e-7)
+            np.testing.assert_allclose(np.diff(positions, axis=0), [[20, 20, 6]], atol=1e-7)
             baseline_root = root / "baseline"
             ReconstructionStage()._execute_plan(self.raw, self.plan, baseline_root, "1.2.3", {})
             baseline = pydicom.dcmread(baseline_root / "横状位" / "骨窗" / "Localizer.dcm")

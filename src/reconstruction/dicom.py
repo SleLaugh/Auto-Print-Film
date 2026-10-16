@@ -7,14 +7,16 @@ from typing import Any, Dict
 
 import pydicom
 import SimpleITK as sitk
+from pydicom.valuerep import format_number_as_ds
 
 from src.models import WindowPreset
+from src.reconstruction.windowing import apply_window_to_image
 
 
 _UID_ROOT = "1.2.826.0.1.3680043.2.1125"
 _DERIVED_CHARACTER_SET = "ISO_IR 192"
 
-# SimpleITK 的 DICOM 写出由 GDCM 原生库完成。不同窗位可以并行计算灰度，
+# SimpleITK 的 DICOM 写出由 GDCM 原生库完成。不同窗位可以并行准备图像，
 # 但同一进程内并发创建和执行 GDCM 写入器可能触发原生内存重复释放，因此
 # CT 成片与定位图必须共用这一把进程内锁。
 _GDCM_WRITE_LOCK = threading.Lock()
@@ -135,11 +137,13 @@ def write_ct_dicom(
     total_slices: int,
     source_metadata: Dict[str, str] | None = None,
 ) -> None:
-    """把一张已经固定窗宽窗位的 2D/单层 3D 图像写成 CT DICOM。"""
+    """按实际窗宽窗位生成派生显示 CT，像素与标签使用同一组参数。"""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     first_pixel = image.GetOrigin()
-    image_2d = _extract_2d_image(image)
+    # 直接窗化重建后的浮点 HU，不先取整为整数 HU。16 位灰度用于存储，
+    # 写盘后补入 Rescale 与实际窗口，查看器显示仍由调用方的窗宽窗位决定。
+    image_2d = _extract_2d_image(apply_window_to_image(image, window))
     output_spacing = planned_slice.get("framing", {}).get(
         "output_spacing_mm", plan["output_spacing_mm"]
     )
@@ -208,9 +212,10 @@ def write_ct_dicom(
         "0028|0030",
         f"{_format_number(output_spacing['y'])}\\{_format_number(output_spacing['x'])}",
     )
-    # 像素已经按所选预设烘焙成固定灰度，查看器不应再次套用原始 HU 窗口。
-    image_2d.SetMetaData("0028|1050", "32768")
-    image_2d.SetMetaData("0028|1051", "65535")
+    _set_window_metadata(image_2d, window)
+    image_2d.SetMetaData("0028|1052", "0")
+    image_2d.SetMetaData("0028|1053", "1")
+    image_2d.SetMetaData("0028|1054", "HU")
     image_2d.SetMetaData("0028|0002", "1")
     image_2d.SetMetaData("0028|0004", "MONOCHROME2")
     image_2d.SetMetaData("0028|0100", "16")
@@ -229,6 +234,7 @@ def write_ct_dicom(
             gdcm_temporary_path,
             slice_thickness=plan["slice_thickness"],
             slice_spacing=plan["slice_spacing"],
+            window=window,
         )
         gdcm_temporary_path.replace(output_path)
     finally:
@@ -241,18 +247,21 @@ def _restore_planned_slice_geometry_tags(
     *,
     slice_thickness: Any,
     slice_spacing: Any,
+    window: WindowPreset | None = None,
 ) -> None:
     """
-    在 GDCM 写出后恢复计划指定的层厚和层间距标签。
+    在 GDCM 写出后恢复计划层厚、层间距及按实际窗口显示的像素转换关系。
 
     SimpleITK/GDCM 写二维 DICOM 时可能根据二维图像默认几何覆盖已经设置的
-    ``SliceThickness`` 和 ``SpacingBetweenSlices``。这里仅校正两个数值标签，
-    再通过同目录临时文件原子替换待发布结果；患者、检查及 UTF-8 文本保持原样。
+    ``SliceThickness`` 和 ``SpacingBetweenSlices``。Rescale 也必须在此时写入，
+    避免 GDCM 对已窗化的灰度再次反向缩放；校正后原子替换待发布结果。
     """
 
     dataset = pydicom.dcmread(str(output_path))
     dataset.SliceThickness = _format_number(slice_thickness)
     dataset.SpacingBetweenSlices = _format_number(slice_spacing)
+    if window is not None:
+        _set_windowed_pixel_metadata(dataset, window, rescale_type="HU")
     temporary_path = _temporary_dicom_path(output_path, "pydicom")
     try:
         dataset.save_as(str(temporary_path), enforce_file_format=True)
@@ -265,8 +274,9 @@ def _restore_planned_slice_geometry_tags(
 def _restore_localizer_geometry_tags(
     output_path: Path,
     geometry_metadata: Dict[str, str],
+    window: WindowPreset,
 ) -> None:
-    """恢复定位图的三维位置和行列方向，避免 GDCM 按二维默认轴重写。"""
+    """恢复三维几何，并将定位图显示灰度映射到实际窗口的数值范围。"""
 
     dataset = pydicom.dcmread(str(output_path))
     position = geometry_metadata.get("0020|0032")
@@ -279,6 +289,8 @@ def _restore_localizer_geometry_tags(
         dataset.ImageOrientationPatient = [
             float(value) for value in orientation.split("\\")
         ]
+    # 定位图含合成定位线，不是定量 CT；背景与白线保留原有显示灰度。
+    _set_windowed_pixel_metadata(dataset, window, rescale_type="US")
     temporary_path = _temporary_dicom_path(output_path, "pydicom")
     try:
         dataset.save_as(str(temporary_path), enforce_file_format=True)
@@ -345,8 +357,11 @@ def write_localizer_dicom(
     image_2d.SetMetaData("0020|000d", study_uid)
     image_2d.SetMetaData("0020|000e", series_uid)
     image_2d.SetMetaData("0020|0013", "1")
-    image_2d.SetMetaData("0028|1050", "32768")
-    image_2d.SetMetaData("0028|1051", "65535")
+    _set_window_metadata(image_2d, window)
+    # 写盘阶段使用恒等变换，保证输入灰度字节不变；最终 Rescale 在写盘后补入。
+    image_2d.SetMetaData("0028|1052", "0")
+    image_2d.SetMetaData("0028|1053", "1")
+    image_2d.SetMetaData("0028|1054", "US")
     image_2d.SetMetaData("0028|0002", "1")
     image_2d.SetMetaData("0028|0004", "MONOCHROME2")
     image_2d.SetMetaData("0028|0100", "16")
@@ -364,11 +379,40 @@ def write_localizer_dicom(
         _restore_localizer_geometry_tags(
             gdcm_temporary_path,
             geometry_metadata,
+            window,
         )
         gdcm_temporary_path.replace(output_path)
     finally:
         if gdcm_temporary_path.exists():
             gdcm_temporary_path.unlink()
+
+
+def _set_window_metadata(image: sitk.Image, window: WindowPreset) -> None:
+    """写入实际窗口，使用与显示灰度计算一致的线性公式。"""
+
+    image.SetMetaData("0028|1050", format_number_as_ds(float(window.window_center)))
+    image.SetMetaData("0028|1051", format_number_as_ds(float(window.window_width)))
+    image.SetMetaData("0028|1056", "LINEAR_EXACT")
+
+
+def _set_windowed_pixel_metadata(
+    dataset: pydicom.dataset.Dataset,
+    window: WindowPreset,
+    *,
+    rescale_type: str,
+) -> None:
+    """把存储灰度还原到窗口对应数值，保证真实窗位标签与显示一致。"""
+
+    # 对存储灰度 g，先得到 x=g*W/65535+C-W/2，再按 W/C 显示，
+    # 归一化亮度恰好是 g/65535。必须在 GDCM 写盘后设置这些标签。
+    dataset.WindowCenter = format_number_as_ds(float(window.window_center))
+    dataset.WindowWidth = format_number_as_ds(float(window.window_width))
+    dataset.VOILUTFunction = "LINEAR_EXACT"
+    dataset.RescaleSlope = format_number_as_ds(float(window.window_width) / 65535.0)
+    dataset.RescaleIntercept = format_number_as_ds(
+        float(window.window_center) - float(window.window_width) / 2.0
+    )
+    dataset.RescaleType = rescale_type
 
 
 def _extract_2d_image(image: sitk.Image) -> sitk.Image:

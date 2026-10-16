@@ -125,6 +125,44 @@ class WindowPresetsTest(unittest.TestCase):
                 {"name": "骨窗", "window_width": 0, "window_center": 100},
             ])
 
+    def test_loader_rejects_non_finite_window_values(self):
+        """外置默认表与请求覆盖都必须拒绝不能写入 DICOM 的数值。"""
+
+        for field in ("window_width", "window_center"):
+            for value in (float("nan"), float("inf"), -float("inf"), 10 ** 400):
+                with self.subTest(field=field, value=value):
+                    entry = {"name": "骨窗", "window_width": 2500, "window_center": 400}
+                    entry[field] = value
+                    with self.assertRaisesRegex(ValueError, field):
+                        self._load_temp_config([entry])
+
+    def test_custom_presets_reject_non_finite_window_values(self):
+        """超大整数也应作为参数错误报告，而不是在浮点转换时溢出。"""
+
+        for field in ("windowWidth", "windowLevel"):
+            for value in (float("nan"), float("inf"), -float("inf"), 10 ** 400):
+                with self.subTest(field=field, value=value):
+                    entry = {"Name": "骨窗", "windowWidth": 2500, "windowLevel": 400}
+                    entry[field] = value
+                    with self.assertRaisesRegex(ValueError, field):
+                        models.parse_window_presets([entry])
+
+    def test_custom_presets_validate_typed_presets(self):
+        """Python 请求实体不能绕过与 JSON 覆盖表相同的数值校验。"""
+
+        for width, center, field in (
+            (float("nan"), 400, "windowWidth"),
+            (float("inf"), 400, "windowWidth"),
+            (0, 400, "windowWidth"),
+            (True, 400, "windowWidth"),
+            (2500, float("nan"), "windowLevel"),
+            (2500, float("inf"), "windowLevel"),
+            (2500, 10 ** 400, "windowLevel"),
+        ):
+            with self.subTest(width=width, center=center):
+                with self.assertRaisesRegex(ValueError, field):
+                    models.parse_window_presets([models.WindowPreset("骨窗", width, center)])
+
     @staticmethod
     def _load_temp_config(entries):
         """为测试准备 `_load_temp_config` 所需的数据或记录行为。"""

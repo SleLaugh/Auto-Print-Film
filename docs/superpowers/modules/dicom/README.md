@@ -10,12 +10,18 @@
 - 定位图背景状位由各部位 `slice_rules.<重建状位>.<切法>.localizer_plane` 显式配置，
   不得与重建状位相同；FillPercent 不改变定位图背景或原计划的定位线。
 - 成片空间标签使用实际取景几何，CPR 展开图不能视为原始解剖结构的规则三维体。
+- 正式切片按实际窗宽窗位将未取整的重建 HU 映射为 uint16 灰度；GDCM 写盘后补入实际
+  `WindowWidth`、`WindowCenter`、`LINEAR_EXACT` 以及对应 Rescale 标签，`RescaleType=HU`。
+  这些派生显示片的窗外数值已截断，定量数据应读取原始 CT 序列。
 - GDCM 写盘必须经由串行保护入口，具体跨模块约束读 `../../architecture/2026-07-20-GDCM写盘串行保护设计.md`。
 - 同一计划各窗 Localizer 必须使用主线程冻结的同一份 `ImagePositionPatient` 和
-  `ImageOrientationPatient` 串行写出；窗位只改变灰度和序列标识。
+  `ImageOrientationPatient` 串行写出；窗位仅改变定位图的显示像素、显示标签和序列标识。
 - Localizer 定位线使用独立亚像素覆盖率掩膜，并在背景完成窗位映射后叠加；正式
   DICOM 使用白线，debug PNG 使用同一掩膜的红线。该显示处理不得进入正式切片
   重采样，也不得改变切片几何、层厚或层间距。
+- Localizer 用 Rescale 标签将 uint16 像素换算到对应窗口的显示数值，并写入实际窗宽窗位；
+  `RescaleType=US` 表示未指定单位。定位图属于合成显示数据，不能用于定量 HU 测量，
+  调试 PNG 显示不变。
 - Localizer 缺少必要空间标签时必须失败，不能发布带二维默认方向的文件。
 - 第八阶段是最终输出硬门禁：先校验正式切片、Localizer、UID、层厚层间距和
   同计划跨窗几何，再发布成功结果；任一硬错误必须使任务失败。

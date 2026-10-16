@@ -87,8 +87,8 @@ class Stage7ReconstructionTest(unittest.TestCase):
                     sampled_indices.append(planned_slice["index"])
                     return planned_slice["index"]
 
-            def recording_window(sampled_image, window):
-                """为测试准备 `recording_window` 所需的数据或记录行为。"""
+            def recording_write(**kwargs):
+                """记录各窗位输出的开始时机和并发情况。"""
 
                 nonlocal active_workers, max_active_workers
                 with lock:
@@ -100,7 +100,6 @@ class Stage7ReconstructionTest(unittest.TestCase):
                 time.sleep(0.03)
                 with lock:
                     active_workers -= 1
-                return sampled_image
 
             stage = ReconstructionStage({
                 "parallel": True,
@@ -110,10 +109,8 @@ class Stage7ReconstructionTest(unittest.TestCase):
                 "src.stages.stage_reconstruction.PlaneStackResampler",
                 return_value=RecordingResampler(),
             ), mock.patch(
-                "src.stages.stage_reconstruction.apply_window_to_image",
-                side_effect=recording_window,
-            ), mock.patch(
                 "src.stages.stage_reconstruction.write_ct_dicom",
+                side_effect=recording_write,
             ):
                 stage._execute_plan(
                     image=object(),
@@ -251,8 +248,8 @@ class Stage7ReconstructionTest(unittest.TestCase):
                 1,
             )
 
-    def test_windowing_bakes_hu_into_fixed_uint16_grayscale(self):
-        """验证 `test_windowing_bakes_hu_into_fixed_uint16_grayscale` 场景符合预期。"""
+    def test_localizer_windowing_maps_hu_into_uint16_display_grayscale(self):
+        """定位图显示背景仍按窗口映射为 uint16 灰度。"""
 
         image = sitk.GetImageFromArray(
             np.asarray([[[-850, 400, 1650]]], dtype=np.int16),
@@ -1904,8 +1901,14 @@ class Stage7ReconstructionTest(unittest.TestCase):
                 atol=1e-8,
             )
             self.assertIn("冠状位-骨窗", dataset.SeriesDescription)
+            self.assertEqual(float(dataset.WindowWidth), 2500.0)
+            self.assertEqual(float(dataset.WindowCenter), 400.0)
+            self.assertEqual(dataset.RescaleType, "HU")
+            self.assertEqual(dataset.pixel_array.dtype, np.dtype(np.uint16))
             localizer = pydicom.dcmread(str(localizer_path))
             self.assertIn("LOCALIZER", str(localizer.ImageType).upper())
+            self.assertEqual(float(localizer.WindowWidth), 2500.0)
+            self.assertEqual(float(localizer.WindowCenter), 400.0)
 
     def test_debug_mode_writes_cpr_localizer_png_in_window_directory(self):
         """CPR 定位图 PNG 应直接写在对应状位和窗位目录下。"""
@@ -1995,10 +1998,10 @@ class Stage7ReconstructionTest(unittest.TestCase):
             self.assertEqual(result["slice_count"], 1)
             dcm_path = next(Path(temp_dir).rglob("1.dcm"))
             output = sitk.ReadImage(str(dcm_path))
-            expected_gray = round((10.0 + 850.0) / 2500.0 * 65535.0)
-            self.assertEqual(
-                int(sitk.GetArrayFromImage(output)[0, 0, 0]),
-                expected_gray,
+            self.assertAlmostEqual(
+                float(sitk.GetArrayFromImage(output)[0, 0, 0]),
+                10,
+                delta=2500.0 / 65535.0 / 2.0,
             )
 
     def test_reconstruction_writes_one_series_per_window_preset(self):
@@ -2077,11 +2080,48 @@ class Stage7ReconstructionTest(unittest.TestCase):
             image = sitk.ReadImage(str(dcm_path))
             self.assertEqual(image.GetMetaData("0008|0060"), "CT")
             self.assertEqual(float(image.GetMetaData("0018|0050")), 1.0)
-            self.assertEqual(image.GetPixelID(), sitk.sitkUInt16)
-            self.assertEqual(image.GetMetaData("0028|1050").strip(), "32768")
-            self.assertEqual(image.GetMetaData("0028|1051").strip(), "65535")
+            # SimpleITK 读取时会应用 Rescale，得到窗口数值域中的浮点图像。
+            self.assertEqual(image.GetPixelID(), sitk.sitkFloat64)
+            self.assertEqual(float(image.GetMetaData("0028|1050")), 400.0)
+            self.assertEqual(float(image.GetMetaData("0028|1051")), 2500.0)
+            self.assertEqual(float(image.GetMetaData("0028|1052")), -850.0)
+            self.assertAlmostEqual(float(image.GetMetaData("0028|1053")), 2500.0 / 65535.0)
+            self.assertEqual(pydicom.dcmread(dcm_path).pixel_array.dtype, np.dtype(np.uint16))
             self.assertIn("骨窗", image.GetMetaData("0008|103e"))
             self.assertIn("\\", image.GetMetaData("0020|0037"))
+
+    def test_requested_window_override_and_default_reach_written_dicom(self):
+        """请求覆盖值与默认回退值应完整进入正式切片及定位图。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._make_context_with_one_plan(
+                temp_dir,
+                slice_count=1,
+                window_presets=["骨窗", "肺窗"],
+            )
+            context.request.window_presets = [WindowPreset("骨窗", 1234.5, 321.25)]
+
+            ReconstructionStage(config={"parallel": True}).execute(context)
+
+            displayed_slices = []
+            for name, width, center in [("骨窗", 1234.5, 321.25), ("肺窗", 1600, -600)]:
+                directory = Path(context.request.output_dir) / "横状位" / name
+                for filename in ("1.dcm", "Localizer.dcm"):
+                    dataset = pydicom.dcmread(directory / filename)
+                    self.assertEqual(float(dataset.WindowWidth), width)
+                    self.assertEqual(float(dataset.WindowCenter), center)
+                    self.assertEqual(dataset.VOILUTFunction, "LINEAR_EXACT")
+                    self.assertAlmostEqual(float(dataset.RescaleSlope), width / 65535.0)
+                    self.assertEqual(float(dataset.RescaleIntercept), center - width / 2.0)
+                    if filename == "1.dcm":
+                        displayed = dataset.pixel_array.astype(float) / 65535.0
+                        # 本用例输入体积的 HU 全为 0；两个窗口应分别显示各自亮度。
+                        expected = np.clip((0.0 - center) / width + 0.5, 0.0, 1.0)
+                        np.testing.assert_allclose(
+                            displayed, expected, rtol=0, atol=0.5 / 65535.0,
+                        )
+                        displayed_slices.append(displayed)
+            self.assertFalse(np.array_equal(displayed_slices[0], displayed_slices[1]))
 
     def test_geometry_tag_restoration_overrides_gdcm_default_values(self):
         """GDCM 写成默认值后，应能按计划原子恢复层厚和层间距。"""

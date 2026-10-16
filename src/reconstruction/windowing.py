@@ -31,10 +31,12 @@ def apply_window_to_image(
     image: sitk.Image,
     preset: WindowPreset | str,
 ) -> sitk.Image:
-    """把 HU 图像按预设裁剪并映射为固定的 uint16 灰度图。"""
+    """直接按所选窗宽窗位把重建 HU 映射为 uint16 出片显示灰度。"""
 
     window = preset if isinstance(preset, WindowPreset) else get_window_preset(preset)
-    array = sitk.GetArrayFromImage(image).astype(np.float32)
+    # 使用双精度执行窗口算术，避免高窗位/窄窗宽时把调用方参数先降为
+    # float32；即使输入 HU 为 float32，窗口的下界和宽度也应保留精度。
+    array = sitk.GetArrayFromImage(image).astype(np.float64)
     lower = float(window.window_center) - float(window.window_width) / 2.0
     scaled = (
         (array - lower)

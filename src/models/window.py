@@ -9,6 +9,17 @@ from typing import Any, Iterable, Mapping
 from src.runtime import config_path
 
 
+def _is_finite_number(value: Any) -> bool:
+    """窗位参数只接受可由浮点数表示的有限数字，不接受布尔值。"""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 @dataclass(frozen=True)
 class WindowPreset:
     """一个不可变的窗宽窗位预设。"""
@@ -55,10 +66,10 @@ def load_window_presets(path: Path | None = None) -> dict[str, WindowPreset]:
             raise ValueError(f"窗宽窗位配置第 {index + 1} 项 name 不能为空")
         if name in presets:
             raise ValueError(f"窗宽窗位配置名称重复: {name}")
-        if isinstance(width, bool) or not isinstance(width, (int, float)) or width <= 0:
-            raise ValueError(f"窗宽窗位 {name} 的 window_width 必须大于 0")
-        if isinstance(center, bool) or not isinstance(center, (int, float)):
-            raise ValueError(f"窗宽窗位 {name} 的 window_center 必须是数值")
+        if not _is_finite_number(width) or width <= 0:
+            raise ValueError(f"窗宽窗位 {name} 的 window_width 必须是大于 0 的有限数值")
+        if not _is_finite_number(center):
+            raise ValueError(f"窗宽窗位 {name} 的 window_center 必须是有限数值")
         presets[name] = WindowPreset(name, width, center)
     return presets
 
@@ -77,18 +88,9 @@ def parse_window_preset(value: Any, index: int | None = None) -> WindowPreset:
     center = value.get("windowLevel", value.get("window_center"))
     if not isinstance(name, str) or not name.strip():
         raise ValueError(f"{label} Name 不能为空")
-    if (
-        isinstance(width, bool)
-        or not isinstance(width, (int, float))
-        or not math.isfinite(width)
-        or width <= 0
-    ):
+    if not _is_finite_number(width) or width <= 0:
         raise ValueError(f"窗宽窗位 {name} 的 windowWidth 必须大于 0")
-    if (
-        isinstance(center, bool)
-        or not isinstance(center, (int, float))
-        or not math.isfinite(center)
-    ):
+    if not _is_finite_number(center):
         raise ValueError(f"窗宽窗位 {name} 的 windowLevel 必须是数值")
     return WindowPreset(name.strip(), width, center)
 
@@ -103,10 +105,10 @@ def parse_window_presets(values: Any) -> list[WindowPreset]:
     result: list[WindowPreset] = []
     seen: set[str] = set()
     for index, value in enumerate(values):
-        preset = (
-            value
-            if isinstance(value, WindowPreset)
-            else parse_window_preset(value, index)
+        # Python 调用方传入的实体也走同一校验，避免绕过 JSON 参数约束。
+        preset = parse_window_preset(
+            value.to_dict() if isinstance(value, WindowPreset) else value,
+            index,
         )
         if preset.name in seen:
             raise ValueError(f"窗宽窗位名称重复: {preset.name}")

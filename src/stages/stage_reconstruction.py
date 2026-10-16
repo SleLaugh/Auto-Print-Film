@@ -7,7 +7,7 @@ MPR多平面重建与DICOM生成
 按第六阶段 SlicePlan 执行直线 plane_stack 重建
 
 每个 plan 分成两个明确步骤：先串行完成全部 MPR HU 图像采样，再按窗位并行完成
-灰度映射和输出任务。不同窗位共享同一份 MPR 结果，不会重复重采样；GDCM 原生
+按窗显示的切片和参数输出任务。不同窗位共享同一份 MPR 结果，不会重复重采样；GDCM 原生
 写盘由 DICOM 模块统一串行保护，避免多线程写入触发原生内存竞态。
 """
 
@@ -1113,7 +1113,7 @@ class ReconstructionStage(BaseStage):
         """
         把一套已完成 MPR 的 HU 图像处理成一个窗位 DICOM 序列。
 
-        本方法不会修改共享的 sampled_image，只会为当前窗位创建新的 uint16 图像；
+        本方法不会修改共享的 sampled_image，写盘时直接按当前窗位窗化浮点 HU；
         output_dir 和 series_uid 也只属于当前窗位，因此可以在线程池中执行。实际
         GDCM 写盘由 ``src.reconstruction.dicom`` 内的统一锁保护。
 
@@ -1129,12 +1129,11 @@ class ReconstructionStage(BaseStage):
         total_slices = len(sampled_slices)
         write_start = time.perf_counter()
         for planned_slice, sampled_image in sampled_slices:
-            windowed_image = apply_window_to_image(sampled_image, window)
             output_path = output_dir / (
                 f"{int(planned_slice['index'])}.dcm"
             )
             write_ct_dicom(
-                image=windowed_image,
+                image=sampled_image,
                 output_path=output_path,
                 plan=plan,
                 planned_slice=planned_slice,

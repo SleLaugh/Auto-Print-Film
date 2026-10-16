@@ -185,9 +185,8 @@ def anatomical_straight_frame(
     """
     把统一解剖坐标系映射成横、矢、冠状位切片坐标系。
 
-    row_dir、col_dir 决定切片画面的左右和上下，normal 决定切片堆叠方向；
-    矢状位的切割法向沿用解剖坐标，但画面上下方向取自原图头脚轴在该平面
-    内的投影，避免成片随脊柱轴旋转；冠状位仍使用解剖头脚轴显示。
+    row_dir、col_dir 决定切片画面的左右和上下，normal 决定切片堆叠方向。
+    三状位的画面和法向全部使用解剖轴，避免在矢状位重新引入原图倾斜。
     """
 
     lr = anatomical_frame.left_right_axis
@@ -198,23 +197,10 @@ def anatomical_straight_frame(
         return StraightPlaneFrame(row_dir=lr, col_dir=ap, normal=si)
     # 矢状位画面使用前后/脚头轴，并按右到左方向推进。
     if plane == PlaneTypeEnum.矢状位:
-        normal = _scale_direction(lr, -1.0)
-        original_inferior = normalize_vector(_scale_direction(
-            image_axis_direction(image_info, 2),
-            -1.0,
-        ))
-        # 只移除原图足侧轴在切片法向上的分量，因此新 col_dir 仍严格位于
-        # 原来的矢状切割平面内，不会改变已经确认正确的切割平面和定位线。
-        col_dir = normalize_vector(Point3D(
-            original_inferior.x - normal.x * _dot(original_inferior, normal),
-            original_inferior.y - normal.y * _dot(original_inferior, normal),
-            original_inferior.z - normal.z * _dot(original_inferior, normal),
-        ))
-        row_dir = normalize_vector(_cross_direction(col_dir, normal))
         return StraightPlaneFrame(
-            row_dir=row_dir,
-            col_dir=col_dir,
-            normal=normal,
+            row_dir=ap,
+            col_dir=_scale_direction(si, -1.0),
+            normal=_scale_direction(lr, -1.0),
         )
     # 冠状位画面使用左右/脚头轴，沿前后方向推进。
     if plane == PlaneTypeEnum.冠状位:

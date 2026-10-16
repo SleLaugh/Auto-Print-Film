@@ -1,4 +1,4 @@
-"""椎间隙的倾斜采样平面应保持原始横断图的显示方向。"""
+"""椎间隙采用可靠局部左右轴，并兼容没有姿态标注的旧定位结果。"""
 
 from pathlib import Path
 
@@ -14,7 +14,11 @@ from src.planning.cervical import (
     resolve_cervical_interspace_segments,
 )
 from src.planning.lumbar import LumbarInterspacePlanner, resolve_lumbar_interspace_segments
-from src.planning.straight import build_straight_slice_plan, default_straight_frame
+from src.planning.straight import (
+    bbox_physical_corners,
+    build_straight_slice_plan,
+    default_straight_frame,
+)
 from src.reconstruction.dicom import write_ct_dicom
 from src.reconstruction.framing import TargetFramer
 from src.reconstruction.plane_stack import PlaneStackResampler
@@ -27,6 +31,17 @@ def _xyz(values):
 
 def _vector(point):
     return np.array((point.x, point.y, point.z))
+
+
+def _add_symmetry_pose(localization, direction, status="accepted"):
+    yaw, roll = np.deg2rad((11.0, 8.0))
+    local_axis = np.array((np.cos(yaw) * np.cos(roll),
+                           np.sin(yaw) * np.cos(roll), -np.sin(roll)))
+    axis = direction @ local_axis
+    for annotation in localization["spine_geometry"]["filtered_annotation_centroids"].values():
+        annotation["symmetry_left_right_axis"] = _xyz(axis)
+        annotation["symmetry_diagnostics"] = {"status": status, "accepted": status == "accepted"}
+    return axis
 
 
 def _source_direction(kind):
@@ -191,8 +206,13 @@ def test_interspace_sampling_keeps_source_display_direction(slice_part, geometry
 
 
 @pytest.mark.parametrize("slice_part", (SlicePartEnum.腰椎, SlicePartEnum.颈椎))
-def test_oblique_interspace_dicom_geometry_and_pixels_agree(tmp_path: Path, slice_part):
+@pytest.mark.parametrize("symmetry_correction", (False, True))
+def test_oblique_interspace_dicom_geometry_and_pixels_agree(
+    tmp_path: Path, slice_part, symmetry_correction,
+):
     image, localization, request = _case(slice_part, "prism", "rotated")
+    if symmetry_correction:
+        _add_symmetry_pose(localization, np.array(image.GetDirection()).reshape(3, 3))
     planner = LumbarInterspacePlanner() if slice_part == SlicePartEnum.腰椎 else CervicalInterspacePlanner()
     plan = planner.build_plans(request, localization).plans[0].to_dict()
     resolver = (
@@ -263,3 +283,66 @@ def test_oblique_interspace_dicom_geometry_and_pixels_agree(tmp_path: Path, slic
         sampled.TransformIndexToPhysicalPoint((int(column), int(row), 0)),
         atol=1e-6,
     )
+
+
+@pytest.mark.parametrize("geometry", ("prism", "faces", "bbox"))
+@pytest.mark.parametrize("orientation", ("identity", "rotated", "reflected_lr", "reversed_si"))
+def test_interspace_uses_measured_local_symmetry_axis_without_moving_gap(geometry, orientation):
+    image, localization, request = _case(SlicePartEnum.腰椎, geometry, orientation)
+    old_segments, old_warnings = resolve_lumbar_interspace_segments(localization)
+    assert any("缺少可靠左右对称轴" in warning for warning in old_warnings)
+    expected_axis = _add_symmetry_pose(localization, np.array(image.GetDirection()).reshape(3, 3))
+    segments, warnings = resolve_lumbar_interspace_segments(localization)
+    assert len(segments) == len(old_segments) == 1, warnings
+    old, new = old_segments[0], segments[0]
+    assert new.frame is not None
+    np.testing.assert_allclose(_vector(new.frame.row_dir), expected_axis, atol=1e-6)
+    assert np.dot(_vector(new.frame.normal), expected_axis) == pytest.approx(0.0, abs=1e-6)
+    np.testing.assert_allclose(
+        np.cross(_vector(new.frame.row_dir), _vector(new.frame.col_dir)),
+        _vector(new.frame.normal), atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        (_vector(new.target_start) + _vector(new.target_end)) / 2.0,
+        (_vector(old.target_start) + _vector(old.target_end)) / 2.0, atol=1e-6,
+    )
+    assert np.linalg.norm(_vector(new.target_end) - _vector(new.target_start)) == pytest.approx(
+        np.linalg.norm(_vector(old.target_end) - _vector(old.target_start)),
+    )
+    if geometry == "bbox":
+        assert any("真实主体质心连线" in warning for warning in warnings)
+    plan = LumbarInterspacePlanner().build_plans(request, localization).plans[0]
+    assert plan.slice_thickness == pytest.approx(0.5)
+    for planned_slice in plan.slices:
+        np.testing.assert_allclose(_vector(planned_slice.row_dir), expected_axis, atol=1e-6)
+        assert np.dot(_vector(planned_slice.col_dir), _source_direction(orientation)[:, 1]) > 0.9
+        corners = np.array([_vector(corner) for corner in bbox_physical_corners(
+            new.target_region_bbox, localization["image"],
+        )])
+        offsets = corners - _vector(planned_slice.center)
+        assert np.max(np.abs(offsets @ _vector(planned_slice.row_dir))) <= plan.extent_mm.width / 2 + 1e-6
+        assert np.max(np.abs(offsets @ _vector(planned_slice.col_dir))) <= plan.extent_mm.height / 2 + 1e-6
+
+
+@pytest.mark.parametrize("quality", ("rejected", "missing"))
+def test_rejected_or_unverified_symmetry_axis_keeps_legacy_geometry_and_warns(quality):
+    image, localization, _ = _case(SlicePartEnum.腰椎, "prism", "identity")
+    original = resolve_lumbar_interspace_segments(localization)[0][0]
+    _add_symmetry_pose(localization, np.array(image.GetDirection()).reshape(3, 3), status="rejected")
+    if quality == "missing":
+        for annotation in localization["spine_geometry"]["filtered_annotation_centroids"].values():
+            annotation.pop("symmetry_diagnostics")
+    segments, warnings = resolve_lumbar_interspace_segments(localization)
+    assert any("缺少可靠左右对称轴" in warning for warning in warnings)
+    assert segments[0].frame == original.frame
+    assert segments[0].target_start == original.target_start
+    assert segments[0].target_end == original.target_end
+
+
+def test_symmetry_pose_cannot_resurrect_overlapping_bbox_interval():
+    image, localization, _ = _case(SlicePartEnum.腰椎, "bbox", "identity")
+    _add_symmetry_pose(localization, np.array(image.GetDirection()).reshape(3, 3))
+    localization["coords"]["vertebrae_L1"]["bbox"].update(z_min=12, z_max=20)
+    segments, warnings = resolve_lumbar_interspace_segments(localization)
+    assert not segments
+    assert any("没有形成有效头脚区间" in warning for warning in warnings)

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import SimpleITK as sitk
@@ -102,8 +103,8 @@ class SpineAnatomicalFrameTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "质心距离"):
             estimate_spine_frame_with_diagnostics(masks, "C1", "C7", image)
 
-    def test_axis_signs_follow_flipped_dicom_patient_directions(self):
-        """输入方向翻转后脊柱三轴仍应与 DICOM 患者方向保持稳定符号。"""
+    def test_storage_flips_preserve_patient_axis_signs(self):
+        """存储轴反向后脊柱三轴仍应朝患者左、后、头侧。"""
 
         from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 
@@ -113,13 +114,102 @@ class SpineAnatomicalFrameTest(unittest.TestCase):
         result, _ = estimate_spine_frame_with_diagnostics(masks, "C1", "C7", image)
         frame = result.global_frame
 
-        dicom = np.asarray(image.GetDirection()).reshape(3, 3)
         lr = np.asarray(list(frame.left_right_axis.to_dict().values()))
         ap = np.asarray(list(frame.anterior_posterior_axis.to_dict().values()))
         si = np.asarray(list(frame.superior_inferior_axis.to_dict().values()))
-        self.assertGreater(float(np.dot(lr, dicom[:, 0])), 0.0)
-        self.assertGreater(float(np.dot(ap, dicom[:, 1])), 0.0)
-        self.assertGreater(float(np.dot(si, dicom[:, 2])), 0.0)
+        self.assertGreater(lr[0], 0.0)
+        self.assertGreater(ap[1], 0.0)
+        self.assertGreater(si[2], 0.0)
+
+    def test_indices_path_matches_masks_without_dense_mask_or_argwhere(self):
+        """复用稀疏坐标时不读取 Mask，所有几何与原入口完全一致。"""
+
+        from src.anatomy.spine import estimate_spine_frame_with_diagnostics
+
+        masks, image = self._make_masks()
+        masks["C4"][1, 1, 1] = True
+        theta = np.deg2rad(23.0)
+        image.SetDirection((np.cos(theta), -np.sin(theta), 0.,
+                            np.sin(theta), np.cos(theta), 0., 0., 0., 1.))
+        indices = {name: np.argwhere(mask) for name, mask in masks.items()}
+        annotations = {name: {
+            "symmetry_left_right_axis": {"x": 0.9, "y": 0.4, "z": 0.1},
+            "symmetry_diagnostics": {"status": "accepted"},
+        } for name in masks}
+        expected, expected_diagnostics = estimate_spine_frame_with_diagnostics(
+            masks, "C1", "C7", image, annotations,
+        )
+        with patch("numpy.argwhere", side_effect=AssertionError("不能重复提取体素坐标")):
+            result, diagnostics = estimate_spine_frame_with_diagnostics(
+                {"must_not_read": object()}, "C1", "C7", image, annotations,
+                label_indices_zyx=indices,
+            )
+        self.assertEqual(result.to_dict(), expected.to_dict())
+        self.assertEqual(diagnostics, expected_diagnostics)
+        all_indices = np.concatenate(list(indices.values()))[:, ::-1]
+        points = (all_indices * image.GetSpacing()) @ np.array(image.GetDirection()).reshape(3, 3).T
+        points += image.GetOrigin()
+        frame = result.global_frame
+        for name, axis in (
+            ("left_right", frame.left_right_axis),
+            ("anterior_posterior", frame.anterior_posterior_axis),
+            ("superior_inferior", frame.superior_inferior_axis),
+        ):
+            projections = points @ np.array(list(axis.to_dict().values()))
+            bounds = getattr(frame.bounds, name)
+            self.assertAlmostEqual(bounds.minimum, projections.min())
+            self.assertAlmostEqual(bounds.maximum, projections.max())
+
+    def test_indices_empty_labels_and_invalid_coordinates_are_checked(self):
+        """空标签仍进入缺失诊断；形状、非有限数和越界不能静默参与几何。"""
+
+        from src.anatomy.spine import estimate_spine_frame_with_diagnostics
+
+        masks, image = self._make_masks()
+        indices = {name: np.argwhere(mask) for name, mask in masks.items()}
+        indices["C4"] = np.empty((0, 3), dtype=int)
+        _, diagnostics = estimate_spine_frame_with_diagnostics(
+            None, "C1", "C7", image, label_indices_zyx=indices,
+        )
+        self.assertEqual(diagnostics["missing_labels"], ["C4"])
+        for invalid in (np.empty((0,)), np.ones((2, 2)), [[1, 2, float("nan")]],
+                        [[1, 2, float("inf")]], [[-1, 2, 3]], [[1, 2, 48]],
+                        [["bad", "coordinates", "here"]]):
+            with self.subTest(indices=invalid):
+                with self.assertRaisesRegex(ValueError, "椎体 C4"):
+                    estimate_spine_frame_with_diagnostics(
+                        None, "C1", "C7", image,
+                        label_indices_zyx={**indices, "C4": invalid},
+                    )
+        with self.assertRaisesRegex(ValueError, "开始椎体 C1"):
+            estimate_spine_frame_with_diagnostics(
+                masks, "C1", "C7", image, label_indices_zyx={},
+            )
+
+    def test_single_storage_axis_flip_keeps_right_handed_frame(self):
+        """单轴反向存储不能倒置患者头脚或破坏右手关系。"""
+
+        from src.anatomy.spine import estimate_spine_frame_with_diagnostics
+
+        for diagonal in ((-1., 1., 1.), (1., -1., 1.), (1., 1., -1.)):
+            with self.subTest(diagonal=diagonal):
+                masks, image = self._make_masks()
+                direction = np.diag(diagonal)
+                image.SetDirection(tuple(direction.ravel()))
+                result, _ = estimate_spine_frame_with_diagnostics(
+                    None, "C1", "C7", image,
+                    label_indices_zyx={name: np.argwhere(mask) for name, mask in masks.items()},
+                )
+                frame = result.global_frame
+                axes = np.column_stack([list(axis.to_dict().values()) for axis in (
+                    frame.left_right_axis, frame.anterior_posterior_axis,
+                    frame.superior_inferior_axis,
+                )])
+                np.testing.assert_allclose(axes.T @ axes, np.eye(3), atol=1e-6)
+                self.assertAlmostEqual(np.linalg.det(axes), 1.0)
+                self.assertGreater(axes[0, 0], 0.0)
+                self.assertGreater(axes[1, 1], 0.0)
+                self.assertGreater(axes[2, 2], 0.0)
 
 
 if __name__ == "__main__":

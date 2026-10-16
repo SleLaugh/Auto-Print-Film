@@ -1382,6 +1382,110 @@ def _resolve_interspace_face_geometry(
     )
 
 
+def _annotation_symmetry_axis(annotation: Any) -> Optional[Point3D]:
+    """只读取通过第五阶段质量检查的物理左右轴。"""
+
+    if not isinstance(annotation, dict):
+        return None
+    diagnostics = annotation.get("symmetry_diagnostics")
+    if not isinstance(diagnostics, dict) or diagnostics.get("status") not in {
+        "accepted", "unchanged",
+    }:
+        return None
+    axis = _parse_xyz_point(
+        annotation.get("symmetry_left_right_axis")
+    )
+    if axis is None:
+        return None
+    try:
+        return normalize_vector(axis)
+    except ValueError:
+        return None
+
+
+def _refine_interspace_symmetry_geometry(
+    localization_result: Dict[str, Any],
+    upper_label: str,
+    lower_label: str,
+    target_start: Point3D,
+    target_end: Point3D,
+    frame: Optional[StraightPlaneFrame],
+) -> tuple[Point3D, Point3D, Optional[StraightPlaneFrame], Optional[str]]:
+    """在保留真实间隙中点和长度的同时，补上局部 yaw 与左右侧倾。
+
+    四棱柱的矢状端面仍决定前后倾斜；左右轴由两个完整椎体的可靠对称面
+    决定，法向随后正交化。缺少端面时只使用真实主体质心连线作为带警告的
+    方向回退，不创建假的端面，也不改变已有 bbox 所给出的间隙范围。
+    """
+
+    annotations = _filtered_spine_annotations(localization_result)
+    axes = [_annotation_symmetry_axis(annotations.get(label))
+            for label in (upper_label, lower_label)]
+    if any(axis is None for axis in axes):
+        return target_start, target_end, frame, "缺少可靠左右对称轴，保留原椎间方向"
+    reference = default_straight_frame(PlaneTypeEnum.横状位, localization_result["image"])
+    upper_axis, lower_axis = axes
+    # 同一无向对称轴用输入左右方向统一符号，避免平均时相互抵消。
+    upper_axis = upper_axis if _dot(upper_axis, reference.row_dir) >= 0.0 else Point3D(
+        -upper_axis.x, -upper_axis.y, -upper_axis.z,
+    )
+    lower_axis = lower_axis if _dot(lower_axis, reference.row_dir) >= 0.0 else Point3D(
+        -lower_axis.x, -lower_axis.y, -lower_axis.z,
+    )
+    if _dot(upper_axis, lower_axis) < math.cos(math.radians(25.0)):
+        return target_start, target_end, frame, "相邻椎体左右轴差异过大，保留原椎间方向"
+    try:
+        row_dir = normalize_vector(Point3D(
+            upper_axis.x + lower_axis.x,
+            upper_axis.y + lower_axis.y,
+            upper_axis.z + lower_axis.z,
+        ))
+        warning = None
+        if frame is not None:
+            source_normal = frame.normal
+        else:
+            upper_center = _annotation_physical_center(localization_result, upper_label)
+            lower_center = _annotation_physical_center(localization_result, lower_label)
+            if upper_center is None or lower_center is None:
+                return target_start, target_end, frame, "缺少真实主体质心，保留原椎间方向"
+            source_normal = normalize_vector(subtract_points(lower_center, upper_center))
+            warning = "端面不足，使用真实主体质心连线与左右对称轴确定椎间方向"
+        row_component = _dot(source_normal, row_dir)
+        normal = normalize_vector(Point3D(
+            source_normal.x - row_dir.x * row_component,
+            source_normal.y - row_dir.y * row_component,
+            source_normal.z - row_dir.z * row_component,
+        ))
+        if _dot(normal, source_normal) < math.cos(math.radians(30.0)):
+            return target_start, target_end, frame, "局部对称轴要求的切面变化过大，保留原椎间方向"
+        col_dir = normalize_vector(_cross(normal, row_dir))
+        target_vector = subtract_points(target_end, target_start)
+        if _dot(normal, target_vector) < 0.0:
+            normal = Point3D(-normal.x, -normal.y, -normal.z)
+            col_dir = Point3D(-col_dir.x, -col_dir.y, -col_dir.z)
+        candidate_frame = StraightPlaneFrame(row_dir=row_dir, col_dir=col_dir, normal=normal)
+        if not _is_finite_orthonormal_frame(candidate_frame, require_right_handed=True):
+            raise ValueError("局部椎间坐标无效")
+        half_length = vector_length(target_vector) / 2.0
+        midpoint = Point3D(
+            (target_start.x + target_end.x) / 2.0,
+            (target_start.y + target_end.y) / 2.0,
+            (target_start.z + target_end.z) / 2.0,
+        )
+        return (
+            Point3D(midpoint.x - normal.x * half_length,
+                    midpoint.y - normal.y * half_length,
+                    midpoint.z - normal.z * half_length),
+            Point3D(midpoint.x + normal.x * half_length,
+                    midpoint.y + normal.y * half_length,
+                    midpoint.z + normal.z * half_length),
+            candidate_frame,
+            warning,
+        )
+    except ValueError:
+        return target_start, target_end, frame, "无法构造可靠局部椎间坐标，保留原椎间方向"
+
+
 def resolve_spine_interspace_segments(
     localization_result: Dict[str, Any],
     intervals: Sequence[Tuple[str, str, str]],
@@ -1442,6 +1546,14 @@ def resolve_spine_interspace_segments(
             target_region_bbox = union_bboxes(upper_bbox, lower_bbox)
             if face_geometry is not None:
                 target_start, target_end, frame = face_geometry
+                target_start, target_end, frame, pose_warning = (
+                    _refine_interspace_symmetry_geometry(
+                        localization_result, upper_label, lower_label,
+                        target_start, target_end, frame,
+                    )
+                )
+                if pose_warning:
+                    warnings.append(f"脊柱区间 {group_name} {pose_warning}")
                 if using_prism_geometry:
                     (
                         target_start,
@@ -1484,6 +1596,17 @@ def resolve_spine_interspace_segments(
             warnings.append(
                 f"脊柱区间 {group_name} 缺少椎体 bbox，已回退到质心范围"
             )
+
+        # 方向估计不能把原先没有有效头脚间隙的 bbox 重新变成有效区间。
+        if frame is None and target_start.z > target_end.z:
+            target_start, target_end, frame, pose_warning = (
+                _refine_interspace_symmetry_geometry(
+                    localization_result, upper_label, lower_label,
+                    target_start, target_end, frame,
+                )
+            )
+            if pose_warning:
+                warnings.append(f"脊柱区间 {group_name} {pose_warning}")
 
         if frame is not None:
             target_vector = subtract_points(target_end, target_start)

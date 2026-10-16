@@ -2612,7 +2612,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertEqual(target_plan.range_start, plan.range_start)
 
     def test_cervical_three_planes_follow_complete_spine_axis(self):
-        """颈椎三状位应沿脊柱轴切割，矢状画面按原图头脚方向摆正。"""
+        """颈椎三状位的画面及法向均使用同一脊柱解剖坐标。"""
 
         spine_axis = np.asarray([0.2, 0.3, 0.9327379053], dtype=float)
         spine_axis /= np.linalg.norm(spine_axis)
@@ -2702,16 +2702,11 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             normal = np.asarray(list(plan.slices[0].normal.to_dict().values()))
             self.assertAlmostEqual(float(np.dot(normal, spine_axis)), 0.0, places=6)
 
-        # 矢状位切割平面不变，但画面上下应尽量贴近原图默认的足侧方向，
-        # 不能继续把负脊柱轴直接作为 col_dir 导致整张成片跟着旋转。
+        # 矢状位必须连同画面方向一起摆正，不能再投影回原图头脚轴。
         sagittal_normal = np.asarray(
             list(sagittal.slices[0].normal.to_dict().values())
         )
-        original_inferior = np.asarray([0.0, 0.0, -1.0])
-        expected_col = original_inferior - np.dot(
-            original_inferior, sagittal_normal
-        ) * sagittal_normal
-        expected_col /= np.linalg.norm(expected_col)
+        expected_col = -spine_axis
         sagittal_row = np.asarray(
             list(sagittal.slices[0].row_dir.to_dict().values())
         )
@@ -2719,6 +2714,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             list(sagittal.slices[0].col_dir.to_dict().values())
         )
         self.assertTrue(np.allclose(sagittal_col, expected_col))
+        self.assertTrue(np.allclose(sagittal_row, anterior_posterior))
         self.assertTrue(
             np.allclose(np.cross(sagittal_row, sagittal_col), sagittal_normal)
         )
@@ -2732,8 +2728,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             expected_reference,
         ))
 
-    def test_non_lung_keeps_default_axes_even_if_anatomical_geometry_is_present(self):
-        """未接入专属坐标的部位即使携带解剖几何，也继续使用默认图像轴。"""
+    def test_skull_uses_available_anatomical_axes(self):
+        """头部必须消费姿态坐标，不能生成方向后又退回原图轴。"""
 
         request = Request(
             dicom_dir="/tmp/dicom",
@@ -2762,10 +2758,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         plan = SingleLabelWholeRangePlanner().build_plans(request, localization_result).plans[0]
 
-        self.assertEqual(plan.slices[0].normal.to_dict(), {"x": 0.0, "y": 0.0, "z": 1.0})
+        self.assertEqual(plan.slices[0].normal.to_dict(), {"x": -0.6, "y": 0.0, "z": 0.8})
 
-    def test_thoracic_axial_uses_default_image_axis_but_sagittal_keeps_spine_axis(self):
-        """胸椎横状位应水平切，矢状位仍应使用胸椎整体走向。"""
+    def test_thoracic_axial_and_sagittal_share_spine_axes(self):
+        """胸椎横位和矢位应使用同一整体解剖坐标。"""
 
         request = Request(
             dicom_dir="/tmp/dicom",
@@ -2806,10 +2802,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             request, localization_result
         ).plans
 
-        self.assertEqual(
-            axial.slices[0].normal.to_dict(),
-            {"x": 0.0, "y": 0.0, "z": 1.0},
-        )
+        self.assertTrue(np.allclose(
+            list(axial.slices[0].normal.to_dict().values()),
+            [0.0, 0.4472135954999579, 0.8944271909999159],
+        ))
         self.assertGreater(axial.slices[0].center.z, axial.slices[-1].center.z)
         self.assertEqual(
             sagittal.slices[0].normal.to_dict(),
@@ -3575,8 +3571,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             "vertebrae_L5",
         ])
 
-    def test_hip_only_tilts_axial_and_sets_three_localizer_planes(self):
-        """髋骨仅横状位使用 AB 角度，矢冠保持默认轴并指定定位背景。"""
+    def test_hip_shares_anatomical_axes_and_sets_three_localizer_planes(self):
+        """髋骨三状位共用解剖方向并分别指定定位背景。"""
 
         request = Request(
             dicom_dir="/tmp/dicom",
@@ -3635,10 +3631,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             list(axial.slices[0].normal.to_dict().values()),
             [0.19611613513818404, 0.0, 0.9805806756909202],
         ))
-        self.assertEqual(
-            sagittal.slices[0].normal.to_dict(),
-            {"x": -1.0, "y": -0.0, "z": -0.0},
-        )
+        self.assertTrue(np.allclose(
+            list(sagittal.slices[0].normal.to_dict().values()),
+            [-0.9805806756909202, 0.0, 0.19611613513818404],
+        ))
         self.assertEqual(
             coronal.slices[0].normal.to_dict(),
             {"x": 0.0, "y": 1.0, "z": 0.0},
@@ -4012,7 +4008,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             [segment.group_name for segment in segments],
             ["L1_L2"],
         )
-        self.assertFalse(any("L1_L2" in warning for warning in warnings))
+        self.assertEqual(
+            [warning for warning in warnings if "L1_L2" in warning],
+            ["脊柱区间 L1_L2 缺少可靠左右对称轴，保留原椎间方向"],
+        )
         segment = segments[0]
         self.assertFalse(segment.recenter_target_in_plane)
         vector = Point3D(
@@ -4041,10 +4040,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             ["L1_L2"],
         )
         self.assertIsNotNone(reflected_segments[0].frame)
-        self.assertFalse(any(
-            "L1_L2" in warning
-            for warning in reflected_warnings
-        ))
+        self.assertEqual(
+            [warning for warning in reflected_warnings if "L1_L2" in warning],
+            ["脊柱区间 L1_L2 缺少可靠左右对称轴，保留原椎间方向"],
+        )
 
     def test_interspace_closest_pair_rejects_crossing_prism_polygons(self):
         """边相交但顶点互不包含的四边形也属于重叠，不能伪造非零间隙。"""
@@ -4416,7 +4415,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
 
         self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
-        self.assertFalse(any("L1_L2" in warning for warning in warnings))
+        self.assertEqual(
+            [warning for warning in warnings if "L1_L2" in warning],
+            ["脊柱区间 L1_L2 缺少可靠左右对称轴，保留原椎间方向"],
+        )
         self.assertFalse(segments[0].recenter_target_in_plane)
         self.assertIsNotNone(segments[0].frame)
         normal = segments[0].frame.normal
@@ -4473,7 +4475,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
 
         self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
-        self.assertFalse(any("L1_L2" in warning for warning in warnings))
+        self.assertEqual(
+            [warning for warning in warnings if "L1_L2" in warning],
+            ["脊柱区间 L1_L2 缺少可靠左右对称轴，保留原椎间方向"],
+        )
         segment = segments[0]
         midpoint_y = (segment.target_start.y + segment.target_end.y) / 2.0
         gap_length = math.sqrt(
@@ -4553,7 +4558,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             [segment.group_name for segment in segments],
             ["L5_S1"],
         )
-        self.assertFalse(any("L5_S1" in warning for warning in warnings))
+        self.assertEqual(
+            [warning for warning in warnings if "L5_S1" in warning],
+            ["脊柱区间 L5_S1 缺少可靠左右对称轴，保留原椎间方向"],
+        )
         normal = segments[0].frame.normal
         center_direction = np.asarray([
             centers["vertebrae_S1"][0] - centers["vertebrae_L5"][0],
@@ -5515,7 +5523,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             [segment.group_name for segment in segments],
             ["L1_L2", "L2_L3", "L3_L4", "L4_L5", "L5_S1"],
         )
-        self.assertEqual(warnings, [])
+        self.assertEqual(warnings, [
+            f"脊柱区间 {group} 缺少可靠左右对称轴，保留原椎间方向"
+            for group in ("L1_L2", "L2_L3", "L3_L4", "L4_L5", "L5_S1")
+        ])
         for index, segment in enumerate(segments):
             with self.subTest(group_name=segment.group_name):
                 self.assertIsNotNone(segment.frame)
@@ -5636,7 +5647,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
 
         self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
-        self.assertFalse(any("L1_L2" in warning for warning in warnings))
+        self.assertEqual(
+            [warning for warning in warnings if "L1_L2" in warning],
+            ["脊柱区间 L1_L2 缺少可靠左右对称轴，保留原椎间方向"],
+        )
         segment = segments[0]
         self.assertAlmostEqual(segment.target_start.z, 11.0)
         self.assertAlmostEqual(segment.target_end.z, 9.0)
@@ -5782,7 +5796,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual([segment.group_name for segment in segments], ["L1_L2"])
         self.assertIsNone(segments[0].frame)
-        self.assertFalse(any("L1_L2" in warning for warning in warnings))
+        self.assertEqual(
+            [warning for warning in warnings if "L1_L2" in warning],
+            ["脊柱区间 L1_L2 缺少可靠左右对称轴，保留原椎间方向"],
+        )
 
     def test_lumbar_interspace_rejects_incomplete_face_pair(self):
         """只有一条头脚面时应视为不完整几何并回退 bbox。"""

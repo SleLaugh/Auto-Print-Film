@@ -211,24 +211,12 @@ def build_whole_range_plan_from_bbox(
     """
     根据整体 bbox 构建指定状位的默认直线整切计划。
 
-    肺部、颈椎和胸椎按既有规则使用解剖坐标。髋骨只有横状位使用外侧顶部
-    AB 角度，矢状位和冠状位继续沿输入图像默认轴生成。
+    所有已生成解剖坐标的部位，三状位共同使用该物理坐标；不能只把横位
+    摆正而让冠位/矢位重新回到歪斜的输入轴。旧结果缺少解剖坐标时才回退。
     """
 
-    anatomical_frame_parts = {"肺部", "颈椎", "胸椎", "髋骨"}
-    # 胸椎横状位按临床要求保持原图默认水平横切；只有胸椎矢状位和冠状位
-    # 继续使用 C7-L1 确定的整体脊柱轴。颈椎三状位仍全部使用解剖坐标。
-    uses_anatomical_frame = (
-        request.slice_part.value in anatomical_frame_parts
-        and not (
-            request.slice_part.value == "胸椎"
-            and plane_config.plane == PlaneTypeEnum.横状位
-        )
-        and not (
-            request.slice_part.value == "髋骨"
-            and plane_config.plane != PlaneTypeEnum.横状位
-        )
-    )
+    anatomical_frame_parts = {"头骨", "肺部", "颈椎", "胸椎", "腰椎", "髋骨"}
+    uses_anatomical_frame = request.slice_part.value in anatomical_frame_parts
     geometry = None
     if localization_result.get("anatomical_geometry"):
         geometry = AnatomicalGeometryResult.from_dict(

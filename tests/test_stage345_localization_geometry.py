@@ -175,11 +175,11 @@ class LocalizationGeometryTest(unittest.TestCase):
         self.assertIsNotNone(geometry)
         self.assertEqual(geometry.global_frame.method, "lung_dicom_axes")
         self.assertFalse(geometry.global_frame.applied)
-        self.assertEqual(diagnostics["angle_source"], "disabled")
+        self.assertEqual(diagnostics["angle_source"], "bilateral_reflection_symmetry")
         self.assertEqual(geometry.local_frames, {})
 
-    def test_non_lung_does_not_enable_anatomical_geometry_yet(self):
-        """验证 `test_non_lung_does_not_enable_anatomical_geometry_yet` 场景符合预期。"""
+    def test_skull_builds_geometry_and_reports_insufficient_symmetry_evidence(self):
+        """头部已接入坐标，极小目标应保留输入轴并记录回退原因。"""
 
         stage = LocalizationStage()
         mask = np.ones((4, 4, 4), dtype=bool)
@@ -191,8 +191,10 @@ class LocalizationGeometryTest(unittest.TestCase):
             image=image,
         )
 
-        self.assertIsNone(geometry)
-        self.assertEqual(diagnostics, {})
+        self.assertIsNotNone(geometry)
+        self.assertFalse(geometry.global_frame.applied)
+        self.assertEqual(diagnostics["symmetry"]["status"], "rejected")
+        self.assertTrue(geometry.global_frame.warnings)
 
     def test_cervical_and_thoracic_build_spine_geometry_from_configured_endpoints(self):
         """颈椎和胸椎应共用首尾椎体质心确定的三维解剖坐标。"""
@@ -228,7 +230,7 @@ class LocalizationGeometryTest(unittest.TestCase):
             self.assertEqual(diagnostics["end_label"], end_label)
 
     def test_hip_builds_geometry_from_left_and_right_masks(self):
-        """髋骨应使用配置中的左右独立 Mask 计算外侧顶部横切坐标。"""
+        """髋骨使用配置中的双侧 Mask 计算统一对称坐标。"""
 
         stage = LocalizationStage()
         shape = (32, 20, 40)
@@ -250,7 +252,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         )
 
         self.assertIsNotNone(geometry)
-        self.assertEqual(geometry.global_frame.method, "hip_outer_superior_caps")
+        self.assertEqual(geometry.global_frame.method, "hip_reflection_symmetry")
         self.assertEqual(diagnostics["left_label"], "hip_left")
         self.assertEqual(diagnostics["right_label"], "hip_right")
 
@@ -3030,7 +3032,18 @@ class LocalizationGeometryTest(unittest.TestCase):
                         for call in debug_log.call_args_list
                     ]
                 else:
-                    stage.execute(context)
+                    if isinstance(stage, SpatialCorrectionStage):
+                        # 本例验证候选空间在三阶段之间的传递，不用极小的
+                        # 人工条状标签测试生产姿态拟合的质量阈值。
+                        with patch.object(stage, "_build_xy_correction_candidate", return_value={
+                            "method": "test_xy_candidate",
+                            "angle_degrees": 12.0,
+                            "correction_status": "candidate",
+                            "should_correct": True,
+                        }):
+                            stage.execute(context)
+                    else:
+                        stage.execute(context)
                 if stage_index < 2:
                     self.assertIn(
                         _LOCALIZATION_WORKSPACE_KEY,
@@ -3307,10 +3320,10 @@ class LocalizationGeometryTest(unittest.TestCase):
                 build_regions.call_args_list[1].args[0].shape,
                 (8, 32, 32),
             )
-            self.assertEqual(
-                build_anatomical_geometry.call_args.kwargs["label_masks"],
-                {},
-            )
+            self.assertEqual(build_anatomical_geometry.call_args.kwargs["label_masks"], {})
+            indices = build_anatomical_geometry.call_args.kwargs["label_indices_zyx"]
+            self.assertEqual(set(indices), {"vertebrae_L1", "vertebrae_S1"})
+            self.assertTrue(all(value.ndim == 2 and value.shape[1] == 3 for value in indices.values()))
 
             result = context.get_result("localization")
             self.assertTrue(result["correction_applied"])

@@ -7,10 +7,10 @@ from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 
 
 class HipAnatomicalFrameTest(unittest.TestCase):
-    """验证髋骨外侧顶部连线生成的横状位解剖坐标。"""
+    """验证双髋骨姿态坐标、顶部诊断和完整主体覆盖。"""
 
-    def test_outer_caps_define_tilt_and_bounds_cover_all_retained_points(self):
-        """AB 负责倾角，最终法向范围必须包含左右髋骨全部主体点。"""
+    def test_symmetry_defines_frame_and_bounds_cover_all_retained_points(self):
+        """双侧主体决定方向，AB 仅供诊断，全部三轴范围都覆盖完整主体。"""
 
         shape = (40, 24, 48)
         left_mask = np.zeros(shape, dtype=bool)
@@ -32,29 +32,26 @@ class HipAnatomicalFrameTest(unittest.TestCase):
         lr = np.asarray(list(frame.left_right_axis.to_dict().values()))
         ap = np.asarray(list(frame.anterior_posterior_axis.to_dict().values()))
         si = np.asarray(list(frame.superior_inferior_axis.to_dict().values()))
-        self.assertEqual(frame.method, "hip_outer_superior_caps")
-        self.assertTrue(frame.applied)
-        self.assertGreater(abs(float(lr[2])), 0.05)
+        # 盒子具有不同高度，不给它们虚构一个临床真实姿态。本例验证顶部
+        # 诊断、主体过滤和投影覆盖；已知旋转的回归由 test_hip_pose_symmetry 验证。
+        self.assertIn(frame.method, {"hip_reflection_symmetry", "hip_dicom_axes"})
+        self.assertEqual(frame.applied, diagnostics["symmetry"]["accepted"])
         self.assertTrue(np.allclose(np.cross(lr, ap), si))
         self.assertAlmostEqual(float(np.dot(lr, ap)), 0.0, places=6)
         self.assertAlmostEqual(float(np.linalg.norm(si)), 1.0, places=6)
         self.assertLess(diagnostics["right_landmark"]["z"], 31.0)
         self.assertGreater(diagnostics["left_landmark"]["z"], diagnostics["right_landmark"]["z"])
 
-        # 重新由诊断中的 A、B 计算方向，保证完整覆盖修正不会改变 AB 倾角。
+        self.assertEqual(diagnostics["ab_role"], "diagnostic_only")
+        self.assertIn(diagnostics["symmetry"]["status"], {"accepted", "unchanged"})
+        # 顶部仍保留在诊断中，但不再要求输出方向等于顶部连线；两侧高度或
+        # 形态略有差异时，单个顶部标志点不能替代整块骨盆的对称姿态。
         left_landmark = np.asarray([
             diagnostics["left_landmark"][axis] for axis in ("x", "y", "z")
         ])
         right_landmark = np.asarray([
             diagnostics["right_landmark"][axis] for axis in ("x", "y", "z")
         ])
-        expected_lr = right_landmark - left_landmark
-        expected_lr[1] = 0.0
-        expected_lr /= np.linalg.norm(expected_lr)
-        if expected_lr[0] < 0.0:
-            expected_lr = -expected_lr
-        np.testing.assert_allclose(lr, expected_lr, atol=1e-6)
-
         # 当前测试图为空间单位阵，z/y/x 索引换成 x/y/z 后就是物理坐标。
         # 已知远端孤立点不属于最大连通主体，不能进入最终覆盖范围。
         retained_mask = np.logical_or(left_mask, right_mask)
@@ -77,6 +74,13 @@ class HipAnatomicalFrameTest(unittest.TestCase):
         self.assertTrue(np.all(
             retained_projections <= frame.bounds.superior_inferior.maximum + 1e-6
         ))
+        for axis, bounds in (
+            (lr, frame.bounds.left_right),
+            (ap, frame.bounds.anterior_posterior),
+        ):
+            projection = retained_points @ axis
+            self.assertAlmostEqual(bounds.minimum, float(np.min(projection)), places=6)
+            self.assertAlmostEqual(bounds.maximum, float(np.max(projection)), places=6)
 
         ab_plane_projection = float(np.mean([
             np.dot(left_landmark, si),
@@ -118,8 +122,8 @@ class HipAnatomicalFrameTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "右侧髋骨"):
             estimate_hip_frame_with_diagnostics(left_mask, right_mask, image)
 
-    def test_direction_signs_follow_flipped_dicom_axes(self):
-        """存储方向翻转时输出三轴仍应与该 DICOM 物理方向保持同向。"""
+    def test_storage_flips_preserve_patient_axis_signs(self):
+        """存储方向翻转不能把患者头侧或左右参考方向反转。"""
 
         shape = (24, 16, 32)
         left_mask = np.zeros(shape, dtype=bool)
@@ -134,10 +138,9 @@ class HipAnatomicalFrameTest(unittest.TestCase):
         )
 
         frame = result.global_frame
-        direction = np.asarray(image.GetDirection()).reshape(3, 3)
-        self.assertGreater(np.dot(list(frame.left_right_axis.to_dict().values()), direction[:, 0]), 0.0)
-        self.assertGreater(np.dot(list(frame.anterior_posterior_axis.to_dict().values()), direction[:, 1]), 0.0)
-        self.assertGreater(np.dot(list(frame.superior_inferior_axis.to_dict().values()), direction[:, 2]), 0.0)
+        self.assertGreater(frame.left_right_axis.x, 0.0)
+        self.assertGreater(frame.anterior_posterior_axis.y, 0.0)
+        self.assertGreater(frame.superior_inferior_axis.z, 0.0)
 
 
 if __name__ == "__main__":

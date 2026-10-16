@@ -6,10 +6,12 @@
 from .lung import estimate_lung_anatomical_geometry, estimate_lung_frame_with_diagnostics
 from .hip import estimate_hip_frame_with_diagnostics
 from .spine import estimate_spine_frame_with_diagnostics
+from .skull import estimate_skull_frame_with_diagnostics
 
 __all__ = [
     "estimate_lung_anatomical_geometry",
     "estimate_lung_frame_with_diagnostics",
     "estimate_hip_frame_with_diagnostics",
     "estimate_spine_frame_with_diagnostics",
+    "estimate_skull_frame_with_diagnostics",
 ]

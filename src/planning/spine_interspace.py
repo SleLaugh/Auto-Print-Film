@@ -2,6 +2,7 @@
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from src.anatomy.spine_labels import resolve_spine_label_name
 from src.models import Point3D
 from src.models.enums import PlaneTypeEnum, SliceType
 from src.planning.base import PlanningResult
@@ -65,6 +66,10 @@ def configured_interspace_definitions(
     if not isinstance(intervals, list) or not intervals:
         raise ValueError("当前定位结果缺少椎间隙区域配置")
 
+    # 持久配置保留标准标签名，执行计划必须使用本次已定位的模型标签。
+    available_labels = (
+        localization_result.get("label_targets") or localization_result.get("coords") or {}
+    )
     definitions = []
     for interval in intervals:
         region = interval.get("region")
@@ -79,7 +84,11 @@ def configured_interspace_definitions(
             or not end_labels
         ):
             raise ValueError(f"椎间隙区域配置无效: {interval}")
-        definitions.append((region, start_labels[0], end_labels[0]))
+        definitions.append((
+            region,
+            resolve_spine_label_name(start_labels[0], available_labels),
+            resolve_spine_label_name(end_labels[0], available_labels),
+        ))
     return definitions
 
 

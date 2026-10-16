@@ -27,6 +27,9 @@ from src.models import (
 from src.anatomy.lung import estimate_lung_frame_with_diagnostics
 from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 from src.anatomy.spine import estimate_spine_frame_with_diagnostics
+from src.anatomy.spine_labels import resolve_spine_label_name
+from src.anatomy.skull import estimate_skull_frame_with_diagnostics
+from src.anatomy.spine_pose import estimate_spine_axial_symmetry, estimate_spine_label_symmetry
 from src.utils import DebugLog
 from src.runtime import config_candidates, resolve_application_path
 
@@ -67,8 +70,8 @@ class LocalizationOperations(
         """初始化共用定位配置、校正阈值和 nnUNet 数据集路径。"""
 
         super().__init__(name=stage_name, config=config)
-        # 这些阈值暂时只给实验开关使用。默认主流程不会自动回正，但保留
-        # 阈值字段，方便后续真正设计回正算法时继续沿用 metadata 结构。
+        # 脊柱候选超过阈值且通过一致性检查时进入第三阶段回正。
+        # 头、髋和肺的左右旋转/侧倾交由第五阶段的物理解剖坐标处理。
         self.correction_angle_threshold_degrees = float(
             self.config.get('correction_angle_threshold_degrees', 3.0)
         )
@@ -160,19 +163,25 @@ class LocalizationOperations(
         label_masks: Dict[str, np.ndarray] | None = None,
         start_label: str | None = None,
         end_label: str | None = None,
+        label_pose_annotations: Dict[str, Any] | None = None,
+        label_indices_zyx: Dict[str, np.ndarray] | None = None,
     ) -> tuple[AnatomicalGeometryResult | None, Dict[str, Any]]:
         """只为已经适配的部位计算统一解剖坐标，其余部位保持旧行为。"""
 
         if slice_part == "肺部":
             return estimate_lung_frame_with_diagnostics(target_mask, image)
-        if slice_part in {"颈椎", "胸椎"}:
-            if not label_masks or not start_label or not end_label:
+        if slice_part == "头骨":
+            return estimate_skull_frame_with_diagnostics(target_mask, image)
+        if slice_part in {"颈椎", "胸椎", "腰椎"}:
+            if not (label_masks or label_indices_zyx) or not start_label or not end_label:
                 raise ValueError(f"{slice_part} 解剖坐标缺少首尾椎体标签信息")
             return estimate_spine_frame_with_diagnostics(
                 label_masks=label_masks,
                 start_label=start_label,
                 end_label=end_label,
                 image=image,
+                label_pose_annotations=label_pose_annotations,
+                label_indices_zyx=label_indices_zyx,
             )
         if slice_part == "髋骨":
             if not label_masks or not start_label or not end_label:
@@ -460,6 +469,19 @@ class LocalizationOperations(
                 return candidate
         return None
 
+    @staticmethod
+    def _resolve_spine_endpoint_label(
+        label_name: str | None,
+        label_targets: Dict[str, LabelTarget],
+    ) -> str | None:
+        """按本次实际定位标签解析 S1，保留其余端点的缺失校验语义。
+
+        配置保留标准名称；部分模型只提供 sacrum。端点必须与第四阶段
+        已验证的 label_targets 一致，同时存在时仍优先第一骶椎标签。
+        """
+
+        return resolve_spine_label_name(label_name, label_targets)
+
     def _extract_label_coordinates(
         self,
         seg_array: np.ndarray,
@@ -713,11 +735,12 @@ class LocalizationOperations(
         label_targets: Dict[str, LabelTarget],
         slice_part: str | None = None,
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
+        image: sitk.Image | None = None,
     ) -> Dict[str, Any]:
-        """估计横状位 XY 回正候选角，但不执行主流程回正。
+        """估计横状位回正候选角；图像写出与应用由第三阶段决定。
 
-        脊柱目标使用逐椎体角度聚合；非脊柱目标保留整体 PCA，但必须超过
-        更高阈值才生成候选，避免正位头骨等被 3-4 度形态偏差误触发。
+        主流程脊柱使用完整椎体的可靠镜像面对齐角。未传图像的兼容 helper
+        保留归一偏角 PCA；头、髋、肺由第三阶段转交第五阶段的统一坐标处理。
         """
 
         if not self.correction_requested:
@@ -730,6 +753,19 @@ class LocalizationOperations(
                 'correction_status': 'disabled',
                 'correction_applied': False,
                 'reason': 'correction_requested 为 false',
+            }
+        if image is not None and slice_part in {"头骨", "髋骨", "肺部"}:
+            # 三维姿态在第五阶段计算，重建时一次采样到最终方向。
+            # 此处不再分配整块 PCA 点云或先做整卷 XY 插值。
+            return {
+                "method": "anatomical_frame_deferred",
+                "axis": "image_z",
+                "angle_degrees": 0.0,
+                "abs_angle_degrees": 0.0,
+                "correction_status": "deferred_to_anatomical_frame",
+                "correction_applied": False,
+                "should_correct": False,
+                "reason": "由第五阶段左右对称面统一确定各状位方向",
             }
         if not self._is_vertebrae_targets(label_targets):
             target_mask = self._build_target_mask(seg_array, label_targets)
@@ -760,6 +796,35 @@ class LocalizationOperations(
                 'should_correct': should_correct,
                 'slice_part': slice_part,
                 'reason': reason,
+            }
+        if image is not None:
+            regions = label_regions or self._build_label_voxel_regions(seg_array, label_targets)
+            excluded = set(
+                self._resolve_spine_cpr_config(slice_part).get("excluded_labels", [])
+                if slice_part else []
+            )
+            skipped = [
+                name for name, region in regions.items()
+                if name in excluded or region.bbox is None
+                or len(region.indices_zyx) < self.correction_min_points
+                or self._bbox_touches_array_boundary(region.bbox, seg_array.shape)
+            ]
+            candidate = estimate_spine_axial_symmetry(
+                {name: region.indices_zyx for name, region in regions.items() if name not in skipped},
+                image,
+                threshold_degrees=self.correction_angle_threshold_degrees,
+                min_labels=self.correction_min_vertebrae,
+                max_angle_spread_degrees=self.correction_max_label_angle_spread_degrees,
+            )
+            candidate["skipped_label_names"] = list(dict.fromkeys(
+                skipped + candidate.get("skipped_label_names", [])
+            ))
+            should_correct = bool(candidate.get("should_correct"))
+            return {
+                **candidate,
+                "axis": "image_z",
+                "correction_status": "candidate" if should_correct else "rejected",
+                "correction_applied": False,
             }
         skew_info = self._detect_target_axial_skew(
             seg_array,
@@ -909,17 +974,18 @@ class LocalizationOperations(
                 'reason': '椎体横状位候选角离散过大，拒绝整体 XY 回正候选',
             }
 
-        mean_raw_angle = self._weighted_axis_angle_mean([
-            (item['raw_pca_angle_degrees'], item['point_count'])
+        # PCA 最长轴可能在左右/前后轴之间切换。先归一成偏角再聚合，
+        # 不能把约 -85° 与 +5° 两条等价基准混合成相反的旋转。
+        deviation_angle = self._weighted_axis_angle_mean([
+            (item['angle_degrees'], item['point_count'])
             for item in label_angles
         ])
-        deviation_angle = self._deviation_from_nearest_axial_axis(mean_raw_angle)
         abs_angle = abs(deviation_angle)
         return {
             **base_info,
             'angle_spread_degrees': float(angle_spread),
             'median_label_angle_degrees': median_angle,
-            'raw_pca_angle_degrees': float(mean_raw_angle),
+            'raw_pca_angle_degrees': float(deviation_angle),
             'angle_degrees': float(deviation_angle),
             'abs_angle_degrees': float(abs_angle),
             'enough_points': True,
@@ -1272,9 +1338,19 @@ class LocalizationOperations(
         ]
         center_point = image.TransformContinuousIndexToPhysicalPoint(center_index)
 
-        transform = sitk.Euler3DTransform()
+        # 候选角属于图像索引 XY 平面。映射到物理坐标后再重采样，
+        # 斜扫描和反向输入不能直接当作患者物理 Z 轴旋转。
+        angle = math.radians(rotation_degrees)
+        local_rotation = np.array([
+            [math.cos(angle), -math.sin(angle), 0.0],
+            [math.sin(angle), math.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+        physical_rotation = direction @ local_rotation @ np.linalg.inv(direction)
+        transform = sitk.AffineTransform(3)
         transform.SetCenter(center_point)
-        transform.SetRotation(0.0, 0.0, math.radians(rotation_degrees))
+        transform.SetMatrix(tuple(physical_rotation.ravel()))
 
         resampler = sitk.ResampleImageFilter()
         resampler.SetReferenceImage(image)
@@ -2357,6 +2433,16 @@ class LocalizationOperations(
                     else None
                 ),
             }
+            # 完整椎体的左右对称面与过滤主体端面职责不同，不能用主体
+            # 截面最长轴代替左右方向。将可靠姿态传给整切和椎间斜切规划。
+            full_indices = (
+                label_regions[label_name].indices_zyx
+                if label_regions is not None and label_name in label_regions
+                else np.argwhere(np.isin(seg_array, target.label_ids))
+            )
+            filtered_annotation_centroids[label_name].update(
+                estimate_spine_label_symmetry(full_indices, image)
+            )
 
         interspace_body_pairs: Dict[str, Dict[str, Any]] = {}
         pair_definitions = []
@@ -2394,7 +2480,11 @@ class LocalizationOperations(
                 if not region or not start_labels or not end_labels:
                     raise ValueError(f"椎间隙区域配置无效: {interval}")
                 pair_definitions.append(
-                    (str(region), str(start_labels[0]), str(end_labels[0]))
+                    (
+                        str(region),
+                        cls._resolve_spine_endpoint_label(str(start_labels[0]), label_targets),
+                        cls._resolve_spine_endpoint_label(str(end_labels[0]), label_targets),
+                    )
                 )
 
         for group_name, upper_label, lower_label in pair_definitions:

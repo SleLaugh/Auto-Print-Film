@@ -29,11 +29,24 @@ def check_packaging():
     from pydicom.uid import ExplicitVRLittleEndian, SecondaryCaptureImageStorage
     from src.config import load_app_config
     from src.models.window import load_window_presets
+    from src.anatomy.symmetry import estimate_reflection_symmetry_plane
     from src.runtime import application_root, config_path
 
     assert getattr(sys, "frozen", False), "Expected a frozen executable"
     assert importlib.util.find_spec("torch") is None
     assert importlib.util.find_spec("nnunetv2") is None
+    # Exercise both SciPy's compiled nearest-neighbour tree and optimizer, since
+    # importing SciPy alone cannot verify that these packaged extensions load.
+    points = np.asarray([
+        [sign * x, y, z]
+        for sign in (-1, 1)
+        for x in (4.0, 6.0)
+        for y in (-8.0, -3.0, 3.0, 8.0)
+        for z in (-12.0, -6.0, 0.0, 6.0, 12.0)
+    ])
+    normal, _, pose = estimate_reflection_symmetry_plane(points, np.eye(3))
+    assert pose["status"] in {"accepted", "unchanged"}, pose
+    assert np.allclose(normal, [1.0, 0.0, 0.0], atol=0.02), normal
     array = np.arange(16, dtype=np.uint16).reshape(4, 4)
     with tempfile.TemporaryDirectory(prefix="autoprintfilm-library-check-") as directory:
         path = Path(directory) / "synthetic.nii.gz"

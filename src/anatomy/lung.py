@@ -3,11 +3,11 @@
 
 """从一个整肺分割 Mask 估计肺部全局解剖坐标系。"""
 
-import math
 from typing import Any
 
 import numpy as np
 import SimpleITK as sitk
+from scipy.spatial import cKDTree
 
 from src.models import (
     AnatomicalBounds,
@@ -16,20 +16,15 @@ from src.models import (
     AxisBounds,
     Point3D,
 )
+from .symmetry import build_symmetry_frame_axes, estimate_reflection_symmetry_plane
+from .orientation import patient_reference_axes
 
 
 _MIN_TARGET_POINTS = 32
 _MAX_DOMINANT_COMPONENTS = 2
 _MIN_COMPONENT_SIZE_RATIO = 0.05
-
-
-def _normalize(vector: np.ndarray) -> np.ndarray:
-    """把物理方向归一化为单位向量，并拒绝零长度或非法向量。"""
-
-    length = float(np.linalg.norm(vector))
-    if not math.isfinite(length) or length <= 0.0:
-        raise ValueError("解剖方向向量长度无效")
-    return vector / length
+_BILATERAL_COMPONENT_SAMPLE_LIMIT = 3000
+_MIN_CROSS_COMPONENT_MATCH_FRACTION = 0.80
 
 
 def _point(vector: np.ndarray) -> Point3D:
@@ -41,12 +36,8 @@ def _point(vector: np.ndarray) -> Point3D:
 def _dicom_axes(image: sitk.Image) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """从方向矩阵读取 DICOM 左右、前后、头脚三个物理单位轴。"""
 
-    direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
-    return (
-        _normalize(direction[:, 0]),
-        _normalize(direction[:, 1]),
-        _normalize(direction[:, 2]),
-    )
+    axes = patient_reference_axes(np.asarray(image.GetDirection()))
+    return tuple(axes[:, axis] for axis in range(3))
 
 
 def target_mask_physical_points(mask: np.ndarray, image: sitk.Image) -> np.ndarray:
@@ -64,9 +55,11 @@ def target_mask_physical_points(mask: np.ndarray, image: sitk.Image) -> np.ndarr
     return origin + (indices_xyz * spacing) @ direction.T
 
 
-def retain_dominant_lung_components(
+def _retain_lung_components(
     target_mask: np.ndarray,
-) -> tuple[np.ndarray, dict[str, Any]]:
+    *,
+    collect_regions: bool = False,
+) -> tuple[np.ndarray, dict[str, Any], list[dict[str, Any]]]:
     """保留一个整肺标签中的一至两个主体，排除远端小块误分割。
 
     整肺模型可能把左右肺输出为两个互不连通的区域，也可能经气道连接成一个
@@ -77,7 +70,13 @@ def retain_dominant_lung_components(
     if target_mask.ndim != 3:
         raise ValueError("肺部目标 Mask 必须是三维数组")
     binary = sitk.GetImageFromArray(target_mask.astype(np.uint8, copy=False))
-    components = sitk.GetArrayFromImage(sitk.ConnectedComponent(binary))
+    component_image = sitk.ConnectedComponent(binary)
+    shape_statistics = None
+    if collect_regions:
+        shape_statistics = sitk.LabelShapeStatisticsImageFilter()
+        shape_statistics.Execute(component_image)
+    components = sitk.GetArrayFromImage(component_image)
+    del component_image
     sizes = np.bincount(components.ravel())
     if len(sizes) <= 1:
         raise ValueError("肺部目标 Mask 为空")
@@ -92,6 +91,28 @@ def retain_dominant_lung_components(
     retained_mask = np.isin(components, retained_ids)
     retained_count = int(np.count_nonzero(retained_mask))
     original_count = int(np.count_nonzero(target_mask))
+    regions = []
+    if collect_regions:
+        interior = np.zeros_like(retained_mask, dtype=bool)
+        interior[1:-1, 1:-1, 1:-1] = (
+            retained_mask[1:-1, 1:-1, 1:-1]
+            & retained_mask[:-2, 1:-1, 1:-1]
+            & retained_mask[2:, 1:-1, 1:-1]
+            & retained_mask[1:-1, :-2, 1:-1]
+            & retained_mask[1:-1, 2:, 1:-1]
+            & retained_mask[1:-1, 1:-1, :-2]
+            & retained_mask[1:-1, 1:-1, 2:]
+        )
+        surface_indices = np.argwhere(retained_mask & ~interior)
+        surface_labels = components[tuple(surface_indices.T)]
+        for component_id in retained_ids:
+            surface_order = np.flatnonzero(surface_labels == component_id)
+            regions.append({
+                # 连通域在单位索引网格上计算；实际毫米几何在调用方恢复。
+                "centroid_index_xyz": shape_statistics.GetCentroid(component_id),
+                "surface_indices_zyx": surface_indices[surface_order],
+                "surface_order": surface_order,
+            })
     return retained_mask, {
         "component_count": int(len(component_ids)),
         "retained_component_count": len(retained_ids),
@@ -99,7 +120,80 @@ def retain_dominant_lung_components(
         "retained_point_count": retained_count,
         "discarded_point_count": original_count - retained_count,
         "retained_component_sizes": [int(sizes[value]) for value in retained_ids],
+    }, regions
+
+
+def retain_dominant_lung_components(
+    target_mask: np.ndarray,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """保留既有双返回值接口；姿态调用另保留稀疏边界的连通域身份。"""
+
+    retained_mask, diagnostics, _ = _retain_lung_components(target_mask)
+    return retained_mask, diagnostics
+
+
+def _bilateral_component_evidence(
+    surfaces: list[np.ndarray],
+    centroids: np.ndarray,
+    normal: np.ndarray,
+    plane_center: np.ndarray,
+    minimum_spacing: float,
+) -> dict[str, Any]:
+    """验证候选面确实交换两个左右主体，不能让同侧碎块各自反射自身。"""
+
+    signed_distances = (centroids - plane_center) @ normal
+    separation = abs(float(signed_distances[0] - signed_distances[1]))
+    widths = [
+        float(np.diff(np.percentile(points @ normal, [2.0, 98.0]))[0])
+        for points in surfaces
+    ]
+    required_separation = max(5.0, 4.0 * minimum_spacing, 0.25 * sum(widths))
+    diagnostics: dict[str, Any] = {
+        "reliable": False,
+        "centroid_signed_distances_mm": signed_distances.tolist(),
+        "centroid_lr_separation_mm": separation,
+        "required_lr_separation_mm": required_separation,
+        "min_cross_component_match_fraction": _MIN_CROSS_COMPONENT_MATCH_FRACTION,
+        "reason": "",
     }
+    if separation < required_separation:
+        diagnostics["reason"] = "两个肺主体沿候选左右轴分离不足，不能证明位于双侧"
+        return diagnostics
+    side_margin = max(minimum_spacing, 0.10 * separation)
+    if (
+        float(signed_distances[0] * signed_distances[1]) >= 0.0
+        or float(np.min(np.abs(signed_distances))) < side_margin
+    ):
+        diagnostics["reason"] = "两个肺主体质心未可靠分居候选对称面两侧"
+        return diagnostics
+
+    samples = []
+    for points in surfaces:
+        if len(points) > _BILATERAL_COMPONENT_SAMPLE_LIMIT:
+            selection = np.sort(np.random.default_rng(0).choice(
+                len(points), _BILATERAL_COMPONENT_SAMPLE_LIMIT, replace=False,
+            ))
+            points = points[selection]
+        samples.append(points)
+    joint = np.concatenate(samples)
+    component_ids = np.concatenate([
+        np.full(len(points), index, dtype=np.uint8)
+        for index, points in enumerate(samples)
+    ])
+    tree = cKDTree(joint)
+    cross_fractions = []
+    for index, points in enumerate(samples):
+        reflected = points - 2.0 * ((points - plane_center) @ normal)[:, None] * normal
+        closest = tree.query(reflected, k=1, workers=1)[1]
+        cross_fractions.append(float(np.mean(component_ids[closest] != index)))
+    diagnostics["cross_component_match_fractions"] = cross_fractions
+    diagnostics["component_sample_counts"] = [int(len(points)) for points in samples]
+    if min(cross_fractions) < _MIN_CROSS_COMPONENT_MATCH_FRACTION:
+        diagnostics["reason"] = "肺主体镜像主要匹配自身，缺少跨左右主体的对应证据"
+        return diagnostics
+    diagnostics["reliable"] = True
+    diagnostics["reason"] = "两个独立主体分居对称面两侧且镜像跨主体对应"
+    return diagnostics
 
 
 def _bounds(points: np.ndarray, axis: np.ndarray) -> AxisBounds:
@@ -143,34 +237,89 @@ def estimate_lung_frame_with_diagnostics(
     target_mask: np.ndarray,
     image: sitk.Image,
 ) -> tuple[AnatomicalGeometryResult, dict[str, Any]]:
-    """用肺主体确定中心和范围，方向始终保持输入图像的 DICOM 三轴。"""
+    """以双肺主体的可靠镜像面对齐左右方向，保留未被确定的俯仰基准。
 
-    dominant_mask, component_diagnostics = retain_dominant_lung_components(target_mask)
+    肺自身存在左右大小和形态差异。缺少双侧主体或镜像质量不足时保留
+    输入方向并警告，不把形态高低差直接解释为患者侧倾。
+    """
+
+    dominant_mask, component_diagnostics, regions = _retain_lung_components(
+        target_mask, collect_regions=True,
+    )
     points = target_mask_physical_points(dominant_mask, image)
     dicom_lr, dicom_ap, dicom_si = _dicom_axes(image)
     diagnostics: dict[str, Any] = {
         "point_count": int(len(points)),
-        "angle_source": "disabled",
+        "angle_source": "bilateral_reflection_symmetry",
         "correction_degrees": 0.0,
         **component_diagnostics,
     }
+    axes = np.column_stack((dicom_lr, dicom_ap, dicom_si))
+    applied = False
     if len(points) < _MIN_TARGET_POINTS:
         diagnostics["fallback_reason"] = "肺部目标体素太少"
         method = "dicom_axes_fallback"
         confidence = 0.0
         warnings = ["肺部目标体素太少，仅保留目标中心和DICOM标准方向"]
-    else:
+    elif component_diagnostics["retained_component_count"] < 2:
         method = "lung_dicom_axes"
-        confidence = 1.0
-        warnings = []
+        confidence = 0.0
+        warnings = ["缺少两个独立肺主体，左右姿态证据不足，保留输入方向"]
+        diagnostics["fallback_reason"] = warnings[0]
+    else:
+        spacing = np.asarray(image.GetSpacing(), dtype=float)
+        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+        surfaces = [
+            np.asarray(image.GetOrigin())
+            + (region["surface_indices_zyx"][:, ::-1] * spacing) @ direction.T
+            for region in regions
+        ]
+        centroids = np.asarray([
+            image.TransformContinuousIndexToPhysicalPoint(region["centroid_index_xyz"])
+            for region in regions
+        ])
+        # 新增连通域身份检查不能改变原来全局 z/y/x 边界顺序，否则固定种子
+        # 抽样也会换一批点，使本次双侧证据修复意外改变原镜像优化候选。
+        surface_order = np.argsort(np.concatenate([
+            region["surface_order"] for region in regions
+        ]))
+        normal, plane_center, symmetry = estimate_reflection_symmetry_plane(
+            np.concatenate(surfaces)[surface_order], axes,
+        )
+        if symmetry["status"] in {"accepted", "unchanged"}:
+            bilateral = _bilateral_component_evidence(
+                surfaces, centroids, normal, plane_center, float(np.min(spacing)),
+            )
+            diagnostics["bilateral_evidence"] = bilateral
+            if not bilateral["reliable"]:
+                reason = bilateral["reason"] + "，保留输入方向"
+                symmetry = {
+                    **symmetry,
+                    "accepted": False,
+                    "source_status": symmetry["status"],
+                    "status": "rejected",
+                    "reason": reason,
+                    "warnings": [reason],
+                    "confidence": 0.0,
+                }
+                normal = axes[:, 0]
+        diagnostics["symmetry"] = symmetry
+        axes = build_symmetry_frame_axes(normal, axes)
+        applied = bool(symmetry["accepted"])
+        method = "lung_reflection_symmetry" if applied else "lung_dicom_axes"
+        confidence = float(symmetry["confidence"])
+        warnings = list(symmetry["warnings"])
+        diagnostics["correction_degrees"] = float(symmetry["angle_degrees"]) if applied else 0.0
+        if symmetry["status"] == "rejected":
+            diagnostics["fallback_reason"] = symmetry["reason"]
     frame = _build_frame(
         points,
-        dicom_lr,
-        dicom_ap,
-        dicom_si,
+        axes[:, 0],
+        axes[:, 1],
+        axes[:, 2],
         method=method,
         confidence=confidence,
-        applied=False,
+        applied=applied,
         warnings=warnings,
     )
     return AnatomicalGeometryResult(global_frame=frame, local_frames={}), diagnostics

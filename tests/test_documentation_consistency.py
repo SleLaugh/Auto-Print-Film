@@ -108,6 +108,8 @@ class DocumentationConsistencyTests(unittest.TestCase):
             "当前实现应观测到多个写入器重叠",
             "CPR 规划是否降级由第六阶段决定",
             "任一计划失败时不应发布该计划的半成品正式 DICOM",
+            "胸椎横状位按临床规则保持",
+            "使用投影到切片平面的 DICOM 头脚轴",
         )
         current_documents = [PROJECT_ROOT / "README.md"]
         current_documents.extend(
@@ -130,6 +132,21 @@ class DocumentationConsistencyTests(unittest.TestCase):
                     text,
                     msg=f"{path.relative_to(PROJECT_ROOT)} 仍包含过时结论: {statement}",
                 )
+
+    def test_pose_documentation_covers_all_parts_and_quality_fallback(self):
+        """统一姿态说明必须包含全部部位、保留俯仰和质量回退。"""
+
+        text = (
+            SUPERPOWERS_ROOT / "modules/reconstruction"
+            / "2026-10-16-统一解剖姿态与三状位回正设计.md"
+        ).read_text(encoding="utf-8")
+        for part in ("头骨", "髋骨", "肺部", "颈椎", "胸椎", "腰椎"):
+            self.assertIn(part, text)
+        self.assertIn("保留", text)
+        self.assertIn("前后倾角", text)
+        self.assertIn("质量", text)
+        self.assertIn("回退", text)
+        self.assertIn("scipy", text)
 
     def test_current_spine_summaries_declare_runtime_contract(self):
         """定位和重建入口必须写出配置范围、C1 配置和实际 CPR 状位。"""

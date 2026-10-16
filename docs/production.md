@@ -128,6 +128,20 @@ systemctl is-active "$WORKER_UNIT"
 - `window_presets.json`：窗宽窗位。
 - `logger_config.json`：日志与调试设置。
 
+三维回正涉及应用代码和 SciPy 本地计算依赖。源码环境执行
+`python -m pip install -r requirements.txt`；已有发布程序须重新 `dev build` 并更新完整包。
+分割缓存仍可复用，旧切片不会自动改变，需要重新执行切割。头、髋、双肺由可靠左右
+对称面统一三状位方向；头部保留输入前后倾角。脊柱还按各椎体、椎间隙的局部方向处理。
+证据不足时保留输入或既有方向并记录告警；回正只改变采样方向，不强制镜像真实结构。
+存储轴反向由 `patient_reference_axes` 统一按患者语义取符号，SI 朝 LPS `+Z`，
+冠状、矢状成片头侧向上；不改变原始物理坐标换算或已有斜扫描、头部俯仰基准。
+镜像质量检查包含 LR 方向唯一性：涉及 LR 的近重根、圆柱角向信息不足或搜索范围内
+等价对称面会拒绝更新，单纯 AP/SI 等谱不否决独立 LR。肺部还须在镜像质量通过后
+验证两主体分居对称面两侧、沿 LR 分离且反射跨主体匹配，不能只凭连通域数量。
+S1 使用实际 `label_targets`，优先 `vertebrae_S1`、只提供 `sacrum` 时回退；标准配置
+不变，坐标端点、诊断及 `L5_S1` 的主体配对和输出计划均使用实际标签名。
+详细方法见[统一姿态说明](superpowers/modules/reconstruction/2026-10-16-统一解剖姿态与三状位回正设计.md)。
+
 `nnUNet_raw`、`nnUNet_preprocessed`、`nnUNet_results` 只配置模型目录。外部推理命令需要单独指定；服务的 PATH 可能不包含开发环境的命令目录，生产应使用完整命令路径。本机已确认的配置为（合并到原 JSON，保留其他字段）：
 
 ```json
@@ -226,7 +240,7 @@ dev build --refresh-runtime
 发布前验证包括：
 
 - 移动到不同目录后，从其他工作目录运行可执行程序 `--help`。
-- NumPy 运算、SimpleITK 合成 NIfTI 写入/读取，以及 pydicom 合成 DICOM 写入/读取、像素和中文信息。
+- NumPy 运算、SciPy 镜像面拟合（最近邻树及优化器）、SimpleITK 合成 NIfTI 写入/读取，以及 pydicom 合成 DICOM 写入/读取、像素和中文信息。
 - 外置配置路径正确，修改外置日志配置后新启动的程序读取修改值，验证结束恢复原配置。
 - 确认包内不含 torch、nnunetv2 或应用源码入口。
 

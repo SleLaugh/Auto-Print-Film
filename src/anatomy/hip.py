@@ -1,14 +1,19 @@
 #!/src/anatomy/hip.py
 # -*- coding: utf-8 -*-
 
-"""根据左右髋骨外侧顶部估计髋骨横状位的解剖坐标。"""
+"""根据双侧髋骨的镜像对称平面建立三状位共用的解剖坐标。"""
 
-import math
 from typing import Any
 
 import numpy as np
 import SimpleITK as sitk
+from scipy.ndimage import binary_erosion
 
+from src.anatomy.symmetry import (
+    build_symmetry_frame_axes,
+    estimate_reflection_symmetry_plane,
+)
+from src.anatomy.orientation import patient_reference_axes
 from src.models import (
     AnatomicalBounds,
     AnatomicalFrame,
@@ -21,15 +26,7 @@ from src.models import (
 _SUPERIOR_CAP_THICKNESS_MM = 5.0
 _ROBUST_SUPERIOR_PERCENTILE = 99.0
 _MIN_COMPONENT_POINTS = 8
-
-
-def _normalize(vector: np.ndarray, error_message: str) -> np.ndarray:
-    """把物理方向归一化，并为无效方向给出明确的业务异常。"""
-
-    length = float(np.linalg.norm(vector))
-    if not math.isfinite(length) or length <= 1e-8:
-        raise ValueError(error_message)
-    return vector / length
+_MIN_BILATERAL_VOLUME_RATIO = 0.25
 
 
 def _point(vector: np.ndarray) -> Point3D:
@@ -47,11 +44,8 @@ def _point_dict(vector: np.ndarray) -> dict[str, float]:
 def _dicom_axes(image: sitk.Image) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """从图像方向矩阵读取左右、前后和头脚三个 DICOM 物理轴。"""
 
-    direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
-    return tuple(
-        _normalize(direction[:, axis], "DICOM 图像方向无效")
-        for axis in range(3)
-    )
+    axes = patient_reference_axes(np.asarray(image.GetDirection()))
+    return tuple(axes[:, axis] for axis in range(3))
 
 
 def _physical_points(mask: np.ndarray, image: sitk.Image, side_name: str) -> np.ndarray:
@@ -75,7 +69,7 @@ def _retain_largest_component(
     mask: np.ndarray,
     side_name: str,
 ) -> tuple[np.ndarray, dict[str, int]]:
-    """每侧只保留最大连通主体，避免孤立误分割改变顶部和切片范围。"""
+    """每侧只保留最大连通主体，避免孤立误分割改变姿态和切片范围。"""
 
     binary = sitk.GetImageFromArray(mask.astype(np.uint8, copy=False))
     components = sitk.GetArrayFromImage(sitk.ConnectedComponent(binary))
@@ -86,7 +80,7 @@ def _retain_largest_component(
     retained_mask = components == component_id
     retained_count = int(np.count_nonzero(retained_mask))
     if retained_count < _MIN_COMPONENT_POINTS:
-        raise ValueError(f"{side_name}髋骨主体体素太少，无法计算顶部方向")
+        raise ValueError(f"{side_name}髋骨主体体素太少，无法估计姿态")
     original_count = int(np.count_nonzero(mask))
     return retained_mask, {
         "component_count": int(len(sizes) - 1),
@@ -135,17 +129,46 @@ def _axis_bounds(points: np.ndarray, axis: np.ndarray) -> AxisBounds:
     return AxisBounds(float(np.min(projection)), float(np.max(projection)))
 
 
+def _bilateral_quality_reason(
+    left_component: np.ndarray,
+    right_component: np.ndarray,
+    left_points: np.ndarray,
+    right_points: np.ndarray,
+    spacing: tuple[float, ...],
+) -> str:
+    """拒绝重叠、严重单侧缺损和两侧质心无法区分的姿态估计。"""
+
+    if np.any(left_component & right_component):
+        return "左右髋骨主体存在重叠"
+    counts = (len(left_points), len(right_points))
+    if min(counts) / max(counts) < _MIN_BILATERAL_VOLUME_RATIO:
+        return "左右髋骨主体体积差异过大，可能存在单侧缺损"
+    center_distance = float(np.linalg.norm(
+        np.mean(left_points, axis=0) - np.mean(right_points, axis=0)
+    ))
+    if center_distance < 2.0 * min(spacing):
+        return "左右髋骨质心距离过小，无法确定双侧方向"
+    return ""
+
+
+def _boundary_physical_points(mask: np.ndarray, image: sitk.Image) -> np.ndarray:
+    """用六邻域主体边界拟合镜像面，避免内部密集体素稀释轮廓误差。"""
+
+    boundary = mask & ~binary_erosion(mask, border_value=0)
+    return _physical_points(boundary, image, "双侧主体边界")
+
+
 def estimate_hip_frame_with_diagnostics(
     left_mask: np.ndarray,
     right_mask: np.ndarray,
     image: sitk.Image,
 ) -> tuple[AnatomicalGeometryResult, dict[str, Any]]:
-    """用左右髋骨外侧顶部 AB 线建立倾斜横切坐标及调试信息。
+    """由双侧主体的镜像对称性估计左右轴，生成统一的三维刚性坐标。
 
-    AB 只保留冠状面中的左右和头脚分量，前后轴沿用 DICOM 方向。这样仅改变
-    横状位角度，不会引入额外的前后旋转。AB 只负责确定角度；最终上下界由
-    两个髋骨主体全部物理点沿最终法向的投影极值决定，保证整组平行切片完整
-    覆盖目标。
+    左右轴保留横状面旋转和左右高低倾斜；前后轴由输入 AP 轴在左右轴的
+    正交平面内投影得到，不根据骨盆形态额外估计俯仰。顶部 AB 仅供诊断，
+    不再决定切片角度。质量不足时保留输入方向并发出警告；最终三个方向的
+    覆盖范围始终重新投影全部保留主体，不能用采样点或 AB 代替完整范围。
     """
 
     left_component, left_stats = _retain_largest_component(left_mask, "左侧")
@@ -154,6 +177,7 @@ def estimate_hip_frame_with_diagnostics(
     right_points = _physical_points(right_component, image, "右侧")
     all_points = np.concatenate((left_points, right_points), axis=0)
     dicom_lr, dicom_ap, dicom_si = _dicom_axes(image)
+    reference_axes = np.column_stack((dicom_lr, dicom_ap, dicom_si))
     combined_lr_center = float(np.mean(all_points @ dicom_lr))
 
     left_landmark, left_cap_stats = _outer_superior_landmark(
@@ -169,27 +193,57 @@ def estimate_hip_frame_with_diagnostics(
         combined_lr_center=combined_lr_center,
     )
 
-    ab_vector = right_landmark - left_landmark
-    coronal_ab = ab_vector - float(np.dot(ab_vector, dicom_ap)) * dicom_ap
-    lr_axis = _normalize(coronal_ab, "髋骨左右外侧顶部 AB 长度无效")
-    if float(np.dot(lr_axis, dicom_lr)) < 0.0:
-        lr_axis = -lr_axis
-    ap_axis = dicom_ap
-    si_axis = _normalize(
-        np.cross(lr_axis, ap_axis),
-        "髋骨横切坐标无法正交化",
+    quality_reason = _bilateral_quality_reason(
+        left_component,
+        right_component,
+        left_points,
+        right_points,
+        image.GetSpacing(),
     )
-    if float(np.dot(si_axis, dicom_si)) < 0.0:
-        # 同时翻转平面内左右轴，保持右手系且使头脚法向与 DICOM 同向。
-        lr_axis = -lr_axis
-        si_axis = -si_axis
+    if quality_reason:
+        lr_axis = dicom_lr
+        symmetry_center = np.mean(all_points, axis=0)
+        symmetry_diagnostics = {
+            "accepted": False,
+            "status": "rejected",
+            "reason": quality_reason,
+            "warnings": [quality_reason],
+            "point_count": int(len(all_points)),
+            "sample_count": 0,
+            "angle_degrees": 0.0,
+        }
+    else:
+        boundary_points = np.concatenate((
+            _boundary_physical_points(left_component, image),
+            _boundary_physical_points(right_component, image),
+        ))
+        lr_axis, symmetry_center, symmetry_diagnostics = (
+            estimate_reflection_symmetry_plane(
+                boundary_points,
+                reference_axes,
+            )
+        )
+    accepted = bool(symmetry_diagnostics["accepted"])
+    if not accepted:
+        lr_axis = dicom_lr
+    axes = build_symmetry_frame_axes(
+        np.asarray(lr_axis),
+        reference_axes,
+    )
+    lr_axis, ap_axis, si_axis = axes.T
+
+    warnings = list(symmetry_diagnostics.get("warnings", []))
+    rejected = symmetry_diagnostics.get("status") == "rejected"
+    if rejected and not warnings:
+        warnings.append(str(symmetry_diagnostics.get("reason") or "镜像对称估计质量不足"))
+    warnings = [f"髋骨姿态回正未采用，保留输入方向: {warning}" for warning in warnings]
 
     ab_plane_projection = float(np.mean([
         np.dot(left_landmark, si_axis),
         np.dot(right_landmark, si_axis),
     ]))
-    # AB 区域中心只用于稳健估计角度，不能直接作为头侧覆盖边界。角度确定后
-    # 必须重新投影完整主体，使用与 AB 平行的最外侧支撑平面包住全部髋骨点。
+    # 对称性拟合只负责方向；覆盖边界必须来自完整主体，避免优化采样或顶部
+    # 诊断点遗漏远端，使三状位中的任意一组切片裁掉真实髋骨结构。
     superior_inferior_bounds = _axis_bounds(all_points, si_axis)
     if (
         superior_inferior_bounds.maximum
@@ -207,10 +261,14 @@ def estimate_hip_frame_with_diagnostics(
             anterior_posterior=_axis_bounds(all_points, ap_axis),
             superior_inferior=superior_inferior_bounds,
         ),
-        method="hip_outer_superior_caps",
-        confidence=1.0,
-        applied=True,
-        warnings=[],
+        method="hip_reflection_symmetry" if accepted else "hip_dicom_axes",
+        confidence=(
+            float(symmetry_diagnostics.get("confidence", 1.0))
+            if accepted
+            else (0.0 if rejected else 1.0)
+        ),
+        applied=accepted,
+        warnings=warnings,
     )
     diagnostics: dict[str, Any] = {
         "top_cap_thickness_mm": _SUPERIOR_CAP_THICKNESS_MM,
@@ -225,6 +283,10 @@ def estimate_hip_frame_with_diagnostics(
         "right_discarded_point_count": right_stats["discarded_point_count"],
         "left_cap": left_cap_stats,
         "right_cap": right_cap_stats,
+        "symmetry": symmetry_diagnostics,
+        "symmetry_plane_center": _point_dict(np.asarray(symmetry_center)),
+        "pitch_source": "projected_input_anterior_posterior_axis",
+        "ab_role": "diagnostic_only",
         "ab_plane_projection_mm": ab_plane_projection,
         "coverage_superior_projection_mm": superior_inferior_bounds.maximum,
         "coverage_inferior_projection_mm": superior_inferior_bounds.minimum,

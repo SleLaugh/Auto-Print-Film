@@ -2,5 +2,6 @@
 numpy>=1.24.0
 SimpleITK>=2.0.0
 pydicom>=3.0.0
+scipy>=1.10,<2
 
 # nnUNet / PyTorch 在外部推理环境中维护，本程序通过配置调用外部命令。

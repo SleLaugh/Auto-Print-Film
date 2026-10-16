@@ -88,6 +88,7 @@ class SpatialCorrectionStage(LocalizationOperations):
             label_targets,
             slice_part=request.slice_part.value,
             label_regions=label_regions,
+            image=image,
         )
         DebugLog(
             "  横状位 XY 候选角: "

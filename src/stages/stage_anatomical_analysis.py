@@ -120,7 +120,8 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             {},
         ).get("interspace", {}).get("intervals", [])
         label_masks: Dict[str, np.ndarray] = {}
-        if slice_part in {"颈椎", "胸椎", "髋骨"}:
+        # 脊柱直接复用已有索引，避免每个椎体额外常驻一份整卷 bool mask。
+        if slice_part == "髋骨":
             for label_name, region in label_regions.items():
                 label_mask = np.zeros(seg_array.shape, dtype=bool)
                 if region.indices_zyx.size:
@@ -133,16 +134,13 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         ].get("whole_range", resolved_cut_config)
         start_labels = anatomical_cut_config.get("start_labels") or []
         end_labels = anatomical_cut_config.get("end_labels") or []
-        anatomical_geometry, anatomical_diagnostics = (
-            self._build_anatomical_geometry(
-                slice_part=slice_part,
-                target_mask=target_mask,
-                image=image,
-                label_masks=label_masks,
-                start_label=start_labels[0] if start_labels else None,
-                end_label=end_labels[0] if end_labels else None,
-            )
-        )
+        start_label = start_labels[0] if start_labels else None
+        end_label = end_labels[0] if end_labels else None
+        if slice_part in {"颈椎", "胸椎", "腰椎"}:
+            # 范围配置使用标准椎体名，实际模型可能以 sacrum 表示 S1。
+            # 仅解析本次已验证的标签，不改写持久配置或缺标签校验政策。
+            start_label = self._resolve_spine_endpoint_label(start_label, label_targets)
+            end_label = self._resolve_spine_endpoint_label(end_label, label_targets)
         spine_geometry = self._build_spine_body_geometry(
             slice_part=slice_part,
             image=image,
@@ -151,6 +149,19 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             label_regions=label_regions,
             excluded_labels=excluded_spine_labels,
             interspace_regions=interspace_regions,
+        )
+        anatomical_geometry, anatomical_diagnostics = self._build_anatomical_geometry(
+            slice_part=slice_part,
+            target_mask=target_mask,
+            image=image,
+            label_masks=label_masks,
+            start_label=start_label,
+            end_label=end_label,
+            label_pose_annotations=(spine_geometry or {}).get("filtered_annotation_centroids"),
+            label_indices_zyx=(
+                {name: region.indices_zyx for name, region in label_regions.items()}
+                if slice_part in {"颈椎", "胸椎", "腰椎"} else None
+            ),
         )
 
         debug_label_path = ""
@@ -260,12 +271,18 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         if anatomical_geometry is not None:
             payload["anatomical_geometry"] = anatomical_geometry.to_dict()
 
-        context.set_stage_result(AnatomicalAnalysisStageResult(payload=payload))
+        context.set_stage_result(AnatomicalAnalysisStageResult(
+            payload=payload,
+            warnings=list(anatomical_geometry.global_frame.warnings) if anatomical_geometry else [],
+        ))
 
-        DebugLog(
-            "  解剖坐标: "
-            f"{'applied' if anatomical_geometry is not None else 'skipped'}"
-        )
+        if anatomical_geometry is not None:
+            frame = anatomical_geometry.global_frame
+            DebugLog(f"  解剖坐标: {frame.method}, pose_applied={frame.applied}")
+            for warning in frame.warnings:
+                DebugLog(f"  解剖坐标告警: {warning}")
+        else:
+            DebugLog("  解剖坐标: skipped")
         DebugLog(
             "  脊柱专用几何: "
             f"{'applied' if spine_geometry is not None else 'skipped'}"

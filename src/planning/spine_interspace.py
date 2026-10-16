@@ -2,6 +2,7 @@
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from src.models import Point3D
 from src.models.enums import PlaneTypeEnum, SliceType
 from src.planning.base import PlanningResult
 from src.planning.spine_common import (
@@ -11,6 +12,7 @@ from src.planning.spine_common import (
 from src.planning.spine_cpr import configured_whole_range_spine_labels
 from src.planning.straight import (
     CutSegment,
+    StraightPlaneFrame,
     build_straight_slice_plan,
     default_straight_frame,
 )
@@ -20,6 +22,28 @@ SegmentResolver = Callable[
     [Dict[str, Any]],
     Tuple[List[CutSegment], List[str]],
 ]
+
+
+def _source_aligned_display_frame(
+    frame: StraightPlaneFrame,
+    reference: StraightPlaneFrame,
+) -> StraightPlaneFrame:
+    """保留切平面和左右方向，让画面上下方向与原图一致。"""
+
+    alignment = (
+        frame.col_dir.x * reference.col_dir.x
+        + frame.col_dir.y * reference.col_dir.y
+        + frame.col_dir.z * reference.col_dir.z
+    )
+    if alignment >= 0.0:
+        return frame
+    # 区间几何法向指向上位→下位，不能直接决定画面上下。同步反转
+    # 显示列轴和法向以保留右手坐标系；端点与切片排列顺序不变。
+    return StraightPlaneFrame(
+        row_dir=frame.row_dir,
+        col_dir=Point3D(-frame.col_dir.x, -frame.col_dir.y, -frame.col_dir.z),
+        normal=Point3D(-frame.normal.x, -frame.normal.y, -frame.normal.z),
+    )
 
 
 def configured_interspace_definitions(
@@ -91,9 +115,13 @@ def build_spine_interspace_plans(
                 )
                 continue
 
-            frame = segment.frame or default_straight_frame(
+            reference_frame = default_straight_frame(
                 plane_config.plane,
                 localization_result["image"],
+            )
+            frame = _source_aligned_display_frame(
+                segment.frame or reference_frame,
+                reference_frame,
             )
             plan = build_straight_slice_plan(
                 request=request,

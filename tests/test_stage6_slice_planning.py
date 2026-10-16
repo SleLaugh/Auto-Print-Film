@@ -5651,7 +5651,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         })
 
     def test_lumbar_interspace_planner_consumes_segment_face_frame(self):
-        """腰椎 planner 应把 resolver 的端面坐标系传给通用直线计划。"""
+        """腰椎 planner 保留端面切角，并把画面上下朝向对齐原图。"""
 
         localization_result = self._lumbar_localization_result()
         self._add_lumbar_face_geometry(localization_result)
@@ -5686,8 +5686,10 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertEqual(len(result.plans), 1)
         plan = result.plans[0]
         self.assertEqual(plan.group_name, "L1_L2")
-        self.assertLess(plan.slices[0].normal.y, -0.2)
-        self.assertLess(plan.slices[0].normal.z, -0.8)
+        self.assertGreater(plan.slices[0].normal.y, 0.2)
+        self.assertGreater(plan.slices[0].normal.z, 0.8)
+        self.assertGreater(plan.slices[0].col_dir.y, 0.8)
+        self.assertLess(plan.slices[0].col_dir.z, -0.2)
         self.assertAlmostEqual(plan.extent_mm.width, 10.0)
         self.assertAlmostEqual(plan.extent_mm.height, 12.660254, places=5)
 

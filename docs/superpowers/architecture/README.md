@@ -25,7 +25,8 @@
 - 交付报告的 `Plane` 始终是医学状位，重复配置通过 `ConfigId` 和实际 `Path` 区分；
   带序号的 `output_plane` 仅是目录隔离名。
 - nnUNet 返回数据集缺失时，失败报告动态说明模型 ID 和查找目录，不直接塞入整段堆栈；
-  其他推理错误保留短摘要，原始输出进入错误日志，详见交付报告设计。
+  其他推理错误优先提取 stdout/stderr 中具体的异常，通用后台进程死亡提示不直接判定为
+  内存不足；实际命令和原始输出进入默认开启的 `log/ErrorLog.txt`，仍遵守显式日志配置。
 - 外部请求信息统一使用 `SlicePart`、`StudyType`、`ScanThickness`；扫描厚度是必填
   毫米数值，第二阶段按 `slice_part_config.json` 中包含上下边界的区间选择模型，
   不再使用扫描厚度档位枚举。
@@ -34,6 +35,9 @@
 - `dev build` 以 PyInstaller onedir 生成直接可执行的应用；JSON 位于程序旁的
   `src/config/`。nnUNet、PyTorch 和模型属于外部推理环境，外部命令由
   `nnUNet_predict_command` 指定，`nnUNet_python` 仅在需要指定外部解释器时使用。
+- nnUNet 的预处理与导出进程数均默认 `1`，分别由 `num_processes_preprocessing` /
+  `num_processes_segmentation_export` 传给 `-npp` / `-nps`，严格接受正整数；
+  这些设置减少并发资源占用，不改变模型、TTA 或滑窗步长。
 - 统一切割部位配置采用严格校验：未知字段、无效标签引用、未使用区域、重叠模型区间和
   切法与区域类型不一致都必须在启动时失败，不能静默回退。
 - GDCM 写盘串行保护是跨模块安全约束，CT 成片和定位图写盘都应遵守。

@@ -88,6 +88,67 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.nnunet.step_size, 0.5)
         self.assertFalse(config.summary()["nnunet"]["disable_tta"])
         self.assertEqual(config.summary()["nnunet"]["step_size"], 0.5)
+        for name in (
+            "num_processes_preprocessing",
+            "num_processes_segmentation_export",
+        ):
+            self.assertEqual(getattr(config.nnunet, name), 1)
+            self.assertEqual(config.summary()["nnunet"][name], 1)
+
+    def test_worker_counts_follow_each_configuration_priority(self):
+        for name in (
+            "num_processes_preprocessing",
+            "num_processes_segmentation_export",
+        ):
+            sources = {
+                "explicit": {"nnunet": {name: 2}, name: 3},
+                "environ": {name: "4"},
+                "defaults": {"nnunet": {name: 5}, name: 6},
+            }
+            for expected in (2, 3, 4, 5, 6, 1):
+                with self.subTest(name=name, expected=expected):
+                    config = load_app_config(**sources)
+                    self.assertEqual(getattr(config.nnunet, name), expected)
+                    self.assertEqual(config.summary()["nnunet"][name], expected)
+                if expected == 2:
+                    sources["explicit"].pop("nnunet")
+                elif expected == 3:
+                    sources["explicit"].pop(name)
+                elif expected == 4:
+                    sources["environ"].pop(name)
+                elif expected == 5:
+                    sources["defaults"].pop("nnunet")
+                elif expected == 6:
+                    sources["defaults"].pop(name)
+
+    def test_worker_counts_accept_integer_text(self):
+        for value in ("2", " 3 ", "+4", "005"):
+            with self.subTest(value=value):
+                config = load_app_config(
+                    explicit={"nnunet": {"num_processes_preprocessing": value}},
+                    environ={"num_processes_segmentation_export": value},
+                    defaults={},
+                )
+                self.assertEqual(config.nnunet.num_processes_preprocessing, int(value))
+                self.assertEqual(config.nnunet.num_processes_segmentation_export, int(value))
+
+    def test_worker_counts_reject_nonpositive_and_noninteger_values(self):
+        for name in (
+            "num_processes_preprocessing",
+            "num_processes_segmentation_export",
+        ):
+            for value in (
+                True, False, 0, -1, 1.0, 1.5, float("nan"), float("inf"),
+                "0", "-1", "1.0", "1.5", "1e2", "true", "nan", "1_000", " ", [], {},
+            ):
+                for defaults in ({name: value}, {"nnunet": {name: value}}):
+                    with self.subTest(name=name, value=value, defaults=defaults):
+                        with self.assertRaisesRegex(ValueError, name):
+                            load_app_config(environ={}, defaults=defaults)
+            for value in (True, False, 0, -1, 1.0, 1.5, "1", None):
+                with self.subTest(name=name, typed_value=value):
+                    with self.assertRaisesRegex(ValueError, name):
+                        NnUNetConfig(**{name: value})
 
     def test_inference_options_follow_configuration_precedence(self):
         config = load_app_config(
@@ -195,6 +256,8 @@ class ConfigLoaderTest(unittest.TestCase):
                 "nnUNet_results": "/central/results",
                 "disable_tta": True,
                 "step_size": 0.75,
+                "num_processes_preprocessing": 2,
+                "num_processes_segmentation_export": 4,
             },
         )
 
@@ -210,6 +273,8 @@ class ConfigLoaderTest(unittest.TestCase):
         )
         self.assertTrue(segmentation._disable_tta)
         self.assertEqual(segmentation._step_size, 0.75)
+        self.assertEqual(segmentation._num_processes_preprocessing, 2)
+        self.assertEqual(segmentation._num_processes_segmentation_export, 4)
 
     def test_default_loader_combines_nnunet_and_logger_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:

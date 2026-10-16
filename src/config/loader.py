@@ -7,6 +7,7 @@ PreflightValidator 完成，确保配置读取和业务验证职责分离。
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -59,6 +60,19 @@ def _coerce_float(value: Any, field_name: str) -> float:
         return float(value)
     except (TypeError, ValueError, OverflowError) as error:
         raise ValueError(f"{field_name} 必须是数值") from error
+
+
+def _coerce_int(value: Any, field_name: str) -> int:
+    """接受整数及整数文本，拒绝布尔值、浮点数和带小数点的文本。"""
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[+-]?[0-9]+", value.strip()):
+        try:
+            return int(value.strip())
+        except ValueError as error:
+            raise ValueError(f"{field_name} 必须是正整数") from error
+    raise ValueError(f"{field_name} 必须是正整数")
 
 
 def load_app_config(
@@ -129,6 +143,12 @@ def load_app_config(
         step_size=_coerce_float(nn_value(
             "step_size", "step_size", fallback=0.5
         ), "nnunet.step_size"),
+        num_processes_preprocessing=_coerce_int(nn_value(
+            "num_processes_preprocessing", "num_processes_preprocessing", fallback=1
+        ), "nnunet.num_processes_preprocessing"),
+        num_processes_segmentation_export=_coerce_int(nn_value(
+            "num_processes_segmentation_export", "num_processes_segmentation_export", fallback=1
+        ), "nnunet.num_processes_segmentation_export"),
     )
     logging_values = {
         key: explicit_logging.get(key, default_logging.get(key, default))

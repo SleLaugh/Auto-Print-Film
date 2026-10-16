@@ -100,6 +100,8 @@ class Pipeline:
             "_continue": config.nnunet.continue_mode,
             "disable_tta": config.nnunet.disable_tta,
             "step_size": config.nnunet.step_size,
+            "num_processes_preprocessing": config.nnunet.num_processes_preprocessing,
+            "num_processes_segmentation_export": config.nnunet.num_processes_segmentation_export,
             "nnUNet_raw": config.nnunet.raw,
             "nnUNet_preprocessed": config.nnunet.preprocessed,
             "nnUNet_results": config.nnunet.results,

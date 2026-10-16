@@ -8,6 +8,7 @@ from typing import Dict, Any, Mapping
 import json
 import math
 import re
+import shlex
 import subprocess
 import shutil
 
@@ -44,6 +45,8 @@ class SegmentationStage(BaseStage):
             "_continue": True,  # 外部 nnUNet 跳过已有输出；阶段缓存另行判断
             "disable_tta": False,  # 是否关闭推理时的镜像增强
             "step_size": 0.5,  # 滑窗步长比例，范围为 (0, 1]
+            "num_processes_preprocessing": 1,  # 限制预处理后台进程数
+            "num_processes_segmentation_export": 1,  # 限制导出后台进程数
             # nnUNet 环境变量。为空时沿用系统环境变量；相对路径按应用根目录解析。
             "nnUNet_raw": "",
             "nnUNet_preprocessed": "",
@@ -80,7 +83,10 @@ class SegmentationStage(BaseStage):
         self._predict_command = default_config.get('nnUNet_predict_command', 'nnUNetv2_predict')
         self._predict_python = default_config.get('nnUNet_python', '')
         # 仅校验新增推理选项，避免解析独立 Stage 调用方的其他应用配置。
-        inference_keys = ("disable_tta", "step_size")
+        inference_keys = (
+            "disable_tta", "step_size",
+            "num_processes_preprocessing", "num_processes_segmentation_export",
+        )
         inference_options = {key: default_config[key] for key in inference_keys}
         nested_config = default_config.get("nnunet")
         if isinstance(nested_config, Mapping):
@@ -90,6 +96,8 @@ class SegmentationStage(BaseStage):
         inference_config = load_app_config(defaults=inference_options, environ={}).nnunet
         self._disable_tta = inference_config.disable_tta
         self._step_size = inference_config.step_size
+        self._num_processes_preprocessing = inference_config.num_processes_preprocessing
+        self._num_processes_segmentation_export = inference_config.num_processes_segmentation_export
         self._slice_part_config = (
             default_config.get('slice_part_config')
             or load_slice_part_config()
@@ -436,6 +444,8 @@ class SegmentationStage(BaseStage):
             "-c", configuration,
             "-f", fold,
             "-step_size", str(self._step_size),
+            "-npp", str(self._num_processes_preprocessing),
+            "-nps", str(self._num_processes_segmentation_export),
         ]
         if self._disable_tta:
             cmd.append("--disable_tta")
@@ -451,7 +461,8 @@ class SegmentationStage(BaseStage):
                 env[key] = value
                 DebugLog(f"    设置环境变量: {key}={value}")
         
-        DebugLog(f"    执行命令: {' '.join(cmd)}")
+        command_text = shlex.join(cmd)
+        DebugLog(f"    执行命令: {command_text}")
         
         try:
             # 执行命令
@@ -470,11 +481,13 @@ class SegmentationStage(BaseStage):
                 # 报告只携带可读摘要，原始输出走错误日志，不依赖调试日志开关。
                 ErrorLog(
                     f"nnUNet 推理失败：模型 {dataset_id}，退出码 {result.returncode}\n"
+                    f"执行命令: {command_text}\n"
                     f"标准错误输出:\n{result.stderr or ''}\n"
                     f"标准输出:\n{result.stdout or ''}"
                 )
                 raise self._describe_inference_failure(
                     dataset_id, result.returncode, result.stderr or '', env,
+                    stdout=result.stdout or '',
                 )
             
             DebugLog("    ✅ nnUNet推理完成")
@@ -498,6 +511,7 @@ class SegmentationStage(BaseStage):
         returncode: int,
         stderr: str,
         env: Dict[str, str],
+        stdout: str = '',
     ) -> ExternalProcessError:
         """根据 nnUNet 明确的失败原因生成报告消息；不硬编码模型号或本机路径。"""
 
@@ -507,7 +521,8 @@ class SegmentationStage(BaseStage):
             for key in ("nnUNet_results", "nnUNet_raw", "nnUNet_preprocessed")
         }
         details = {"model_id": model_id, "returncode": returncode}
-        missing = re.search(r"Could not find a dataset with the ID (\d+)\b", stderr)
+        output = '\n'.join((stderr, stdout))
+        missing = re.search(r"Could not find a dataset with the ID (\d+)\b", output)
         if missing and int(missing.group(1)) == model_id:
             # 只翻译 nnUNet 已确认的当前数据集缺失，不把权重缺失或其他异常混为一谈。
             locations = "；".join(f"{key}={value}" for key, value in directories.items())
@@ -519,14 +534,43 @@ class SegmentationStage(BaseStage):
             )
             details.update(reason="dataset_not_found", directories=directories)
         else:
-            # 未识别的错误保留末条异常摘要，限制长度，避免堆栈淹没业务消息。
-            lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-            reason = lines[-1] if lines else "外部进程未提供错误说明"
+            stderr_lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
+            worker_failed = 'Background workers died' in output
+            # worker 退出只是外层通知；优先保留两个输出流中更早的具体异常。
+            exceptions = [
+                line for line in lines
+                if re.match(r'^(?:\w+\.)*\w*(?:Error|Exception)(?::|$)', line)
+                and 'Background workers died' not in line
+            ]
+            # 管道断开通常是 worker 退出后的次生错误；另一个输出流若有
+            # 文件读取、内存分配等具体异常，应优先显示它。
+            primary_exceptions = [
+                line for line in exceptions
+                if line.split(':', 1)[0].rsplit('.', 1)[-1] not in {
+                    'EOFError', 'BrokenPipeError', 'ConnectionResetError',
+                }
+            ]
+            if worker_failed and not exceptions:
+                message = (
+                    f"nnUNet 推理失败（模型 {model_id}，退出码 {returncode}）："
+                    "预处理后台进程异常退出，可能是进程内部异常或内存不足导致被系统终止。"
+                    "请查看控制台或错误日志中的完整输出及更早的异常。"
+                )
+                details['reason'] = 'background_worker_failed'
+                return ExternalProcessError(message, stage='segmentation', details=details)
+            candidates = primary_exceptions or exceptions
+            if candidates:
+                stderr_candidates = [line for line in stderr_lines if line in candidates]
+                reason = candidates[0] if worker_failed else (stderr_candidates or candidates)[-1]
+            else:
+                # 普通 stdout 进度不能覆盖 stderr 中的失败说明。
+                reason = (stderr_lines or lines)[-1] if lines else "外部进程未提供错误说明"
             if len(reason) > 300:
                 reason = reason[:300] + "…"
             message = (
                 f"nnUNet 推理失败（模型 {model_id}，退出码 {returncode}）：{reason}。"
-                "详细输出请查看错误日志。"
+                "详细输出请查看控制台或错误日志。"
             )
             details["reason"] = "inference_failed"
         return ExternalProcessError(message, stage="segmentation", details=details)

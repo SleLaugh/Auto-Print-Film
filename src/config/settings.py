@@ -29,6 +29,10 @@ class NnUNetConfig:
     """是否关闭推理时的镜像增强；默认保留 nnUNet 的增强行为。"""
     step_size: float = 0.5
     """滑窗步长比例，范围为 0 < step_size <= 1；增大可能影响分割精度。"""
+    num_processes_preprocessing: int = 1
+    """预处理进程数，对应 -npp；默认单进程以控制主机内存占用。"""
+    num_processes_segmentation_export: int = 1
+    """分割导出进程数，对应 -nps；默认单进程以控制主机内存占用。"""
 
     def __post_init__(self) -> None:
         """在构造配置时拒绝非法推理选项，避免启动外部推理后才失败。"""
@@ -41,6 +45,13 @@ class NnUNetConfig:
             or not math.isfinite(self.step_size)
         ):
             raise ValueError("nnunet.step_size 必须是有限数值，范围为 0 < step_size <= 1")
+        for name in (
+            "num_processes_preprocessing",
+            "num_processes_segmentation_export",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"nnunet.{name} 必须是正整数")
 
 
 @dataclass(frozen=True)
@@ -98,6 +109,10 @@ class AppConfig:
                 "continue_mode": self.nnunet.continue_mode,
                 "disable_tta": self.nnunet.disable_tta,
                 "step_size": self.nnunet.step_size,
+                "num_processes_preprocessing": self.nnunet.num_processes_preprocessing,
+                "num_processes_segmentation_export": (
+                    self.nnunet.num_processes_segmentation_export
+                ),
                 "raw_configured": bool(self.nnunet.raw),
                 "preprocessed_configured": bool(self.nnunet.preprocessed),
                 "results_configured": bool(self.nnunet.results),

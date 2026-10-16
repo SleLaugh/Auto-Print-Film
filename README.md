@@ -108,26 +108,32 @@ src/config/nnuNet_config.json
 服务启动时的 PATH 可能与开发终端不同，生产配置应填写命令的完整路径。
 发布程序已读取这些 JSON 字段，修改后下一次任务启动生效，无需重新打包。
 
-推理速度可以通过同一 JSON 的顶层字段调整。将以下字段合并到原 JSON，保留其他字段；
-省略时保持原来的推理行为：
+推理速度和后台进程数可以通过同一 JSON 的顶层字段调整。将以下字段合并到原 JSON，保留其他字段：
 
 ```json
 {
   "disable_tta": false,
-  "step_size": 0.5
+  "step_size": 0.5,
+  "num_processes_preprocessing": 1,
+  "num_processes_segmentation_export": 1
 }
 ```
 
 JSON 中 `disable_tta` 使用布尔值，默认 `false`，设为 `true` 会关闭镜像增强、减少重复推理。
 `step_size` 使用数值，范围为 `0 < step_size <= 1`，默认 `0.5`；增大步长可以减少
-滑窗重叠。环境变量也可使用同名字段，接受 `true`/`false` 和数值文本。
+滑窗重叠。`num_processes_preprocessing` 和 `num_processes_segmentation_export`
+分别对应 nnUNet 的 `-npp`、`-nps`，默认均为 `1`，只接受正整数，拒绝布尔值和浮点数。
+环境变量也可使用同名字段，分别接受 `true`/`false`、数值文本和整数文本；Python 显式配置
+既支持这些顶层字段，也支持放在 `nnunet` 段中。
+单病例的预处理原本实际已限制为 1 个进程；本次默认主要将导出进程池从 3 减为 1，
+以减少主机内存和并发资源占用，不改变模型、TTA 或滑窗步长。
 提速时先试 `disable_tta=true`、保持 `step_size=0.5`，再按效果测试 `0.75`。
 这些调整可能影响分割及自动切割定位，应比较实际病例的耗时和切割结果。
 分割缓存仍按模型 ID 复用；测试参数变化时使用新的 `-c` 目录，或清理对应的
 `<cache>/<model_id>/segmentation/`，否则会跳过推理。
 
 已有 PyInstaller 发布程序需要先重新执行 `dev build` 并更新完整应用包，才能支持新增的
-这两个字段。升级后直接修改外置 `src/config/nnuNet_config.json`，下一次任务启动生效，
+上述字段。升级后直接修改外置 `src/config/nnuNet_config.json`，下一次任务启动生效，
 无需再次打包；模型无需重新训练，外部 nnUNet 环境无需重新安装。
 
 下面是模型目录配置项的空值示例；当前配置保留本机已有的路径，首次发布也会沿用：
@@ -329,6 +335,13 @@ log/DebugLog.txt
 log/ErrorLog.txt
 log/BatchLog.txt
 ```
+
+默认 `error_log_file_enabled=true`，推理失败时 `log/ErrorLog.txt` 记录实际命令和完整
+stdout/stderr，其余日志开关保持原值；显式关闭错误日志时仍遵守该配置。
+报告摘要优先保留 stdout/stderr 中的具体异常。仅有 `Background workers died`
+不能判断为内存不足，也可能是后台进程自身的 Python 异常；应先查看完整错误日志，
+再结合系统的内存终止记录排查。将上述两个进程数设为 1 可减少并发资源占用，不能保证
+解决所有后台进程退出。
 
 对比两次批量执行的交付报告（会忽略不同结果目录造成的绝对路径差异）：
 

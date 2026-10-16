@@ -150,29 +150,42 @@ systemctl is-active "$WORKER_UNIT"
 
 此时由该外部 Python 调用 nnUNet 入口，其 nnUNet/PyTorch 安装和版本保持原样。两个字段均未配置时沿用原来的 PATH 命令调用。`nnUNet_python` 必须指向外部 Python，不能指向本包的 `AutoPrintFilm` 可执行程序。
 
-`nnuNet_config.json` 还支持以下顶层推理速度参数。将字段合并到原 JSON，保留其他字段；
-省略时保持原来的推理行为：
+`nnuNet_config.json` 还支持以下顶层推理速度及后台进程参数。将字段合并到原 JSON，保留其他字段：
 
 ```json
 {
   "disable_tta": false,
-  "step_size": 0.5
+  "step_size": 0.5,
+  "num_processes_preprocessing": 1,
+  "num_processes_segmentation_export": 1
 }
 ```
 
 - `disable_tta`：JSON 使用布尔值，默认 `false`；设为 `true` 关闭镜像增强、减少重复推理。
 - `step_size`：JSON 使用数值，范围为 `0 < step_size <= 1`，默认 `0.5`；增大后减少滑窗重叠。
+- `num_processes_preprocessing` / `num_processes_segmentation_export`：分别传为 `-npp` / `-nps`，
+  默认均为 `1`；只接受正整数，布尔值、浮点数和带小数点的文本均不合法。
 
-环境变量也可使用同名字段，接受 `true`/`false` 和数值文本，优先于 JSON。
+环境变量也可使用同名字段，分别接受 `true`/`false`、数值文本和整数文本，优先于 JSON。
+Python 显式配置支持顶层字段和 `nnunet` 嵌套段，优先于环境变量。
+单病例的预处理原本实际已限制为 1 个进程；本次默认主要将导出进程池从 3 减为 1，
+以减少主机内存和并发资源占用，不改变模型、TTA 或滑窗步长。
 
 提速时先测试 `disable_tta=true`、`step_size=0.5`，再按效果测试 `step_size=0.75`。
 这些设置可能影响分割及自动切割定位，需要比较实际病例的耗时和切割结果。
 分割缓存仍按模型 ID 复用，不区分这些参数；测试时使用新的 `-c` 目录，或清理对应的
 `<cache>/<model_id>/segmentation/`，否则会复用旧分割、跳过推理。
 
-首次加入这两个字段的支持涉及应用代码变更，已有 PyInstaller 发布程序须重新执行
+首次加入上述字段的支持涉及应用代码变更，已有 PyInstaller 发布程序须重新执行
 `dev build`，按第 3 节更新完整应用目录。升级后只改外置 JSON，下一次任务启动生效，
 无需再次打包；模型无需重新训练，外部 nnUNet 环境无需重新安装，当前 Worker 无需改造。
+
+遇到 `Background workers died` 时，先查看本次任务输出目录的 `log/ErrorLog.txt`：
+其中记录实际命令和完整 stdout/stderr，报告摘要会优先显示更具体的异常。该提示本身
+不能证明主机内存不足，后台进程也可能因 Python 异常退出；没有具体异常时再结合系统的
+内存终止记录排查。两个进程数设为 1 只能减少并发资源占用，不能保证解决所有失败。
+仓库默认 `logger_config.json` 开启 `error_log_file_enabled`，其余日志开关保持原值；
+升级时保留的旧配置或显式配置仍优先，若旧配置关闭错误日志，须设为 `true` 后重跑以收集详情。
 
 在 Linux 下，外部推理子进程会恢复 PyInstaller 启动前的动态库搜索路径；父进程仍使用自己的打包库。[PyInstaller 外部程序调用说明](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#launching-external-programs-from-the-frozen-application)
 

@@ -56,6 +56,35 @@ class SegmentationInferenceOptionsTest(unittest.TestCase):
         self.assertEqual(command.count("-step_size"), 1)
         self.assertEqual(command[command.index("-step_size") + 1], "0.5")
         self.assertNotIn("--disable_tta", command)
+        self.assertEqual(command[command.index("-npp") + 1], "1")
+        self.assertEqual(command[command.index("-nps") + 1], "1")
+
+    def test_worker_options_reach_subprocess(self):
+        options = {"num_processes_preprocessing": 2, "num_processes_segmentation_export": 4}
+        for config in (options, {"nnunet": options}):
+            with self.subTest(config=config):
+                command = self.run_inference(config)
+                self.assertEqual(command.count("-npp"), 1)
+                self.assertEqual(command.count("-nps"), 1)
+                self.assertEqual(command[command.index("-npp") + 1], "2")
+                self.assertEqual(command[command.index("-nps") + 1], "4")
+
+    def test_worker_text_values_are_normalized_before_subprocess(self):
+        command = self.run_inference({
+            "num_processes_preprocessing": "2", "num_processes_segmentation_export": "3",
+        })
+        self.assertEqual(command[command.index("-npp") + 1], "2")
+        self.assertEqual(command[command.index("-nps") + 1], "3")
+
+    def test_invalid_worker_options_are_rejected_before_inference(self):
+        for field in ("num_processes_preprocessing", "num_processes_segmentation_export"):
+            for value in (0, -1, True, False, 1.5, 1.0, "1.5", "nan", float("inf")):
+                for options in ({field: value}, {"nnunet": {field: value}}):
+                    with self.subTest(field=field, value=value, options=options):
+                        with patch("src.stages.stage_segmentation.subprocess.run") as run:
+                            with self.assertRaisesRegex(ValueError, field):
+                                SegmentationStage(options)
+                            run.assert_not_called()
 
     def test_flat_and_nested_options_reach_subprocess(self):
         options = {"disable_tta": True, "step_size": 0.75}

@@ -131,7 +131,7 @@ class ExternalNnUNetTest(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], [
             str(self.command), "-i", str(input_dir), "-o", str(output.parent),
             "-d", "292", "-c", "3d_fullres", "-f", "0",
-            "-step_size", "0.5", "--continue_prediction",
+            "-step_size", "0.5", "-npp", "1", "-nps", "1", "--continue_prediction",
         ])
         self.assertEqual(run.call_args.kwargs["env"]["nnUNet_results"], "/external/models")
 

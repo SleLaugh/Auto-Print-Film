@@ -32,7 +32,12 @@ from src.reconstruction.dicom import (
     write_localizer_dicom,
 )
 from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
-from src.reconstruction.framing import TargetFramer, frame_curved_slice, curved_group_bounds
+from src.reconstruction.framing import (
+    TargetFramer,
+    frame_curved_slice,
+    curved_group_bounds,
+    prepare_interspace_framing,
+)
 from src.utils import DebugLog, is_debug_file_enabled
 
 
@@ -145,6 +150,22 @@ class ReconstructionStage(BaseStage):
         plans_by_plane = self._group_plans_by_plane(plans)
         for plane, plane_plans in plans_by_plane.items():
             DebugLog(f"  开始处理状位: {plane}, 共 {len(plane_plans)} 个 plan")
+            interspace_groups = {}
+            for plan in plane_plans:
+                key = self._interspace_framing_key(plan)
+                if key is not None:
+                    interspace_groups.setdefault(key, []).append(plan)
+            shared_geometries = {}
+            for key, group in interspace_groups.items():
+                geometry = prepare_interspace_framing(
+                    segmentation, loc_result.get("coords", {}), group,
+                )
+                shared_geometries[key] = geometry
+                DebugLog(
+                    f"  [椎间隙共同取景] 配置={key}, 间隙数={len(group)}, "
+                    f"矩阵={geometry.size_xy}, 像素间距mm={geometry.spacing_xy}, "
+                    f"统一倍率={geometry.scale:.6f}"
+                )
             for plan in plane_plans:
                 DebugLog(f"  执行 plan: {plan['plan_id']}")
                 plan_results.append(
@@ -155,7 +176,14 @@ class ReconstructionStage(BaseStage):
                         study_uid=study_uid,
                         source_metadata=source_metadata,
                         custom_window_presets=getattr(request, "window_presets", None),
-                        target_framer=TargetFramer(segmentation, loc_result.get("coords", {}), plan),
+                        target_framer=TargetFramer(
+                            segmentation,
+                            loc_result.get("coords", {}),
+                            plan,
+                            shared_geometry=shared_geometries.get(
+                                self._interspace_framing_key(plan),
+                            ),
+                        ),
                     )
                 )
             DebugLog(f"  状位处理完成: {plane}")
@@ -1315,6 +1343,21 @@ class ReconstructionStage(BaseStage):
         for key in reference.GetMetaDataKeys():
             output.SetMetaData(key, reference.GetMetaData(key))
         return output
+
+    @staticmethod
+    def _interspace_framing_key(plan: Dict[str, Any]) -> tuple[str, str, str] | None:
+        """同部位同配置的间隙共用矩阵及比例，重复状位配置各自隔离。"""
+
+        if (
+            plan.get("slice_type") != "椎间隙"
+            or plan.get("geometry_type") != "plane_stack"
+        ):
+            return None
+        return (
+            str(plan.get("slice_part", "")),
+            str(plan.get("config_id") or ""),
+            str(plan.get("output_plane") or plan["plane"]),
+        )
 
     @staticmethod
     def _group_plans_by_plane(

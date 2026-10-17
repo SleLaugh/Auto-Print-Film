@@ -33,6 +33,7 @@ from src.reconstruction.dicom import (
 )
 from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
 from src.reconstruction.framing_context import load_framing_context
+from src.reconstruction.symmetry_framing import resolve_symmetry_framing_plane
 from src.reconstruction.framing import (
     TargetFramer,
     frame_curved_slice,
@@ -142,6 +143,12 @@ class ReconstructionStage(BaseStage):
         framing_context = load_framing_context(
             loc_result.get("dataset_json_path"), loc_result.get("coords", {}),
         ) if any(plan.get("fill_percent") for plan in plans) else None
+        anatomical_analysis = context.get_result("anatomical_analysis") or {}
+        symmetry_planes = {
+            str(plan.get("plan_id", "")): plane
+            for plan in plans
+            if (plane := resolve_symmetry_framing_plane(plan, anatomical_analysis)) is not None
+        }
         preprocessing_result = context.get_result("preprocessing") or {}
         source_metadata = dict(preprocessing_result.get("source_dicom_metadata") or {})
         if not source_metadata:
@@ -163,6 +170,7 @@ class ReconstructionStage(BaseStage):
                 geometry = prepare_interspace_framing(
                     segmentation, loc_result.get("coords", {}), group,
                     context=framing_context,
+                    symmetry_planes=symmetry_planes,
                 )
                 shared_geometries[key] = geometry
                 DebugLog(
@@ -185,6 +193,7 @@ class ReconstructionStage(BaseStage):
                             loc_result.get("coords", {}),
                             plan,
                             context=framing_context,
+                            symmetry_plane=symmetry_planes.get(str(plan.get("plan_id", ""))),
                             shared_geometry=shared_geometries.get(
                                 self._interspace_framing_key(plan),
                             ),

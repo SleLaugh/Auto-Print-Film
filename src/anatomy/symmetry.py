@@ -225,6 +225,7 @@ def estimate_reflection_symmetry_plane(
         "accepted": False,
         "status": "rejected",
         "reason": "",
+        "rejection_code": "",
         "warnings": [],
         "point_count": int(len(points)),
         "sample_count": int(min(len(points), max_points)),
@@ -239,9 +240,10 @@ def estimate_reflection_symmetry_plane(
         "direction_uniqueness": {"status": "not_checked"},
     }
 
-    def fallback(reason: str, *, unchanged: bool = False):
+    def fallback(reason: str, *, unchanged: bool = False, code: str = ""):
         diagnostics["status"] = "unchanged" if unchanged else "rejected"
         diagnostics["reason"] = reason
+        diagnostics["rejection_code"] = code
         if not unchanged:
             diagnostics["warnings"] = [reason]
         return reference_lr, center, diagnostics
@@ -355,7 +357,7 @@ def estimate_reflection_symmetry_plane(
     if angle >= max_angle_degrees - 0.5 or abs(float(best.x[2])) >= offset_limit * 0.98:
         return fallback("镜像面候选触及角度或位移边界，保留输入方向")
     if after > quality_limit or inlier_fraction < 0.70:
-        return fallback("目标镜像匹配质量不足，保留输入方向")
+        return fallback("目标镜像匹配质量不足，保留输入方向", code="reflection_quality")
     equivalent = _equivalent_reflection_direction(
         normal_local, float(best.x[2]), ambiguities, objective,
         max_angle_degrees=max_angle_degrees,

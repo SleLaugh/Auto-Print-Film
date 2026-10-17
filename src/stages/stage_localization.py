@@ -165,11 +165,17 @@ class LocalizationOperations(
         end_label: str | None = None,
         label_pose_annotations: Dict[str, Any] | None = None,
         label_indices_zyx: Dict[str, np.ndarray] | None = None,
+        lung_pose_support_mask: np.ndarray | None = None,
+        lung_pose_support_labels: tuple[str, ...] = (),
     ) -> tuple[AnatomicalGeometryResult | None, Dict[str, Any]]:
         """只为已经适配的部位计算统一解剖坐标，其余部位保持旧行为。"""
 
         if slice_part == "肺部":
-            return estimate_lung_frame_with_diagnostics(target_mask, image)
+            return estimate_lung_frame_with_diagnostics(
+                target_mask, image,
+                pose_support_mask=lung_pose_support_mask,
+                pose_support_source=lung_pose_support_labels,
+            )
         if slice_part == "头骨":
             return estimate_skull_frame_with_diagnostics(target_mask, image)
         if slice_part in {"颈椎", "胸椎", "腰椎"}:

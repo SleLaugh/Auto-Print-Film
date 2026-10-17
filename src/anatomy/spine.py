@@ -1,7 +1,7 @@
 #!/src/anatomy/spine.py
 # -*- coding: utf-8 -*-
 
-"""根据脊柱首尾质心与可靠椎体左右对称面构造整体三维坐标系。"""
+"""由可靠椎体左右对称面构造保留输入前后倾角的整体三维坐标系。"""
 
 import math
 from typing import Any
@@ -10,6 +10,7 @@ import numpy as np
 import SimpleITK as sitk
 
 from src.anatomy.orientation import patient_reference_axes
+from src.anatomy.symmetry import build_symmetry_frame_axes
 
 from src.models import (
     AnatomicalBounds,
@@ -21,7 +22,6 @@ from src.models import (
 
 
 _MIN_ENDPOINT_DISTANCE_MM = 1.0
-_MIN_AXIS_ALIGNMENT = 1e-6
 
 
 def _normalize(vector: np.ndarray, error_message: str) -> np.ndarray:
@@ -92,11 +92,12 @@ def estimate_spine_frame_with_diagnostics(
     *,
     label_indices_zyx: dict[str, np.ndarray] | None = None,
 ) -> tuple[AnatomicalGeometryResult, dict[str, Any]]:
-    """用首尾椎体质心定方向，并用全部有效椎体确定中心和范围。
+    """用可靠左右对称方向回正，并用全部有效椎体确定中心和范围。
 
-    首尾质心确定头脚轴，逐椎体可靠对称面确定左右方向。方向符号按患者
-    LPS 头侧及左右/前后参考选择；缺少可靠左右证据时保留参考左右轴
-    投影并明确诊断。提供 ``label_indices_zyx`` 时以其为唯一标签来源，
+    左右法向采用可靠逐椎体估计的中位方向；将输入 AP 投影到该法向的
+    正交平面，保留原始前后倾角。首尾质心仅用于范围有效性和诊断，不能
+    将其连线强制摆竖直；证据不足时保持患者参考三轴并明确警告。
+    提供 ``label_indices_zyx`` 时以其为唯一标签来源，
     直接复用已有稀疏坐标；``label_masks`` 可传 None，不读取或重建 Mask。
     中心、首尾质心及范围始终使用全部体素，不以姿态拟合的抽样代替。
     """
@@ -125,25 +126,20 @@ def estimate_spine_frame_with_diagnostics(
             missing_labels.append(label)
 
     if start_label not in physical_points:
-        raise ValueError(f"开始椎体 {start_label} 缺失，无法计算脊柱方向")
+        raise ValueError(f"开始椎体 {start_label} 缺失，无法计算脊柱范围")
     if end_label not in physical_points:
-        raise ValueError(f"结束椎体 {end_label} 缺失，无法计算脊柱方向")
+        raise ValueError(f"结束椎体 {end_label} 缺失，无法计算脊柱范围")
 
     start_center = np.mean(physical_points[start_label], axis=0)
     end_center = np.mean(physical_points[end_label], axis=0)
     raw_axis_vector = end_center - start_center
     endpoint_distance = float(np.linalg.norm(raw_axis_vector))
     if not math.isfinite(endpoint_distance) or endpoint_distance < _MIN_ENDPOINT_DISTANCE_MM:
-        raise ValueError("首尾椎体质心距离过小，无法计算脊柱方向")
+        raise ValueError("首尾椎体质心距离过小，无法计算脊柱范围")
     raw_spine_axis = raw_axis_vector / endpoint_distance
 
     dicom_lr, dicom_ap, dicom_si = _dicom_axes(image)
-    spine_axis = raw_spine_axis.copy()
-    # 起止点用实际患者毫米坐标判定头脚，不能随存储单轴反向倒置成片。
-    if spine_axis[2] < 0.0 or (
-        abs(float(spine_axis[2])) < 1e-8 and float(np.dot(spine_axis, dicom_si)) < 0.0
-    ):
-        spine_axis = -spine_axis
+    reference_axes = np.column_stack((dicom_lr, dicom_ap, dicom_si))
 
     reliable_lr_axes = []
     for label in physical_points:
@@ -163,27 +159,22 @@ def estimate_spine_frame_with_diagnostics(
         _normalize(np.median(reliable_lr_axes, axis=0), "脊柱左右对称方向无效")
         if reliable_lr_axes else dicom_lr
     )
-    # 与首尾轴正交化，确保实际重采样使用同一个右手单位正交坐标。
-    left_right_axis = _normalize(
-        reference_lr - float(np.dot(reference_lr, spine_axis)) * spine_axis,
-        "左右对称方向与脊柱轴近似平行，无法构造解剖坐标",
-    )
-    if float(np.dot(left_right_axis, dicom_lr)) < 0.0:
-        left_right_axis = -left_right_axis
-    anterior_posterior_axis = _normalize(
-        np.cross(spine_axis, left_right_axis),
-        "无法由脊柱轴和左右轴构造前后方向",
-    )
-    if float(np.dot(anterior_posterior_axis, dicom_ap)) <= _MIN_AXIS_ALIGNMENT:
-        raise ValueError("脊柱解剖坐标与DICOM患者方向不一致")
+    # 与头、髋、肺使用同一构造：不能为了把首尾连线立直而额外改变俯仰，
+    # 也不能把可靠左右法向再次投影到首尾连线的法面上。
+    axes = build_symmetry_frame_axes(reference_lr, reference_axes)
+    left_right_axis, anterior_posterior_axis, spine_axis = axes.T
+    correction_degrees = math.degrees(math.atan2(
+        float(np.linalg.norm(np.cross(left_right_axis, dicom_lr))),
+        float(np.dot(left_right_axis, dicom_lr)),
+    ))
 
     used_labels = [label for label in labels if label in physical_points]
     all_points = np.concatenate([physical_points[label] for label in used_labels])
     warnings = []
     if missing_labels:
         warnings.append("部分中间椎体缺失: " + ", ".join(missing_labels))
-    if label_pose_annotations is not None and not reliable_lr_axes:
-        warnings.append("椎体左右对称证据不足，整体左右轴回退到输入方向投影")
+    if not reliable_lr_axes:
+        warnings.append("椎体左右对称证据不足，整体姿态保留患者参考方向和原始前后倾角")
     frame = AnatomicalFrame(
         origin=_point(np.mean(all_points, axis=0)),
         left_right_axis=_point(left_right_axis),
@@ -194,9 +185,9 @@ def estimate_spine_frame_with_diagnostics(
             anterior_posterior=_axis_bounds(all_points, anterior_posterior_axis),
             superior_inferior=_axis_bounds(all_points, spine_axis),
         ),
-        method="spine_endpoint_centroids",
-        confidence=1.0 if not missing_labels else 0.8,
-        applied=True,
+        method="spine_reflection_symmetry" if reliable_lr_axes else "spine_dicom_axes",
+        confidence=(1.0 if not missing_labels else 0.8) if reliable_lr_axes else 0.0,
+        applied=bool(reliable_lr_axes) and correction_degrees > 1e-6,
         warnings=warnings,
     )
     diagnostics: dict[str, Any] = {
@@ -207,9 +198,12 @@ def estimate_spine_frame_with_diagnostics(
         "endpoint_distance_mm": endpoint_distance,
         "raw_spine_axis": [float(value) for value in raw_spine_axis],
         "spine_axis": [float(value) for value in spine_axis],
+        "endpoint_axis_role": "diagnostic_only",
+        "pitch_policy": "project_input_ap_onto_symmetry_plane",
+        "correction_degrees": correction_degrees,
         "used_labels": used_labels,
         "missing_labels": missing_labels,
-        "left_right_source": "vertebral_reflection_symmetry" if reliable_lr_axes else "dicom_projection",
+        "left_right_source": "vertebral_reflection_symmetry" if reliable_lr_axes else "dicom_reference",
         "reliable_symmetry_label_count": len(reliable_lr_axes),
     }
     return AnatomicalGeometryResult(global_frame=frame, local_frames={}), diagnostics

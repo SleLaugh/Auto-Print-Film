@@ -196,8 +196,8 @@ class LocalizationGeometryTest(unittest.TestCase):
         self.assertEqual(diagnostics["symmetry"]["status"], "rejected")
         self.assertTrue(geometry.global_frame.warnings)
 
-    def test_cervical_and_thoracic_build_spine_geometry_from_configured_endpoints(self):
-        """颈椎和胸椎应共用首尾椎体质心确定的三维解剖坐标。"""
+    def test_all_spine_parts_preserve_reference_pitch_without_reliable_symmetry(self):
+        """颈胸腰首尾标签只检查范围，缺少对称证据不能改变输入俯仰。"""
 
         stage = LocalizationStage()
         shape = (40, 32, 40)
@@ -205,6 +205,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         for slice_part, start_label, end_label in (
             ("颈椎", "vertebrae_C1", "vertebrae_C7"),
             ("胸椎", "vertebrae_C7", "vertebrae_L1"),
+            ("腰椎", "vertebrae_L1", "vertebrae_S1"),
         ):
             label_masks = {
                 start_label: np.zeros(shape, dtype=bool),
@@ -224,8 +225,10 @@ class LocalizationGeometryTest(unittest.TestCase):
             )
 
             self.assertIsNotNone(geometry)
-            self.assertEqual(geometry.global_frame.method, "spine_endpoint_centroids")
-            self.assertTrue(geometry.global_frame.applied)
+            self.assertEqual(geometry.global_frame.method, "spine_dicom_axes")
+            self.assertFalse(geometry.global_frame.applied)
+            self.assertEqual(geometry.global_frame.anterior_posterior_axis.y, 1.0)
+            self.assertEqual(geometry.global_frame.anterior_posterior_axis.z, 0.0)
             self.assertEqual(diagnostics["start_label"], start_label)
             self.assertEqual(diagnostics["end_label"], end_label)
 

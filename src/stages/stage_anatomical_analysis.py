@@ -26,6 +26,37 @@ class AnatomicalAnalysisStage(LocalizationOperations):
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(config, stage_name="anatomical_analysis")
 
+    @classmethod
+    def _lung_pose_support(
+        cls,
+        target_mask: np.ndarray,
+        seg_array: np.ndarray,
+        dataset_json_path: str | None,
+    ) -> tuple[np.ndarray | None, tuple[str, ...]]:
+        """从本次模型语义标签补充胸膜腔姿态证据，不扩展肺切割目标。
+
+        仅识别明确的 pleural effusion 标签；不按模型号、数字标签或全部前景
+        猜测支持范围，也不纳入心包标签。缺少该可选标签时保持原肺流程。
+        """
+
+        if not dataset_json_path:
+            return None, ()
+        label_map = cls._load_label_map(Path(dataset_json_path))
+        support_labels = tuple(
+            name for name in label_map
+            if " ".join(name.replace("_", " ").casefold().split()) == "pleural effusion"
+        )
+        support_ids = {
+            label_id for name in support_labels for label_id in label_map[name] if label_id > 0
+        }
+        if not support_ids:
+            return None, ()
+        support = np.isin(seg_array, list(support_ids))
+        if not np.any(support & ~target_mask):
+            return None, ()
+        support |= target_mask
+        return support, support_labels
+
     def execute(self, context: ProcessingContext) -> ProcessingContext:
         """消费纯定位结果，并在第五阶段结束时释放运行时快照。"""
 
@@ -150,6 +181,11 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             excluded_labels=excluded_spine_labels,
             interspace_regions=interspace_regions,
         )
+        lung_pose_support_mask, lung_pose_support_labels = (None, ())
+        if slice_part == "肺部":
+            lung_pose_support_mask, lung_pose_support_labels = self._lung_pose_support(
+                target_mask, seg_array, localization_result.get("dataset_json_path"),
+            )
         anatomical_geometry, anatomical_diagnostics = self._build_anatomical_geometry(
             slice_part=slice_part,
             target_mask=target_mask,
@@ -162,7 +198,10 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 {name: region.indices_zyx for name, region in label_regions.items()}
                 if slice_part in {"颈椎", "胸椎", "腰椎"} else None
             ),
+            lung_pose_support_mask=lung_pose_support_mask,
+            lung_pose_support_labels=lung_pose_support_labels,
         )
+        del lung_pose_support_mask
 
         debug_label_path = ""
         debug_body_path = ""

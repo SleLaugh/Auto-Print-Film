@@ -7,6 +7,7 @@ import SimpleITK as sitk
 
 from src.models.request import parse_fill_percent
 from src.reconstruction.framing_context import FramingContext
+from src.reconstruction.symmetry_framing import SymmetryFramingPlane
 
 
 @dataclass(frozen=True)
@@ -32,8 +33,10 @@ class TargetFramer:
         *,
         shared_geometry: InterspaceFramingGeometry | None = None,
         context: FramingContext | None = None,
+        symmetry_plane: SymmetryFramingPlane | None = None,
     ):
         self.shared_geometry = shared_geometry
+        self.symmetry_plane = symmetry_plane
         names = plan.get("source_labels") or []
         # 旧 planner 的这两个名称表示整个目标范围，并非模型标签名。
         if not names or any(name in {
@@ -172,7 +175,9 @@ class TargetFramer:
         lower, upper = self.plane_target_bounds(planned_slice)
         if self._framing_target_size is None:
             target_size = upper - lower
-            if self._context_points is not None:
+            percent = parse_fill_percent(plan.get("fill_percent"))
+            use_symmetry = self.symmetry_plane is not None and percent is not None and percent > 0
+            if self._context_points is not None or use_symmetry:
                 # 计划内通常方向一致；有不同方向时各方向使用自己的投影缓存。
                 normal = self._projection_axes[:, 2]
                 for item in plan["slices"]:
@@ -186,15 +191,27 @@ class TargetFramer:
                     # 只读取层中心的法向位置，不使用规划时的面内偏移。
                     bounds = self._slab_target_bounds(plan, normal * float(center @ normal))
                     if bounds is not None:
-                        target_size = np.maximum(target_size, bounds[1] - bounds[0])
+                        lower_slice, upper_slice = bounds
+                        required_size = upper_slice - lower_slice
+                        if use_symmetry:
+                            target_center, _ = self.symmetry_plane.centered_projection(
+                                self._projection_axes, float(center @ normal), lower_slice, upper_slice,
+                            )
+                            if target_center is not None:
+                                # 以镜像中心容纳左右两侧完整边界，Fill100 也不能裁掉长侧。
+                                required_size = 2 * np.maximum(
+                                    upper_slice - target_center, target_center - lower_slice,
+                                )
+                        target_size = np.maximum(target_size, required_size)
             self._framing_target_size = target_size
         return self._framing_target_size
 
     def plane_geometry(self, plan: dict, planned_slice: dict) -> tuple[dict, dict]:
-        """整组共用比例，正 FillPercent 时按当前厚层目标与上下文联合居中。
+        """整组共用比例，正 FillPercent 时按当前厚层目标与上下文联合取景。
 
         原目标整组投影范围作为倍率基准，并预先容纳每层的联合显示范围。
         椎间隙配置可共用矩阵及比例；逐层只移动面内中心，不改变切平面。
+        可靠镜像面只约束面内左右中心，其余方向继续使用当前厚层 bbox 中心。
         原目标与上下文均为空，或 FillPercent 未设置/为零时，保留整组投影中心。
         """
 
@@ -206,6 +223,7 @@ class TargetFramer:
         target_center = (lower + upper) / 2
         center_source = "group_target"
         slice_target_size = None
+        symmetry_details = None
         percent = parse_fill_percent(plan.get("fill_percent"))
         if percent is not None and percent > 0:
             slice_bounds = self._slab_target_bounds(plan, center)
@@ -216,6 +234,22 @@ class TargetFramer:
                 target_center = (slice_lower + slice_upper) / 2
                 slice_target_size = list(map(float, slice_upper - slice_lower))
                 center_source = "slice_target"
+                if self.symmetry_plane is not None:
+                    symmetry_center, symmetry_status = self.symmetry_plane.centered_projection(
+                        axes, float(center_local[2]), slice_lower, slice_upper,
+                    )
+                    symmetry_details = {
+                        "status": symmetry_status,
+                        "source_labels": list(self.symmetry_plane.source_labels),
+                        "normal_xyz": list(self.symmetry_plane.normal_xyz),
+                        "point_xyz": list(self.symmetry_plane.point_xyz),
+                    }
+                    if symmetry_center is not None:
+                        symmetry_details["shift_in_plane_mm"] = list(map(
+                            float, symmetry_center - target_center,
+                        ))
+                        target_center = symmetry_center
+                        center_source = "slice_symmetry_plane"
         new_center = center + axes[:, :2] @ (target_center - center_local[:2])
         if self.shared_geometry is None:
             size, spacing = _plane_matrix(plan)
@@ -250,6 +284,8 @@ class TargetFramer:
                 "shared_plan_ids": list(self.shared_geometry.plan_ids),
                 "canvas_reference_plan_ids": list(self.shared_geometry.reference_plan_ids),
             })
+        if symmetry_details is not None:
+            framed_slice["framing"]["symmetry_centering"] = symmetry_details
         return framed_plan, framed_slice
 
 
@@ -266,6 +302,7 @@ def prepare_interspace_framing(
     plans: list[dict],
     *,
     context: FramingContext | None = None,
+    symmetry_planes: dict[str, SymmetryFramingPlane] | None = None,
 ) -> InterspaceFramingGeometry:
     """以前面各组画布中位数及全部计划的显示尺寸需求确定共同采样比例。
 
@@ -297,7 +334,10 @@ def prepare_interspace_framing(
             raise ValueError("同一椎间隙配置需要一致的基础像素间距和 FillPercent")
         if index < len(reference_plans):
             reference_sizes.append(_plane_matrix(plan)[0])
-        framer = TargetFramer(segmentation, coords, plan, context=context)
+        framer = TargetFramer(
+            segmentation, coords, plan, context=context,
+            symmetry_plane=(symmetry_planes or {}).get(str(plan.get("plan_id", ""))),
+        )
         for planned_slice in plan["slices"]:
             target_size = np.maximum(target_size, framer.framing_target_size(plan, planned_slice))
         del framer

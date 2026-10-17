@@ -77,12 +77,18 @@ new_spacing = (sx*f, sy*f)
 
 占比以像素外边界定义，用 N×spacing；采样矩阵的中心跨度仍是 (N−1)×spacing。
 两轴使用同一倍率，保留原像素纵横比；普通 MPR、CPR 输出矩阵不变。
-目标中心由包围框中点确定，不是质量重心，也不是肉眼认定的椎体中心。
+默认目标中心由包围框中点确定，不是质量重心，也不是肉眼认定的椎体中心。
+正数 FillPercent 下，椎间隙两椎体有通过质量检查的明确对称面时，
+沿切面内 LR 投影将包围框中心移到该面，其余面内分量和法向位置保持不变。
+不从一般 global_frame.origin 推断面点；拒绝姿态、面点落出有效范围、空层或 LR 主要
+指向切面法向时保留默认策略。该约束不改变切片方向或原始前后倾角。
 极小百分比若使物理视野无法有限表示，采样前明确报错。
 
 普通平面的 Tx、Ty 逐轴取原始目标整组投影尺寸与每个厚层原目标加有界上下文联合尺寸的
 最大值。原整组投影基准不能因逐层目标变小而缩小，也不能只移动中心却忽略新增上下文的覆盖需求。
 若联合尺寸需要放宽视野，整个计划只统一计算一次新倍率；不得让各层 PixelSpacing 不一致。
+应用对称面居中时，尺寸逐轴使用新中心到完整联合边界的最大距离乘二；所有层预先参与
+整组/间隙配置的倍率统计，FillPercent=100 时也必须容纳长侧，不能先缩放再单独平移造成截断。
 
 椎间隙以前面各组画布为基准：按有效计划顺序，取末组之前各组基础矩阵的逐轴中位数，
 按 NumPy rint 取整后作为同一部位、同一配置的共同 Nx、Ny；单个有效间隙使用自身基础矩阵。
@@ -115,6 +121,8 @@ CPR 不需要额外展开全体标签的三维点数组来计算平面投影。
 整组目标尺寸、实际中心、间距与共同倍率，用于排查。mode/source 表示共同倍率的来源，
 不再表示所有切片拥有相同面内中心。另记录 center_source：
 正数且当前层有目标为 slice_target，空层为 group_fallback，0/null/省略为 group_target；
+可靠对称面居中为 slice_symmetry_plane，另在 symmetry_centering 记录面点、法向、来源标签、
+状态和实际面内平移；此状态仅描述取景，不代表重新估计或修改了姿态。
 slice_target_size_mm 记录当前厚层目标尺寸，回退或未逐层居中时为空。
 context_label_ids 记录实际参与取景的额外标签；普通平面的 framing_target_size_mm
 记录原组范围与逐层上下文覆盖需求逐轴取最大值后的倍率依据。target_size_mm 保留原组投影尺寸，
@@ -141,7 +149,8 @@ CPR 是展开图，不能由这些标签把原始弯曲解剖恢复成规则三�
 
 ## 代码与验收
 
-`src/reconstruction/framing.py`、`src/reconstruction/framing_context.py`、`src/reconstruction/curved_stack.py`、
+`src/reconstruction/framing.py`、`src/reconstruction/symmetry_framing.py`、
+`src/reconstruction/framing_context.py`、`src/reconstruction/curved_stack.py`、
 `src/reconstruction/dicom.py`、`src/stages/stage_reconstruction.py`。
 
 `tests/test_slice_framing.py` 覆盖整组并集、0/省略、80/100、空白/末端层、斜面、

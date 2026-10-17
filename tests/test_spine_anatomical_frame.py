@@ -6,7 +6,7 @@ import SimpleITK as sitk
 
 
 class SpineAnatomicalFrameTest(unittest.TestCase):
-    """验证首尾椎体质心确定的三维脊柱坐标系。"""
+    """验证保留前后倾角的脊柱对称坐标、质量回退和完整覆盖。"""
 
     @staticmethod
     def _make_masks() -> tuple[dict[str, np.ndarray], sitk.Image]:
@@ -22,8 +22,8 @@ class SpineAnatomicalFrameTest(unittest.TestCase):
         image.SetOrigin((10.0, 20.0, 30.0))
         return masks, image
 
-    def test_endpoint_centroids_build_complete_orthonormal_frame_and_bounds(self):
-        """首尾质心连线应保留 XYZ 分量，全部 Mask 应决定中心和范围。"""
+    def test_endpoints_are_diagnostic_and_missing_symmetry_keeps_reference_axes(self):
+        """无可靠左右证据时，斜向首尾连线不能改变输入前后倾角。"""
 
         from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 
@@ -38,13 +38,13 @@ class SpineAnatomicalFrameTest(unittest.TestCase):
 
         c1 = np.asarray(diagnostics["start_center"], dtype=float)
         c7 = np.asarray(diagnostics["end_center"], dtype=float)
-        expected = c7 - c1
-        expected /= np.linalg.norm(expected)
-        dicom_si = np.asarray(image.GetDirection()).reshape(3, 3)[:, 2]
-        if float(np.dot(expected, dicom_si)) < 0.0:
-            expected = -expected
+        raw_endpoint_axis = c7 - c1
+        raw_endpoint_axis /= np.linalg.norm(raw_endpoint_axis)
+        np.testing.assert_allclose(diagnostics["raw_spine_axis"], raw_endpoint_axis)
+        self.assertEqual(diagnostics["endpoint_axis_role"], "diagnostic_only")
         actual = np.asarray(list(frame.superior_inferior_axis.to_dict().values()))
-        self.assertTrue(np.allclose(actual, expected))
+        np.testing.assert_allclose(actual, [0.0, 0.0, 1.0])
+        self.assertGreater(abs(float(raw_endpoint_axis[1])), 0.1)
         axes = [
             np.asarray(list(frame.left_right_axis.to_dict().values())),
             np.asarray(list(frame.anterior_posterior_axis.to_dict().values())),
@@ -64,12 +64,14 @@ class SpineAnatomicalFrameTest(unittest.TestCase):
             list(frame.origin.to_dict().values()),
             expected_center,
         ))
-        self.assertEqual(frame.method, "spine_endpoint_centroids")
-        self.assertTrue(frame.applied)
+        self.assertEqual(frame.method, "spine_dicom_axes")
+        self.assertFalse(frame.applied)
+        self.assertEqual(frame.confidence, 0.0)
+        self.assertTrue(any("左右对称证据不足" in message for message in frame.warnings))
         self.assertEqual(diagnostics["used_labels"], ["C1", "C4", "C7"])
         self.assertEqual(diagnostics["missing_labels"], [])
 
-    def test_missing_middle_label_warns_but_keeps_endpoint_direction(self):
+    def test_missing_middle_label_warns_and_preserves_pitch(self):
         """首尾存在时允许中间椎体缺失，并在诊断和 frame 警告中记录。"""
 
         from src.anatomy.spine import estimate_spine_frame_with_diagnostics

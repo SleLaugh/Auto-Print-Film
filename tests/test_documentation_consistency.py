@@ -110,8 +110,14 @@ class DocumentationConsistencyTests(unittest.TestCase):
             "任一计划失败时不应发布该计划的半成品正式 DICOM",
             "胸椎横状位按临床规则保持",
             "使用投影到切片平面的 DICOM 头脚轴",
+            "配置首尾椎体质心确定整体头脚轴",
+            "首尾轴及可靠逐椎体左右方向",
+            "使用配置首尾椎体建立整体脊柱轴",
+            "使用配置开始、结束椎体的全量物理质心建立整体脊柱轴",
+            "颈胸腰结合首尾轴",
+            "整体坐标结合配置首尾椎体轴",
         )
-        current_documents = [PROJECT_ROOT / "README.md"]
+        current_documents = [PROJECT_ROOT / "README.md", DOCS_ROOT / "production.md"]
         current_documents.extend(
             path
             for path in SUPERPOWERS_ROOT.rglob("*.md")
@@ -147,6 +153,36 @@ class DocumentationConsistencyTests(unittest.TestCase):
         self.assertIn("质量", text)
         self.assertIn("回退", text)
         self.assertIn("scipy", text)
+
+    def test_current_spine_mpr_docs_preserve_input_pitch_and_endpoint_scope(self):
+        """普通整切保留俯仰，首尾仅验证范围，不替代局部椎间隙或 CPR 几何。"""
+
+        current_documents = (
+            PROJECT_ROOT / "README.md",
+            DOCS_ROOT / "production.md",
+            SUPERPOWERS_ROOT / "architecture/README.md",
+            SUPERPOWERS_ROOT / "modules/localization/README.md",
+            SUPERPOWERS_ROOT / "modules/reconstruction/README.md",
+            SUPERPOWERS_ROOT / "modules/reconstruction/2026-07-10-平面堆栈重建设计.md",
+            SUPERPOWERS_ROOT / "modules/reconstruction/2026-07-15-颈椎胸椎直线MPR设计.md",
+            SUPERPOWERS_ROOT / "modules/reconstruction/2026-10-16-统一解剖姿态与三状位回正设计.md",
+        )
+        for path in current_documents:
+            with self.subTest(path=path.relative_to(PROJECT_ROOT)):
+                text = re.sub(r"\s+", "", path.read_text(encoding="utf-8"))
+                for statement in (
+                    "普通整切MPR",
+                    "保留输入前后倾角",
+                    "输入AP",
+                    "首尾质心仅用于范围有效性检查和诊断",
+                    "不再决定全局SI",
+                    "患者参考三轴",
+                    "`applied`",
+                    "局部椎间隙",
+                    "CPR",
+                    "抬头、低头",
+                ):
+                    self.assertIn(statement, text)
 
     def test_current_spine_summaries_declare_runtime_contract(self):
         """定位和重建入口必须写出配置范围、C1 配置和实际 CPR 状位。"""

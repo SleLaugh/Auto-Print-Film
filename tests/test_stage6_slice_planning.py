@@ -2611,7 +2611,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         # FillPercent 由第七阶段按整组应用，不改第六阶段采样平面。
         self.assertEqual(target_plan.range_start, plan.range_start)
 
-    def test_cervical_three_planes_follow_complete_spine_axis(self):
+    def test_cervical_three_planes_follow_provided_anatomical_axes(self):
         """颈椎三状位的画面及法向均使用同一脊柱解剖坐标。"""
 
         spine_axis = np.asarray([0.2, 0.3, 0.9327379053], dtype=float)
@@ -2665,7 +2665,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                         "anterior_posterior": {"minimum": 5.0, "maximum": 45.0},
                         "superior_inferior": {"minimum": 20.0, "maximum": 80.0},
                     },
-                    "method": "spine_endpoint_centroids",
+                    "method": "synthetic_anatomical_frame",
                     "confidence": 1.0,
                     "applied": True,
                     "warnings": [],
@@ -2790,7 +2790,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     "anterior_posterior": {"minimum": 10.0, "maximum": 30.0},
                     "superior_inferior": {"minimum": 20.0, "maximum": 80.0},
                 },
-                "method": "spine_endpoint_centroids",
+                "method": "synthetic_anatomical_frame",
                 "confidence": 1.0,
                 "applied": True,
                 "warnings": [],
@@ -2921,7 +2921,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     "anterior_posterior": {"minimum": 10.0, "maximum": 90.0},
                     "superior_inferior": {"minimum": 0.0, "maximum": 100.0},
                 },
-                "method": "spine_endpoint_centroids",
+                "method": "synthetic_anatomical_frame",
                 "confidence": 1.0,
                 "applied": True,
                 "warnings": [],

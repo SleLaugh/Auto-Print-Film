@@ -203,6 +203,82 @@ def _bounds(points: np.ndarray, axis: np.ndarray) -> AxisBounds:
     return AxisBounds(float(np.min(projections)), float(np.max(projections)))
 
 
+def _fit_bilateral_pose(
+    regions: list[dict[str, Any]],
+    image: sitk.Image,
+    axes: np.ndarray,
+) -> tuple[np.ndarray, dict[str, Any], dict[str, Any] | None]:
+    """对两个主体执行相同的严格镜像拟合和跨侧身份验证。"""
+
+    spacing = np.asarray(image.GetSpacing(), dtype=float)
+    direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
+    surfaces = [
+        np.asarray(image.GetOrigin())
+        + (region["surface_indices_zyx"][:, ::-1] * spacing) @ direction.T
+        for region in regions
+    ]
+    centroids = np.asarray([
+        image.TransformContinuousIndexToPhysicalPoint(region["centroid_index_xyz"])
+        for region in regions
+    ])
+    # 保留原来的全局 z/y/x 顺序，使既有固定种子候选不受辅助证据重构影响。
+    surface_order = np.argsort(np.concatenate([
+        region["surface_order"] for region in regions
+    ]))
+    normal, plane_center, symmetry = estimate_reflection_symmetry_plane(
+        np.concatenate(surfaces)[surface_order], axes,
+    )
+    bilateral = None
+    if symmetry["status"] in {"accepted", "unchanged"}:
+        bilateral = _bilateral_component_evidence(
+            surfaces, centroids, normal, plane_center, float(np.min(spacing)),
+        )
+        if not bilateral["reliable"]:
+            reason = bilateral["reason"] + "，保留输入方向"
+            symmetry = {
+                **symmetry,
+                "accepted": False,
+                "source_status": symmetry["status"],
+                "status": "rejected",
+                "reason": reason,
+                "warnings": [reason],
+                "confidence": 0.0,
+            }
+            normal = axes[:, 0]
+    return normal, symmetry, bilateral
+
+
+def _try_pose_support(
+    pose_support_mask: np.ndarray,
+    dominant_lung_mask: np.ndarray,
+    image: sitk.Image,
+    axes: np.ndarray,
+) -> tuple[np.ndarray | None, dict[str, Any]]:
+    """胸膜腔支持只供姿态使用，不改变肺主体、中心或覆盖范围。"""
+
+    support = np.asarray(pose_support_mask, dtype=bool)
+    if support.shape != dominant_lung_mask.shape:
+        return None, {"status": "rejected", "reason": "肺姿态支持 Mask 尺寸不匹配"}
+    if not np.all(support[dominant_lung_mask]):
+        return None, {"status": "rejected", "reason": "肺姿态支持 Mask 未包含全部肺主体"}
+    retained, components, regions = _retain_lung_components(support, collect_regions=True)
+    diagnostic: dict[str, Any] = {"status": "rejected", **components}
+    if components["retained_component_count"] != 2:
+        diagnostic["reason"] = "胸膜腔支持缺少两个独立主体"
+        return None, diagnostic
+    if not np.all(retained[dominant_lung_mask]):
+        diagnostic["reason"] = "胸膜腔支持主体过滤后丢失肺主体"
+        return None, diagnostic
+    normal, symmetry, bilateral = _fit_bilateral_pose(regions, image, axes)
+    diagnostic.update({"status": symmetry["status"], "reason": symmetry["reason"],
+                       "symmetry": symmetry})
+    if bilateral is not None:
+        diagnostic["bilateral_evidence"] = bilateral
+    if symmetry["status"] not in {"accepted", "unchanged"}:
+        return None, diagnostic
+    return normal, diagnostic
+
+
 def _build_frame(
     points: np.ndarray,
     lr_axis: np.ndarray,
@@ -236,11 +312,16 @@ def _build_frame(
 def estimate_lung_frame_with_diagnostics(
     target_mask: np.ndarray,
     image: sitk.Image,
+    *,
+    pose_support_mask: np.ndarray | None = None,
+    pose_support_source: tuple[str, ...] | list[str] = (),
 ) -> tuple[AnatomicalGeometryResult, dict[str, Any]]:
     """以双肺主体的可靠镜像面对齐左右方向，保留未被确定的俯仰基准。
 
-    肺自身存在左右大小和形态差异。缺少双侧主体或镜像质量不足时保留
-    输入方向并警告，不把形态高低差直接解释为患者侧倾。
+    肺自身存在左右大小和形态差异。原肺拟合仅因整体镜像质量不足而回退时，
+    可尝试上游按语义提供的肺加胸膜积液支持 Mask；仍使用相同质量和跨侧
+    门槛。支持不改变切割主体、中心或范围，不能用心包/未知标签补全形态。
+    两种证据均不足时保留输入方向，不把肺形态高低差直接解释为侧倾。
     """
 
     dominant_mask, component_diagnostics, regions = _retain_lung_components(
@@ -254,6 +335,11 @@ def estimate_lung_frame_with_diagnostics(
         "correction_degrees": 0.0,
         **component_diagnostics,
     }
+    if pose_support_mask is not None:
+        diagnostics["pose_support"] = {
+            "status": "not_needed",
+            "source_labels": list(pose_support_source),
+        }
     axes = np.column_stack((dicom_lr, dicom_ap, dicom_si))
     applied = False
     if len(points) < _MIN_TARGET_POINTS:
@@ -267,46 +353,35 @@ def estimate_lung_frame_with_diagnostics(
         warnings = ["缺少两个独立肺主体，左右姿态证据不足，保留输入方向"]
         diagnostics["fallback_reason"] = warnings[0]
     else:
-        spacing = np.asarray(image.GetSpacing(), dtype=float)
-        direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
-        surfaces = [
-            np.asarray(image.GetOrigin())
-            + (region["surface_indices_zyx"][:, ::-1] * spacing) @ direction.T
-            for region in regions
-        ]
-        centroids = np.asarray([
-            image.TransformContinuousIndexToPhysicalPoint(region["centroid_index_xyz"])
-            for region in regions
-        ])
-        # 新增连通域身份检查不能改变原来全局 z/y/x 边界顺序，否则固定种子
-        # 抽样也会换一批点，使本次双侧证据修复意外改变原镜像优化候选。
-        surface_order = np.argsort(np.concatenate([
-            region["surface_order"] for region in regions
-        ]))
-        normal, plane_center, symmetry = estimate_reflection_symmetry_plane(
-            np.concatenate(surfaces)[surface_order], axes,
-        )
-        if symmetry["status"] in {"accepted", "unchanged"}:
-            bilateral = _bilateral_component_evidence(
-                surfaces, centroids, normal, plane_center, float(np.min(spacing)),
-            )
+        normal, symmetry, bilateral = _fit_bilateral_pose(regions, image, axes)
+        if bilateral is not None:
             diagnostics["bilateral_evidence"] = bilateral
-            if not bilateral["reliable"]:
-                reason = bilateral["reason"] + "，保留输入方向"
-                symmetry = {
-                    **symmetry,
-                    "accepted": False,
-                    "source_status": symmetry["status"],
-                    "status": "rejected",
-                    "reason": reason,
-                    "warnings": [reason],
-                    "confidence": 0.0,
-                }
-                normal = axes[:, 0]
+        # 只补救形态质量不足，不绕过不收敛、边界、方向歧义或跨侧证据拒绝。
+        if (
+            pose_support_mask is not None
+            and symmetry["status"] == "rejected"
+            and symmetry.get("rejection_code") == "reflection_quality"
+        ):
+            diagnostics["lung_symmetry"] = symmetry
+            support_normal, support = _try_pose_support(
+                pose_support_mask, dominant_mask, image, axes,
+            )
+            diagnostics["pose_support"] = {
+                **support,
+                "source_labels": list(pose_support_source),
+                "fallback_source": "lung_reflection_quality",
+            }
+            if support_normal is not None:
+                normal = support_normal
+                symmetry = support["symmetry"]
+                diagnostics["bilateral_evidence"] = support["bilateral_evidence"]
+                diagnostics["angle_source"] = "pleural_envelope_reflection_symmetry"
         diagnostics["symmetry"] = symmetry
         axes = build_symmetry_frame_axes(normal, axes)
         applied = bool(symmetry["accepted"])
         method = "lung_reflection_symmetry" if applied else "lung_dicom_axes"
+        if applied and diagnostics["angle_source"] == "pleural_envelope_reflection_symmetry":
+            method = "lung_pleural_envelope_symmetry"
         confidence = float(symmetry["confidence"])
         warnings = list(symmetry["warnings"])
         diagnostics["correction_degrees"] = float(symmetry["angle_degrees"]) if applied else 0.0

@@ -1,0 +1,237 @@
+# `slice_part_config.json` 配置说明
+
+`slice_part_config.json` 是切割部位相关配置的唯一事实来源。它同时控制：
+
+- 原始扫描层厚对应的 nnUNet 分割模型；
+- 标签别名与定位区域的首尾端点；
+- 每个部位支持的状位、切法和定位图状位；
+- 整体范围、椎间隙范围以及范围扩展；
+- 脊柱 CPR 是否使用完整标签范围，以及需要排除的标签。
+
+默认文件为：
+
+```text
+src/config/slice_part_config.json
+```
+
+应用启动时会读取并严格校验该文件。发布包中的 `src/config/` 是外置配置目录，修改
+JSON 后下一次任务启动即可生效，无需重新打包。
+
+## 顶层结构
+
+```json
+{
+  "schema_version": 1,
+  "label_aliases": {},
+  "slice_parts": {}
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `schema_version` | 整数 | 当前必须为 `1`。 |
+| `label_aliases` | 对象 | 配置内部使用的标签别名到 nnUNet 标签名的映射。值可以是字符串，也可以是字符串数组。 |
+| `slice_parts` | 对象 | 按切割部位名称组织的部位配置，至少包含一个部位。 |
+
+### `label_aliases`
+
+区域端点和 CPR 排除项引用的是别名，例如 `L1`，而不是直接写
+`vertebrae_L1`。别名的值是分割结果中的实际标签名；如果一个别名需要对应多个实际
+标签，可以使用字符串数组。
+
+同一个实际标签不能被多个别名重复引用。所有在 `regions.*.start_label`、
+`regions.*.end_label` 或 `spine_cpr.excluded_labels` 中出现的名称，都必须先在
+`label_aliases` 中定义。
+
+当前配置包含以下标签组：
+
+- 脊柱：`C1`–`C7`、`T1`–`T12`、`L1`–`L5`、`S1`；
+- 单体或成对结构：`lung`、`skull`、`hip_left`、`hip_right`。
+
+## 单个部位的结构
+
+```json
+{
+  "enabled": true,
+  "model_rules": {
+    "CT": [
+      {
+        "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
+        "model_id": 292
+      }
+    ]
+  },
+  "localization": {
+    "regions": {
+      "default": {
+        "type": "whole_range",
+        "start_label": "L1",
+        "end_label": "S1"
+      }
+    }
+  },
+  "slice_rules": {
+    "横状位": {
+      "MPR": {
+        "regions": ["default"],
+        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
+        "localizer_plane": "矢状位"
+      }
+    }
+  }
+}
+```
+
+### `enabled`
+
+布尔值，表示该部位是否可以被任务使用。设为 `false` 后，查询接口会拒绝该部位，
+但配置文件本身仍会经过结构校验。禁用部位可以保留模型规则，也可以使用空的定位和
+切法规则；当前示例中的 `骶骨` 为禁用部位。
+
+### `model_rules`
+
+模型规则按检查类型组织：`model_rules.<检查类型>` 是非空数组，每项支持以下字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `scan_thickness_range_mm.min` | 非负有限数值 | 扫描层厚下限，单位 mm。 |
+| `scan_thickness_range_mm.max` | 非负有限数值 | 扫描层厚上限，单位 mm，不能小于 `min`。 |
+| `model_id` | 正整数 | nnUNet 数据集 ID。 |
+| `configuration` | 可选 | 覆盖默认 nnUNet 配置，例如 `3d_fullres`。 |
+| `fold` | 可选 | 覆盖默认训练折；值会传给 nnUNet 的 `-f` 参数。 |
+
+层厚区间是闭区间，匹配条件为 `min <= ScanThickness <= max`。区间不能重叠；没有
+任何区间命中时任务会明确失败，不会自动选择临近模型。例如 `0–1.5` 和 `1.6–4.5`
+不会重叠，但 `1.55` 不属于任何一个区间。
+
+当前配置中的模型选择如下：
+
+| 部位 | 检查类型与层厚区间 | 模型 |
+| --- | --- | --- |
+| 头骨、髋骨 | CT：`0–1.5`、`1.6–4.5`、`4.6–6.0 mm` | `294`、`297`、`298` |
+| 颈椎、胸椎、腰椎 | CT：`0–1.5`、`1.6–4.5`、`4.6–6.0 mm` | `292`、`297`、`298` |
+| 肺部 | CT：`0–1.5 mm` | `315` |
+| 骶骨 | 已禁用 | — |
+
+### `localization`
+
+`localization.regions` 定义可以被切法引用的定位区域：
+
+| 字段 | 可选值 | 说明 |
+| --- | --- | --- |
+| `type` | `whole_range`、`interspace` | 整体范围或椎间隙范围。 |
+| `start_label` | 已定义别名 | 区域起点标签。 |
+| `end_label` | 已定义别名 | 区域终点标签。 |
+
+`MPR` 和 `CPR` 只能引用 `whole_range`，每条规则当前只能引用一个整体区域；
+`椎间隙` 只能引用 `interspace`，可以一次引用多个椎间隙区域。区域必须至少被一条
+切法规则引用，不能定义未使用区域。
+
+同一部位当前只支持一个整体定位区域，MPR 和 CPR 共用它。将颈椎 `default` 的
+`end_label` 从 `C7` 改为 `T1`，或将腰椎 `start_label` 从 `L1` 改为 `T12`，会同时
+改变该部位整体切割的目标范围和 CPR 标签序列；椎间隙仍由各自的区域列表决定，
+不会自动增加 `C7_T1` 或 `T12_L1`。
+
+端点必须能由本次模型标签解析。当前脊柱顺序支持 `C1` 至 `S1`；S1 在运行时优先
+使用 `vertebrae_S1`，缺少时回退到模型已有的整个 `sacrum`。这个回退不能表达
+骶骨内部的 S2 边界，不能仅新增 `S2` 别名来实现切到 S2。
+
+脊柱部位支持可选的 `localization.spine_cpr`：
+
+```json
+{
+  "spine_cpr": {
+    "full_label": true,
+    "excluded_labels": ["C1"]
+  }
+}
+```
+
+- `full_label` 为布尔值。`true` 使用完整标注范围生成 CPR，`false` 使用过滤后的主体范围；
+- `excluded_labels` 是别名数组，用于从 CPR 标签范围中排除指定标签，可以省略，默认为空数组。
+
+只要某个部位配置了 `CPR`，就必须同时配置 `spine_cpr`；没有 `CPR` 的部位不应配置
+`spine_cpr`。当前 `颈椎`、`胸椎`、`腰椎`启用 CPR，`full_label` 均为 `true`，颈椎
+另外排除 `C1`。
+
+### `slice_rules`
+
+`slice_rules` 定义“状位 + 切法”的能力矩阵。支持的状位和切法只有：
+
+- 状位：`横状位`、`冠状位`、`矢状位`；
+- 切法：`MPR`、`CPR`、`椎间隙`。
+
+每条规则包含：
+
+| 字段 | 说明 |
+| --- | --- |
+| `regions` | 要使用的区域名称数组，必须引用当前部位 `localization.regions` 中已定义的区域。 |
+| `range_extension.start_mm` | 从定位起点向外扩展的距离，单位 mm。 |
+| `range_extension.end_mm` | 从定位终点向外扩展的距离，单位 mm。 |
+| `localizer_plane` | 定位图使用的正交状位，只能是三种状位之一，且不能与当前重建状位相同。 |
+
+范围扩展值必须是非负有限数值；`0.0` 表示不扩展。`localizer_plane` 只决定定位图的
+参考背景状位，不改变正式输出的重建状位。
+
+CPR 的 `range_extension` 沿当前输出状位的切片偏移轴扩展，分别增加负向和正向的
+覆盖范围；冠状位和矢状位读取各自的 CPR 规则，不改变中心曲线的首尾椎体。
+首尾椎体范围通过 `localization.regions` 调整。
+
+颈椎、胸椎、腰椎均可在任务的 `plane_configs` 中显式选择矢状位 CPR，例如：
+
+```json
+{
+  "Plane": "矢状位",
+  "SliceType": "CPR",
+  "SliceThickness": 1.0,
+  "SliceSpacing": 3.0,
+  "WindowPresets": ["骨窗"]
+}
+```
+
+冠状位 CPR 沿前后方向偏移，画面横向覆盖左右，默认使用矢状位定位图；
+矢状位 CPR 沿左右方向偏移，画面横向覆盖前后，默认使用冠状位定位图。
+`localizer_plane` 仍由各条规则显式配置。仅增加支持规则不会自动增加输出序列；省略
+`SliceType` 时仍为 `MPR`，现有矢状位 MPR 和批量脚本的默认请求保持原有行为。
+
+## 当前能力矩阵
+
+| 部位 | 启用 | 定位范围 | 已配置的状位与切法 |
+| --- | --- | --- | --- |
+| 头骨 | 是 | `skull`–`skull` 整体范围 | 横 MPR、冠 MPR、矢 MPR |
+| 颈椎 | 是 | `C1`–`C7`；`C2_C3` 至 `C6_C7` 椎间隙 | 横 MPR/椎间隙、冠 MPR/CPR、矢 MPR/CPR |
+| 胸椎 | 是 | `C7`–`L1` 整体范围 | 横 MPR、冠 MPR/CPR、矢 MPR/CPR |
+| 腰椎 | 是 | `L1`–`S1`；`L1_L2` 至 `L5_S1` 椎间隙 | 横 MPR/椎间隙、冠 MPR/CPR、矢 MPR/CPR |
+| 肺部 | 是 | `lung`–`lung` 整体范围 | 横 MPR、冠 MPR、矢 MPR |
+| 骶骨 | 否 | — | — |
+| 髋骨 | 是 | `hip_left`–`hip_right` 整体范围 | 横 MPR、冠 MPR、矢 MPR |
+
+肺部和髋骨的横状位规则当前均设置 `start_mm=3.0`、`end_mm=3.0`；两者的横状位
+定位图均使用冠状位。其他当前规则的范围扩展为 `0.0 mm`，定位图状位按 JSON 中的
+`localizer_plane` 读取。
+
+## 修改规则与校验
+
+修改配置时按以下顺序处理：
+
+1. 新增标签时先在 `label_aliases` 中定义别名，再在定位区域中引用；
+2. 为部位添加或修改 `model_rules`，确认层厚区间无重叠，且需要覆盖的层厚没有空洞；
+3. 在 `localization.regions` 定义区域，并在 `slice_rules` 中引用；
+4. 根据需要添加 CPR 配置和范围扩展；
+5. 启动任务前执行 JSON 语法和业务校验。
+
+推荐的本地校验命令：
+
+```bash
+python -m json.tool src/config/slice_part_config.json >/dev/null
+python -c "from src.config import load_slice_part_config; load_slice_part_config()"
+```
+
+校验会拒绝未知字段、非法状位或切法、重复标签、未定义标签、未使用区域、区域类型
+不匹配、重叠层厚区间、非法范围扩展、同状位定位图，以及 CPR 配置不完整等情况。
+
+修改后建议运行与配置直接相关的测试：
+
+```bash
+python -m unittest tests.test_config_loader tests.test_segmentation_model_matching
+```

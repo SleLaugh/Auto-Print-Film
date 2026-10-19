@@ -90,12 +90,20 @@ class PreflightTest(unittest.TestCase):
                     )
 
     def test_registry_rejects_cpr_for_lumbar_axial(self):
-        """CPR 只允许用于已注册的脊柱冠状位。"""
+        """CPR 只允许用于已注册的脊柱冠状位或矢状位。"""
 
         request = make_request("腰椎", "CPR", "横状位")
 
         with self.assertRaises(CapabilityError):
             CapabilityRegistry.current().validate(request)
+
+    def test_registry_accepts_sagittal_cpr_for_all_spine_parts(self):
+        """三个脊柱部位均注册矢状位 CPR 能力。"""
+
+        registry = CapabilityRegistry.current()
+        for slice_part in ("颈椎", "胸椎", "腰椎"):
+            with self.subTest(slice_part=slice_part):
+                registry.validate(make_request(slice_part, "CPR", "矢状位"))
 
     def test_preflight_failure_does_not_create_output_directory(self):
         """验证 `test_preflight_failure_does_not_create_output_directory` 场景符合预期。"""

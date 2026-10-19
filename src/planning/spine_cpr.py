@@ -1,4 +1,4 @@
-"""脊柱冠状位 CPR 规划。"""
+"""脊柱冠状位和矢状位 CPR 规划。"""
 
 import math
 import time
@@ -28,6 +28,7 @@ from src.planning.spine_cpr_math import cross as _cross
 from src.planning.spine_cpr_math import dot as _dot
 from src.planning.spine_cpr_math import midpoint as _midpoint
 from src.planning.spine_cpr_math import scale as _scale
+from src.reconstruction.curved_stack import CurvedStackResampler
 from src.utils import DebugLog
 
 
@@ -65,10 +66,13 @@ def build_spine_sagittal_cpr_plans(
     localization_result: Dict[str, Any],
     label_names: Iterable[str],
 ) -> Tuple[List[SlicePlan], List[str]]:
-    """为脊柱冠状位生成 CPR plan；矢状位继续交给旧直线 MPR 逻辑。"""
+    """按输出状位为脊柱生成 CPR plan。"""
 
     perf_start = time.perf_counter()
-    if plane_config.plane != PlaneTypeEnum.冠状位:
+    if plane_config.plane not in {
+        PlaneTypeEnum.冠状位,
+        PlaneTypeEnum.矢状位,
+    }:
         return [], []
 
     centers, center_warnings = _get_spine_annotation_centers(
@@ -130,6 +134,7 @@ def build_spine_sagittal_cpr_plans(
             plane_config.slice_thickness,
             plane_config.slice_spacing,
             plane_config.slice_image_count,
+            plane=plane_config.plane,
             range_mode=range_mode,
         )
         slices = [
@@ -149,6 +154,20 @@ def build_spine_sagittal_cpr_plans(
             range_mode,
             include_range_suffix,
         )
+        width = _resolve_cpr_width_extent_mm(
+            localization_result,
+            source_labels,
+            row_dir,
+        )
+        if plane_config.plane == PlaneTypeEnum.矢状位:
+            width = max(width, _resolve_centered_cpr_width_extent_mm(
+                localization_result,
+                source_labels,
+                curve_points,
+                offset_axis,
+                offsets,
+                sampling.slice_thickness,
+            ))
         plans.append(SlicePlan(
             plan_id=plan_id,
             slice_part=request.slice_part.value,
@@ -161,11 +180,7 @@ def build_spine_sagittal_cpr_plans(
             path_points=curve_points,
             slices=slices,
             extent_mm=ExtentMM(
-                width=_resolve_cpr_width_extent_mm(
-                    localization_result,
-                    source_labels,
-                    row_dir,
-                ),
+                width=width,
                 height=curve_length,
             ),
             output_spacing_mm=Point3D(
@@ -974,6 +989,8 @@ def _resolve_sampling_offsets_mm(
     slice_spacing: float | None,
     slice_image_count: int | None,
     range_mode: str = CPR_RANGE_MODE_FULL_LABEL,
+    *,
+    plane: PlaneTypeEnum = PlaneTypeEnum.冠状位,
 ) -> tuple[List[float], ResolvedSampling]:
     """按 CPR 有效偏移范围统一计算实际层厚、层间距和数量。"""
 
@@ -982,6 +999,7 @@ def _resolve_sampling_offsets_mm(
         label_names,
         curve_points,
         offset_axis,
+        plane=plane,
         range_mode=range_mode,
         fallback_spacing=(slice_spacing or slice_thickness or 1.0),
     )
@@ -1010,6 +1028,8 @@ def _resolve_offset_interval_mm(
     offset_axis: Point3D,
     range_mode: str = CPR_RANGE_MODE_FULL_LABEL,
     fallback_spacing: float = 1.0,
+    *,
+    plane: PlaneTypeEnum = PlaneTypeEnum.冠状位,
 ) -> Tuple[float, float]:
     """返回 CPR 已应用配置扩展后的有效偏移范围。"""
 
@@ -1024,6 +1044,7 @@ def _resolve_offset_interval_mm(
             return _extend_cpr_offset_interval(
                 localization_result,
                 filtered_interval,
+                plane=plane,
             )
 
     raw_interval = _raw_label_offset_interval_mm(
@@ -1036,6 +1057,7 @@ def _resolve_offset_interval_mm(
         return _extend_cpr_offset_interval(
             localization_result,
             raw_interval,
+            plane=plane,
         )
     return _bbox_offset_interval_mm(
         localization_result,
@@ -1043,6 +1065,7 @@ def _resolve_offset_interval_mm(
         curve_points,
         offset_axis,
         slice_spacing=fallback_spacing,
+        plane=plane,
     )
 
 
@@ -1174,10 +1197,15 @@ def _filtered_annotation_support_points(
 def _extend_cpr_offset_interval(
     localization_result: Dict[str, Any],
     interval: Tuple[float, float],
+    *,
+    plane: PlaneTypeEnum = PlaneTypeEnum.冠状位,
 ) -> Tuple[float, float]:
-    """用 whole_range 冠状位扩展增加 CPR offset 覆盖范围。"""
+    """按输出状位配置扩展 CPR offset 覆盖范围。"""
 
-    extension = _resolve_cpr_offset_range_extension(localization_result)
+    extension = _resolve_cpr_offset_range_extension(
+        localization_result,
+        plane=plane,
+    )
     return (
         float(interval[0]) - extension.start_mm,
         float(interval[1]) + extension.end_mm,
@@ -1186,13 +1214,15 @@ def _extend_cpr_offset_interval(
 
 def _resolve_cpr_offset_range_extension(
     localization_result: Dict[str, Any],
+    *,
+    plane: PlaneTypeEnum = PlaneTypeEnum.冠状位,
 ) -> SliceRangeExtension:
-    """CPR 冠状位定位竖线左右范围沿 offset 轴扩展。"""
+    """读取当前 CPR 输出状位沿 offset 轴的范围扩展。"""
 
     return resolve_range_extension(
         localization_result,
         "CPR",
-        PlaneTypeEnum.冠状位,
+        plane,
     )
 
 
@@ -1202,7 +1232,7 @@ def _raw_label_offset_interval_mm(
     curve_points: List[Point3D],
     offset_axis: Point3D,
 ) -> Tuple[float, float] | None:
-    """计算原始标签体素相对现有 CPR 中线的前后偏移区间。"""
+    """计算原始标签体素相对 CPR 中线沿当前 offset 轴的偏移区间。"""
 
     perf_start = time.perf_counter()
     segmentation = _read_original_segmentation(localization_result)
@@ -1479,6 +1509,8 @@ def _bbox_offset_interval_mm(
     curve_points: List[Point3D],
     offset_axis: Point3D,
     slice_spacing: float,
+    *,
+    plane: PlaneTypeEnum = PlaneTypeEnum.冠状位,
 ) -> Tuple[float, float]:
     """原始分割不可用时，用完整 bbox 角点估算 CPR 有效偏移范围。"""
 
@@ -1507,6 +1539,7 @@ def _bbox_offset_interval_mm(
     interval = _extend_cpr_offset_interval(
         localization_result,
         (min(projections), max(projections)),
+        plane=plane,
     )
     return float(interval[0]), float(interval[1])
 
@@ -1575,6 +1608,67 @@ def _resolve_cpr_width_extent_mm(
     projections = [_dot(point, row_dir) for point in corners]
     extent = max(projections) - min(projections)
     return max(float(extent), _minimum_image_spacing(localization_result["image"]))
+
+
+def _resolve_centered_cpr_width_extent_mm(
+    localization_result: Dict[str, Any],
+    label_names: List[str],
+    curve_points: List[Point3D],
+    offset_axis: Point3D,
+    offsets_mm: List[float],
+    slice_thickness: float,
+) -> float:
+    """为矢状位曲面留足中心线两侧的原始标签范围。
+
+    主体中心线不一定经过完整标签 bbox 的前后中点。宽度必须按两侧最远
+    边界确定，不能直接把 bbox 总跨度居中。复用重采样器的纯几何方法，
+    在与每个椎体相交的逐行横断面中计算横向支撑，包含各层 offset 和体素
+    外缘；后续 FillPercent 只能缩放完整展开图，无法恢复已裁掉的结构。
+    """
+
+    image_info = localization_result["image"]
+    spacing = _minimum_image_spacing(image_info)
+    curve = np.asarray([[point.x, point.y, point.z] for point in curve_points])
+    rows = max(2, int(round(_polyline_length(curve_points) / spacing)) + 1)
+    samples = CurvedStackResampler._resample_curve(curve, rows)
+    curves, preferred_normals = CurvedStackResampler._offset_curve_geometry(
+        samples,
+        np.asarray([offset_axis.x, offset_axis.y, offset_axis.z]),
+        offsets_mm,
+        support_mm=max(abs(value) for value in offsets_mm) + slice_thickness / 2.0,
+    )
+    label_corners = []
+    for label_name in label_names:
+        bbox = localization_result.get("coords", {}).get(label_name, {}).get("bbox")
+        if not bbox:
+            continue
+        outer_bbox = {
+            f"{axis}_{side}": float(bbox[f"{axis}_{side}"]) + delta
+            for axis in "xyz"
+            for side, delta in (("min", -0.5), ("max", 0.5))
+        }
+        label_corners.append(np.asarray([
+            [point.x, point.y, point.z]
+            for point in _bbox_corners(outer_bbox, image_info)
+        ]))
+
+    radius = 0.0
+    for offset, offset_curve in curves.items():
+        tangents, transverse, _ = CurvedStackResampler._surface_frame(
+            offset_curve,
+            preferred_normals[offset],
+        )
+        for corners in label_corners:
+            along = corners @ tangents.T - np.sum(offset_curve * tangents, axis=1)
+            intersects = (along.min(axis=0) <= 1e-6) & (along.max(axis=0) >= -1e-6)
+            if not np.any(intersects):
+                continue
+            across = corners @ transverse[intersects].T - np.sum(
+                offset_curve[intersects] * transverse[intersects], axis=1,
+            )
+            radius = max(radius, float(np.max(np.abs(across))))
+    # 向外取整，避免按像素矩阵四舍五入后重新损失已经计算出的边界。
+    return max(spacing, math.ceil(2.0 * radius / spacing) * spacing)
 
 
 def _polyline_length(points: List[Point3D]) -> float:

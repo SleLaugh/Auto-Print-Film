@@ -141,6 +141,11 @@
                         "regions": ["default"],
                         "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
                         "localizer_plane": "冠状位"
+                    },
+                    "CPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
+                        "localizer_plane": "冠状位"
                     }
                 }
             }
@@ -193,6 +198,11 @@
                 },
                 "矢状位": {
                     "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
+                        "localizer_plane": "冠状位"
+                    },
+                    "CPR": {
                         "regions": ["default"],
                         "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
                         "localizer_plane": "冠状位"
@@ -258,6 +268,11 @@
                 },
                 "矢状位": {
                     "MPR": {
+                        "regions": ["default"],
+                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
+                        "localizer_plane": "冠状位"
+                    },
+                    "CPR": {
                         "regions": ["default"],
                         "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
                         "localizer_plane": "冠状位"

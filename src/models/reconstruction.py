@@ -37,7 +37,7 @@ class PlannedSlice:
     row_dir: Point3D
     col_dir: Point3D
     offset_mm: float | None = None
-    """CPR 曲面相对中心曲线的左右偏移；普通平面切片为空。"""
+    """CPR 曲面沿当前 offset 轴相对中心曲线的偏移；普通平面切片为空。"""
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化单张计划切片的中心、法向和画面方向。"""
@@ -92,9 +92,9 @@ class SlicePlan:
     curve_spacing_mm: float | None = None
     """CPR 沿曲线弧长方向的输出采样间距。"""
     offset_axis: Point3D | None = None
-    """CPR 左右偏移方向单位向量。"""
+    """CPR 首选堆叠方向：矢状位为左右轴，冠状位为前后轴。"""
     offsets_mm: List[float] | None = None
-    """CPR 每张图相对中心曲线的左右偏移。"""
+    """CPR 每张图沿当前 offset 轴相对中心曲线的偏移。"""
     cpr_range_mode: str | None = None
     """CPR offset 覆盖范围来源；full_label 为完整标注，body_prism 为主椎体。"""
     target_start: Point3D | None = None

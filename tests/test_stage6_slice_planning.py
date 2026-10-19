@@ -2184,6 +2184,87 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             ["vertebrae_C2", "vertebrae_C3", "vertebrae_C4"],
         )
 
+    def test_spine_sagittal_cpr_is_supported_for_all_three_spine_parts(self):
+        """颈椎、胸椎、腰椎显式请求矢状位 CPR 时均生成曲面计划。"""
+
+        cases = (
+            (
+                SlicePartEnum.颈椎,
+                ("C1", "C2", "C3", "C4"),
+                SingleLabelWholeRangePlanner(),
+            ),
+            (
+                SlicePartEnum.胸椎,
+                ("C7", "T1", "T2", "T3"),
+                SingleLabelWholeRangePlanner(),
+            ),
+            (
+                SlicePartEnum.腰椎,
+                ("L1", "L2", "L3", "L4", "L5", "S1"),
+                LumbarWholeRangePlanner(),
+            ),
+        )
+        for slice_part, labels, planner in cases:
+            with self.subTest(slice_part=slice_part.value):
+                request = Request(
+                    dicom_dir="/tmp/dicom",
+                    output_dir="/tmp/output",
+                    slice_part=slice_part,
+                    plane_configs=[
+                        PlaneConfig(
+                            PlaneTypeEnum.矢状位,
+                            1.0,
+                            3.0,
+                            ["骨窗"],
+                            slice_type=SliceType.CPR,
+                        ),
+                    ],
+                )
+                result = planner.build_plans(
+                    request,
+                    self._spine_localization_result(labels, slice_part.value),
+                )
+
+                self.assertEqual(len(result.plans), 1)
+                plan = result.plans[0]
+                self.assertEqual(plan.geometry_type, "curved_stack")
+                self.assertEqual(plan.plane, "矢状位")
+                self.assertEqual(plan.localizer_plane, "冠状位")
+                self.assertEqual(plan.offset_axis, Point3D(1.0, 0.0, 0.0))
+
+    def test_spine_sagittal_cpr_reads_sagittal_range_extension(self):
+        """矢状位 CPR 的 offset 范围应读取矢状位自身的扩展配置。"""
+
+        localization_result = self._spine_localization_result(
+            ("L1", "L2", "L3"),
+            "腰椎",
+        )
+        localization_result["slice_rules"]["矢状位"]["CPR"][
+            "range_extension"
+        ] = {"start_mm": 4.0, "end_mm": 6.0}
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            slice_part=SlicePartEnum.腰椎,
+            plane_configs=[
+                PlaneConfig(
+                    PlaneTypeEnum.矢状位,
+                    4.0,
+                    5.0,
+                    ["骨窗"],
+                    slice_type=SliceType.CPR,
+                ),
+            ],
+        )
+
+        plan = SingleLabelWholeRangePlanner().build_plans(
+            request,
+            localization_result,
+        ).plans[0]
+
+        self.assertEqual(plan.offsets_mm, [-9.0, -4.0, 1.0, 6.0, 11.0])
+        self.assertGreaterEqual(plan.extent_mm.width, 10.0)
+
     def test_cervical_cpr_label_sequence_excludes_c1_ring(self):
         """颈椎 CPR 源序列从 C2 开始，避免 C1 环形结构干扰曲线。"""
 

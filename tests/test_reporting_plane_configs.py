@@ -376,6 +376,53 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             ["配置01", "配置02", "配置03"],
         )
 
+    def test_delivery_sampling_precision_only_rounds_report_values(self):
+        """实际参数报告落盘到两位，保持数值类型且不影响请求和重建来源精度。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = Request.from_dict({
+                "dicom_dir": "/tmp/dicom",
+                "output_dir": temp_dir,
+                "ScanThickness": 1.0,
+                "plane_configs": [{
+                    "Plane": "矢状位",
+                    "SliceThickness": 5.123456,
+                    "SliceSpacing": 5.987654,
+                    "WindowPresets": ["骨窗", "软组织窗"],
+                }],
+            })
+            output = {
+                "plane": "矢状位",
+                "slice_type": "MPR",
+                "group_name": "whole_range",
+                "slice_thickness": 3.456789,
+                "slice_spacing": 4.987654,
+                "slice_count": 21,
+                "window_outputs": {
+                    "骨窗": "/tmp/矢状位/骨窗",
+                    "软组织窗": "/tmp/矢状位/软组织窗",
+                },
+            }
+            context = ProcessingContext(request)
+            context.set_result("reconstruction", {"outputs": [output]})
+
+            report_path = ReportingStage()._generate_report(context)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            config = report["PlaneList"][0]
+
+            self.assertEqual(config["SliceThickness"], 5.123456)
+            self.assertEqual(config["SliceSpacing"], 5.987654)
+            for window in config["WindowPresetList"]:
+                region = window["RegionList"][0]
+                self.assertIsInstance(region["ActualSliceThickness"], float)
+                self.assertIsInstance(region["ActualSliceSpacing"], float)
+                self.assertEqual(region["ActualSliceThickness"], 3.46)
+                self.assertEqual(region["ActualSliceSpacing"], 4.99)
+                self.assertEqual(region["ActualSliceImageCount"], 21)
+            actual_output = context.get_result("reconstruction")["outputs"][0]
+            self.assertEqual(actual_output["slice_thickness"], 3.456789)
+            self.assertEqual(actual_output["slice_spacing"], 4.987654)
+
     def test_global_config_ids_do_not_mix_different_plane_outputs(self):
         """全局配置编号必须让不同状位关联各自实际输出。"""
 

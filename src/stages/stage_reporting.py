@@ -242,16 +242,16 @@ class ReportingStage(BaseStage):
         output: Dict[str, Any],
         window_name: str,
     ) -> Dict[str, Any]:
-        """整理一个窗位下实际重建区域的参数、数量和目录。"""
+        """整理交付区域；实际层厚、间距仅在报告中取两位小数，保留内部计算精度。"""
 
         region = ReportingStage._resolve_region(output)
         window_outputs = output.get('window_outputs') or {}
         return {
             'Region': region,
-            'ActualSliceThickness': float(
-                output.get('slice_thickness', 0.0)
+            'ActualSliceThickness': round(
+                float(output.get('slice_thickness', 0.0)), 2,
             ),
-            'ActualSliceSpacing': float(output.get('slice_spacing', 0.0)),
+            'ActualSliceSpacing': round(float(output.get('slice_spacing', 0.0)), 2),
             'ActualSliceImageCount': int(output.get('slice_count', 0)),
             'Path': str(window_outputs[window_name]),
         }

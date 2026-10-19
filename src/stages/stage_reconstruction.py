@@ -34,6 +34,10 @@ from src.reconstruction.dicom import (
 from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
 from src.reconstruction.framing_context import load_framing_context
 from src.reconstruction.symmetry_framing import resolve_symmetry_framing_plane
+from src.reconstruction.spine_localizer import (
+    SpineLocalizerSurface,
+    build_spine_localizer_surface,
+)
 from src.reconstruction.framing import (
     TargetFramer,
     frame_curved_slice,
@@ -51,6 +55,7 @@ class _LocalizerRender:
     background_image: sitk.Image
     line_alpha: np.ndarray
     legacy_line_value: float
+    background_kind: str = "orthogonal_plane"
 
 
 class ReconstructionStage(BaseStage):
@@ -198,6 +203,8 @@ class ReconstructionStage(BaseStage):
                                 self._interspace_framing_key(plan),
                             ),
                         ),
+                        localization_result=loc_result,
+                        anatomical_analysis=anatomical_analysis,
                     )
                 )
             DebugLog(f"  状位处理完成: {plane}")
@@ -222,6 +229,8 @@ class ReconstructionStage(BaseStage):
         localizer_image: sitk.Image | None = None,
         custom_window_presets: list[WindowPreset] | None = None,
         target_framer: TargetFramer | None = None,
+        localization_result: Dict[str, Any] | None = None,
+        anatomical_analysis: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """
         执行一个切片计划。
@@ -231,16 +240,7 @@ class ReconstructionStage(BaseStage):
         线程不触碰重采样器，也符合“先采集、后显示处理”的流程。
         """
         localizer_render: _LocalizerRender | None = None
-        if localizer_image is None and isinstance(image, sitk.Image):
-            localizer_start = time.perf_counter()
-            localizer_render = self._build_plan_localizer_render(image, plan)
-            DebugLog(
-                "    [重建性能] Localizer生成完成: "
-                f"plan={plan.get('plan_id', '')}, "
-                f"has_localizer={localizer_render is not None}, "
-                f"耗时={time.perf_counter() - localizer_start:.3f}s"
-            )
-        elif localizer_image is not None:
+        if localizer_image is not None:
             # 保留内部测试或调用方传入预构建定位图的兼容入口。该图可能已经烧录
             # 线条，因此这里只把它作为无额外覆盖掩膜的完整背景继续写出。
             localizer_render = _LocalizerRender(
@@ -341,6 +341,21 @@ class ReconstructionStage(BaseStage):
         )
         DebugLog("    [1] MPR采样完成")
 
+        if localizer_image is None and isinstance(image, sitk.Image):
+            localizer_start = time.perf_counter()
+            localizer_plan = self._plan_for_localizer(image, plan, sampled_slices)
+            localizer_render = self._build_plan_localizer_render(
+                image, localizer_plan,
+                localization_result=localization_result,
+                anatomical_analysis=anatomical_analysis,
+            )
+            DebugLog(
+                "    [重建性能] Localizer生成完成: "
+                f"plan={plan.get('plan_id', '')}, "
+                f"has_localizer={localizer_render is not None}, "
+                f"耗时={time.perf_counter() - localizer_start:.3f}s"
+            )
+
         self._write_plan_windows(
             sampled_slices=sampled_slices,
             windows=windows,
@@ -376,7 +391,48 @@ class ReconstructionStage(BaseStage):
                 for name, path in output_dirs.items()
             },
             "localizer_only": False,
+            "localizer_background": (
+                localizer_render.background_kind if localizer_render is not None else None
+            ),
         }
+
+    @staticmethod
+    def _plan_for_localizer(
+        image: sitk.Image,
+        plan: Dict[str, Any],
+        sampled_slices: list[tuple[dict[str, Any], sitk.Image]],
+    ) -> Dict[str, Any]:
+        """仅读取最终 MPR 视野构造绘线计划，保持原采样计划和定位参考层不变。"""
+
+        if plan.get("geometry_type") == "curved_stack" or not sampled_slices:
+            return plan
+        localizer_plan = {
+            **plan,
+            "slices": [
+                {
+                    **planned_slice,
+                    "localizer_extent_mm": (planned_slice.get("framing") or {}).get(
+                        "extent_mm", plan.get("extent_mm", {}),
+                    ),
+                }
+                for planned_slice, _ in sampled_slices
+            ],
+        }
+        if not plan.get("localizer_reference"):
+            # 兼容旧计划：固定层回退仍由原切片中心决定，不能随取景移动。
+            original_indices = np.asarray([
+                image.TransformPhysicalPointToContinuousIndex((
+                    float(item["center"]["x"]),
+                    float(item["center"]["y"]),
+                    float(item["center"]["z"]),
+                ))
+                for item in plan.get("slices", [])
+            ], dtype=float)
+            reference = image.TransformContinuousIndexToPhysicalPoint(
+                tuple(np.median(original_indices, axis=0)),
+            )
+            localizer_plan["localizer_reference"] = dict(zip(("x", "y", "z"), reference))
+        return localizer_plan
 
     def _write_plan_windows(
         self,
@@ -473,10 +529,17 @@ class ReconstructionStage(BaseStage):
         cls,
         image: sitk.Image,
         plan: Dict[str, Any],
+        *,
+        localization_result: Dict[str, Any] | None = None,
+        anatomical_analysis: Dict[str, Any] | None = None,
     ) -> sitk.Image | None:
         """返回兼容既有检查入口的、已烧录定位线的 HU 图像。"""
 
-        render = cls._build_plan_localizer_render(image, plan)
+        render = cls._build_plan_localizer_render(
+            image, plan,
+            localization_result=localization_result,
+            anatomical_analysis=anatomical_analysis,
+        )
         if render is None:
             return None
         return cls._compose_legacy_localizer_image(render)
@@ -486,20 +549,32 @@ class ReconstructionStage(BaseStage):
         cls,
         image: sitk.Image,
         plan: Dict[str, Any],
+        *,
+        localization_result: Dict[str, Any] | None = None,
+        anatomical_analysis: Dict[str, Any] | None = None,
     ) -> _LocalizerRender | None:
         """生成定位图背景与亚像素线掩膜，不参与正式切片重建。"""
 
+        surface = build_spine_localizer_surface(
+            image, plan, localization_result, anatomical_analysis,
+        )
         if plan.get("geometry_type") == "curved_stack":
-            return cls._build_curved_plan_localizer_render(image, plan)
-        return cls._build_plane_plan_localizer_render(image, plan)
+            return cls._build_curved_plan_localizer_render(
+                image, plan, localizer_surface=surface,
+            )
+        return cls._build_plane_plan_localizer_render(
+            image, plan, localizer_surface=surface,
+        )
 
     @classmethod
     def _build_plane_plan_localizer_render(
         cls,
         image: sitk.Image,
         plan: Dict[str, Any],
+        *,
+        localizer_surface: SpineLocalizerSurface | None = None,
     ) -> _LocalizerRender | None:
-        """生成直线切片平面在原始正交背景上的抗锯齿交线。"""
+        """在正交或脊柱曲面背景上绘制实际 MPR 切片矩形的交线。"""
 
         axes = cls._LOCALIZER_DRAW_AXES.get(str(plan.get("plane", "")))
         if axes is None:
@@ -533,12 +608,15 @@ class ReconstructionStage(BaseStage):
                 index_xyz[fixed_axis] for index_xyz in center_indices
             ]))))
         fixed_index = min(max(fixed_index, 0), image.GetSize()[fixed_axis] - 1)
-        roi_index = [0, 0, 0]
-        roi_size = list(image.GetSize())
-        roi_index[fixed_axis] = fixed_index
-        roi_size[fixed_axis] = 1
-        representative_slice = sitk.RegionOfInterest(image, roi_size, roi_index)
-        representative_slice = sitk.Cast(representative_slice, sitk.sitkFloat32)
+        if localizer_surface is not None:
+            representative_slice = localizer_surface.sample(image)
+        else:
+            roi_index = [0, 0, 0]
+            roi_size = list(image.GetSize())
+            roi_index[fixed_axis] = fixed_index
+            roi_size[fixed_axis] = 1
+            representative_slice = sitk.RegionOfInterest(image, roi_size, roi_index)
+            representative_slice = sitk.Cast(representative_slice, sitk.sitkFloat32)
         line_alpha_array = np.zeros(
             sitk.GetArrayViewFromImage(representative_slice).shape,
             dtype=np.float32,
@@ -560,9 +638,20 @@ class ReconstructionStage(BaseStage):
             dtype=float,
         ).reshape(3, 3)[:, fixed_axis]
         for planned_slice in plan.get("slices", []):
+            if localizer_surface is not None:
+                # 曲面背景的前后深度随行变化；斜切 MPR 不能继续使用旧平面交线。
+                for indices in localizer_surface.plane_intersections(
+                    image, planned_slice,
+                    planned_slice.get("localizer_extent_mm", plan.get("extent_mm", {})),
+                ):
+                    cls._paint_antialiased_polyline(
+                        line_alpha_array, indices,
+                        display_axes=(stack_axis, line_axis), fixed_axis=fixed_axis,
+                    )
+                continue
             segment = cls._slice_localizer_intersection(
                 planned_slice=planned_slice,
-                extent_mm=plan.get("extent_mm", {}),
+                extent_mm=planned_slice.get("localizer_extent_mm", plan.get("extent_mm", {})),
                 fixed_plane_point=fixed_plane_point,
                 fixed_plane_normal=fixed_plane_normal,
             )
@@ -590,6 +679,7 @@ class ReconstructionStage(BaseStage):
             line_alpha_array=line_alpha_array,
             fixed_axis=fixed_axis,
             legacy_line_value=line_value,
+            localizer_surface=localizer_surface,
         )
 
     @classmethod
@@ -600,7 +690,9 @@ class ReconstructionStage(BaseStage):
     ) -> sitk.Image | None:
         """返回兼容既有检查入口的、已烧录 CPR 定位线的 HU 图像。"""
 
-        render = cls._build_curved_plan_localizer_render(image, plan)
+        render = cls._build_curved_plan_localizer_render(
+            image, plan, localizer_surface=build_spine_localizer_surface(image, plan),
+        )
         if render is None:
             return None
         return cls._compose_legacy_localizer_image(render)
@@ -610,6 +702,8 @@ class ReconstructionStage(BaseStage):
         cls,
         image: sitk.Image,
         plan: Dict[str, Any],
+        *,
+        localizer_surface: SpineLocalizerSurface | None = None,
     ) -> _LocalizerRender | None:
         """投影实际 CPR 中心曲线，并生成亚像素覆盖掩膜。"""
 
@@ -624,12 +718,15 @@ class ReconstructionStage(BaseStage):
         display_axes = [axis for axis in range(3) if axis != fixed_axis]
 
         fixed_index = cls._curved_localizer_fixed_index(image, plan, fixed_axis)
-        roi_index = [0, 0, 0]
-        roi_size = list(image.GetSize())
-        roi_index[fixed_axis] = fixed_index
-        roi_size[fixed_axis] = 1
-        representative_slice = sitk.RegionOfInterest(image, roi_size, roi_index)
-        representative_slice = sitk.Cast(representative_slice, sitk.sitkFloat32)
+        if localizer_surface is not None:
+            representative_slice = localizer_surface.sample(image)
+        else:
+            roi_index = [0, 0, 0]
+            roi_size = list(image.GetSize())
+            roi_index[fixed_axis] = fixed_index
+            roi_size[fixed_axis] = 1
+            representative_slice = sitk.RegionOfInterest(image, roi_size, roi_index)
+            representative_slice = sitk.Cast(representative_slice, sitk.sitkFloat32)
         line_alpha_array = np.zeros(
             sitk.GetArrayViewFromImage(representative_slice).shape,
             dtype=np.float32,
@@ -675,6 +772,7 @@ class ReconstructionStage(BaseStage):
             line_alpha_array=line_alpha_array,
             fixed_axis=fixed_axis,
             legacy_line_value=line_value,
+            localizer_surface=localizer_surface,
         )
 
     @classmethod
@@ -783,6 +881,7 @@ class ReconstructionStage(BaseStage):
         line_alpha_array: np.ndarray,
         fixed_axis: int,
         legacy_line_value: float,
+        localizer_surface: SpineLocalizerSurface | None = None,
     ) -> _LocalizerRender:
         """统一定位图头脚翻转、二维提取和患者空间标签。"""
 
@@ -827,6 +926,15 @@ class ReconstructionStage(BaseStage):
             "0020|0032",
             "\\".join(f"{float(value):.12g}" for value in first_pixel),
         )
+        if localizer_surface is not None:
+            # x/z 仍是原图参考网格，但每行取样的 y 不同，不能冒充单一冠状切面。
+            localizer.SetMetaData(
+                "0008|2111",
+                "Spine-following coronal localizer: AP sampling depth varies by row. "
+                "Position/orientation describe the x/z reference grid, not a single "
+                "physical coronal plane. MPR lines intersect the sampling surface; "
+                "CPR lines project the sampled surface center paths.",
+            )
         line_alpha = np.clip(
             sitk.GetArrayFromImage(line_alpha_image).astype(np.float32),
             0.0,
@@ -836,6 +944,9 @@ class ReconstructionStage(BaseStage):
             background_image=localizer,
             line_alpha=line_alpha,
             legacy_line_value=float(legacy_line_value),
+            background_kind=(
+                "spine_following_coronal" if localizer_surface is not None else "orthogonal_plane"
+            ),
         )
 
     @classmethod
@@ -1105,17 +1216,26 @@ class ReconstructionStage(BaseStage):
 
         half_width = max(0.0, float(extent_mm.get("width", 0.0)) / 2.0)
         half_height = max(0.0, float(extent_mm.get("height", 0.0)) / 2.0)
-        limits = []
-        row_component = abs(float(np.dot(line_direction, row_dir)))
-        col_component = abs(float(np.dot(line_direction, col_dir)))
-        if row_component > 1e-8:
-            limits.append(half_width / row_component)
-        if col_component > 1e-8:
-            limits.append(half_height / col_component)
-        half_length = min(limits) if limits else 0.0
+        # 交线经过的点通常偏离切片中心，需将 p(t) 分别裁入 row/col 的有限区间。
+        # 直接按半宽/半高对称延伸，会越过斜切边界，也会给完全不相交的 FOV 画线。
+        relative_center = intersection_center - center
+        lower_t, upper_t = -math.inf, math.inf
+        for direction, half_extent in ((row_dir, half_width), (col_dir, half_height)):
+            offset = float(np.dot(relative_center, direction))
+            component = float(np.dot(line_direction, direction))
+            if abs(component) <= 1e-8:
+                if abs(offset) > half_extent:
+                    return None
+                continue
+            first_t = (-half_extent - offset) / component
+            second_t = (half_extent - offset) / component
+            lower_t = max(lower_t, min(first_t, second_t))
+            upper_t = min(upper_t, max(first_t, second_t))
+            if lower_t > upper_t:
+                return None
         return (
-            intersection_center - line_direction * half_length,
-            intersection_center + line_direction * half_length,
+            intersection_center + line_direction * lower_t,
+            intersection_center + line_direction * upper_t,
         )
 
     @staticmethod
@@ -1143,7 +1263,7 @@ class ReconstructionStage(BaseStage):
         projection: sitk.Image,
         projection_axis: int,
     ) -> sitk.Image:
-        """移除最大强度投影后的单体素轴，得到可写定位图的二维图像。"""
+        """移除定位背景或线掩膜的单体素轴，得到二维显示图。"""
 
         size = list(projection.GetSize())
         size[projection_axis] = 0
@@ -1216,9 +1336,11 @@ class ReconstructionStage(BaseStage):
             raise ValueError(
                 "Localizer 缺少必要空间标签: " + ", ".join(missing_tags)
             )
+        optional_tags = ("0008|2111",)
         return {
             tag: image.GetMetaData(tag)
-            for tag in required_tags
+            for tag in (*required_tags, *optional_tags)
+            if image.HasMetaDataKey(tag)
         }
 
     @staticmethod

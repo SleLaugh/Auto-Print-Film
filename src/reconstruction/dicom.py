@@ -289,6 +289,9 @@ def _restore_localizer_geometry_tags(
         dataset.ImageOrientationPatient = [
             float(value) for value in orientation.split("\\")
         ]
+    # 曲面定位背景只有二维参考网格；保留派生说明，避免被解释为普通冠状切面。
+    if geometry_metadata.get("0008|2111"):
+        dataset.DerivationDescription = geometry_metadata["0008|2111"]
     # 定位图含合成定位线，不是定量 CT；背景与白线保留原有显示灰度。
     _set_windowed_pixel_metadata(dataset, window, rescale_type="US")
     temporary_path = _temporary_dicom_path(output_path, "pydicom")
@@ -323,7 +326,7 @@ def write_localizer_dicom(
     if geometry_metadata is None:
         geometry_metadata = {
             tag: image.GetMetaData(tag)
-            for tag in ("0020|0032", "0020|0037")
+            for tag in ("0020|0032", "0020|0037", "0008|2111")
             if image.HasMetaDataKey(tag)
         }
     else:

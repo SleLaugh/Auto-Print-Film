@@ -100,9 +100,9 @@ class SlicePlan:
     target_start: Point3D | None = None
     target_end: Point3D | None = None
     localizer_reference: Point3D | None = None
-    """定位图选择原始参考层时使用的物理点；不参与正式切片重采样。"""
+    """定位图正交选层或曲面显示参考网格的物理点；不参与正式切片重采样。"""
     localizer_plane: str | None = None
-    """定位图使用的原始正交状位；为空时自动选择，不改变正式切片状位。"""
+    """定位图参考显示状位；为空时自动选择，脊柱可用曲面背景，不改变正式切片状位。"""
     confidence: float = 1.0
     warnings: List[str] = field(default_factory=list)
     config_id: str = ""

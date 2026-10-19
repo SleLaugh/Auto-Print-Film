@@ -377,8 +377,8 @@ def _build_whole_range_plan_from_anatomical_frame(
     else:
         raise ValueError(f"不支持的切割平面: {plane}")
 
-    # 定位图必须选取经过目标部位的原始正交层。这里保存显示居中前的目标
-    # 中心，避免整平面模式把 MPR 画面移到整幅 CT 中心后带偏定位图背景层。
+    # 保存显示居中前的目标中心，供定位图的原始正交层或曲面参考网格使用；
+    # 不能让正式切片的面内取景移动带偏定位背景。脊柱曲面深度另由主体几何确定。
     localizer_reference = Point3D(
         (target_start.x + target_end.x) / 2.0,
         (target_start.y + target_end.y) / 2.0,

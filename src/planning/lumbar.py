@@ -79,8 +79,8 @@ class LumbarWholeRangePlanner:
                 localization_result=localization_result,
             )
             if plane_config.plane == PlaneTypeEnum.矢状位:
-                # 矢状位切片保持旧的直线 MPR；定位图单独选择穿过腰椎主体的
-                # 配置层，不能复用整平面成片为了显示覆盖而移动后的中心。
+                # 正式切片保持直线 MPR；此点只确定定位图参考网格和单层回退，
+                # 曲面背景的前后深度由主体几何确定，不能跟随成片面内取景移动。
                 plan.localizer_reference = localizer_reference
             plans.append(plan)
 

@@ -313,7 +313,12 @@ class LocalizationOperations(
         resolved_cut_configs: Dict[str, Dict[str, Any]],
         label_map: Dict[str, list[int]],
     ) -> Dict[str, LabelTarget]:
-        """合并全部范围方案的标签，保留整体定位所需的首尾椎体。"""
+        """合并全部范围方案的标签，供空间校正、整体定位和解剖分析使用。
+
+        即使本次只请求椎间隙，也会合并整切范围并校验其中的标签体素；
+        因此扩展整切端点后，新增椎体同样必须存在于分割结果中。
+        这里仅合并定位标签，不会据此增加椎间隙区域。
+        """
 
         combined_targets: Dict[str, LabelTarget] = {}
         for resolved_cut_config in resolved_cut_configs.values():
@@ -331,7 +336,8 @@ class LocalizationOperations(
         收集本次定位需要的 label 名称。
 
         普通目标仍然收集 start/end。脊柱整切的 start/end 是范围边界，
-        不是只取两个端点；比如 C1 到 C7 会展开为 C1-C7 全部椎体。
+        不是只取两个端点；例如 C1 到 T1 会按解剖顺序收集 C1-C7、T1，
+        T12 到 S1 会收集 T12、L1-L5、S1。
         """
         label_names = []
         if 'intervals' in resolved_cut_config:

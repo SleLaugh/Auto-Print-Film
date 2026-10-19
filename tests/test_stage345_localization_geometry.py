@@ -690,8 +690,42 @@ class LocalizationGeometryTest(unittest.TestCase):
         self.assertEqual(config["slice_parts"]["颈椎"]["localization"]["regions"]["default"], {
             "type": "whole_range",
             "start_label": "C1",
-            "end_label": "C7",
+            "end_label": "T1",
         })
+
+    def test_default_spine_targets_include_junction_vertebrae(self):
+        """整体范围延伸到 T1/T12，同时仍只保留原有五个椎间隙。"""
+
+        stage = LocalizationStage()
+        for part, labels in (
+            ("颈椎", [f"vertebrae_C{i}" for i in range(1, 8)] + ["vertebrae_T1"]),
+            ("腰椎", ["vertebrae_T12"] + [f"vertebrae_L{i}" for i in range(1, 6)]
+             + ["vertebrae_S1"]),
+        ):
+            with self.subTest(slice_part=part):
+                request = Request.from_dict({
+                    "dicom_dir": "/tmp/dicom",
+                    "output_dir": "/tmp/output",
+                    "SlicePart": part,
+                    "ScanThickness": 1.0,
+                })
+                cut_configs = stage._resolve_cut_configs(request)
+                resolved = {
+                    profile: stage._resolve_label_aliases(config)
+                    for profile, config in cut_configs.items()
+                }
+                targets = stage._resolve_combined_label_targets(
+                    resolved,
+                    {label: [index] for index, label in enumerate(labels, start=1)},
+                )
+
+                self.assertEqual(list(targets), labels)
+                self.assertEqual(len(resolved["interspace"]["intervals"]), 5)
+                self.assertTrue(all(
+                    "T1" not in interval["start_labels"][0]
+                    and "T1" not in interval["end_labels"][0]
+                    for interval in resolved["interspace"]["intervals"]
+                ))
 
     def test_cervical_interspace_targets_still_include_c1_for_localization(self):
         """椎间隙从 C2 开始，但颈椎整体定位仍必须包含 C1。"""

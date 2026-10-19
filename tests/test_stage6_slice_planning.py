@@ -2266,16 +2266,49 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertGreaterEqual(plan.extent_mm.width, 10.0)
 
     def test_cervical_cpr_label_sequence_excludes_c1_ring(self):
-        """颈椎 CPR 源序列从 C2 开始，避免 C1 环形结构干扰曲线。"""
+        """颈椎 CPR 从 C2 开始，并包含整体范围新增的 T1。"""
 
         localization_result = self._spine_localization_result(
-            ("C1", "C2", "C3", "C4", "C5", "C6", "C7"),
+            ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1"),
             "颈椎",
         )
         self.assertEqual(
             configured_spine_cpr_labels(localization_result),
-            [f"vertebrae_C{index}" for index in range(2, 8)],
+            [f"vertebrae_C{index}" for index in range(2, 8)] + ["vertebrae_T1"],
         )
+
+    def test_default_cpr_plans_include_extended_spine_endpoints(self):
+        """冠状位和矢状位 CPR 均随默认范围纳入新增交界椎体。"""
+
+        for part, labels in (
+            (SlicePartEnum.颈椎, ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1")),
+            (SlicePartEnum.腰椎, ("T12", "L1", "L2", "L3", "L4", "L5", "S1")),
+        ):
+            localization = self._spine_localization_result(labels, part.value)
+            expected = [f"vertebrae_{label}" for label in labels if label != "C1"]
+            for plane in (PlaneTypeEnum.冠状位, PlaneTypeEnum.矢状位):
+                with self.subTest(slice_part=part.value, plane=plane.value):
+                    request = Request(
+                        dicom_dir="/tmp/dicom",
+                        output_dir="/tmp/output",
+                        slice_part=part,
+                        plane_configs=[PlaneConfig(
+                            plane, 1.0, 3.0, ["骨窗"], slice_type=SliceType.CPR,
+                        )],
+                    )
+                    plan = select_planner(part.value, "CPR").build_plans(
+                        request, localization,
+                    ).plans[0]
+
+                    self.assertEqual(plan.source_labels, expected)
+                    self.assertAlmostEqual(
+                        plan.range_start.z,
+                        localization["coords"][expected[0]]["centroid"]["z"],
+                    )
+                    self.assertAlmostEqual(
+                        plan.range_end.z,
+                        localization["coords"][expected[-1]]["centroid"]["z"],
+                    )
 
     def test_cervical_interspace_starts_at_c2_c3_and_keeps_five_gaps(self):
         """颈椎横状位不生成环椎 C1 与 C2 之间的区间。"""

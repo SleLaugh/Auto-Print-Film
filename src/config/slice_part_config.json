@@ -103,7 +103,7 @@
                     "excluded_labels": ["C1"]
                 },
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "C1", "end_label": "C7" },
+                    "default": { "type": "whole_range", "start_label": "C1", "end_label": "T1" },
                     "C2_C3": { "type": "interspace", "start_label": "C2", "end_label": "C3" },
                     "C3_C4": { "type": "interspace", "start_label": "C3", "end_label": "C4" },
                     "C4_C5": { "type": "interspace", "start_label": "C4", "end_label": "C5" },
@@ -233,7 +233,7 @@
                     "full_label": true
                 },
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "L1", "end_label": "S1" },
+                    "default": { "type": "whole_range", "start_label": "T12", "end_label": "S1" },
                     "L1_L2": { "type": "interspace", "start_label": "L1", "end_label": "L2" },
                     "L2_L3": { "type": "interspace", "start_label": "L2", "end_label": "L3" },
                     "L3_L4": { "type": "interspace", "start_label": "L3", "end_label": "L4" },

@@ -103,6 +103,8 @@ def build_spine_interspace_plans(
 
     plans = []
     intervals = configured_interspace_definitions(localization_result)
+    # 椎间隙由显式区间列表决定；整体范围在此只用于共享定位图参考。
+    # 扩展整切端点会影响定位图范围，但不会自动增加交界处的椎间隙。
     label_names = configured_whole_range_spine_labels(localization_result) or []
     localizer_reference = resolve_spine_localizer_reference(
         localization_result,

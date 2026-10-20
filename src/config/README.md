@@ -16,6 +16,8 @@ src/config/slice_part_config.json
 
 应用启动时会读取并严格校验该文件。发布包中的 `src/config/` 是外置配置目录，修改
 JSON 后下一次任务启动即可生效，无需重新打包。
+`dev build` 默认把源码目录中的全部 JSON 同步到发布目录和压缩包；仅显式使用
+`dev build --keep-config` 时才沿用上次 `dist` 中的配置修改。
 
 ## 顶层结构
 

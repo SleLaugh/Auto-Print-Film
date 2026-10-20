@@ -252,7 +252,7 @@ def _validate_existing_output(output):
 
 
 def copy_configs(source, application, previous=None):
-    """Keep editable JSON, including operator changes in an earlier dist bundle."""
+    """Publish source JSON; reuse earlier dist edits only when explicitly requested."""
     directory = source / CONFIG_DIRECTORY
     if not directory.is_dir() or directory.absolute() != directory.resolve():
         raise ValueError("源配置目录必须是项目内普通目录")
@@ -412,7 +412,7 @@ def build_lock(cache):
             fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def build_portable(source=PROJECT_ROOT, *, refresh=False, reset_config=False):
+def build_portable(source=PROJECT_ROOT, *, refresh=False, reset_config=True):
     source = Path(source).resolve()
     if platform.system() != "Linux" or platform.machine() not in {"x86_64", "AMD64"}:
         raise ValueError("当前发布配置支持 Linux x86_64，请在相同平台构建")
@@ -431,6 +431,8 @@ def build_portable(source=PROJECT_ROOT, *, refresh=False, reset_config=False):
             # Deliberately use a different path for validation before the final
             # dist move, so absolute build-time runtime paths cannot pass unnoticed.
             staging = freeze_application(source, runtime, temporary)
+            _log("发布配置：使用当前源码 src/config/*.json。" if reset_config
+                 else "发布配置：沿用上次 dist 的 JSON，新增文件使用源码配置（--keep-config）。")
             copy_configs(source, staging, None if reset_config else output)
             for relative in ("README.md", "docs/production.md"):
                 target = staging / relative
@@ -478,7 +480,12 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     build = commands.add_parser("build", help="构建可执行程序、内部依赖和外置配置")
     build.add_argument("--refresh-runtime", action="store_true", help="重新安装依赖缓存")
-    build.add_argument("--reset-config", action="store_true", help="用源码配置替换上次 dist 中的配置")
+    config = build.add_mutually_exclusive_group()
+    config.add_argument("--keep-config", dest="reset_config", action="store_false",
+                        help="沿用上次 dist 中的 JSON 修改；默认发布当前源码配置")
+    config.add_argument("--reset-config", dest="reset_config", action="store_true",
+                        help="发布当前源码配置（默认行为，兼容旧命令）")
+    build.set_defaults(reset_config=True)
     commands.add_parser("install-command", help="一次性注册裸命令 dev 到 ~/.local/bin")
     arguments = parser.parse_args(argv)
     try:

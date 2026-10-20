@@ -74,7 +74,7 @@ tar -xzf AutoPrintFilm-linux-x64.tar.gz -C /home/peng/03_data/production && \
 
 最后一条只查看帮助，不检查外部模型或运行病例。服务账号须能读取、执行完整程序目录，访问外部推理环境、模型和输入，并写入任务缓存、输出及日志。
 
-已有生产版本时先备份程序与外置配置，等待在途任务结束后再替换整个目录；不要直接解压覆盖运行中的版本。升级时保留实际生产 `src/config/*.json`，核对新旧配置格式后再运行。
+已有生产版本时先备份程序与外置配置，等待在途任务结束后再替换整个目录；不要直接解压覆盖运行中的版本。升级时以新包的 `src/config/*.json` 为基础，合并生产所需的模型路径、推理命令等本机设置，核对后再运行。整份覆盖成旧配置会丢失新版部位名称、切割范围等更新。
 
 ## 4. 更新 Worker 并保存服务配置
 
@@ -238,11 +238,18 @@ OMP/BLAS 等线程默认值也会继承，除非其启动器自行覆盖；`-npp
 
 在 Linux 下，外部推理子进程会恢复 PyInstaller 启动前的动态库搜索路径；父进程仍使用自己的打包库。[PyInstaller 外部程序调用说明](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#launching-external-programs-from-the-frozen-application)
 
-首次构建沿用源码配置；重复 `dev build` 默认保留上次 `dist/AutoPrintFilm/src/config/` 中的 JSON 修改。独立生产目录的配置不会被构建命令修改。若明确要让构建产物改用当前源码配置：
+每次 `dev build` 默认把当前源码 `src/config/*.json` 同步到发布目录和压缩包，包括
+`nnuNet_config.json`、`slice_part_config.json`、`window_presets.json`、`logger_config.json`。
+上次 `dist/AutoPrintFilm/src/config/` 的 JSON 会被当前源码配置替换，确保部位名称、
+切割范围等更新随程序发布；独立生产目录的配置不会被构建命令修改。
+若本次明确需要沿用上次 `dist` 中的 JSON 修改：
 
 ```bash
-dev build --reset-config
+dev build --keep-config
 ```
+
+此选项会优先保留旧包同名 JSON，仅新增文件采用源码配置。旧命令
+`dev build --reset-config` 仍可用，与默认 `dev build` 行为一致。
 
 ## 6. 缓存与构建验证
 

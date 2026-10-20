@@ -27,7 +27,9 @@ dev build
 直接入口为 `dist/AutoPrintFilm/AutoPrintFilm`，压缩包为
 `dist/AutoPrintFilm-linux-x64.tar.gz`。整体移动应用目录，保留 `_internal/` 和符号链接；
 生产端无需安装应用 Python 或运行 `main.py`，包内不交付应用源码脚本。
-JSON 配置外置于产物的 `src/config/`，可直接编辑；重复构建默认保留已修改的发布配置。
+JSON 配置外置于产物的 `src/config/`，可直接编辑；每次构建默认同步当前源码的全部
+JSON 配置，应用目录和压缩包都会包含。仅在需要沿用上次 `dist` 中的配置修改时使用
+`dev build --keep-config`。
 nnUNet、PyTorch 和模型继续使用外部环境，通过 `nnuNet_config.json` 配置路径，不打入包。
 新机器克隆项目后先运行一次 `./dev install-command`，或直接使用 `./dev build`。
 支持 `ExecutablePath` 的 .NET Worker 直接启动程序，未设置时保留

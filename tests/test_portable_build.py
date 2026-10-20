@@ -1,4 +1,4 @@
-"""Executable builds preserve operator changes and publish verified artifacts safely."""
+"""Executable builds publish current JSON, with explicit reuse of earlier edits."""
 
 import hashlib
 import io
@@ -41,6 +41,9 @@ def source(tmp_path, monkeypatch):
     })
     write_json(root / "src/config/logger_config.json", {"base_dir": "OperatorLog"})
     write_json(root / "src/config/slice_part_config.json", {"revision": "source-default"})
+    write_json(root / "src/config/window_presets.json", [
+        {"name": "脑窗", "window_width": 80, "window_center": 40},
+    ])
     write_json(root / "build-config.json", {
         "python_version": "3.11.17",
         "python_url": "https://example.invalid/python.tar.gz",
@@ -116,7 +119,7 @@ def artifact_snapshot(dist):
 
 
 @pytest.mark.parametrize("reset_config", [False, True])
-def test_rebuild_preserves_edited_json_unless_reset_is_requested(
+def test_rebuild_can_explicitly_preserve_or_replace_edited_json(
     source, simulated_runtime, reset_config,
 ):
     output = build_portable.build_portable(source)
@@ -139,13 +142,95 @@ def test_rebuild_preserves_edited_json_unless_reset_is_requested(
     assert manifest["files"][relative] == hashlib.sha256((output / relative).read_bytes()).hexdigest()
 
 
+def test_default_rebuild_publishes_all_current_source_json_in_directory_and_archive(
+    source, simulated_runtime,
+):
+    output = build_portable.build_portable(source)
+    # Model a previous release with obsolete names and operator-only settings.
+    write_json(output / "src/config/slice_part_config.json", {"部位": "头骨", "标签": "skull"})
+    write_json(output / "src/config/operator-extra.json", {"enabled": True})
+    for path in (source / "src/config").glob("*.json"):
+        updated = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(updated, dict):
+            updated["revision"] = "new source"
+        else:
+            updated[0]["window_center"] = 45
+        write_json(path, updated)
+    write_json(source / "src/config/slice_part_config.json", {
+        "部位": "颅脑", "标签": "brain", "start_mm": 10,
+    })
+    # Future source configurations must also be published without a fixed list.
+    write_json(source / "src/config/new-setting.json", {"enabled": True})
+
+    build_portable.build_portable(source)
+
+    assert not (output / "src/config/operator-extra.json").exists()
+    manifest = json.loads((output / "RELEASE.json").read_text(encoding="utf-8"))
+    archive = source / "dist" / build_portable.ARCHIVE_NAME
+    for path in (source / "src/config").glob("*.json"):
+        relative = f"src/config/{path.name}"
+        assert (output / relative).read_bytes() == path.read_bytes()
+        assert archived_json(archive, relative) == json.loads(path.read_text(encoding="utf-8"))
+        assert manifest["files"][relative] == hashlib.sha256(path.read_bytes()).hexdigest()
+    with tarfile.open(archive, "r:gz") as bundle:
+        assert "AutoPrintFilm/src/config/operator-extra.json" not in bundle.getnames()
+
+
+def test_keep_config_still_publishes_new_source_configuration(source, simulated_runtime):
+    output = build_portable.build_portable(source)
+    write_json(source / "src/config/new-setting.json", {"enabled": True})
+    write_json(output / "src/config/logger_config.json", {"base_dir": "EditedLogs"})
+
+    build_portable.build_portable(source, reset_config=False)
+
+    assert archived_json(source / "dist" / build_portable.ARCHIVE_NAME,
+                         "src/config/new-setting.json") == {"enabled": True}
+    assert json.loads((output / "src/config/logger_config.json").read_text()) == {
+        "base_dir": "EditedLogs",
+    }
+
+
+def test_default_rebuild_replaces_invalid_old_json_without_reading_it(source, simulated_runtime):
+    output = build_portable.build_portable(source)
+    (output / "src/config/slice_part_config.json").write_text("broken old JSON", encoding="utf-8")
+
+    build_portable.build_portable(source)
+
+    assert (output / "src/config/slice_part_config.json").read_bytes() == (
+        source / "src/config/slice_part_config.json"
+    ).read_bytes()
+
+
+@pytest.mark.parametrize("options, reset_config", [
+    ([], True), (["--reset-config"], True), (["--keep-config"], False),
+])
+def test_cli_config_policy_defaults_to_current_source(monkeypatch, options, reset_config):
+    build = Mock()
+    monkeypatch.setattr(build_portable, "build_portable", build)
+
+    assert build_portable.main(["build", *options]) == 0
+
+    build.assert_called_once_with(refresh=False, reset_config=reset_config)
+
+
+def test_cli_rejects_conflicting_config_options(monkeypatch):
+    build = Mock()
+    monkeypatch.setattr(build_portable, "build_portable", build)
+
+    with pytest.raises(SystemExit) as error:
+        build_portable.main(["build", "--keep-config", "--reset-config"])
+
+    assert error.value.code == 2
+    build.assert_not_called()
+
+
 def test_invalid_operator_json_aborts_without_replacing_previous_artifacts(source, simulated_runtime):
     output = build_portable.build_portable(source)
     (output / "src/config/slice_part_config.json").write_text("broken operator JSON", encoding="utf-8")
     before = artifact_snapshot(source / "dist")
 
     with pytest.raises(ValueError):
-        build_portable.build_portable(source)
+        build_portable.build_portable(source, reset_config=False)
 
     assert artifact_snapshot(source / "dist") == before
     assert not list((source / "dist").glob(".autoprintfilm-build-*"))
@@ -244,7 +329,7 @@ def test_previous_configuration_symlink_is_rejected_without_reading_or_overwriti
     configuration.symlink_to(external)
 
     with pytest.raises(ValueError):
-        build_portable.build_portable(source)
+        build_portable.build_portable(source, reset_config=False)
 
     assert configuration.is_symlink()
     assert external.read_text(encoding="utf-8") == '{"private": "unchanged"}'

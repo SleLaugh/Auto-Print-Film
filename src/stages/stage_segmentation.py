@@ -254,7 +254,7 @@ class SegmentationStage(BaseStage):
         模型表从统一切割部位配置读取，再按扫描厚度闭区间匹配 model_id。
         
         Args:
-            slice_part: 切割部位名称（如 "腰椎"、"头骨"、"肺部"）
+            slice_part: 切割部位名称（如 "腰椎"、"颅脑"、"肺部"）
             study_type: 检查类型（CT、MR）
             scan_thickness: 当前原始扫描层厚，单位 mm
             

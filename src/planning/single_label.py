@@ -16,7 +16,7 @@ from src.planning.whole_range import build_whole_range_plan_from_bbox
 
 
 class SingleLabelWholeRangePlanner:
-    """肺部、头骨等单目标三状位直线整切的兜底规划器。"""
+    """肺部、颅脑等单目标三状位直线整切的兜底规划器。"""
 
     planner_name = "SingleLabelWholeRangePlanner"
     """写入第六阶段结果和调试报告的稳定 planner 名称。"""

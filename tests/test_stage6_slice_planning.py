@@ -2382,7 +2382,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         ]
 
         self.assertEqual(set(whole_range_slice_parts), {
-            "颈椎", "胸椎", "腰椎", "肺部", "头骨", "髋骨",
+            "颈椎", "胸椎", "腰椎", "肺部", "颅脑", "髋骨",
         })
 
         for slice_part in whole_range_slice_parts:
@@ -2842,13 +2842,13 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             expected_reference,
         ))
 
-    def test_skull_uses_available_anatomical_axes(self):
+    def test_brain_uses_available_anatomical_axes(self):
         """头部必须消费姿态坐标，不能生成方向后又退回原图轴。"""
 
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
-            slice_part=SlicePartEnum.头骨,
+            slice_part=SlicePartEnum.颅脑,
             plane_configs=[PlaneConfig(
                 PlaneTypeEnum.横状位, 1.0, 5.0, ["骨窗"]
             )],
@@ -3521,7 +3521,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     ["spine_cpr"].get("full_label"),
                     bool,
                 )
-        for slice_part in ("肺部", "头骨", "髋骨"):
+        for slice_part in ("肺部", "颅脑", "髋骨"):
             with self.subTest(slice_part=slice_part):
                 self.assertNotIn(
                     "spine_cpr",

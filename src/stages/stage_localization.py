@@ -28,7 +28,7 @@ from src.anatomy.lung import estimate_lung_frame_with_diagnostics
 from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 from src.anatomy.spine_labels import resolve_spine_label_name
-from src.anatomy.skull import estimate_skull_frame_with_diagnostics
+from src.anatomy.brain import estimate_brain_frame_with_diagnostics
 from src.anatomy.spine_pose import estimate_spine_axial_symmetry, estimate_spine_label_symmetry
 from src.utils import DebugLog
 from src.runtime import config_candidates, resolve_application_path
@@ -176,8 +176,8 @@ class LocalizationOperations(
                 pose_support_mask=lung_pose_support_mask,
                 pose_support_source=lung_pose_support_labels,
             )
-        if slice_part == "头骨":
-            return estimate_skull_frame_with_diagnostics(target_mask, image)
+        if slice_part == "颅脑":
+            return estimate_brain_frame_with_diagnostics(target_mask, image)
         if slice_part in {"颈椎", "胸椎", "腰椎"}:
             if not (label_masks or label_indices_zyx) or not start_label or not end_label:
                 raise ValueError(f"{slice_part} 解剖坐标缺少首尾椎体标签信息")
@@ -373,7 +373,7 @@ class LocalizationOperations(
         展开一组 start/end label。
 
         如果 start/end 都是脊柱 label，就按解剖顺序展开中间椎体；否则
-        保持原来的端点语义，适配 skull、lung 这类整体目标。
+        保持原来的端点语义，适配 brain、lung 这类整体目标。
         """
         expanded_names = []
         for start_label in start_labels:
@@ -678,7 +678,7 @@ class LocalizationOperations(
         """
         根据目标类型选择横状位角度检测方法。
 
-        脊柱类目标优先用单个椎体的横状位主轴做稳健聚合；头骨、肺部等
+        脊柱类目标优先用单个椎体的横状位主轴做稳健聚合；颅脑、肺部等
         非脊柱目标没有天然的椎体顺序，候选入口会用更高阈值约束整体
         mask PCA，避免小角度形态偏差生成误导性候选。
 
@@ -766,7 +766,7 @@ class LocalizationOperations(
                 'correction_applied': False,
                 'reason': 'correction_requested 为 false',
             }
-        if image is not None and slice_part in {"头骨", "髋骨", "肺部"}:
+        if image is not None and slice_part in {"颅脑", "髋骨", "肺部"}:
             # 三维姿态在第五阶段计算，重建时一次采样到最终方向。
             # 此处不再分配整块 PCA 点云或先做整卷 XY 插值。
             return {

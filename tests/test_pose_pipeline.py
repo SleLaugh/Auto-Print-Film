@@ -59,7 +59,7 @@ def test_spine_candidate_excludes_truncated_and_missing_labels_before_fitting():
     assert result["skipped_label_names"] == ["vertebrae_L1", "vertebrae_L4"]
 
 
-@pytest.mark.parametrize("part", ("头骨", "髋骨", "肺部"))
+@pytest.mark.parametrize("part", ("颅脑", "髋骨", "肺部"))
 def test_non_spine_production_defers_pose_without_allocating_a_pca_point_cloud(part):
     stage = LocalizationStage()
     segmentation = np.ones((5, 20, 20), dtype=np.uint8)
@@ -87,7 +87,7 @@ def test_legacy_pca_aggregation_cannot_reverse_when_the_long_axis_switches():
     assert result["angle_degrees"] == pytest.approx(5.0, abs=0.75)
 
 
-@pytest.mark.parametrize("part", (SlicePartEnum.头骨, SlicePartEnum.肺部, SlicePartEnum.颈椎,
+@pytest.mark.parametrize("part", (SlicePartEnum.颅脑, SlicePartEnum.肺部, SlicePartEnum.颈椎,
                                   SlicePartEnum.胸椎, SlicePartEnum.腰椎, SlicePartEnum.髋骨))
 def test_every_part_preserves_all_three_anatomical_plane_axes(part):
     axes = _rotation()

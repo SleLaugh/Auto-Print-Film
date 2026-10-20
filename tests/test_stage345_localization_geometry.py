@@ -178,7 +178,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         self.assertEqual(diagnostics["angle_source"], "bilateral_reflection_symmetry")
         self.assertEqual(geometry.local_frames, {})
 
-    def test_skull_builds_geometry_and_reports_insufficient_symmetry_evidence(self):
+    def test_brain_builds_geometry_and_reports_insufficient_symmetry_evidence(self):
         """头部已接入坐标，极小目标应保留输入轴并记录回退原因。"""
 
         stage = LocalizationStage()
@@ -186,7 +186,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         image = sitk.GetImageFromArray(mask.astype(np.uint8))
 
         geometry, diagnostics = stage._build_anatomical_geometry(
-            slice_part="头骨",
+            slice_part="颅脑",
             target_mask=mask,
             image=image,
         )
@@ -450,7 +450,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         self.assertIn("离散", candidate["reason"])
 
     def test_xy_correction_candidate_rejects_low_angle_non_spine_whole_mask_pca(self):
-        """头骨等非脊柱整体 mask PCA 小角度偏斜不应作为 XY 回正候选。"""
+        """颅脑等非脊柱整体 mask PCA 小角度偏斜不应作为 XY 回正候选。"""
 
         stage = LocalizationStage()
         seg_array = np.zeros((8, 80, 80), dtype=np.uint8)
@@ -467,8 +467,8 @@ class LocalizationGeometryTest(unittest.TestCase):
 
         candidate = stage._build_xy_correction_candidate(
             seg_array,
-            {"skull": LabelTarget("skull", [1])},
-            slice_part="头骨",
+            {"brain": LabelTarget("brain", [1])},
+            slice_part="颅脑",
         )
 
         self.assertEqual(candidate["correction_status"], "rejected")
@@ -478,7 +478,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         self.assertIn("非脊柱候选角未超过高置信阈值", candidate["reason"])
 
     def test_xy_correction_candidate_accepts_high_angle_non_spine_whole_mask_pca(self):
-        """头骨等非脊柱整体 mask PCA 大角度偏斜仍应输出候选。"""
+        """颅脑等非脊柱整体 mask PCA 大角度偏斜仍应输出候选。"""
 
         stage = LocalizationStage()
         seg_array = np.zeros((8, 80, 80), dtype=np.uint8)
@@ -496,8 +496,8 @@ class LocalizationGeometryTest(unittest.TestCase):
 
         candidate = stage._build_xy_correction_candidate(
             seg_array,
-            {"skull": LabelTarget("skull", [1])},
-            slice_part="头骨",
+            {"brain": LabelTarget("brain", [1])},
+            slice_part="颅脑",
         )
 
         self.assertEqual(candidate["correction_status"], "candidate")

@@ -1,17 +1,17 @@
-"""验证头骨对称面、保留俯仰策略和全目标覆盖。"""
+"""验证颅脑对称面、保留俯仰策略和全目标覆盖。"""
 
 import unittest
 
 import numpy as np
 import SimpleITK as sitk
 
-from src.anatomy.skull import estimate_skull_frame_with_diagnostics
+from src.anatomy.brain import estimate_brain_frame_with_diagnostics
 from tests.test_symmetry_plane import _rotation_yz
 
 
-class SkullAnatomicalFrameTest(unittest.TestCase):
+class BrainAnatomicalFrameTest(unittest.TestCase):
     def _make_target(self):
-        """在各向异性、斜向物理图像中生成已知姿态的颅骨样椭球壳。"""
+        """在各向异性、斜向物理图像中生成已知姿态的颅脑样椭球壳。"""
 
         shape = (62, 94, 100)
         image = sitk.GetImageFromArray(np.zeros(shape, dtype=np.uint8))
@@ -30,7 +30,7 @@ class SkullAnatomicalFrameTest(unittest.TestCase):
 
     def test_recovers_side_tilt_and_bounds_cover_every_target_voxel(self):
         image, mask, reference, pose = self._make_target()
-        result, diagnostics = estimate_skull_frame_with_diagnostics(mask, image)
+        result, diagnostics = estimate_brain_frame_with_diagnostics(mask, image)
         frame = result.global_frame
         axes = np.column_stack([
             list(frame.left_right_axis.to_dict().values()),
@@ -60,7 +60,7 @@ class SkullAnatomicalFrameTest(unittest.TestCase):
             with self.subTest(flips=flips):
                 raw_direction = oblique @ np.diag(flips)
                 image.SetDirection(tuple(raw_direction.ravel()))
-                result, diagnostics = estimate_skull_frame_with_diagnostics(mask, image)
+                result, diagnostics = estimate_brain_frame_with_diagnostics(mask, image)
                 frame = result.global_frame
                 axes = np.column_stack([
                     list(frame.left_right_axis.to_dict().values()),
@@ -86,7 +86,7 @@ class SkullAnatomicalFrameTest(unittest.TestCase):
         mask = np.zeros((8, 12, 14), dtype=bool)
         mask[4, 4:8, 5:9] = True
         image = sitk.GetImageFromArray(mask.astype(np.uint8))
-        result, diagnostics = estimate_skull_frame_with_diagnostics(mask, image)
+        result, diagnostics = estimate_brain_frame_with_diagnostics(mask, image)
         frame = result.global_frame
         self.assertFalse(frame.applied)
         self.assertTrue(frame.warnings)
@@ -97,7 +97,7 @@ class SkullAnatomicalFrameTest(unittest.TestCase):
         image = sitk.Image(12, 14, 16, sitk.sitkUInt8)
         for mask in (np.zeros((16, 14, 12), dtype=bool), np.ones((14, 12), dtype=bool)):
             with self.assertRaises(ValueError):
-                estimate_skull_frame_with_diagnostics(mask, image)
+                estimate_brain_frame_with_diagnostics(mask, image)
 
 
 if __name__ == "__main__":

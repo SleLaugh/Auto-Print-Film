@@ -61,7 +61,7 @@ class VoxelBBox:
 @dataclass
 class LabelTarget:
     """需要定位的模型 label 定义。"""
-    label_name: str  # dataset.json 中的 label 名称，如 skull、vertebrae_L1
+    label_name: str  # dataset.json 中的 label 名称，如 brain、vertebrae_L1
     label_ids: list[int]  # dataset.json 中对应的 label id，普通 label 通常只有一个
 
     def to_dict(self) -> Dict[str, Any]:
@@ -120,7 +120,7 @@ class NiftiImageInfo:
 @dataclass
 class LocalizationResult:
     """第三至第五阶段调试汇总实体，对应 metadata/localization_result.json。"""
-    slice_part: str  # 请求处理的切割部位，如 头骨、腰椎、肺部
+    slice_part: str  # 请求处理的切割部位，如 颅脑、腰椎、肺部
     localization_profile: str  # 定位范围方案，如 whole_range 或 interspace
     seg_path: str  # 当前用于定位的分割文件路径
     model: Dict[str, Any]  # 分割阶段匹配到的模型信息

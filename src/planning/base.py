@@ -40,7 +40,7 @@ def select_planner(slice_part: str, slice_type: str) -> Any:
         ("腰椎", "CPR"): LumbarWholeRangePlanner,
         ("腰椎", "椎间隙"): LumbarInterspacePlanner,
         ("肺部", "MPR"): SingleLabelWholeRangePlanner,
-        ("头骨", "MPR"): SingleLabelWholeRangePlanner,
+        ("颅脑", "MPR"): SingleLabelWholeRangePlanner,
         ("髋骨", "MPR"): SingleLabelWholeRangePlanner,
     }
     key = (slice_part, slice_type)

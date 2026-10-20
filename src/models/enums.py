@@ -8,7 +8,7 @@ from enum import Enum
 
 class SlicePartEnum(Enum):
     """切割部位枚举。"""
-    头骨 = "头骨"
+    颅脑 = "颅脑"
     颈椎 = "颈椎"
     胸椎 = "胸椎"
     腰椎 = "腰椎"

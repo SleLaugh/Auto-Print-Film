@@ -10,7 +10,7 @@ import SimpleITK as sitk
 from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 from src.anatomy.lung import estimate_lung_frame_with_diagnostics
 from src.anatomy.orientation import patient_reference_axes
-from src.anatomy.skull import estimate_skull_frame_with_diagnostics
+from src.anatomy.brain import estimate_brain_frame_with_diagnostics
 from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 from src.models import PlaneConfig, Request, WindowPreset
 from src.models.enums import PlaneTypeEnum, SlicePartEnum
@@ -19,14 +19,14 @@ from src.reconstruction.dicom import write_ct_dicom
 from src.reconstruction.plane_stack import PlaneStackResampler
 
 
-PARTS = (SlicePartEnum.头骨, SlicePartEnum.髋骨, SlicePartEnum.肺部,
+PARTS = (SlicePartEnum.颅脑, SlicePartEnum.髋骨, SlicePartEnum.肺部,
          SlicePartEnum.颈椎, SlicePartEnum.胸椎, SlicePartEnum.腰椎)
 FLIPS = tuple(product((False, True), repeat=3))
 
 
 def _case(part, flips):
     labels = np.zeros((20, 18, 24), dtype=np.uint8)
-    if part in {SlicePartEnum.头骨, SlicePartEnum.肺部, SlicePartEnum.髋骨}:
+    if part in {SlicePartEnum.颅脑, SlicePartEnum.肺部, SlicePartEnum.髋骨}:
         labels[6:9, 6:8, 5:9] = 1
         labels[10:13, 7:9, 15:19] = 2
     else:
@@ -34,8 +34,8 @@ def _case(part, flips):
         labels[6:8, 7:9, 10:12] = 2
     image = sitk.Flip(sitk.GetImageFromArray(labels), list(flips))
     array = sitk.GetArrayFromImage(image)
-    if part == SlicePartEnum.头骨:
-        geometry, _ = estimate_skull_frame_with_diagnostics(array > 0, image)
+    if part == SlicePartEnum.颅脑:
+        geometry, _ = estimate_brain_frame_with_diagnostics(array > 0, image)
     elif part == SlicePartEnum.肺部:
         geometry, _ = estimate_lung_frame_with_diagnostics(array > 0, image)
     elif part == SlicePartEnum.髋骨:
@@ -94,10 +94,10 @@ def test_all_parts_keep_head_up_and_same_physical_bounds_when_storage_flips(part
 
 @pytest.mark.parametrize("flips", ((True, False, False), (False, True, False), (False, False, True)))
 def test_written_coronal_sagittal_pixels_and_iop_keep_patient_head_up(tmp_path, flips):
-    _, _, localization = _case(SlicePartEnum.头骨, flips)
+    _, _, localization = _case(SlicePartEnum.颅脑, flips)
     z, y, x = np.indices((20, 18, 24), dtype=np.float32)
     raw = sitk.Flip(sitk.GetImageFromArray(10 * x + 100 * y + z), list(flips))
-    request = Request("/tmp/dicom", str(tmp_path), slice_part=SlicePartEnum.头骨)
+    request = Request("/tmp/dicom", str(tmp_path), slice_part=SlicePartEnum.颅脑)
     window = WindowPreset("方向验证", 6000., 2500.)
     for plane in (PlaneTypeEnum.冠状位, PlaneTypeEnum.矢状位):
         plan = build_whole_range_plan_from_bbox(request, PlaneConfig(plane, 1., 1., ["骨窗"]), localization)

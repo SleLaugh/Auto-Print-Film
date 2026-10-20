@@ -50,7 +50,7 @@ class PreflightTest(unittest.TestCase):
         """所有已支持部位都应对外声明三个基础 MPR 状位。"""
 
         combinations = set(CapabilityRegistry.current().combinations())
-        for slice_part in ("颈椎", "胸椎", "腰椎", "肺部", "头骨", "髋骨"):
+        for slice_part in ("颈椎", "胸椎", "腰椎", "肺部", "颅脑", "髋骨"):
             for plane in ("横状位", "矢状位", "冠状位"):
                 with self.subTest(slice_part=slice_part, plane=plane):
                     self.assertIn(

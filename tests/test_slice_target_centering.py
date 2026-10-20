@@ -41,7 +41,7 @@ class SliceTargetCenteringTest(unittest.TestCase):
         cases = (
             (0, 1, 2, "肺部", ("lung_left", "lung_right")),
             (1, 2, 0, "髋骨", ("hip_left", "hip_right")),
-            (2, 0, 1, "头骨", ("skull_left", "skull_right")),
+            (2, 0, 1, "颅脑", ("brain_left", "brain_right")),
         )
         for row_axis, col_axis, normal_axis, part, names in cases:
             with self.subTest(part=part, normal_axis=normal_axis):

@@ -27,12 +27,12 @@
         "L5": "vertebrae_L5",
         "S1": "vertebrae_S1",
         "lung": "lung",
-        "skull": "skull",
+        "brain": "brain",
         "hip_left": "hip_left",
         "hip_right": "hip_right"
     },
     "slice_parts": {
-        "头骨": {
+        "颅脑": {
             "enabled": true,
             "model_rules": {
                 "CT": [
@@ -52,7 +52,7 @@
             },
             "localization": {
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "skull", "end_label": "skull" }
+                    "default": { "type": "whole_range", "start_label": "brain", "end_label": "brain" }
                 }
             },
             "slice_rules": {

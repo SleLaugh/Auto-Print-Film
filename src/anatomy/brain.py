@@ -1,4 +1,4 @@
-"""由颅骨左右对称面建立保留原前后倾角的三维重建坐标。"""
+"""由颅脑左右对称面建立保留原前后倾角的三维重建坐标。"""
 
 from typing import Any
 
@@ -25,22 +25,22 @@ def _point(vector: np.ndarray) -> Point3D:
     return Point3D(*(float(value) for value in vector))
 
 
-def estimate_skull_frame_with_diagnostics(
+def estimate_brain_frame_with_diagnostics(
     target_mask: np.ndarray,
     image: sitk.Image,
 ) -> tuple[AnatomicalGeometryResult, dict[str, Any]]:
     """纠正头部左右旋转、侧倾，匹配不足时保留输入坐标并报告原因。
 
-    颅骨边界用于估计中矢状对称面；原 AP 方向投影到该平面后构造 AP/SI，
+    颅脑边界用于估计中矢状对称面；原 AP 方向投影到该平面后构造 AP/SI，
     不额外估计或调整对称面内的前后倾角。目标整体质心及三轴范围均从全部
     目标体素计算，不能因拟合点数上限而裁掉末端或面部。
     """
 
     mask = np.asarray(target_mask, dtype=bool)
     if mask.ndim != 3 or mask.shape != tuple(reversed(image.GetSize())):
-        raise ValueError("头骨 Mask 尺寸与三维输入图像不一致")
+        raise ValueError("颅脑 Mask 尺寸与三维输入图像不一致")
     if not np.any(mask):
-        raise ValueError("头骨 Mask 为空")
+        raise ValueError("颅脑 Mask 为空")
     image_direction = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)
     # 参考轴按患者头脚方向定符号，物理点仍由未改写的存储方向换算。
     reference_axes = patient_reference_axes(image_direction)
@@ -77,7 +77,7 @@ def estimate_skull_frame_with_diagnostics(
         anterior_posterior_axis=_point(ap),
         superior_inferior_axis=_point(si),
         bounds=AnatomicalBounds(*(AxisBounds(float(lower[i]), float(upper[i])) for i in range(3))),
-        method="skull_reflection_symmetry",
+        method="brain_reflection_symmetry",
         confidence=float(symmetry["confidence"]),
         applied=bool(symmetry["accepted"]),
         warnings=list(symmetry["warnings"]),

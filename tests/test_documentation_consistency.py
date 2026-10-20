@@ -146,7 +146,7 @@ class DocumentationConsistencyTests(unittest.TestCase):
             SUPERPOWERS_ROOT / "modules/reconstruction"
             / "2026-10-16-统一解剖姿态与三状位回正设计.md"
         ).read_text(encoding="utf-8")
-        for part in ("头骨", "髋骨", "肺部", "颈椎", "胸椎", "腰椎"):
+        for part in ("颅脑", "髋骨", "肺部", "颈椎", "胸椎", "腰椎"):
             self.assertIn(part, text)
         self.assertIn("保留", text)
         self.assertIn("前后倾角", text)

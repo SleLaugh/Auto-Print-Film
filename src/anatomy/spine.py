@@ -159,7 +159,8 @@ def estimate_spine_frame_with_diagnostics(
         _normalize(np.median(reliable_lr_axes, axis=0), "脊柱左右对称方向无效")
         if reliable_lr_axes else dicom_lr
     )
-    # 与头、髋、肺使用同一构造：不能为了把首尾连线立直而额外改变俯仰，
+    # 与髋、肺使用同一保留俯仰构造；颅脑在该基础上另行估计形态俯仰。
+    # 脊柱不能为了把首尾连线立直而额外改变俯仰，
     # 也不能把可靠左右法向再次投影到首尾连线的法面上。
     axes = build_symmetry_frame_axes(reference_lr, reference_axes)
     left_right_axis, anterior_posterior_axis, spine_axis = axes.T

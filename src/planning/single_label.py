@@ -13,6 +13,7 @@ from src.planning.spine_cpr import (
 )
 from src.planning.base import PlanningResult
 from src.planning.whole_range import build_whole_range_plan_from_bbox
+from src.planning.straight import resolve_range_extension
 
 
 class SingleLabelWholeRangePlanner:
@@ -35,7 +36,12 @@ class SingleLabelWholeRangePlanner:
         )
         for plane_config in request.plane_configs:
             target_region_bbox = None
-            source_labels = None
+            # 颅脑基础范围只用配置内的脑区标签；可选头骨是独立取景支持，
+            # 不能通过 source_labels 再次把面部和下颌纳入实际切片范围。
+            source_labels = (
+                list(localization_result.get("label_targets") or {})
+                if request.slice_part.value == "颅脑" else None
+            )
             if (
                 spine_labels
                 and plane_config.slice_type is SliceType.CPR
@@ -67,6 +73,16 @@ class SingleLabelWholeRangePlanner:
                 source_labels=source_labels,
                 target_region_bbox=target_region_bbox,
             )
+            if (
+                request.slice_part.value == "颅脑"
+                and plane_config.plane == PlaneTypeEnum.横状位
+                and plane_config.slice_type is SliceType.MPR
+            ):
+                # 横状位从上向下输出，start_mm 是颅顶余量。将本计划实际
+                # 使用的配置快照交给取景阶段，避免新增顶部切片仍只按脑区取景。
+                plan.framing_superior_extension_mm = resolve_range_extension(
+                    localization_result, plane_config.slice_type.value, plane_config.plane,
+                ).start_mm
             plans.append(plan)
 
         return PlanningResult(

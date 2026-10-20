@@ -60,6 +60,9 @@ class LocalizationContractMixin:
         skew_params: Dict[str, Any],
         anatomical_geometry: AnatomicalGeometryResult | None = None,
         spine_cpr_config: Dict[str, Any] | None = None,
+        anatomical_geometry_diagnostics: Dict[str, Any] | None = None,
+        framing_source_labels: list[str] | None = None,
+        framing_label_ids: list[int] | None = None,
     ) -> None:
         """写出定位结果，供后续规划、重建和调试使用。"""
 
@@ -107,8 +110,15 @@ class LocalizationContractMixin:
             skew_params=skew_params,
             anatomical_geometry=anatomical_geometry,
         )
+        data = localization_result.to_dict()
+        if anatomical_geometry_diagnostics is not None:
+            data["anatomical_geometry_diagnostics"] = anatomical_geometry_diagnostics
+        if framing_source_labels is not None:
+            data["framing_source_labels"] = framing_source_labels
+        if framing_label_ids is not None:
+            data["framing_label_ids"] = framing_label_ids
         with output_path.open("w", encoding="utf-8") as file:
-            json.dump(localization_result.to_dict(), file, ensure_ascii=False, indent=2)
+            json.dump(data, file, ensure_ascii=False, indent=2)
 
     @staticmethod
     def _label_targets_to_dict(

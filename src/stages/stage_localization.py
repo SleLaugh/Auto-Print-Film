@@ -71,7 +71,8 @@ class LocalizationOperations(
 
         super().__init__(name=stage_name, config=config)
         # 脊柱候选超过阈值且通过一致性检查时进入第三阶段回正。
-        # 头、髋和肺的左右旋转/侧倾交由第五阶段的物理解剖坐标处理。
+        # 颅脑、髋和肺的左右旋转/侧倾交由第五阶段的物理解剖坐标处理；
+        # 颅脑的形态俯仰也在第五阶段估计，不在此处旋转整卷图像。
         self.correction_angle_threshold_degrees = float(
             self.config.get('correction_angle_threshold_degrees', 3.0)
         )
@@ -177,6 +178,7 @@ class LocalizationOperations(
                 pose_support_source=lung_pose_support_labels,
             )
         if slice_part == "颅脑":
+            # 方向和切片三轴范围只使用脑区，骨性取景支持不进入几何估计。
             return estimate_brain_frame_with_diagnostics(target_mask, image)
         if slice_part in {"颈椎", "胸椎", "腰椎"}:
             if not (label_masks or label_indices_zyx) or not start_label or not end_label:

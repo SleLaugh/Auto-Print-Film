@@ -32,7 +32,7 @@ from src.reconstruction.dicom import (
     write_localizer_dicom,
 )
 from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
-from src.reconstruction.framing_context import load_framing_context
+from src.reconstruction.framing_context import FramingContext, load_framing_context
 from src.reconstruction.symmetry_framing import resolve_symmetry_framing_plane
 from src.reconstruction.spine_localizer import (
     SpineLocalizerSurface,
@@ -145,10 +145,21 @@ class ReconstructionStage(BaseStage):
         if not segmentation_path:
             raise ValueError("整组居中需要 seg_for_reconstruction_path")
         segmentation = sitk.ReadImage(str(segmentation_path))
+        anatomical_analysis = context.get_result("anatomical_analysis") or {}
+        # 与第六阶段消费相同的展平结果。脑区仍是独立切割目标，骨性支持
+        # 只能在最终脑 SI 范围及计划允许的颅顶余量内取景，不通过坐标表扩展层组。
+        loc_result = {**loc_result, **anatomical_analysis}
         framing_context = load_framing_context(
             loc_result.get("dataset_json_path"), loc_result.get("coords", {}),
         ) if any(plan.get("fill_percent") for plan in plans) else None
-        anatomical_analysis = context.get_result("anatomical_analysis") or {}
+        merge_framing_support = False
+        if request.slice_part.value == "颅脑" and anatomical_analysis.get("framing_label_ids"):
+            frame = anatomical_analysis["anatomical_geometry"]["global_frame"]
+            framing_context = FramingContext(
+                label_ids=tuple(anatomical_analysis["framing_label_ids"]),
+                axis_xyz=tuple(frame["superior_inferior_axis"][axis] for axis in "xyz"),
+            )
+            merge_framing_support = True
         symmetry_planes = {
             str(plan.get("plan_id", "")): plane
             for plan in plans
@@ -197,7 +208,14 @@ class ReconstructionStage(BaseStage):
                             segmentation,
                             loc_result.get("coords", {}),
                             plan,
-                            context=framing_context,
+                            context=(
+                                FramingContext(
+                                    label_ids=framing_context.label_ids,
+                                    axis_xyz=framing_context.axis_xyz,
+                                    upper_extension_mm=plan.get("framing_superior_extension_mm", 0.0),
+                                ) if merge_framing_support else framing_context
+                            ),
+                            merge_context_into_target=merge_framing_support,
                             symmetry_plane=symmetry_planes.get(str(plan.get("plan_id", ""))),
                             shared_geometry=shared_geometries.get(
                                 self._interspace_framing_key(plan),

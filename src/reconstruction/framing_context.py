@@ -11,10 +11,12 @@ _VERTEBRA_NAME = re.compile(r"(?:vertebrae_)?(?:C[1-7]|T(?:[1-9]|1[0-2])|L[1-5]|
 
 @dataclass(frozen=True)
 class FramingContext:
-    """同类结构的标签及限定原目标纵向覆盖的患者物理轴。"""
+    """同类结构标签、纵向物理轴及计划显式允许的正轴端取景余量。"""
 
     label_ids: tuple[int, ...]
     axis_xyz: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    upper_extension_mm: float = 0.0
+    """只放宽正轴端的骨性取景上界；颅脑使用 SI 正方向，脊柱默认为零。"""
 
 
 def load_framing_context(

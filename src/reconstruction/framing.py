@@ -34,6 +34,7 @@ class TargetFramer:
         shared_geometry: InterspaceFramingGeometry | None = None,
         context: FramingContext | None = None,
         symmetry_plane: SymmetryFramingPlane | None = None,
+        merge_context_into_target: bool = False,
     ):
         self.shared_geometry = shared_geometry
         self.symmetry_plane = symmetry_plane
@@ -60,21 +61,29 @@ class TargetFramer:
         self.context_label_ids = ()
         self._context_points = None
         percent = parse_fill_percent(plan.get("fill_percent"))
-        if context is not None and percent is not None and percent > 0:
+        if context is not None and (
+            merge_context_into_target or (percent is not None and percent > 0)
+        ):
             extra_ids = set(context.label_ids) - ids - {0}
             if extra_ids:
                 axis = np.asarray(context.axis_xyz, dtype=float)
                 if not np.all(np.isfinite(axis)) or np.linalg.norm(axis) <= 0:
                     raise ValueError("显示支持范围的纵向轴必须是有限非零向量")
                 axis /= np.linalg.norm(axis)
-                # 限定在原目标的纵向覆盖内；相邻标签只补充显示，不延长切割范围。
+                upper_extension = float(context.upper_extension_mm)
+                if not np.isfinite(upper_extension) or upper_extension < 0:
+                    raise ValueError("显示支持范围的上端余量必须是有限非负距离")
+                # 限定在原目标的物理纵向支撑范围内，不能按数组 z 裁斜切。
+                # 相邻标签仅补充显示，不延长切片层组。颅脑的骨性支持也须
+                # 剔除脑底以外的面部/下颌；上端只增加计划明确允许的颅顶余量。
+                # 零 FillPercent 同样受限，不能因保留原像素间距而漏掉颅顶取景。
                 target_indices = np.argwhere(selected)
                 axis_steps = self.voxel_axes.T @ axis
                 # 两组体素共用原点，范围比较可省去相同的原点投影。
                 target_depths = target_indices[:, ::-1] @ axis_steps
                 half_support = float(np.abs(axis_steps).sum() / 2)
                 lower = float(target_depths.min() - half_support)
-                upper = float(target_depths.max() + half_support)
+                upper = float(target_depths.max() + half_support + upper_extension)
                 extra_indices = np.argwhere(np.isin(array, list(extra_ids)))
                 extra_depths = extra_indices[:, ::-1] @ axis_steps
                 keep = (extra_depths + half_support > lower + 1e-7) & (
@@ -83,7 +92,7 @@ class TargetFramer:
                 extra_indices = extra_indices[keep]
                 if len(extra_indices):
                     self.context_label_ids = tuple(sorted(map(int, np.unique(array[tuple(extra_indices.T)]))))
-                    if plan.get("geometry_type") == "curved_stack":
+                    if merge_context_into_target or plan.get("geometry_type") == "curved_stack":
                         selected[tuple(extra_indices.T)] = True
                     else:
                         self._context_points = (

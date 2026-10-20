@@ -113,6 +113,8 @@ class SlicePlan:
     """实际层厚、层间距、数量、有效范围和总范围的计算详情。"""
     fill_percent: float | None = None
     """第七阶段整组目标取景占比；None 或 0 仅整组居中、不缩放。"""
+    framing_superior_extension_mm: float | None = None
+    """颅脑横状位获准的颅顶取景余量；同步范围扩展，不包含下端或取整余量。"""
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化第七阶段可直接执行的一组完整切片计划。"""
@@ -139,6 +141,8 @@ class SlicePlan:
         }
         if self.fill_percent is not None:
             data["fill_percent"] = self.fill_percent
+        if self.framing_superior_extension_mm is not None:
+            data["framing_superior_extension_mm"] = self.framing_superior_extension_mm
         if self.target_start is not None:
             data["target_start"] = self.target_start.to_dict()
         if self.target_end is not None:

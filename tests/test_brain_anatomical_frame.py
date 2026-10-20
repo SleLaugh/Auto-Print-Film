@@ -1,4 +1,4 @@
-"""验证颅脑对称面、保留俯仰策略和全目标覆盖。"""
+"""验证颅脑左右对称面、关闭形态俯仰的兼容路径及完整体素支撑覆盖。"""
 
 import unittest
 
@@ -30,7 +30,7 @@ class BrainAnatomicalFrameTest(unittest.TestCase):
 
     def test_recovers_side_tilt_and_bounds_cover_every_target_voxel(self):
         image, mask, reference, pose = self._make_target()
-        result, diagnostics = estimate_brain_frame_with_diagnostics(mask, image)
+        result, diagnostics = estimate_brain_frame_with_diagnostics(mask, image, pitch_enabled=False)
         frame = result.global_frame
         axes = np.column_stack([
             list(frame.left_right_axis.to_dict().values()),
@@ -45,12 +45,15 @@ class BrainAnatomicalFrameTest(unittest.TestCase):
         indices_xyz = np.argwhere(mask)[:, ::-1]
         points = np.asarray(image.GetOrigin()) + (indices_xyz * np.asarray(image.GetSpacing())) @ reference.T
         projection = points @ axes
+        support = 0.5 * np.sum(np.abs(reference.T @ axes) * np.asarray(image.GetSpacing())[:, None], axis=0)
         for index, bound in enumerate((frame.bounds.left_right, frame.bounds.anterior_posterior, frame.bounds.superior_inferior)):
-            self.assertAlmostEqual(bound.minimum, float(np.min(projection[:, index])))
-            self.assertAlmostEqual(bound.maximum, float(np.max(projection[:, index])))
+            self.assertAlmostEqual(bound.minimum, float(np.min(projection[:, index]) - support[index]))
+            self.assertAlmostEqual(bound.maximum, float(np.max(projection[:, index]) + support[index]))
         np.testing.assert_allclose(list(frame.origin.to_dict().values()), np.mean(points, axis=0), atol=1e-10)
         self.assertEqual(diagnostics["target_point_count"], int(np.count_nonzero(mask)))
         self.assertLessEqual(diagnostics["symmetry"]["sample_count"], 6000)
+        self.assertEqual(diagnostics["pitch"]["status"], "disabled")
+        self.assertEqual(diagnostics["pitch_policy"], "project_input_ap_onto_symmetry_plane")
 
     def test_reflected_storage_keeps_physical_points_and_patient_head_direction(self):
         """反向存储不能改物理点，最终头侧必须沿患者+Z而非存储叉积。"""
@@ -60,7 +63,7 @@ class BrainAnatomicalFrameTest(unittest.TestCase):
             with self.subTest(flips=flips):
                 raw_direction = oblique @ np.diag(flips)
                 image.SetDirection(tuple(raw_direction.ravel()))
-                result, diagnostics = estimate_brain_frame_with_diagnostics(mask, image)
+                result, diagnostics = estimate_brain_frame_with_diagnostics(mask, image, pitch_enabled=False)
                 frame = result.global_frame
                 axes = np.column_stack([
                     list(frame.left_right_axis.to_dict().values()),
@@ -78,9 +81,10 @@ class BrainAnatomicalFrameTest(unittest.TestCase):
                 points = np.asarray(image.GetOrigin()) + (indices_xyz * np.asarray(image.GetSpacing())) @ raw_direction.T
                 np.testing.assert_allclose(list(frame.origin.to_dict().values()), np.mean(points, axis=0), atol=1e-10)
                 projection = points @ axes
+                support = 0.5 * np.sum(np.abs(raw_direction.T @ axes) * np.asarray(image.GetSpacing())[:, None], axis=0)
                 for index, bound in enumerate((frame.bounds.left_right, frame.bounds.anterior_posterior, frame.bounds.superior_inferior)):
-                    self.assertAlmostEqual(bound.minimum, float(np.min(projection[:, index])))
-                    self.assertAlmostEqual(bound.maximum, float(np.max(projection[:, index])))
+                    self.assertAlmostEqual(bound.minimum, float(np.min(projection[:, index]) - support[index]))
+                    self.assertAlmostEqual(bound.maximum, float(np.max(projection[:, index]) + support[index]))
 
     def test_unreliable_target_keeps_dicom_axes_and_explains_why(self):
         mask = np.zeros((8, 12, 14), dtype=bool)

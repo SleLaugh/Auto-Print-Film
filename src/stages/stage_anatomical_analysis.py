@@ -27,6 +27,44 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         super().__init__(config, stage_name="anatomical_analysis")
 
     @classmethod
+    def _brain_framing_support(
+        cls,
+        seg_array: np.ndarray,
+        dataset_json_path: str | None,
+    ) -> tuple[tuple[int, ...], tuple[str, ...], dict]:
+        """仅解析同次分割中的骨性取景支持，不扩大脑区切片范围。
+
+        模型的 ``skull`` 是实际解剖标签名，不是请求部位名。只保留语义明确、
+        体素存在的正数标签；第七阶段按脑区 SI 及计划允许的颅顶余量筛选，排除范围外的
+        面部、下颌等骨体素。这里不生成骨坐标或全卷脑骨并集。
+        """
+
+        diagnostic = {"status": "missing", "source_labels": [], "voxel_count": 0}
+        if not dataset_json_path:
+            return (), (), diagnostic
+        label_map = cls._load_label_map(Path(dataset_json_path))
+        candidates = {
+            name: tuple(sorted({value for value in ids if value > 0}))
+            for name, ids in label_map.items() if name.strip().casefold() == "skull"
+        }
+        candidates = {name: ids for name, ids in candidates.items() if ids}
+        if not candidates:
+            return (), (), diagnostic
+        active_ids, active_names = set(), []
+        for name, ids in candidates.items():
+            count = sum(int(np.count_nonzero(np.isin(section, ids))) for section in seg_array)
+            if count:
+                active_ids.update(ids)
+                active_names.append(name)
+        if not active_ids:
+            diagnostic["status"] = "empty"
+            return (), (), diagnostic
+        # 计数为模型中可用骨体素数；真正用于取景的范围由第七阶段再约束。
+        count = sum(int(np.count_nonzero(np.isin(section, list(active_ids)))) for section in seg_array)
+        diagnostic.update(status="available", source_labels=active_names, voxel_count=count)
+        return tuple(sorted(active_ids)), tuple(active_names), diagnostic
+
+    @classmethod
     def _lung_pose_support(
         cls,
         target_mask: np.ndarray,
@@ -186,6 +224,13 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             lung_pose_support_mask, lung_pose_support_labels = self._lung_pose_support(
                 target_mask, seg_array, localization_result.get("dataset_json_path"),
             )
+        framing_label_ids, framing_source_labels = (), ()
+        coverage_diagnostic = None
+        if slice_part == "颅脑":
+            framing_label_ids, framing_source_labels, coverage_diagnostic = self._brain_framing_support(
+                seg_array, localization_result.get("dataset_json_path"),
+            )
+        # 脑区独占姿态与三轴基础范围；规划另加配置余量，骨只作独立取景支持。
         anatomical_geometry, anatomical_diagnostics = self._build_anatomical_geometry(
             slice_part=slice_part,
             target_mask=target_mask,
@@ -202,6 +247,12 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             lung_pose_support_labels=lung_pose_support_labels,
         )
         del lung_pose_support_mask
+        if coverage_diagnostic is not None:
+            anatomical_diagnostics["bone_coverage"] = coverage_diagnostic
+            if coverage_diagnostic["status"] != "available":
+                anatomical_geometry.global_frame.warnings.append(
+                    "本次分割缺少可用骨性取景支持，仅按脑区居中，不能保证脑部周边骨轮廓完整"
+                )
 
         debug_label_path = ""
         debug_body_path = ""
@@ -295,6 +346,9 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 skew_params=localization_result["skew_params"],
                 anatomical_geometry=anatomical_geometry,
                 spine_cpr_config=localization_result["spine_cpr_config"],
+                anatomical_geometry_diagnostics=anatomical_diagnostics,
+                framing_source_labels=list(framing_source_labels) if slice_part == "颅脑" else None,
+                framing_label_ids=list(framing_label_ids) if slice_part == "颅脑" else None,
             )
 
         payload = {
@@ -309,6 +363,11 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         }
         if anatomical_geometry is not None:
             payload["anatomical_geometry"] = anatomical_geometry.to_dict()
+        if slice_part == "颅脑":
+            payload.update(
+                framing_source_labels=list(framing_source_labels),
+                framing_label_ids=list(framing_label_ids),
+            )
 
         context.set_stage_result(AnatomicalAnalysisStageResult(
             payload=payload,
@@ -318,6 +377,13 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         if anatomical_geometry is not None:
             frame = anatomical_geometry.global_frame
             DebugLog(f"  解剖坐标: {frame.method}, pose_applied={frame.applied}")
+            if slice_part == "颅脑":
+                pitch = anatomical_diagnostics.get("pitch", {})
+                DebugLog(
+                    f"  颅脑形态俯仰: status={pitch.get('status')}, "
+                    f"候选角={pitch.get('candidate_angle_degrees')}°, "
+                    f"采用角={pitch.get('angle_degrees')}°, 原因={pitch.get('reason')}"
+                )
             for warning in frame.warnings:
                 DebugLog(f"  解剖坐标告警: {warning}")
         else:

@@ -51,7 +51,7 @@ def _axes(frame):
     ])
 
 
-@pytest.mark.parametrize("pitch", (-37.0, -24.0, 20.0, 37.0))
+@pytest.mark.parametrize("pitch", (-65.0, -48.0, -37.0, -24.0, 20.0, 37.0, 48.0, 65.0))
 def test_default_pitch_recovers_known_physical_axis_without_symmetry_improvement(pitch):
     image, mask, expected = _brain_case(pitch)
     result, diagnostics = estimate_brain_frame_with_diagnostics(mask, image)
@@ -70,6 +70,18 @@ def test_default_pitch_recovers_known_physical_axis_without_symmetry_improvement
     assert frame.method == "brain_shape_principal_axis"
 
 
+@pytest.mark.parametrize("pitch", (-0.4, 0.4))
+def test_small_measurable_pitch_is_applied_without_an_angle_dead_zone(pitch):
+    image, mask, expected = _brain_case(pitch)
+    result, diagnostics = estimate_brain_frame_with_diagnostics(mask, image)
+    measured = diagnostics["pitch"]
+    assert measured["accepted"], diagnostics
+    assert measured["angle_degrees"] == pytest.approx(pitch, abs=0.2)
+    assert 0.0 < abs(measured["angle_degrees"]) < 0.75
+    assert result.global_frame.applied
+    np.testing.assert_allclose(_axes(result.global_frame), expected, atol=0.004)
+
+
 @pytest.mark.parametrize("flips", tuple(product((False, True), repeat=3)))
 def test_oblique_and_reflected_storage_preserve_the_same_physical_pitch(flips):
     image, mask, expected = _brain_case(-18.0, oblique=True, flips=flips)
@@ -86,12 +98,12 @@ def test_oblique_and_reflected_storage_preserve_the_same_physical_pitch(flips):
 
 @pytest.mark.parametrize("case,code", (
     ("round", "low_anisotropy"),
-    ("large_angle", "angle_out_of_bounds"),
     ("clipped", "brain_touches_image_boundary"),
     ("tiny", "insufficient_voxels"),
 ))
-def test_unreliable_shape_keeps_symmetry_plane_pitch_and_explains_rejection(case, code):
-    image, mask, _ = _brain_case(48.0 if case == "large_angle" else 20.0,
+@pytest.mark.parametrize("shape_pitch", (20.0, 65.0))
+def test_unreliable_shape_keeps_symmetry_plane_pitch_and_explains_rejection(case, code, shape_pitch):
+    image, mask, _ = _brain_case(shape_pitch,
                                radii=(22.0, 25.0, 25.0) if case == "round" else (22.0, 36.0, 19.0))
     if case == "clipped":
         mask[0, 50, 40] = True
@@ -119,7 +131,7 @@ def test_zero_pitch_keeps_reference_axes_without_claiming_an_applied_correction(
     image, mask, _ = _brain_case(0.0)
     result, diagnostics = estimate_brain_frame_with_diagnostics(mask, image)
     assert diagnostics["pitch"]["status"] == "unchanged"
-    assert diagnostics["pitch"]["rejection_code"] == "below_minimum_correction"
+    assert diagnostics["pitch"]["rejection_code"] == "aligned_with_reference"
     assert not result.global_frame.applied
     np.testing.assert_allclose(_axes(result.global_frame), np.eye(3), atol=1e-12)
 
@@ -206,7 +218,8 @@ def test_all_brain_voxel_corners_fit_final_bounds_in_each_axis():
         assert bounds.maximum == pytest.approx(upper[index], abs=1e-9)
 
 
-def test_midline_shape_must_agree_with_whole_brain():
+@pytest.mark.parametrize(("inner_pitch", "outer_pitch"), ((-20.0, 28.0), (35.0, 80.0)))
+def test_midline_shape_must_agree_with_whole_brain(inner_pitch, outer_pitch):
     image, mask, _ = _brain_case()
     spacing = np.asarray(image.GetSpacing())
     xyz = np.indices(mask.shape).reshape(3, -1).T[:, ::-1] * spacing
@@ -214,13 +227,15 @@ def test_midline_shape_must_agree_with_whole_brain():
     radius_lr = (local[:, 0] / 28.0) ** 2
     inner = np.abs(local[:, 0]) <= 10.0
     radius = np.empty(len(local))
-    for selected, angle in ((inner, -20.0), (~inner, 28.0)):
+    for selected, angle in ((inner, inner_pitch), (~inner, outer_pitch)):
         coordinates = local[selected] @ _rotation_x(angle)
         radius[selected] = radius_lr[selected] + (coordinates[:, 1] / 36.0) ** 2 + (coordinates[:, 2] / 18.0) ** 2
     mask = (radius <= 1.0).reshape(mask.shape)
     _, diagnostics = estimate_brain_frame_with_diagnostics(mask, image)
     assert diagnostics["pitch"]["rejection_code"] == "midline_disagreement", diagnostics
     assert diagnostics["pitch"]["midline_disagreement_degrees"] > 5.0
+    if outer_pitch > 45.0:
+        assert abs(diagnostics["pitch"]["candidate_angle_degrees"]) > 45.0
 
 
 def test_missing_midline_evidence_rejects_pitch():

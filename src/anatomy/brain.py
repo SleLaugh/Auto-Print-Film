@@ -21,9 +21,6 @@ from src.models import (
 
 _MIN_PITCH_VOXELS = 64
 _MIN_PITCH_RATIO = 1.15
-# 允许较大的形态俯仰；实际角度逐病例估计，仍须通过接边、主轴与中央带检查。
-_MAX_PITCH_DEGREES = 45.0
-_MIN_PITCH_DEGREES = 0.75
 _MIDLINE_HALF_WIDTH_MM = 10.0
 _MAX_MIDLINE_DISAGREEMENT_DEGREES = 5.0
 _MAX_SYMMETRY_POINTS = 6000
@@ -123,8 +120,6 @@ def _estimate_pitch(
         "point_count": count,
         "min_point_count": _MIN_PITCH_VOXELS,
         "min_ratio": _MIN_PITCH_RATIO,
-        "max_angle_degrees": _MAX_PITCH_DEGREES,
-        "min_correction_degrees": _MIN_PITCH_DEGREES,
         "midline_half_width_mm": _MIDLINE_HALF_WIDTH_MM,
         "max_midline_disagreement_degrees": _MAX_MIDLINE_DISAGREEMENT_DEGREES,
         "confidence": 0.0,
@@ -148,8 +143,6 @@ def _estimate_pitch(
         return reject("insufficient_spread", "脑区缺少稳定的 AP/SI 二维范围")
     if ratio < _MIN_PITCH_RATIO:
         return reject("low_anisotropy", "脑区 AP/SI 形态近圆，主轴方向不稳定")
-    if abs(angle) > _MAX_PITCH_DEGREES:
-        return reject("angle_out_of_bounds", "脑形态主轴倾角超出允许范围")
     midline_count, _, midline_scatter = _moments(mask, transform, midline_center=float(mean[0]))
     diagnostics["midline_point_count"] = midline_count
     if midline_count < _MIN_PITCH_VOXELS:
@@ -167,8 +160,6 @@ def _estimate_pitch(
         min(1.0, (min(ratio, midline_ratio) - 1.0) / (2.0 * (_MIN_PITCH_RATIO - 1.0)))
         * (1.0 - disagreement / (2.0 * _MAX_MIDLINE_DISAGREEMENT_DEGREES))
     )
-    if abs(angle) < _MIN_PITCH_DEGREES:
-        return reject("below_minimum_correction", "脑形态主轴已接近输入 AP，保持原俯仰", status="unchanged")
     diagnostics.update(status="accepted", accepted=True, angle_degrees=angle, reason="脑形态主轴及中央脑区一致性检查通过")
     return diagnostics
 
@@ -205,12 +196,12 @@ def estimate_brain_frame_with_diagnostics(
     *,
     pitch_enabled: bool = True,
 ) -> tuple[AnatomicalGeometryResult, dict[str, Any]]:
-    """先定左右对称面，再用全脑 AP/SI 形态主轴估计受限的前后倾角。
+    """先定左右对称面，再用全脑 AP/SI 形态主轴估计前后倾角。
 
-    全脑与中央左右各 10 mm 脑区的主轴必须一致，近圆、截断或大倾角时保留
-    对称面内的输入方向。此方向不代表听眦线或 AC-PC 线。三轴切片范围始终
-    仅包含全部脑区体素的立方体支撑；颅骨不参与基础范围。颅顶余量由规划
-    阶段显式应用，周边骨轮廓由有界取景处理。物理坐标按原始存储方向换算。
+    全脑与中央左右各 10 mm 脑区的主轴必须一致，近圆、截断或方向冲突时保留
+    对称面内的输入方向；不以倾角绝对值大小判断可用性。此方向不代表听眦线或
+    AC-PC 线。三轴切片范围始终仅包含全部脑区体素的立方体支撑；颅骨不参与基础范围。
+    颅顶余量由规划阶段显式应用，周边骨轮廓由有界取景处理。物理坐标按原始存储方向换算。
     """
 
     mask = np.asarray(target_mask, dtype=bool)
@@ -236,8 +227,9 @@ def estimate_brain_frame_with_diagnostics(
     if pitch["accepted"]:
         theta = np.radians(pitch["angle_degrees"])
         ap, si = base_axes[:, 1], base_axes[:, 2]
+        candidate_ap = np.cos(theta) * ap + np.sin(theta) * si
         candidate_si = -np.sin(theta) * ap + np.cos(theta) * si
-        # 输入已有较大斜角时，受限的相对俯仰仍可能使 SI 越过患者头侧。
+        # 直接采用形态测得的方向；不对倾角限幅。输入本身倾斜时仍须检查患者头侧。
         # 不能把足向轴当作 superior 写入规划；只拒绝本次俯仰，保留原 LR。
         if candidate_si[2] <= 1e-8:
             pitch.update(
@@ -245,8 +237,18 @@ def estimate_brain_frame_with_diagnostics(
                 reason="形态俯仰与患者头脚方向冲突",
                 rejection_code="patient_head_direction_conflict",
             )
+        elif np.allclose(
+            np.column_stack((candidate_ap, candidate_si)), base_axes[:, 1:],
+            atol=1e-8, rtol=0.0,
+        ):
+            # 仅把数值上已重合的方向记作未变化；较小的实测倾角照常使用。
+            pitch.update(
+                status="unchanged", accepted=False, angle_degrees=0.0,
+                reason="脑形态主轴与基础 AP 方向一致，保持原俯仰",
+                rejection_code="aligned_with_reference",
+            )
         else:
-            final_axes[:, 1] = np.cos(theta) * ap + np.sin(theta) * si
+            final_axes[:, 1] = candidate_ap
             final_axes[:, 2] = candidate_si
 
     lower = np.full(3, np.inf)

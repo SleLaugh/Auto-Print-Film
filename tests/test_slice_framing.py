@@ -284,8 +284,7 @@ class SliceFramingTest(unittest.TestCase):
             localizer = pydicom.dcmread(directory / "Localizer.dcm")
             for field in ("ImagePositionPatient", "ImageOrientationPatient", "PixelSpacing"):
                 self.assertEqual(getattr(localizer, field), getattr(baseline, field))
-            # 最终 FOV 可缩短有限定位线，背景与真实切面所在行仍保持一致。
-            # 亚像素端点不一定刚好落在像素中心，抗锯齿白线也不一定达到 65535。
+            # Fill 只影响正式切片，定位图背景与全幅定位线都必须保持一致。
             baseline_lines = np.flatnonzero(np.any(baseline.pixel_array > 55000, axis=1))
             actual_lines = np.flatnonzero(np.any(localizer.pixel_array > 55000, axis=1))
             np.testing.assert_array_equal(actual_lines, baseline_lines)
@@ -294,10 +293,7 @@ class SliceFramingTest(unittest.TestCase):
             np.testing.assert_array_equal(
                 localizer.pixel_array[background_rows], baseline.pixel_array[background_rows],
             )
-            self.assertLess(
-                np.count_nonzero(localizer.pixel_array > 55000),
-                np.count_nonzero(baseline.pixel_array > 55000),
-            )
+            np.testing.assert_array_equal(localizer.pixel_array, baseline.pixel_array)
             ReportingStage().execute(context)
 
     def test_framed_dicom_slice_location_uses_actual_image_plane(self):

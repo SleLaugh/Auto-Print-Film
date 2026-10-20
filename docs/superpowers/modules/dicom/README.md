@@ -8,8 +8,10 @@
 - `Localizer.dcm` 放在对应窗位 series 旁边，第八阶段计数时不应把它当作普通切片。
 - `InstanceNumber` 仍表达 DICOM 内部序号，文件名变化不应改变重建几何。
 - 定位图背景状位由各部位 `slice_rules.<重建状位>.<切法>.localizer_plane` 显式配置，
-  不得与重建状位相同；FillPercent 不改变定位背景取样和真实切面位置，MPR 交线
-  按最终成片视野裁剪，端点和长度可变；CPR 投影路径保持不变。
+  不得与重建状位相同。FillPercent 只影响正式切片，定位背景保留原图网格和固定
+  `localizer_reference`，不缩放、裁切或逐层移动。MPR 直接用第六阶段真实平面求交，
+  交线仅裁到底图边界，不表示正式切片的有限视野；切换 FillPercent 不改变线长。
+  脊柱曲面背景同样只按显示网格裁线；CPR 投影路径保持不变。
 - 成片空间标签逐张使用实际取景几何；正数 FillPercent 按当前层目标居中，矩阵与
   PixelSpacing 共用，但相邻切片可有面内 ImagePositionPatient 平移，不能假定为固定
   面内原点的规则直角三维体。CPR 展开图不能视为原始解剖结构的规则三维体。

@@ -242,7 +242,7 @@ def _framing_points(context, image, array, plan):
     return brain_points, np.concatenate((brain_points, bone_points[keep])), int(np.count_nonzero(~keep))
 
 
-@pytest.mark.parametrize("extension", (0., 7.5, 15.))
+@pytest.mark.parametrize("extension", (None, 0., 7.5, 15.))
 def test_superior_framing_margin_serializes_the_configured_axial_snapshot_only(
     tmp_path, monkeypatch, extension,
 ):
@@ -252,14 +252,19 @@ def test_superior_framing_margin_serializes_the_configured_axial_snapshot_only(
     # PlanningStage serializes SlicePlan; a JSON round trip must retain the
     # request-independent snapshot consumed later by ReconstructionStage.
     plans = json.loads(json.dumps(context.get_result("planning")["plans"]))
+    expected_extension = extension
+    if expected_extension is None:
+        expected_extension = load_slice_part_config()["slice_parts"]["颅脑"][
+            "slice_rules"
+        ]["横状位"]["MPR"]["range_extension"]["start_mm"]
     for plan in plans:
         if plan["plane"] == "横状位":
-            assert plan["framing_superior_extension_mm"] == extension
+            assert plan["framing_superior_extension_mm"] == expected_extension
         else:
             assert plan.get("framing_superior_extension_mm", 0.) == 0.
 
 
-def test_default_superior_margin_covers_cranial_cap_without_changing_brain_or_inferior_end(
+def test_configured_superior_margin_covers_cranial_cap_without_changing_brain_or_inferior_end(
     tmp_path, monkeypatch,
 ):
     baseline, image, array = _run_to_planning(
@@ -267,7 +272,8 @@ def test_default_superior_margin_covers_cranial_cap_without_changing_brain_or_in
         superior_cap=True, superior_extension=0.,
     )
     extended, _, _ = _run_to_planning(
-        tmp_path / "default", monkeypatch, all_planes=True, superior_cap=True,
+        tmp_path / "extended", monkeypatch, all_planes=True, superior_cap=True,
+        superior_extension=15.,
     )
     first_frame = baseline.get_result("anatomical_analysis")["anatomical_geometry"]["global_frame"]
     assert extended.get_result("anatomical_analysis")["anatomical_geometry"]["global_frame"] == first_frame
@@ -305,7 +311,7 @@ def test_superior_cap_participates_in_new_first_layer_framing_without_inferior_j
 ):
     context, image, array = _run_to_planning(
         tmp_path, monkeypatch, fill_percent=fill_percent,
-        superior_cap=True, remote_bone="inferior",
+        superior_cap=True, remote_bone="inferior", superior_extension=15.,
     )
     plan = context.get_result("planning")["plans"][0]
     assert plan["framing_superior_extension_mm"] == 15.

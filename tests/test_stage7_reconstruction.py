@@ -442,8 +442,8 @@ class Stage7ReconstructionTest(unittest.TestCase):
         self.assertGreater(int(np.ptp(highlighted[:, 0])), 2)
         self.assertGreater(int(np.ptp(highlighted[:, 1])), 2)
 
-    def test_localizer_intersection_clips_oblique_slice_to_finite_rectangle(self):
-        """偏心交线的两端必须分别裁到真实切片边界，不能围绕交点对称延伸。"""
+    def test_localizer_intersection_spans_background_instead_of_finite_mpr_rectangle(self):
+        """定位线只裁到底图边缘，正式切片有限宽高不能缩短定位线。"""
 
         component = math.sqrt(0.5)
         planned_slice = {
@@ -453,11 +453,12 @@ class Stage7ReconstructionTest(unittest.TestCase):
             "col_dir": {"x": -component, "y": component, "z": 0.0},
         }
 
+        image = sitk.Image([16, 30, 20], sitk.sitkInt16)
+        background = sitk.RegionOfInterest(image, [1, 30, 20], [8, 0, 0])
         segment = ReconstructionStage._slice_localizer_intersection(
             planned_slice=planned_slice,
-            extent_mm={"width": 10.0, "height": 20.0},
-            fixed_plane_point=np.asarray([8.0, 0.0, 0.0]),
-            fixed_plane_normal=np.asarray([1.0, 0.0, 0.0]),
+            background_image=background,
+            fixed_axis=0,
         )
 
         self.assertIsNotNone(segment)
@@ -466,21 +467,18 @@ class Stage7ReconstructionTest(unittest.TestCase):
         np.testing.assert_allclose(endpoints[:, 2], [5.0, 5.0], atol=1e-8)
         np.testing.assert_allclose(
             np.sort(endpoints[:, 1]),
-            [8.0 - 10.0 * math.sqrt(2.0), 5.0 * math.sqrt(2.0) - 8.0],
+            [0.0, 29.0],
             atol=1e-8,
         )
-        relative_endpoints = endpoints - np.asarray([0.0, 0.0, 5.0])
-        row_coordinates = relative_endpoints @ np.asarray([component, component, 0.0])
-        col_coordinates = relative_endpoints @ np.asarray([-component, component, 0.0])
-        self.assertTrue(np.all(np.abs(row_coordinates) <= 5.0 + 1e-8))
-        self.assertTrue(np.all(np.abs(col_coordinates) <= 10.0 + 1e-8))
 
-    def test_localizer_intersection_skips_plane_outside_finite_slice(self):
-        """定位背景只与无限切片平面相交、未穿过有限 FOV 时不应画线。"""
+    def test_localizer_intersection_ignores_mpr_center_shift_inside_the_plane(self):
+        """面内移动和旋转成片不改变实际切面及其全幅定位线。"""
 
         for angle_degrees, background_x in [(0.0, 8.0), (45.0, 12.0)]:
             with self.subTest(angle_degrees=angle_degrees):
                 angle = math.radians(angle_degrees)
+                image = sitk.Image([16, 30, 20], sitk.sitkInt16)
+                background = sitk.RegionOfInterest(image, [1, 30, 20], [int(background_x), 0, 0])
                 segment = ReconstructionStage._slice_localizer_intersection(
                     planned_slice={
                         "center": {"x": 0.0, "y": 0.0, "z": 5.0},
@@ -488,11 +486,25 @@ class Stage7ReconstructionTest(unittest.TestCase):
                         "row_dir": {"x": math.cos(angle), "y": math.sin(angle), "z": 0.0},
                         "col_dir": {"x": -math.sin(angle), "y": math.cos(angle), "z": 0.0},
                     },
-                    extent_mm={"width": 10.0, "height": 20.0},
-                    fixed_plane_point=np.asarray([background_x, 0.0, 0.0]),
-                    fixed_plane_normal=np.asarray([1.0, 0.0, 0.0]),
+                    background_image=background,
+                    fixed_axis=0,
                 )
 
+                self.assertIsNotNone(segment)
+                endpoints = np.asarray(segment)
+                np.testing.assert_allclose(endpoints[:, 0], background_x, atol=1e-8)
+                np.testing.assert_allclose(endpoints[:, 2], 5., atol=1e-8)
+                np.testing.assert_allclose(np.sort(endpoints[:, 1]), [0., 29.], atol=1e-8)
+
+    def test_localizer_intersection_skips_plane_outside_background(self):
+        image = sitk.Image([16, 30, 20], sitk.sitkInt16)
+        background = sitk.RegionOfInterest(image, [1, 30, 20], [8, 0, 0])
+        for normal, center in (([0., 0., 1.], [0., 0., 25.]), ([1., 0., 0.], [0., 0., 5.])):
+            with self.subTest(normal=normal, center=center):
+                segment = ReconstructionStage._slice_localizer_intersection(
+                    planned_slice={"center": dict(zip("xyz", center)), "normal": dict(zip("xyz", normal))},
+                    background_image=background, fixed_axis=0,
+                )
                 self.assertIsNone(segment)
 
     def test_localizer_oblique_line_uses_continuous_subpixel_coverage(self):

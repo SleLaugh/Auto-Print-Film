@@ -361,9 +361,8 @@ class ReconstructionStage(BaseStage):
 
         if localizer_image is None and isinstance(image, sitk.Image):
             localizer_start = time.perf_counter()
-            localizer_plan = self._plan_for_localizer(image, plan, sampled_slices)
             localizer_render = self._build_plan_localizer_render(
-                image, localizer_plan,
+                image, plan,
                 localization_result=localization_result,
                 anatomical_analysis=anatomical_analysis,
             )
@@ -413,44 +412,6 @@ class ReconstructionStage(BaseStage):
                 localizer_render.background_kind if localizer_render is not None else None
             ),
         }
-
-    @staticmethod
-    def _plan_for_localizer(
-        image: sitk.Image,
-        plan: Dict[str, Any],
-        sampled_slices: list[tuple[dict[str, Any], sitk.Image]],
-    ) -> Dict[str, Any]:
-        """仅读取最终 MPR 视野构造绘线计划，保持原采样计划和定位参考层不变。"""
-
-        if plan.get("geometry_type") == "curved_stack" or not sampled_slices:
-            return plan
-        localizer_plan = {
-            **plan,
-            "slices": [
-                {
-                    **planned_slice,
-                    "localizer_extent_mm": (planned_slice.get("framing") or {}).get(
-                        "extent_mm", plan.get("extent_mm", {}),
-                    ),
-                }
-                for planned_slice, _ in sampled_slices
-            ],
-        }
-        if not plan.get("localizer_reference"):
-            # 兼容旧计划：固定层回退仍由原切片中心决定，不能随取景移动。
-            original_indices = np.asarray([
-                image.TransformPhysicalPointToContinuousIndex((
-                    float(item["center"]["x"]),
-                    float(item["center"]["y"]),
-                    float(item["center"]["z"]),
-                ))
-                for item in plan.get("slices", [])
-            ], dtype=float)
-            reference = image.TransformContinuousIndexToPhysicalPoint(
-                tuple(np.median(original_indices, axis=0)),
-            )
-            localizer_plan["localizer_reference"] = dict(zip(("x", "y", "z"), reference))
-        return localizer_plan
 
     def _write_plan_windows(
         self,
@@ -592,7 +553,11 @@ class ReconstructionStage(BaseStage):
         *,
         localizer_surface: SpineLocalizerSurface | None = None,
     ) -> _LocalizerRender | None:
-        """在正交或脊柱曲面背景上绘制实际 MPR 切片矩形的交线。"""
+        """在固定原图网格上绘制切片平面交线，仅按背景边界裁线。
+
+        定位线表示平面位置与倾角，不表示正式切片的有限取景矩形。
+        背景参考层、物理大小和线长均不能随 FillPercent 改变。
+        """
 
         axes = cls._LOCALIZER_DRAW_AXES.get(str(plan.get("plane", "")))
         if axes is None:
@@ -645,23 +610,10 @@ class ReconstructionStage(BaseStage):
         intensity_span = max(source_max - source_min, 1.0)
         line_value = source_max + intensity_span
 
-        fixed_plane_index = [0, 0, 0]
-        fixed_plane_index[fixed_axis] = fixed_index
-        fixed_plane_point = np.asarray(
-            image.TransformIndexToPhysicalPoint(fixed_plane_index),
-            dtype=float,
-        )
-        fixed_plane_normal = np.asarray(
-            image.GetDirection(),
-            dtype=float,
-        ).reshape(3, 3)[:, fixed_axis]
         for planned_slice in plan.get("slices", []):
             if localizer_surface is not None:
                 # 曲面背景的前后深度随行变化；斜切 MPR 不能继续使用旧平面交线。
-                for indices in localizer_surface.plane_intersections(
-                    image, planned_slice,
-                    planned_slice.get("localizer_extent_mm", plan.get("extent_mm", {})),
-                ):
+                for indices in localizer_surface.plane_intersections(image, planned_slice):
                     cls._paint_antialiased_polyline(
                         line_alpha_array, indices,
                         display_axes=(stack_axis, line_axis), fixed_axis=fixed_axis,
@@ -669,9 +621,8 @@ class ReconstructionStage(BaseStage):
                 continue
             segment = cls._slice_localizer_intersection(
                 planned_slice=planned_slice,
-                extent_mm=planned_slice.get("localizer_extent_mm", plan.get("extent_mm", {})),
-                fixed_plane_point=fixed_plane_point,
-                fixed_plane_normal=fixed_plane_normal,
+                background_image=representative_slice,
+                fixed_axis=fixed_axis,
             )
             if segment is None:
                 continue
@@ -1209,17 +1160,16 @@ class ReconstructionStage(BaseStage):
         cls,
         *,
         planned_slice: Dict[str, Any],
-        extent_mm: Dict[str, Any],
-        fixed_plane_point: np.ndarray,
-        fixed_plane_normal: np.ndarray,
+        background_image: sitk.Image,
+        fixed_axis: int,
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        """计算有限切片矩形与原图正交定位面的物理交线端点。"""
+        """计算切片平面与定位底图的交线，仅裁入底图的完整像素网格。"""
 
         center = cls._vector(planned_slice.get("center", {}), normalize=False)
         normal = cls._vector(planned_slice.get("normal", {}))
-        row_dir = cls._vector(planned_slice.get("row_dir", {}))
-        col_dir = cls._vector(planned_slice.get("col_dir", {}))
-        fixed_plane_normal = cls._normalize_array(fixed_plane_normal)
+        direction = np.asarray(background_image.GetDirection(), dtype=float).reshape(3, 3)
+        fixed_plane_normal = cls._normalize_array(direction[:, fixed_axis])
+        fixed_plane_point = np.asarray(background_image.GetOrigin(), dtype=float)
 
         in_slice_normal = (
             fixed_plane_normal
@@ -1232,21 +1182,21 @@ class ReconstructionStage(BaseStage):
         intersection_center = center - in_slice_normal * distance / denominator
         line_direction = cls._normalize_array(np.cross(normal, fixed_plane_normal))
 
-        half_width = max(0.0, float(extent_mm.get("width", 0.0)) / 2.0)
-        half_height = max(0.0, float(extent_mm.get("height", 0.0)) / 2.0)
-        # 交线经过的点通常偏离切片中心，需将 p(t) 分别裁入 row/col 的有限区间。
-        # 直接按半宽/半高对称延伸，会越过斜切边界，也会给完全不相交的 FOV 画线。
-        relative_center = intersection_center - center
+        index_origin = np.asarray(background_image.TransformPhysicalPointToContinuousIndex(
+            tuple(intersection_center),
+        ))
+        voxel_axes = direction * np.asarray(background_image.GetSpacing())
+        index_step = np.linalg.solve(voxel_axes, line_direction)
+        # 在连续索引中裁到底图边界，兼容非等距、斜向和反向存储。
+        # 不使用成片 extent 或面内居中位置，也不虚构巨大 FOV 来延长线。
         lower_t, upper_t = -math.inf, math.inf
-        for direction, half_extent in ((row_dir, half_width), (col_dir, half_height)):
-            offset = float(np.dot(relative_center, direction))
-            component = float(np.dot(line_direction, direction))
-            if abs(component) <= 1e-8:
-                if abs(offset) > half_extent:
+        for offset, component, size in zip(index_origin, index_step, background_image.GetSize()):
+            if abs(component) <= 1e-10:
+                if offset < -1e-7 or offset > size - 1 + 1e-7:
                     return None
                 continue
-            first_t = (-half_extent - offset) / component
-            second_t = (half_extent - offset) / component
+            first_t = -offset / component
+            second_t = (size - 1 - offset) / component
             lower_t = max(lower_t, min(first_t, second_t))
             upper_t = min(upper_t, max(first_t, second_t))
             if lower_t > upper_t:

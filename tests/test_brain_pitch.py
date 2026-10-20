@@ -51,7 +51,7 @@ def _axes(frame):
     ])
 
 
-@pytest.mark.parametrize("pitch", (-24.0, 20.0))
+@pytest.mark.parametrize("pitch", (-37.0, -24.0, 20.0, 37.0))
 def test_default_pitch_recovers_known_physical_axis_without_symmetry_improvement(pitch):
     image, mask, expected = _brain_case(pitch)
     result, diagnostics = estimate_brain_frame_with_diagnostics(mask, image)

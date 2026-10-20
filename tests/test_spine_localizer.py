@@ -426,8 +426,10 @@ class SpineLocalizerTest(unittest.TestCase):
         self.assertGreater(float(alpha[12 - 6, 8]), 0.5)
         self.assertGreater(float(alpha[12 - 4, 10]), 0.5)
         self.assertLess(float(alpha[12 - 4, 8]), 1e-6)
-        self.assertEqual(float(np.max(alpha[12 - 2])), 0.0)
-        self.assertEqual(float(np.max(alpha[12 - 10])), 0.0)
+        # The Localizer line is clipped by the fixed background grid, so the
+        # same oblique curve remains visible at both background edges.
+        self.assertGreater(float(np.max(alpha[12 - 2])), 0.5)
+        self.assertGreater(float(np.max(alpha[12 - 10])), 0.5)
 
     def test_mpr_renderer_without_filtered_geometry_preserves_fixed_layer_fallback(self):
         image = self._image()
@@ -484,8 +486,8 @@ class SpineLocalizerTest(unittest.TestCase):
                     else:
                         self.assertEqual(render.background_kind, "orthogonal_plane")
 
-    def test_execute_plan_localizer_uses_each_final_sampled_rectangle(self):
-        """定位线必须使用实际取景后的中心和逐层宽高，不使用原始计划矩形。"""
+    def test_execute_plan_localizer_spans_surface_independent_of_final_sampled_rectangles(self):
+        """正式切片仍按各自FOV采样，定位图交线跨整幅固定曲面网格。"""
 
         image = self._image()
         plan = self._plan(image, slice_type="MPR")
@@ -528,10 +530,10 @@ class SpineLocalizerTest(unittest.TestCase):
         self.assertEqual([sampled_image.GetSize() for _, sampled_image in sampled],
                          [(9, 5, 1), (9, 3, 1)])
         alpha = written["localizer_render"].line_alpha
-        self.assertGreater(float(alpha[12 - 4, 8]), 0.5)
-        self.assertEqual(float(alpha[12 - 8, 8]), 0.0)
-        self.assertGreater(float(alpha[12 - 8, 20]), 0.5)
-        self.assertEqual(float(alpha[12 - 5, 20]), 0.0)
+        self.assertTrue(np.all(alpha[:, 8] > 0.5))
+        self.assertTrue(np.all(alpha[:, 20] > 0.5))
+        self.assertEqual(float(alpha[:, 7].max()), 0.0)
+        self.assertEqual(float(alpha[:, 21].max()), 0.0)
         self.assertEqual(result["localizer_background"], "spine_following_coronal")
         self.assertEqual(plan, plan_before)
 

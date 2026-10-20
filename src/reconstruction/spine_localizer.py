@@ -1,4 +1,4 @@
-"""仅供脊柱定位图使用的冠状曲面背景和有限切片交线。
+"""仅供脊柱定位图使用的冠状曲面背景和切片平面交线。
 
 曲面只改变定位图在每个头脚位置读取的前后深度，保留原图的左右、头脚
 网格。这里不创建或修改正式 MPR / CPR 的采样计划。
@@ -178,13 +178,14 @@ class SpineLocalizerSurface:
         self,
         image: sitk.Image,
         planned_slice: dict,
-        extent_mm: dict,
+        extent_mm: dict | None = None,
     ) -> list[np.ndarray]:
-        """严格裁剪有限 MPR 矩形与分段线性曲面的交线，返回连续体素 XYZ。
+        """求切片平面与分段线性曲面的交线，返回连续体素 XYZ。
 
         每段曲面写成 P(x,t)=B+Dx*x+V*t，在 0≤x≤sizeX−1、0≤t≤1
-        内求实际切片平面交线，再按 row/col 两个半宽剪裁。这样斜切平面的
-        法向 y 分量也参与求交，不会把固定参考层的旧线直接搬到曲面上。
+        内求真实交线。定位图省略 extent_mm，仅按显示网格裁线，避免 Fill
+        缩短定位线；显式提供范围的几何查询仍可按有限矩形裁剪。
+        法向 y 分量参与求交，不把固定参考层的旧线搬到曲面上。
         """
 
         geometry = _image_affine(image)
@@ -192,11 +193,19 @@ class SpineLocalizerSurface:
         normal = _direction(planned_slice.get("normal"))
         row = _direction(planned_slice.get("row_dir"))
         col = _direction(planned_slice.get("col_dir"))
-        try:
-            half_width = float(extent_mm["width"]) / 2.0
-            half_height = float(extent_mm["height"]) / 2.0
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return []
+        half_width = half_height = None
+        if extent_mm is not None:
+            try:
+                half_width = float(extent_mm["width"]) / 2.0
+                half_height = float(extent_mm["height"]) / 2.0
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return []
+            if (
+                not np.isfinite(half_width)
+                or not np.isfinite(half_height)
+                or min(half_width, half_height) < 0.0
+            ):
+                return []
         size = image.GetSize()
         depths = np.asarray(self.depth_indices, dtype=float)
         if (
@@ -205,9 +214,6 @@ class SpineLocalizerSurface:
             or normal is None
             or row is None
             or col is None
-            or not np.isfinite(half_width)
-            or not np.isfinite(half_height)
-            or min(half_width, half_height) < 0.0
             or depths.shape != (size[2],)
             or not np.all(np.isfinite(depths))
         ):
@@ -241,19 +247,22 @@ class SpineLocalizerSurface:
             constraints = [
                 (parameter_origin[0], parameter_direction[0], 0.0, size[0] - 1.0),
                 (parameter_origin[1], parameter_direction[1], 0.0, 1.0),
-                (
-                    float(np.dot(physical_origin - center, row)),
-                    float(np.dot(physical_direction, row)),
-                    -half_width,
-                    half_width,
-                ),
-                (
-                    float(np.dot(physical_origin - center, col)),
-                    float(np.dot(physical_direction, col)),
-                    -half_height,
-                    half_height,
-                ),
             ]
+            if extent_mm is not None:
+                constraints.extend([
+                    (
+                        float(np.dot(physical_origin - center, row)),
+                        float(np.dot(physical_direction, row)),
+                        -half_width,
+                        half_width,
+                    ),
+                    (
+                        float(np.dot(physical_origin - center, col)),
+                        float(np.dot(physical_direction, col)),
+                        -half_height,
+                        half_height,
+                    ),
+                ])
             interval = _clip_parameter(constraints)
             if interval is None:
                 continue

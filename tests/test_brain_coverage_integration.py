@@ -324,7 +324,8 @@ def test_superior_cap_participates_in_new_first_layer_framing_without_inferior_j
     assert np.any(np.abs(points @ normal - first_depth) < 2.5 + half_voxel)
     ReconstructionStage({"parallel": False}).execute(context)
     output = context.get_result("reconstruction")["outputs"][0]
-    assert output["framing"][0]["center_source"] == "slice_target"
+    first_framing = output["framing"][0]
+    assert first_framing.get("target_center_source", first_framing["center_source"]) == "slice_target"
     assert output["framing"][0]["context_label_ids"] == [19]
     _verify_output(plan, output, image, brain_points, points, fill_percent)
 
@@ -379,6 +380,10 @@ def _verify_output(plan, output, image, brain_points, points, fill_percent):
     if plan["plane"] in {"横状位", "冠状位"}:
         assert group_upper[0] - group_lower[0] > brain_size[0] + 2.
     scales, depths, centers, spacings, sizes = [], [], [], [], []
+    base_spacing = np.array([plan["output_spacing_mm"][axis] for axis in "xy"])
+    original_size = np.maximum(1, np.rint(np.array([
+        plan["extent_mm"][axis] for axis in ("width", "height")
+    ]) / base_spacing).astype(int) + 1)
     for path, planned, framing in zip(files, plan["slices"], output["framing"]):
         dataset = pydicom.dcmread(str(path))
         iop = np.array(dataset.ImageOrientationPatient, dtype=float)
@@ -387,6 +392,18 @@ def _verify_output(plan, output, image, brain_points, points, fill_percent):
         assert float(dataset.SliceThickness) == float(dataset.SpacingBetweenSlices) == 5.
         spacing = np.array(dataset.PixelSpacing, dtype=float)[::-1]
         size = np.array([dataset.Columns, dataset.Rows])
+        # Source-support cropping can change Rows only. The common sampling
+        # scale and original column grid must still be exactly preserved.
+        assert dataset.Columns == original_size[0]
+        np.testing.assert_allclose(spacing, base_spacing / framing["scale"], atol=1e-7)
+        np.testing.assert_array_equal(size, framing["output_size_xy"])
+        crop = framing.get("vertical_source_support", {})
+        top, bottom = crop.get("crop_top_rows", 0), crop.get("crop_bottom_rows", 0)
+        assert isinstance(top, int) and top >= 0
+        assert isinstance(bottom, int) and bottom >= 0
+        assert dataset.Rows == original_size[1] - top - bottom
+        if top or bottom:
+            assert crop["original_rows"] == original_size[1]
         center = np.array(dataset.ImagePositionPatient, dtype=float)
         center += row * ((size[0] - 1) * spacing[0] / 2)
         center += col * ((size[1] - 1) * spacing[1] / 2)
@@ -407,7 +424,25 @@ def _verify_output(plan, output, image, brain_points, points, fill_percent):
             actual_upper = center @ axes[:, :2] + size * spacing / 2
             assert np.all(actual_lower <= lower + 1e-6)
             assert np.all(actual_upper >= upper - 1e-6)
-        np.testing.assert_allclose(center @ axes[:, :2], expected_center, atol=1e-6)
+        # The old target center remains the independent framing oracle. An
+        # asymmetric integer crop moves the displayed center by this exact
+        # col-axis distance; neither the row axis nor the slice normal may move.
+        original_target_center = (
+            axes[:, :2] @ expected_center + normal * depths[-1]
+        )
+        crop_shift_mm = (top - bottom) * spacing[1] / 2
+        np.testing.assert_allclose(
+            center, original_target_center + col * crop_shift_mm, atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            (center - original_target_center) @ axes,
+            [0., crop_shift_mm, 0.], atol=1e-6,
+        )
+        if top or bottom:
+            np.testing.assert_allclose(
+                [crop["original_center"][axis] for axis in "xyz"],
+                original_target_center, atol=1e-6,
+            )
         np.testing.assert_allclose(
             center, [framing["center"][axis] for axis in "xyz"], atol=1e-6,
         )

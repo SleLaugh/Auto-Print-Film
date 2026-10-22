@@ -65,7 +65,7 @@ def _parse_optional_positive_integer(value: Any, name: str) -> int | None:
 
 
 def parse_fill_percent(value: Any) -> float | None:
-    """None 或 0 仅整组居中、不缩放；百分比为 [0, 100] 内的 JSON 数字。"""
+    """解析 [0, 100] 的 JSON 数字；None/0 不缩放，后续平面上下裁空独立生效。"""
 
     if value is None:
         return None
@@ -90,7 +90,7 @@ class PlaneConfig:
     slice_spacing: Optional[float]
     # 一个状位可以同时输出多套窗宽窗位图像，例如骨窗和纵隔窗。
     window_presets: List[str]
-    # 整组目标包围框宽/高的最大占比；None 或 0 仅整组居中、不缩放。
+    # 整组目标包围框宽/高的最大占比；None/0 不缩放，平面成片仍可上下裁空。
     fill_percent: Optional[float] = None
     # 切片方式由调用方显式选择；普通直线重建默认使用 MPR。
     slice_type: SliceType = SliceType.MPR
@@ -152,7 +152,7 @@ class PlaneConfig:
         spacing = data.get('SliceSpacing')
         image_count = data.get('SliceImageCount')
         if 'line_extent_mode' in data:
-            raise ValueError("line_extent_mode 已移除，请使用 FillPercent；省略时只居中")
+            raise ValueError("line_extent_mode 已移除，请使用 FillPercent；省略时不缩放，平面成片仍裁上下空白")
         return cls(
             plane=PlaneTypeEnum(data['Plane']),
             slice_thickness=_parse_optional_positive_float(

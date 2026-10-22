@@ -379,7 +379,8 @@ class DocumentationConsistencyTests(unittest.TestCase):
             / "modules/reconstruction/2026-10-08-整组居中与FillPercent取景设计.md"
         ).read_text(encoding="utf-8")
         for statement in (
-            "省略、null、0 均仅按整组目标范围居中",
+            "省略、null、0 的目标取景均按整组范围居中",
+            "随后仍执行平面成片上下裁空",
             "占比的参照物是输出图像，不是屏幕",
             "不是只挑面积最大的一层",
             "定位图不应用取景",

@@ -13,7 +13,7 @@ from src.reconstruction.symmetry_framing import SymmetryFramingPlane
 
 @dataclass(frozen=True)
 class InterspaceFramingGeometry:
-    """同一椎间隙配置共用的输出矩阵、物理采样比例及其计算依据。"""
+    """同一椎间隙配置共用的裁空前采样矩阵、物理比例及其计算依据。"""
 
     size_xy: tuple[int, int]
     spacing_xy: tuple[float, float]
@@ -301,7 +301,8 @@ class TargetFramer:
         椎间隙配置可共用矩阵及比例；逐层只移动面内中心，不改变切平面。
         可靠镜像面只约束面内左右中心，其余方向继续使用当前厚层 bbox 中心。
         当前层无目标及显示支持时回退整组中心；FillPercent 未设置/为零时
-        保留原有整组目标中心。
+        保留原有整组目标中心。本方法确定裁空前的采样几何；HU 采样后的
+        上下无源支持行裁剪仍可改变最终 Rows 和图像垂直中心。
         """
 
         lower, upper = self.plane_target_bounds(planned_slice)
@@ -472,7 +473,7 @@ def prepare_interspace_framing(
 
 
 def fitted_spacing(size, spacing, target_size, fill_percent):
-    """按像素外边界定义占比，保留输出矩阵和像素纵横比。"""
+    """按像素外边界定义占比，本步保留采样矩阵和像素纵横比。"""
 
     percent = parse_fill_percent(fill_percent)
     spacing = np.asarray(spacing, dtype=float)

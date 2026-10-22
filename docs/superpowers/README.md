@@ -11,7 +11,7 @@
 | 持久缓存、按模型复用分割、缓存失效边界 | `architecture/2026-10-08-预处理与分割缓存设计.md` | 缓存不是整任务断点续跑 |
 | 交付报告、Python Response、重复状位、报告对比 | `architecture/2026-10-08-交付报告与响应契约设计.md` | 区分医学状位与输出目录名 |
 | 批量脚本、并发病例、FillPercent 配置透传 | `architecture/2026-10-08-批量执行与配置透传设计.md` | 不读取 launch.json |
-| 整组倍率、逐层居中、0/80/100、目标占图比例 | `modules/reconstruction/2026-10-08-整组居中与FillPercent取景设计.md` | 正数逐层居中，0 保持整组中心；不逐张拉满 |
+| 整组倍率、逐层居中、0/80/100、上下裁空 | `modules/reconstruction/2026-10-08-整组居中与FillPercent取景设计.md` | 目标取景后平面成片按源支持逐张裁空，含 0/null；不逐张拉满 |
 | GDCM、SimpleITK、DICOM 写盘并发安全 | `architecture/README.md` + `modules/dicom/README.md` | 写盘锁属于跨模块约束 |
 | DICOM 文件名、定位图、InstanceNumber | `modules/dicom/README.md` | 不涉及 MPR 几何时不读 reconstruction |
 | 第三至五阶段校正、label/bbox、解剖几何 | `modules/localization/README.md` | 只处理目标范围或四棱柱时从这里开始 |

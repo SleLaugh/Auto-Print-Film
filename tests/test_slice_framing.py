@@ -257,7 +257,9 @@ class SliceFramingTest(unittest.TestCase):
             context.set_result("planning", {"plans": [self.plan]})
             ReconstructionStage(config={"parallel": True}).execute(context)
             result = context.get_result("reconstruction")
-            for index, expected_center in enumerate(([12.25, 19.5, 4], [32.25, 39.5, 10]), 1):
+            # 首张裁掉上端 3 行、末张裁掉下端 3 行后，实际图像中心随有效
+            # 视野改变；原目标中心留在 framing 诊断中，法向层位置保持不变。
+            for index, expected_center in enumerate(([12.25, 20.625, 4], [32.25, 38.375, 10]), 1):
                 bone = pydicom.dcmread(root / "横状位" / "骨窗" / f"{index}.dcm")
                 soft = pydicom.dcmread(root / "横状位" / "软组织窗" / f"{index}.dcm")
                 for field in ("ImagePositionPatient", "PixelSpacing", "ImageOrientationPatient", "Rows", "Columns"):
@@ -277,7 +279,7 @@ class SliceFramingTest(unittest.TestCase):
             directions = np.asarray(bone.ImageOrientationPatient, float).reshape(2, 3)
             normal = np.cross(*directions)
             np.testing.assert_allclose(np.diff(positions, axis=0) @ normal, [6], atol=1e-7)
-            np.testing.assert_allclose(np.diff(positions, axis=0), [[20, 20, 6]], atol=1e-7)
+            np.testing.assert_allclose(np.diff(positions, axis=0), [[20, 17.75, 6]], atol=1e-7)
             baseline_root = root / "baseline"
             ReconstructionStage()._execute_plan(self.raw, self.plan, baseline_root, "1.2.3", {})
             baseline = pydicom.dcmread(baseline_root / "横状位" / "骨窗" / "Localizer.dcm")

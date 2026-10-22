@@ -34,6 +34,7 @@ from src.reconstruction.dicom import (
     write_localizer_dicom,
 )
 from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
+from src.reconstruction.vertical_support import crop_vertical_padding
 from src.reconstruction.framing_context import FramingContext, load_framing_context
 from src.reconstruction.symmetry_framing import resolve_symmetry_framing_plane
 from src.reconstruction.spine_localizer import (
@@ -335,7 +336,8 @@ class ReconstructionStage(BaseStage):
 
         resampler = self._resampler_for_plan(plan)
 
-        # 第一步：按计划完成 HU 厚层采样与取景，保留未窗化的 float32 图像。
+        # 第一步：按计划完成 HU 厚层采样，再裁首尾无源支持行，以整幅有效图
+        # 居中；允许逐层 Rows 不同，保留未窗化的 float32 像素及共同采样间距。
         # 所有采样完成之前不会开始任何窗宽窗位映射。
         DebugLog(f"    [1] MPR采样: 共 {len(plan['slices'])} 张")
         sampling_start = time.perf_counter()
@@ -354,6 +356,14 @@ class ReconstructionStage(BaseStage):
                 else:
                     sampling_plan, planned_slice = target_framer.plane_geometry(plan, planned_slice)
             sampled_image = resampler.sample_slice(image, sampling_plan, planned_slice)
+            if (
+                plan.get("geometry_type") != "curved_stack"
+                and isinstance(image, sitk.Image)
+                and isinstance(sampled_image, sitk.Image)
+            ):
+                sampled_image, planned_slice = crop_vertical_padding(
+                    image, sampling_plan, planned_slice, sampled_image,
+                )
             single_elapsed = time.perf_counter() - single_start
             if single_elapsed > slowest_slice_elapsed:
                 slowest_slice_elapsed = single_elapsed

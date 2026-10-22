@@ -19,11 +19,13 @@ _PART_LABELS = {
     SlicePartEnum.颈椎: ("vertebrae_C1", "vertebrae_C4", "vertebrae_C7"),
     SlicePartEnum.胸椎: ("vertebrae_T1", "vertebrae_T6", "vertebrae_T12"),
     SlicePartEnum.腰椎: ("vertebrae_L1", "vertebrae_L3", "vertebrae_L5"),
+    SlicePartEnum.脊柱: ("vertebrae_C7", "vertebrae_T6", "vertebrae_S1"),
 }
 _PITCH_DEGREES = {
     SlicePartEnum.颈椎: -6.24,
     SlicePartEnum.胸椎: 12.0,
     SlicePartEnum.腰椎: -17.0,
+    SlicePartEnum.脊柱: 9.0,
 }
 _ORIENTATIONS = ("identity", "oblique", "flipped_lr", "reversed_si", "reversed_all")
 _HU_GRADIENT = np.array((3.0, 7.0, 11.0))

@@ -8,12 +8,14 @@ from itertools import product
 import math
 from typing import Any, Dict, Iterable, List
 
+from src.anatomy.orientation import patient_reference_axes
 from src.models import AnatomicalFrame, ExtentMM, Point3D, SlicePlan
 from src.models.enums import PlaneTypeEnum
 from src.planning.sampling import ResolvedSampling, resolve_sampling
 from src.planning.geometry import (
     build_plane_stack_slices,
     image_axis_direction,
+    image_direction_matrix,
     normalize_vector,
     subtract_points,
     vector_length,
@@ -243,9 +245,14 @@ def default_straight_frame(
         col_axis, col_sign = 1, 1.0
         normal_axis, normal_sign = 2, 1.0
     elif plane == PlaneTypeEnum.矢状位:
-        row_axis, row_sign = 1, 1.0
-        col_axis, col_sign = 2, -1.0
-        normal_axis, normal_sign = 0, -1.0
+        # 兼容没有解剖坐标的旧结果时，同样按患者前→后、头→脚显示。
+        # 仅校正存储轴符号，保留原始斜扫描角度。
+        axes = patient_reference_axes(image_direction_matrix(image_info))
+        return StraightPlaneFrame(
+            row_dir=Point3D(*(float(value) for value in axes[:, 1])),
+            col_dir=Point3D(*(float(value) for value in -axes[:, 2])),
+            normal=Point3D(*(float(value) for value in -axes[:, 0])),
+        )
     elif plane == PlaneTypeEnum.冠状位:
         row_axis, row_sign = 0, 1.0
         col_axis, col_sign = 2, -1.0

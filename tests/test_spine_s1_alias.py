@@ -14,6 +14,7 @@ from src.core.context import ProcessingContext
 from src.models import PlaneConfig, Request
 from src.models.enums import PlaneTypeEnum, SlicePartEnum, SliceType
 from src.planning.spine_interspace import configured_interspace_definitions
+from src.planning.spine_cpr import spine_target_bbox
 from src.stages.stage_anatomical_analysis import AnatomicalAnalysisStage
 from src.stages.stage_localization import LocalizationStage
 from src.stages.stage_planning import PlanningStage
@@ -58,6 +59,33 @@ def test_interspace_alias_uses_real_targets_without_rewriting_configuration():
     assert configured_interspace_definitions(localization) == [
         ("L5_S1", "vertebrae_L5", "sacrum"),
     ]
+    assert localization == before
+
+
+@pytest.mark.parametrize("has_first_sacral_label", (False, True))
+def test_spine_target_bbox_resolves_s1_against_actual_targets(has_first_sacral_label):
+    lumbar_bbox = dict(x_min=10, x_max=20, y_min=10, y_max=20, z_min=20, z_max=30)
+    sacral_bbox = dict(x_min=8, x_max=22, y_min=8, y_max=22, z_min=5, z_max=10)
+    localization = {
+        "label_targets": {"vertebrae_L5": {}, "sacrum": {}},
+        "coords": {
+            "vertebrae_L5": {"found": True, "bbox": lumbar_bbox},
+            "vertebrae_S1": {"found": False, "bbox": None},
+            "sacrum": {"found": True, "bbox": sacral_bbox},
+        },
+    }
+    expected_label = "sacrum"
+    if has_first_sacral_label:
+        expected_label = "vertebrae_S1"
+        localization["label_targets"][expected_label] = {}
+        localization["coords"][expected_label] = {"found": True, "bbox": sacral_bbox}
+        localization["coords"]["sacrum"]["bbox"] = {**sacral_bbox, "z_min": 0}
+    before = deepcopy(localization)
+
+    bbox, source_labels = spine_target_bbox(localization, ["vertebrae_L5", "vertebrae_S1"])
+
+    assert source_labels == ["vertebrae_L5", expected_label]
+    assert bbox == {**sacral_bbox, "z_max": 30}
     assert localization == before
 
 

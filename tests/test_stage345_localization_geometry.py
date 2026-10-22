@@ -690,15 +690,16 @@ class LocalizationGeometryTest(unittest.TestCase):
         self.assertEqual(config["slice_parts"]["颈椎"]["localization"]["regions"]["default"], {
             "type": "whole_range",
             "start_label": "C1",
-            "end_label": "T1",
+            "end_label": "T2",
         })
 
     def test_default_spine_targets_include_junction_vertebrae(self):
-        """整体范围延伸到 T1/T12，同时仍只保留原有五个椎间隙。"""
+        """颈椎覆盖到 T2、腰椎从 T12 开始，仍只保留原有五个椎间隙。"""
 
         stage = LocalizationStage()
         for part, labels in (
-            ("颈椎", [f"vertebrae_C{i}" for i in range(1, 8)] + ["vertebrae_T1"]),
+            ("颈椎", [f"vertebrae_C{i}" for i in range(1, 8)]
+             + ["vertebrae_T1", "vertebrae_T2"]),
             ("腰椎", ["vertebrae_T12"] + [f"vertebrae_L{i}" for i in range(1, 6)]
              + ["vertebrae_S1"]),
         ):
@@ -722,8 +723,8 @@ class LocalizationGeometryTest(unittest.TestCase):
                 self.assertEqual(list(targets), labels)
                 self.assertEqual(len(resolved["interspace"]["intervals"]), 5)
                 self.assertTrue(all(
-                    "T1" not in interval["start_labels"][0]
-                    and "T1" not in interval["end_labels"][0]
+                    not interval["start_labels"][0].startswith("vertebrae_T")
+                    and not interval["end_labels"][0].startswith("vertebrae_T")
                     for interval in resolved["interspace"]["intervals"]
                 ))
 

@@ -1,4 +1,4 @@
-"""按计划统一取景比例，正 FillPercent 时逐层居中目标（不依赖窗宽窗位）。"""
+"""按计划统一比例，以目标和部位所需显示轮廓居中，不依赖窗宽窗位。"""
 
 from dataclasses import dataclass
 
@@ -6,6 +6,7 @@ import numpy as np
 import SimpleITK as sitk
 
 from src.models.request import parse_fill_percent
+from src.reconstruction.body_framing import BodyFramingSupport
 from src.reconstruction.framing_context import FramingContext
 from src.reconstruction.symmetry_framing import SymmetryFramingPlane
 
@@ -23,7 +24,7 @@ class InterspaceFramingGeometry:
 
 
 class TargetFramer:
-    """以计划目标为比例基准，正 FillPercent 时结合有界上下文逐层居中。"""
+    """正 FillPercent 容纳目标及显示支持，肺用躯干、髋用完整身体轮廓。"""
 
     def __init__(
         self,
@@ -35,6 +36,7 @@ class TargetFramer:
         context: FramingContext | None = None,
         symmetry_plane: SymmetryFramingPlane | None = None,
         merge_context_into_target: bool = False,
+        body_support: BodyFramingSupport | None = None,
     ):
         self.shared_geometry = shared_geometry
         self.symmetry_plane = symmetry_plane
@@ -106,12 +108,54 @@ class TargetFramer:
         else:
             indices = np.argwhere(selected)
             self.points = indices[:, ::-1] @ self.voxel_axes.T + segmentation.GetOrigin()
+        self._body_points = None
+        self._body_voxel_axes = None
+        self._body_region = None
+        if (
+            body_support is not None
+            and plan.get("slice_part") in {"肺部", "髋骨"}
+            and plan.get("slice_type") == "MPR"
+            and plan.get("geometry_type") == "plane_stack"
+            and percent is not None and percent > 0
+        ):
+            # 只作显示支持，不扩大切片层组或修改原始目标标签。
+            axis = np.asarray(body_support.longitudinal_axis_xyz, dtype=float)
+            if plan.get("plane") == "横状位":
+                # 横状切面可能相对源轴斜切，整幅身体边缘的 SI 会随面内
+                # 位置变化。须沿实际法向裁支持，不能用中心的 SI 截断体表。
+                axis = self._vector(plan["slices"][0]["normal"])
+            axis /= np.linalg.norm(axis)
+            body_axes = np.asarray(body_support.voxel_axes, dtype=float)
+            points = np.asarray(body_support.points_xyz, dtype=float)
+            target_depths = self.points @ axis
+            half_target = float(np.abs(self.voxel_axes.T @ axis).sum() / 2)
+            lower_depth = float(target_depths.min() - half_target)
+            upper_depth = float(target_depths.max() + half_target)
+            if plan.get("plane") == "横状位":
+                # 数量/间距计算可能向肺尖、肺底外多出空目标厚层，这些层
+                # 仍应显示同层身体，不能跳回少量肺组织的整组中心。
+                half_slab = float(plan.get("slice_thickness", 1.0)) / 2
+                depths = [float(self._vector(item["center"]) @ axis) for item in plan["slices"]]
+                lower_depth = min(lower_depth, min(depths) - half_slab)
+                upper_depth = max(upper_depth, max(depths) + half_slab)
+            half_body = float(np.abs(body_axes.T @ axis).sum() / 2)
+            body_depths = points @ axis
+            keep = (body_depths + half_body > lower_depth + 1e-7) & (
+                body_depths - half_body < upper_depth - 1e-7
+            )
+            if np.any(keep):
+                self._body_points = points[keep]
+                self._body_voxel_axes = body_axes
+                self._body_region = body_support.region
         self._projection_key = None
         self._bounds = None
         self._projection_axes = None
         self._half_voxel = None
         self._normal_depths = None
         self._context_normal_depths = None
+        self._body_normal_depths = None
+        self._body_half_voxel = None
+        self._body_group_bounds = None
         self._framing_target_size = None
 
     @staticmethod
@@ -141,6 +185,16 @@ class TargetFramer:
             self._half_voxel = half_voxel
             self._normal_depths = None
             self._context_normal_depths = None
+            self._body_normal_depths = None
+            self._body_half_voxel = None
+            self._body_group_bounds = None
+            if self._body_points is not None:
+                self._body_half_voxel = np.abs(self._body_voxel_axes.T @ axes).sum(axis=0) / 2
+                projected_body = self._body_points @ axes[:, :2]
+                self._body_group_bounds = (
+                    projected_body.min(axis=0) - self._body_half_voxel[:2],
+                    projected_body.max(axis=0) + self._body_half_voxel[:2],
+                )
             self._framing_target_size = None
             self._projection_key = key
         return self._bounds
@@ -148,35 +202,49 @@ class TargetFramer:
     def _slab_target_bounds(
         self, plan: dict, center: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        """求原目标及有界上下文与当前厚层正重叠的体素投影外边界。"""
+        """求原目标、有界上下文及身体轮廓与当前厚层正重叠的外边界。"""
 
         axes = self._projection_axes
         if self._normal_depths is None:
             self._normal_depths = self.points @ axes[:, 2]
         if self._context_points is not None and self._context_normal_depths is None:
             self._context_normal_depths = self._context_points @ axes[:, 2]
+        if self._body_points is not None and self._body_normal_depths is None:
+            self._body_normal_depths = self._body_points @ axes[:, 2]
         center_depth = float(center @ axes[:, 2])
-        half_support = float(plan.get("slice_thickness", 1.0)) / 2 + self._half_voxel[2]
         # 只接触厚层边界的体素没有采样厚度，不能让相邻层的目标拉偏中心。
         # 容差为亚纳米级毫米数；额外覆盖大物理坐标投影的浮点舍入误差。
-        tolerance = max(1e-7, np.finfo(float).eps * max(abs(center_depth), half_support, 1.0) * 32)
         bounds = []
-        for points, depths in (
-            (self.points, self._normal_depths),
-            (self._context_points, self._context_normal_depths),
+        for points, depths, half_voxel in (
+            (self.points, self._normal_depths, self._half_voxel),
+            (self._context_points, self._context_normal_depths, self._half_voxel),
+            (self._body_points, self._body_normal_depths, self._body_half_voxel),
         ):
             if points is None:
                 continue
+            half_support = float(plan.get("slice_thickness", 1.0)) / 2 + half_voxel[2]
+            tolerance = max(1e-7, np.finfo(float).eps * max(abs(center_depth), half_support, 1.0) * 32)
             selected = np.abs(depths - center_depth) < half_support - tolerance
             if np.any(selected):
                 projected = points[selected] @ axes[:, :2]
-                bounds.append((projected.min(axis=0), projected.max(axis=0)))
+                bounds.append((projected.min(axis=0) - half_voxel[:2],
+                               projected.max(axis=0) + half_voxel[:2]))
         if not bounds:
             return None
         return (
-            np.min([item[0] for item in bounds], axis=0) - self._half_voxel[:2],
-            np.max([item[1] for item in bounds], axis=0) + self._half_voxel[:2],
+            np.min([item[0] for item in bounds], axis=0),
+            np.max([item[1] for item in bounds], axis=0),
         )
+
+    def _slab_has_body_support(self, plan: dict, center: np.ndarray) -> bool:
+        """本层确实存在身体边界时才标记身体轮廓居中。"""
+
+        if self._body_points is None:
+            return False
+        depth = float(center @ self._projection_axes[:, 2])
+        half_support = float(plan.get("slice_thickness", 1.0)) / 2 + self._body_half_voxel[2]
+        tolerance = max(1e-7, np.finfo(float).eps * max(abs(depth), half_support, 1.0) * 32)
+        return bool(np.any(np.abs(self._body_normal_depths - depth) < half_support - tolerance))
 
     def framing_target_size(self, plan: dict, planned_slice: dict) -> np.ndarray:
         """预先容纳每层的完整显示支持范围，倍率仍对整组固定。"""
@@ -184,9 +252,14 @@ class TargetFramer:
         lower, upper = self.plane_target_bounds(planned_slice)
         if self._framing_target_size is None:
             target_size = upper - lower
+            if self._body_group_bounds is not None:
+                body_lower, body_upper = self._body_group_bounds
+                # 各层已分别居中，位置漂移不能再撑大共同视野。
+                # 身体支持按真实厚层的最大联合尺寸定倍率，使最宽层达到设定占比。
+                target_size = np.zeros(2, dtype=float)
             percent = parse_fill_percent(plan.get("fill_percent"))
             use_symmetry = self.symmetry_plane is not None and percent is not None and percent > 0
-            if self._context_points is not None or use_symmetry:
+            if self._context_points is not None or use_symmetry or self._body_points is not None:
                 # 计划内通常方向一致；有不同方向时各方向使用自己的投影缓存。
                 normal = self._projection_axes[:, 2]
                 for item in plan["slices"]:
@@ -212,16 +285,23 @@ class TargetFramer:
                                     upper_slice - target_center, target_center - lower_slice,
                                 )
                         target_size = np.maximum(target_size, required_size)
+            if self._body_group_bounds is not None and not np.any(target_size > 0):
+                # 所有计划层均无交集时沿用整组回退中心的范围，避免零尺寸倍率。
+                target_size = np.maximum(upper, body_upper) - np.minimum(lower, body_lower)
             self._framing_target_size = target_size
         return self._framing_target_size
 
     def plane_geometry(self, plan: dict, planned_slice: dict) -> tuple[dict, dict]:
         """整组共用比例，正 FillPercent 时按当前厚层目标与上下文联合取景。
 
-        原目标整组投影范围作为倍率基准，并预先容纳每层的联合显示范围。
+        一般计划保留原目标整组投影基准，肺/髋有身体支持时改用实际各厚层
+        联合尺寸的最大值，避免把跨层位置漂移计入倍率。肺部保护躯干轮廓，
+        髋骨保护完整身体轮廓，使末端小目标不把轮廓拉出画面；
+        完整联合 bbox 中心令左右留白平衡，不能缩放或镜像解剖结构本身。
         椎间隙配置可共用矩阵及比例；逐层只移动面内中心，不改变切平面。
         可靠镜像面只约束面内左右中心，其余方向继续使用当前厚层 bbox 中心。
-        原目标与上下文均为空，或 FillPercent 未设置/为零时，保留整组投影中心。
+        当前层无目标及显示支持时回退整组中心；FillPercent 未设置/为零时
+        保留原有整组目标中心。
         """
 
         lower, upper = self.plane_target_bounds(planned_slice)
@@ -238,11 +318,17 @@ class TargetFramer:
             slice_bounds = self._slab_target_bounds(plan, center)
             if slice_bounds is None:
                 center_source = "group_fallback"
+                if self._body_group_bounds is not None:
+                    body_lower, body_upper = self._body_group_bounds
+                    target_center = (np.minimum(lower, body_lower) + np.maximum(upper, body_upper)) / 2
+                    center_source = "group_body_fallback"
             else:
                 slice_lower, slice_upper = slice_bounds
                 target_center = (slice_lower + slice_upper) / 2
                 slice_target_size = list(map(float, slice_upper - slice_lower))
                 center_source = "slice_target"
+                if self._slab_has_body_support(plan, center):
+                    center_source = "slice_body_contour"
                 if self.symmetry_plane is not None:
                     symmetry_center, symmetry_status = self.symmetry_plane.centered_projection(
                         axes, float(center_local[2]), slice_lower, slice_upper,
@@ -295,6 +381,9 @@ class TargetFramer:
             })
         if symmetry_details is not None:
             framed_slice["framing"]["symmetry_centering"] = symmetry_details
+        if self._body_points is not None:
+            framed_slice["framing"]["body_support_source"] = "ct_body_contour"
+            framed_slice["framing"]["body_support_region"] = self._body_region
         return framed_plan, framed_slice
 
 

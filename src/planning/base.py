@@ -36,6 +36,8 @@ def select_planner(slice_part: str, slice_type: str) -> Any:
         ("颈椎", "椎间隙"): CervicalInterspacePlanner,
         ("胸椎", "MPR"): SingleLabelWholeRangePlanner,
         ("胸椎", "CPR"): SingleLabelWholeRangePlanner,
+        ("脊柱", "MPR"): SingleLabelWholeRangePlanner,
+        ("脊柱", "CPR"): SingleLabelWholeRangePlanner,
         ("腰椎", "MPR"): LumbarWholeRangePlanner,
         ("腰椎", "CPR"): LumbarWholeRangePlanner,
         ("腰椎", "椎间隙"): LumbarInterspacePlanner,

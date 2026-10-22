@@ -90,7 +90,8 @@ class DocumentationConsistencyTests(unittest.TestCase):
         )
         self.assertEqual(
             cervical_labels,
-            [f"vertebrae_C{index}" for index in range(2, 8)] + ["vertebrae_T1"],
+            [f"vertebrae_C{index}" for index in range(2, 8)]
+            + ["vertebrae_T1", "vertebrae_T2"],
         )
 
     def test_current_rule_documents_do_not_restore_known_stale_claims(self):

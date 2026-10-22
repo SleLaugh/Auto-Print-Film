@@ -14,13 +14,15 @@ from src.anatomy.brain import estimate_brain_frame_with_diagnostics
 from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 from src.models import PlaneConfig, Request, WindowPreset
 from src.models.enums import PlaneTypeEnum, SlicePartEnum
+from src.planning import select_planner
+from src.planning.straight import default_straight_frame
 from src.planning.whole_range import build_whole_range_plan_from_bbox
 from src.reconstruction.dicom import write_ct_dicom
 from src.reconstruction.plane_stack import PlaneStackResampler
 
 
 PARTS = (SlicePartEnum.颅脑, SlicePartEnum.髋骨, SlicePartEnum.肺部,
-         SlicePartEnum.颈椎, SlicePartEnum.胸椎, SlicePartEnum.腰椎)
+         SlicePartEnum.颈椎, SlicePartEnum.胸椎, SlicePartEnum.腰椎, SlicePartEnum.脊柱)
 FLIPS = tuple(product((False, True), repeat=3))
 
 
@@ -69,6 +71,15 @@ def test_patient_reference_ignores_storage_axis_signs_and_keeps_obliquity(flips)
     reference = rz @ rx
     stored = reference @ np.diag([-1. if flip else 1. for flip in flips])
     np.testing.assert_allclose(patient_reference_axes(stored), reference, atol=1e-12)
+    sagittal_frame = default_straight_frame(
+        PlaneTypeEnum.矢状位, {"direction": stored.ravel().tolist()},
+    )
+    for actual, expected in (
+        (sagittal_frame.row_dir, reference[:, 1]),
+        (sagittal_frame.col_dir, -reference[:, 2]),
+        (sagittal_frame.normal, -reference[:, 0]),
+    ):
+        np.testing.assert_allclose(list(actual.to_dict().values()), expected, atol=1e-12)
 
 
 @pytest.mark.parametrize("part", PARTS)
@@ -90,32 +101,67 @@ def test_all_parts_keep_head_up_and_same_physical_bounds_when_storage_flips(part
             assert plan.slices[0].center.z > plan.slices[-1].center.z
         else:
             assert plan.slices[0].col_dir.z < 0.0
+        if plane == PlaneTypeEnum.矢状位:
+            # 存储轴符号不能改变矢状位的左右：前方在左，后方在右。
+            patient_ap = np.asarray(list(frame.anterior_posterior_axis.to_dict().values()))
+            for planned_slice in plan.slices:
+                display_right = np.asarray(list(planned_slice.row_dir.to_dict().values()))
+                assert np.dot(display_right, patient_ap) == pytest.approx(1.0)
 
 
-@pytest.mark.parametrize("flips", ((True, False, False), (False, True, False), (False, False, True)))
-def test_written_coronal_sagittal_pixels_and_iop_keep_patient_head_up(tmp_path, flips):
-    _, _, localization = _case(SlicePartEnum.颅脑, flips)
+@pytest.mark.parametrize("part", PARTS)
+@pytest.mark.parametrize("flips", FLIPS)
+@pytest.mark.parametrize("use_anatomical_geometry", (True, False))
+def test_written_coronal_sagittal_pixels_and_iop_keep_patient_display_direction(
+    tmp_path, part, flips, use_anatomical_geometry,
+):
+    _, _, localization = _case(part, flips)
+    if not use_anatomical_geometry:
+        localization.pop("anatomical_geometry")
     z, y, x = np.indices((20, 18, 24), dtype=np.float32)
+    # 三个方向采用不同梯度；翻转存储数组时保留同一患者物理强度场。
     raw = sitk.Flip(sitk.GetImageFromArray(10 * x + 100 * y + z), list(flips))
-    request = Request("/tmp/dicom", str(tmp_path), slice_part=SlicePartEnum.颅脑)
+    request = Request(
+        "/tmp/dicom", str(tmp_path), slice_part=part,
+        plane_configs=[
+            PlaneConfig(plane, 1., 1., ["骨窗"])
+            for plane in (
+                (PlaneTypeEnum.冠状位, PlaneTypeEnum.矢状位)
+                if use_anatomical_geometry else (PlaneTypeEnum.矢状位,)
+            )
+        ],
+    )
+    # 从部位和切法的正式分发入口取计划，包含腰椎的专用 planner。
+    result = select_planner(part.value, "MPR").build_plans(request, localization)
+    assert len(result.plans) == len(request.plane_configs)
     window = WindowPreset("方向验证", 6000., 2500.)
-    for plane in (PlaneTypeEnum.冠状位, PlaneTypeEnum.矢状位):
-        plan = build_whole_range_plan_from_bbox(request, PlaneConfig(plane, 1., 1., ["骨窗"]), localization)
+    for plan in result.plans:
         plan_data, planned_slice = plan.to_dict(), plan.slices[len(plan.slices) // 2].to_dict()
         sampled = PlaneStackResampler().sample_slice(raw, plan_data, planned_slice)
-        path = tmp_path / f"{plane.value}.dcm"
+        path = tmp_path / f"{plan.plane}.dcm"
         write_ct_dicom(image=sampled, output_path=path, plan=plan_data, planned_slice=planned_slice,
                        window=window, series_uid="1.2.3.4.5", study_uid="1.2.3.4", total_slices=len(plan.slices))
         dataset = pydicom.dcmread(path)
         row_axis = np.asarray(dataset.ImageOrientationPatient[:3], dtype=float)
         col_axis = np.asarray(dataset.ImageOrientationPatient[3:], dtype=float)
-        assert col_axis[2] < 0.0
+        expected_row_axis = (0., 1., 0.) if plan.plane == "矢状位" else (1., 0., 0.)
+        np.testing.assert_allclose(row_axis, expected_row_axis, atol=1e-12)
+        np.testing.assert_allclose(col_axis, (0., 0., -1.), atol=1e-12)
         hu = dataset.pixel_array.astype(float) * float(dataset.RescaleSlope) + float(dataset.RescaleIntercept)
         center_row, center_column = np.array(hu.shape) // 2
-        for row in (center_row - 2, center_row + 2):
+        probe_pixels = (
+            (center_row - 2, center_column), (center_row + 2, center_column),
+            (center_row, center_column - 2), (center_row, center_column + 2),
+        )
+        for row, column in probe_pixels:
             point = np.asarray(dataset.ImagePositionPatient, dtype=float)
-            point = point + center_column * float(dataset.PixelSpacing[1]) * row_axis
+            point = point + column * float(dataset.PixelSpacing[1]) * row_axis
             point = point + row * float(dataset.PixelSpacing[0]) * col_axis
             expected_hu = point @ [10., 100., 1.]
-            assert hu[row, center_column] == pytest.approx(expected_hu, abs=0.1)
+            assert hu[row, column] == pytest.approx(expected_hu, abs=0.1)
         assert hu[center_row - 2, center_column] > hu[center_row + 2, center_column]
+        # 独立检查真实像素的左右关系，防止仅改 IOP 却仍把图像镜像写盘。
+        expected_horizontal_gradient = 100.0 if plan.plane == "矢状位" else 10.0
+        assert hu[center_row, center_column + 2] - hu[center_row, center_column - 2] == pytest.approx(
+            4.0 * expected_horizontal_gradient, abs=0.1,
+        )

@@ -71,6 +71,14 @@ class CurvedStackResampler:
             offset_curve,
             preferred_normals[offset_mm],
         )
+        row_dir = planned_slice.get("row_dir")
+        if row_dir is not None and float(np.dot(
+            in_plane_directions[0], self._normalize(self._point(row_dir)),
+        )) < 0.0:
+            # 显示横向由计划决定，堆叠中心和顺序仍由 offset_axis 决定。
+            # 同时反转对称厚层的采样法向，保持输出方向矩阵为右手系。
+            in_plane_directions = -in_plane_directions
+            slab_directions = -slab_directions
         in_plane_offsets = (
             np.arange(columns, dtype=float) - (columns - 1) / 2.0
         ) * spacing_x
@@ -146,16 +154,12 @@ class CurvedStackResampler:
             max((abs(value) for value in offsets), default=0.0)
             + float(plan.get("slice_thickness", 0.0)) / 2.0,
         )
-        curve_key = tuple(
-            (
-                float(point["x"]),
-                float(point["y"]),
-                float(point["z"]),
-            )
-            for point in plan.get("curve_points", [])
-        )
+        sampling_curve = self._sampling_curve(plan)
+        curve_key = tuple(tuple(float(value) for value in point) for point in sampling_curve)
+        projection_axis = plan.get("curve_projection_axis")
         cache_key = (
             curve_key,
+            None if projection_axis is None else tuple(self._point(projection_axis)),
             int(rows),
             float(plan["curve_spacing_mm"]),
             tuple(float(value) for value in offset_axis),
@@ -165,7 +169,7 @@ class CurvedStackResampler:
         if getattr(self, "_prepared_geometry_key", None) != cache_key:
             prepare_start = time.perf_counter()
             curve_samples = self._resample_curve(
-                self._curve_points(plan),
+                sampling_curve,
                 rows,
             )
             (
@@ -186,6 +190,38 @@ class CurvedStackResampler:
                 f"耗时={time.perf_counter() - prepare_start:.3f}s"
             )
         return self._prepared_offset_curves, self._prepared_normals
+
+    @classmethod
+    def _sampling_curve(cls, plan: Dict[str, Any]) -> np.ndarray:
+        """真实中心线保持不变；矢状 CPR 只展开固定 AP 平面上的冠状投影。"""
+
+        curve = cls._curve_points(plan)
+        projection_axis = plan.get("curve_projection_axis")
+        if projection_axis is None:
+            return curve
+        slices = plan.get("slices") or []
+        if not slices or "center" not in slices[0]:
+            raise ValueError("CPR 曲线投影缺少切片中心参考")
+        return cls._project_curve(
+            curve,
+            cls._point(projection_axis),
+            cls._point(slices[0]["center"]),
+        )
+
+    @classmethod
+    def _project_curve(
+        cls,
+        curve: np.ndarray,
+        axis: np.ndarray,
+        reference: np.ndarray,
+    ) -> np.ndarray:
+        """将 AP 坐标固定于全组参考值，保留 LR/SI，避免逐行拉直生理曲度。"""
+
+        axis = cls._normalize(np.asarray(axis, dtype=float))
+        reference = np.asarray(reference, dtype=float)
+        if reference.shape != (3,) or not np.all(np.isfinite(reference)):
+            raise ValueError("CPR 曲线投影参考点必须为有限三维坐标")
+        return curve - np.outer((curve - reference) @ axis, axis)
 
     @staticmethod
     def _curve_points(plan: Dict[str, Any]) -> np.ndarray:

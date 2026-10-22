@@ -1,7 +1,7 @@
 #!/src/planning/single_label.py
 # -*- coding: utf-8 -*-
 
-"""单目标整切 planner。"""
+"""普通整切与显式脊柱 CPR 规划。"""
 
 from typing import Any, Dict
 
@@ -9,6 +9,7 @@ from src.models.enums import PlaneTypeEnum, SliceType
 from src.planning.spine_cpr import (
     build_spine_sagittal_cpr_plans,
     configured_spine_cpr_labels,
+    configured_whole_range_spine_labels,
     spine_target_bbox,
 )
 from src.planning.base import PlanningResult
@@ -17,7 +18,7 @@ from src.planning.straight import resolve_range_extension
 
 
 class SingleLabelWholeRangePlanner:
-    """肺部、颅脑等单目标三状位直线整切的兜底规划器。"""
+    """复用整体范围生成三状位 MPR，并处理显式脊柱 CPR。"""
 
     planner_name = "SingleLabelWholeRangePlanner"
     """写入第六阶段结果和调试报告的稳定 planner 名称。"""
@@ -27,11 +28,14 @@ class SingleLabelWholeRangePlanner:
         request: Any,
         localization_result: Dict[str, Any],
     ) -> PlanningResult:
-        """根据第四阶段整体 bbox 为请求中的每个状位生成直线整切计划。"""
+        """按请求的显式切法生成整体 MPR 或脊柱 CPR 计划。"""
 
         plans = []
         warnings = []
-        spine_labels = configured_spine_cpr_labels(
+        spine_labels = configured_whole_range_spine_labels(
+            localization_result,
+        ) or []
+        cpr_labels = configured_spine_cpr_labels(
             localization_result,
         )
         for plane_config in request.plane_configs:
@@ -43,14 +47,14 @@ class SingleLabelWholeRangePlanner:
                 if request.slice_part.value == "颅脑" else None
             )
             if (
-                spine_labels
+                cpr_labels
                 and plane_config.slice_type is SliceType.CPR
             ):
                 cpr_plans, cpr_warnings = build_spine_sagittal_cpr_plans(
                     request=request,
                     plane_config=plane_config,
                     localization_result=localization_result,
-                    label_names=spine_labels,
+                    label_names=cpr_labels,
                 )
                 warnings.extend(cpr_warnings)
                 if not cpr_plans:
@@ -59,9 +63,10 @@ class SingleLabelWholeRangePlanner:
                 continue
             if (
                 spine_labels
-                and request.slice_part.value == "胸椎"
+                and request.slice_part.value in {"胸椎", "脊柱"}
                 and plane_config.plane == PlaneTypeEnum.冠状位
             ):
+                # 普通 MPR 覆盖整体范围，不应用 CPR 专用的椎体排除项。
                 target_region_bbox, source_labels = spine_target_bbox(
                     localization_result,
                     spine_labels,

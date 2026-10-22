@@ -22,6 +22,7 @@ class SagittalCprCoverageTest(unittest.TestCase):
         (SlicePartEnum.颈椎, ("C2", "C3", "C4")),
         (SlicePartEnum.胸椎, ("T1", "T2", "T3")),
         (SlicePartEnum.腰椎, ("L1", "L2", "L3")),
+        (SlicePartEnum.脊柱, ("C7", "T6", "S1")),
     )
 
     @staticmethod
@@ -128,6 +129,21 @@ class SagittalCprCoverageTest(unittest.TestCase):
                         for output in (raw, framed):
                             pixels = sitk.GetArrayFromImage(output)[0]
                             self.assertGreaterEqual(float(pixels.max()), 899.0)
+                            body_columns = np.nonzero(
+                                (pixels >= 90.0) & (pixels <= 110.0),
+                            )[1]
+                            posterior_columns = np.nonzero(pixels >= 850.0)[1]
+                            self.assertGreater(body_columns.size, 0)
+                            self.assertGreater(
+                                posterior_columns.mean(), body_columns.mean(),
+                                "椎体应在左，后方棘突应在右",
+                            )
+                            source_axes = np.asarray(
+                                localization["image"]["direction"],
+                            ).reshape(3, 3)
+                            output_axes = np.asarray(output.GetDirection()).reshape(3, 3)
+                            self.assertGreater(np.dot(output_axes[:, 0], source_axes[:, 1]), 0)
+                            self.assertLess(np.dot(output_axes[:, 1], source_axes[:, 2]), 0)
                             # At least 13 mm of the 16 mm posterior band must
                             # survive; detecting one bright edge pixel is not
                             # enough to establish complete posterior coverage.

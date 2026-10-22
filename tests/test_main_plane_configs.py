@@ -13,6 +13,15 @@ from src.models.enums import PlaneTypeEnum
 class MainPlaneConfigsTest(unittest.TestCase):
     """汇总 `MainPlaneConfigsTest` 相关测试场景。"""
 
+    def test_parse_arguments_accepts_whole_spine(self):
+        """新增脊柱部位可通过正式命令行入口传入。"""
+
+        with patch.object(sys, "argv", [
+            "main.py", "-i", "/tmp/dicom", "-o", "/tmp/output", "--slice_part", "脊柱",
+            "--scan_thickness", "1.0",
+        ]):
+            self.assertEqual(main.parse_arguments().slice_part, "脊柱")
+
     def test_parse_arguments_no_longer_accepts_cut_mode(self):
         """验证 `test_parse_arguments_no_longer_accepts_cut_mode` 场景符合预期。"""
 

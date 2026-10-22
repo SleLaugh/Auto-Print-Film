@@ -4,6 +4,7 @@ import shlex
 import subprocess
 import sys
 import unittest
+from collections import Counter
 from pathlib import Path
 
 
@@ -130,7 +131,7 @@ class BatchTestPlanScriptTest(unittest.TestCase):
             set(mapping),
             {
                 (slice_part, plane)
-                for slice_part in ("颈椎", "胸椎", "腰椎", "肺部", "髋骨")
+                for slice_part in ("颈椎", "胸椎", "腰椎", "脊柱", "肺部", "髋骨")
                 for plane in ("横状位", "矢状位", "冠状位")
             },
         )
@@ -145,8 +146,66 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         )
         self.assertEqual(mapping[("腰椎", "冠状位")], [("CPR", 5.0, 5.0)])
         self.assertEqual(mapping[("胸椎", "冠状位")], [("CPR", 5.0, 5.0)])
+        self.assertEqual(mapping[("脊柱", "横状位")], [("MPR", 5.0, 5.0)])
+        for plane in ("矢状位", "冠状位"):
+            self.assertEqual(
+                mapping[("脊柱", plane)],
+                [("MPR", 5.0, 5.0), ("CPR", 5.0, 5.0)],
+            )
         self.assertEqual(mapping[("肺部", "冠状位")], [("MPR", 5.0, 5.0)])
         self.assertEqual(mapping[("髋骨", "冠状位")], [("MPR", 5.0, 5.0)])
+
+    def test_spine_dry_run_keeps_five_configs_and_separate_full_range_cases(self):
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "--dry-run"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [
+            shlex.split(line.removeprefix("命令:"))
+            for line in result.stdout.splitlines()
+            if line.startswith("命令:")
+        ]
+        self.assertEqual(len(commands), 20)
+        self.assertEqual(
+            Counter(command[command.index("--slice_part") + 1] for command in commands),
+            {"颈椎": 3, "胸椎": 3, "腰椎": 6, "脊柱": 2, "肺部": 3, "髋骨": 3},
+        )
+        spine_commands = [
+            command for command in commands
+            if command[command.index("--slice_part") + 1] == "脊柱"
+        ]
+        self.assertEqual(
+            {
+                (Path(command[command.index("-i") + 1]).name,
+                 Path(command[command.index("-o") + 1]).name)
+                for command in spine_commands
+            },
+            {
+                ("颈到盆1_1.5mm", "脊柱_颈到盆1_1.5mm"),
+                ("颈到盆2_1.5mm", "脊柱_颈到盆2_1.5mm"),
+            },
+        )
+        for command in spine_commands:
+            configs = json.loads(command[command.index("--plane_configs") + 1])
+            self.assertEqual(
+                [(config["Plane"], config["SliceType"]) for config in configs],
+                [
+                    ("横状位", "MPR"),
+                    ("矢状位", "MPR"),
+                    ("矢状位", "CPR"),
+                    ("冠状位", "MPR"),
+                    ("冠状位", "CPR"),
+                ],
+            )
+            self.assertEqual(command[command.index("--scan_thickness") + 1], "1.5")
+            self.assertTrue(all(config["FillPercent"] == 80 for config in configs))
+        self.assertIn("批量测试完成，共 20 条。", result.stdout)
 
     def test_optional_fill_percent_is_forwarded_per_config(self):
         definitions = SCRIPT.read_text(encoding="utf-8").split('# 格式: "dicom目录名')[0]

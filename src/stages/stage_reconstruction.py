@@ -24,7 +24,9 @@ import SimpleITK as sitk
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.models import ReconstructionStageResult, WindowPreset
+from src.models.request import parse_fill_percent
 from src.reconstruction import CurvedStackResampler, PlaneStackResampler
+from src.reconstruction.body_framing import build_body_framing_support
 from src.reconstruction.dicom import (
     new_uid,
     read_source_dicom_metadata,
@@ -149,6 +151,44 @@ class ReconstructionStage(BaseStage):
         # 与第六阶段消费相同的展平结果。脑区仍是独立切割目标，骨性支持
         # 只能在最终脑 SI 范围及计划允许的颅顶余量内取景，不通过坐标表扩展层组。
         loc_result = {**loc_result, **anatomical_analysis}
+        body_plans = {
+            str(plan["plan_id"])
+            for plan in plans
+            if plan.get("slice_part") in {"肺部", "髋骨"}
+            and plan.get("slice_type") == "MPR"
+            and plan.get("geometry_type") == "plane_stack"
+            and (parse_fill_percent(plan.get("fill_percent")) or 0) > 0
+        }
+        # 身体轮廓仅约束肺/髋正数取景，不成为分割标签或切割范围。
+        # 多状位、窗位共享一次源 CT 轮廓提取，不能逐层/逐窗重复计算。
+        body_start = time.perf_counter()
+        body_support = None
+        if body_plans and request.slice_part.value == "肺部":
+            target_ids = {
+                int(value) for coord in loc_result.get("coords", {}).values()
+                for value in coord.get("label_ids", []) if int(value) != 0
+            }
+            target_mask = sitk.GetImageFromArray(
+                np.isin(sitk.GetArrayViewFromImage(segmentation), list(target_ids)).astype(np.uint8),
+            )
+            target_mask.CopyInformation(segmentation)
+            body_support = build_body_framing_support(
+                image, target_mask=target_mask, exclude_arms=True,
+            )
+            del target_mask
+        elif body_plans:
+            body_support = build_body_framing_support(image)
+        if body_plans and body_support is None:
+            warning = "未能从 CT 提取可靠身体轮廓，取景回退目标标签，周边轮廓可能不完整"
+            DebugLog(f"  警告: {warning}")
+            context.warnings.append({"code": "BODY_FRAMING_SUPPORT_UNAVAILABLE", "message": warning})
+        elif body_support is not None:
+            DebugLog(
+                "  [身体轮廓取景] "
+                f"区域={body_support.region}, 边界点数={len(body_support.points_xyz)}, "
+                f"计划数={len(body_plans)}, "
+                f"提取耗时={time.perf_counter() - body_start:.3f}s"
+            )
         framing_context = load_framing_context(
             loc_result.get("dataset_json_path"), loc_result.get("coords", {}),
         ) if any(plan.get("fill_percent") for plan in plans) else None
@@ -217,6 +257,7 @@ class ReconstructionStage(BaseStage):
                             ),
                             merge_context_into_target=merge_framing_support,
                             symmetry_plane=symmetry_planes.get(str(plan.get("plan_id", ""))),
+                            body_support=body_support if str(plan["plan_id"]) in body_plans else None,
                             shared_geometry=shared_geometries.get(
                                 self._interspace_framing_key(plan),
                             ),
@@ -1037,12 +1078,11 @@ class ReconstructionStage(BaseStage):
     ) -> Dict[float, List[tuple[float, float, float]]]:
         """按实际 CPR 采样曲线和 offset 生成定位曲线。"""
 
-        curve = np.asarray([
-            cls._point_array(point)
-            for point in (plan.get("curve_points") or [])
-        ], dtype=float)
-        if len(curve) < 2:
+        if len(plan.get("curve_points") or []) < 2:
             return {}
+        # 正式矢状位 CPR 只展开冠状投影；定位线必须复用实际采样曲线，
+        # 原始三维中心线仍保留给随脊柱前后深度变化的定位图背景。
+        curve = CurvedStackResampler._sampling_curve(plan)
         offsets = cls._curved_localizer_offsets(plan)
         rows = cls._curved_localizer_sample_count(plan, len(curve))
         curve = CurvedStackResampler._resample_curve(curve, rows)
@@ -1603,6 +1643,35 @@ class ReconstructionStage(BaseStage):
                 raise ValueError(f"plan_id={plan_id} curve_spacing_mm 必须大于 0")
             if not isinstance(plan["offsets_mm"], list) or not plan["offsets_mm"]:
                 raise ValueError(f"plan_id={plan_id} offsets_mm 不能为空")
+        if plan.get("curve_projection_axis") is not None:
+            if (
+                geometry_type != "curved_stack"
+                or slice_type != "CPR"
+                or str(plan["plane"]) != "矢状位"
+            ):
+                raise ValueError(
+                    f"plan_id={plan_id} curve_projection_axis 仅支持矢状位 CPR"
+                )
+            try:
+                projection_axis = ReconstructionStage._point_array(plan["curve_projection_axis"])
+                reference = ReconstructionStage._point_array(plan["slices"][0]["center"])
+            except (KeyError, TypeError, ValueError, OverflowError) as error:
+                raise ValueError(
+                    f"plan_id={plan_id} curve_projection_axis 和参考 center 必须是有限三维坐标"
+                ) from error
+            axis_length = float(np.linalg.norm(projection_axis))
+            if (
+                not np.all(np.isfinite(projection_axis))
+                or not math.isfinite(axis_length)
+                or axis_length <= 0.0
+            ):
+                raise ValueError(
+                    f"plan_id={plan_id} curve_projection_axis 必须是有限非零三维向量"
+                )
+            if not np.all(np.isfinite(reference)):
+                raise ValueError(
+                    f"plan_id={plan_id} curve_projection_axis 参考 center 必须是有限三维坐标"
+                )
 
     @staticmethod
     def _resampler_for_plan(plan: Dict[str, Any]) -> Any:

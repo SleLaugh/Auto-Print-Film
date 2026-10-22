@@ -7,10 +7,13 @@ from typing import Any, Dict, Iterable, List, Tuple
 import numpy as np
 import SimpleITK as sitk
 
+from src.anatomy.orientation import patient_reference_axes
+from src.anatomy.spine_labels import resolve_spine_label_name
 from src.models import ExtentMM, PlannedSlice, Point3D, SlicePlan
 from src.models.enums import PlaneTypeEnum
 from src.planning.geometry import (
     image_axis_direction,
+    image_direction_matrix,
     normalize_vector,
     subtract_points,
     vector_length,
@@ -109,18 +112,40 @@ def build_spine_sagittal_cpr_plans(
         longitudinal_axis,
         centroids_precorrected=True,
     )
+    projection_axis = None
+    if plane_config.plane == PlaneTypeEnum.矢状位:
+        projection_axis = Point3D(*patient_reference_axes(image_direction_matrix(image_info))[:, 1])
     curve_points = _extend_curve_endpoints_to_terminal_raw_labels(
         localization_result,
         source_labels,
         curve_points,
+        projection_axis=projection_axis,
     )
-    curve_length = _polyline_length(curve_points)
+    sampling_curve_points = curve_points
+    if projection_axis is not None:
+        # 只展开冠状面的左右侧弯；前后生理曲度保留为成片中的横向位移。
+        sampling_curve = CurvedStackResampler._project_curve(
+            np.asarray([[point.x, point.y, point.z] for point in curve_points]),
+            np.asarray([projection_axis.x, projection_axis.y, projection_axis.z]),
+            np.asarray([center.x, center.y, center.z]),
+        )
+        sampling_curve_points = [Point3D(*point) for point in sampling_curve]
+    curve_length = _polyline_length(sampling_curve_points)
     if curve_length <= 0.0:
         return [], ["CPR 降级: 中心曲线长度无效"]
 
     offset_axis = _offset_axis_for_plane(image_info, plane_config.plane)
-    tangent_dir = normalize_vector(subtract_points(curve_points[-1], curve_points[0]))
+    tangent_dir = normalize_vector(subtract_points(
+        sampling_curve_points[-1], sampling_curve_points[0],
+    ))
     row_dir = normalize_vector(_cross(tangent_dir, offset_axis))
+    normal = offset_axis
+    if plane_config.plane == PlaneTypeEnum.矢状位:
+        # 和原图矢状位一致：从左向右为前到后，椎体在左、棘突在右。
+        # 复用 MPR 的患者参考方向，避免原始存储轴反向时再次镜像。
+        if _dot(row_dir, projection_axis) < 0.0:
+            row_dir = _scale(row_dir, -1.0)
+        normal = normalize_vector(_cross(row_dir, tangent_dir))
 
     range_modes = _configured_cpr_range_modes(localization_result)
     include_range_suffix = range_modes != ["full_label"]
@@ -129,7 +154,7 @@ def build_spine_sagittal_cpr_plans(
         offsets, sampling = _resolve_sampling_offsets_mm(
             localization_result,
             source_labels,
-            curve_points,
+            sampling_curve_points,
             offset_axis,
             plane_config.slice_thickness,
             plane_config.slice_spacing,
@@ -141,7 +166,7 @@ def build_spine_sagittal_cpr_plans(
             PlannedSlice(
                 index=index + 1,
                 center=_add(center, _scale(offset_axis, offset_mm)),
-                normal=offset_axis,
+                normal=normal,
                 row_dir=row_dir,
                 col_dir=tangent_dir,
                 offset_mm=offset_mm,
@@ -163,7 +188,7 @@ def build_spine_sagittal_cpr_plans(
             width = max(width, _resolve_centered_cpr_width_extent_mm(
                 localization_result,
                 source_labels,
-                curve_points,
+                sampling_curve_points,
                 offset_axis,
                 offsets,
                 sampling.slice_thickness,
@@ -195,6 +220,7 @@ def build_spine_sagittal_cpr_plans(
             fill_percent=plane_config.fill_percent,
             curve_points=curve_points,
             curve_spacing_mm=_minimum_image_spacing(image_info),
+            curve_projection_axis=projection_axis,
             offset_axis=offset_axis,
             offsets_mm=offsets,
             cpr_range_mode=range_mode,
@@ -963,12 +989,15 @@ def spine_target_bbox(
     localization_result: Dict[str, Any],
     label_names: Iterable[str],
 ) -> Tuple[Dict[str, float] | None, List[str]]:
-    """用指定椎体 label 的 bbox 并集限定当前脊柱目标段。"""
+    """解析实际椎体标签，再用 bbox 并集限定当前脊柱目标段。"""
 
     coords = localization_result.get("coords", {})
+    # 以本次目标标签为准，避免旧 coords 中的 S1 占位符遮蔽实际 sacrum。
+    available_labels = localization_result.get("label_targets") or coords
     used_labels = []
     bboxes = []
-    for label_name in label_names:
+    for requested_label_name in label_names:
+        label_name = resolve_spine_label_name(requested_label_name, available_labels)
         coord = coords.get(label_name, {})
         bbox = coord.get("bbox")
         if not coord.get("found") or not bbox:
@@ -1294,8 +1323,10 @@ def _extend_curve_endpoints_to_terminal_raw_labels(
     localization_result: Dict[str, Any],
     label_names: List[str],
     curve_points: List[Point3D],
+    *,
+    projection_axis: Point3D | None = None,
 ) -> List[Point3D]:
-    """沿当前首尾切线延长 CPR 中线到终端原始标签投影外缘。"""
+    """沿三维首尾切线延长，覆盖实际采样方向上的终端标签外缘。"""
 
     perf_start = time.perf_counter()
     if len(curve_points) < 2 or not label_names:
@@ -1331,6 +1362,7 @@ def _extend_curve_endpoints_to_terminal_raw_labels(
             adjacent=_adjacent_endpoint_point(extended, start_endpoint_index),
             segmentation=segmentation,
             label_ids=start_ids,
+            projection_axis=projection_axis,
         )
     if end_ids and end_endpoint_index is not None:
         extended[end_endpoint_index] = _extend_endpoint_to_label_projection(
@@ -1338,6 +1370,7 @@ def _extend_curve_endpoints_to_terminal_raw_labels(
             adjacent=_adjacent_endpoint_point(extended, end_endpoint_index),
             segmentation=segmentation,
             label_ids=end_ids,
+            projection_axis=projection_axis,
         )
     DebugLog(
         "    [CPR规划性能] 端点延伸到原始标注: "
@@ -1393,8 +1426,9 @@ def _extend_endpoint_to_label_projection(
     adjacent: Point3D,
     segmentation: sitk.Image,
     label_ids: set[int],
+    projection_axis: Point3D | None = None,
 ) -> Point3D:
-    """把端点沿远离相邻点的方向延伸到标签体素投影外缘。"""
+    """沿原三维切线延伸端点，使采样曲线覆盖标签体素投影外缘。"""
 
     outward_delta = subtract_points(endpoint, adjacent)
     if vector_length(outward_delta) <= 1e-6:
@@ -1405,12 +1439,24 @@ def _extend_endpoint_to_label_projection(
 
     outward = normalize_vector(outward_delta)
     outward_array = np.asarray([outward.x, outward.y, outward.z], dtype=float)
+    sampling_outward = outward_array
+    sampling_scale = 1.0
+    if projection_axis is not None:
+        axis = np.asarray([projection_axis.x, projection_axis.y, projection_axis.z], dtype=float)
+        axis /= np.linalg.norm(axis)
+        sampling_outward = outward_array - np.dot(outward_array, axis) * axis
+        sampling_scale = float(np.linalg.norm(sampling_outward))
+        if sampling_scale <= 1e-6:
+            return endpoint
+        sampling_outward /= sampling_scale
     endpoint_array = np.asarray([endpoint.x, endpoint.y, endpoint.z], dtype=float)
-    projections = (label_points - endpoint_array) @ outward_array
+    projections = (label_points - endpoint_array) @ sampling_outward
+    # 去除 AP 后切线会缩短。用投影方向确定外缘，再换算为原三维切线的
+    # 延伸量，避免端部标签在新矢状采样中被裁掉，同时保留真实路径方向。
     max_extension = (
         float(np.max(projections))
         + _terminal_endpoint_padding_mm(segmentation)
-    )
+    ) / sampling_scale
     if max_extension <= 1e-6 or not math.isfinite(max_extension):
         return endpoint
     return _add(endpoint, _scale(outward, max_extension))
@@ -1618,10 +1664,11 @@ def _resolve_centered_cpr_width_extent_mm(
     offsets_mm: List[float],
     slice_thickness: float,
 ) -> float:
-    """为矢状位曲面留足中心线两侧的原始标签范围。
+    """为矢状位曲面留足固定 AP 参考两侧的原始标签范围。
 
-    主体中心线不一定经过完整标签 bbox 的前后中点。宽度必须按两侧最远
-    边界确定，不能直接把 bbox 总跨度居中。复用重采样器的纯几何方法，
+    输入为冠状投影采样曲线，固定 AP 参考不一定经过标签前后中点。
+    宽度必须按两侧最远边界确定，不能直接把 bbox 总跨度居中。
+    复用重采样器的纯几何方法，
     在与每个椎体相交的逐行横断面中计算横向支撑，包含各层 offset 和体素
     外缘；后续 FillPercent 只能缩放完整展开图，无法恢复已裁掉的结构。
     """

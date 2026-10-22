@@ -215,7 +215,7 @@ def build_whole_range_plan_from_bbox(
     摆正而让冠位/矢位重新回到歪斜的输入轴。旧结果缺少解剖坐标时才回退。
     """
 
-    anatomical_frame_parts = {"颅脑", "肺部", "颈椎", "胸椎", "腰椎", "髋骨"}
+    anatomical_frame_parts = {"颅脑", "肺部", "颈椎", "胸椎", "腰椎", "脊柱", "髋骨"}
     uses_anatomical_frame = request.slice_part.value in anatomical_frame_parts
     geometry = None
     if localization_result.get("anatomical_geometry"):

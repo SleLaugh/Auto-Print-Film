@@ -205,7 +205,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         end_labels = anatomical_cut_config.get("end_labels") or []
         start_label = start_labels[0] if start_labels else None
         end_label = end_labels[0] if end_labels else None
-        if slice_part in {"颈椎", "胸椎", "腰椎"}:
+        if slice_part in {"颈椎", "胸椎", "腰椎", "脊柱"}:
             # 范围配置使用标准椎体名，实际模型可能以 sacrum 表示 S1。
             # 仅解析本次已验证的标签，不改写持久配置或缺标签校验政策。
             start_label = self._resolve_spine_endpoint_label(start_label, label_targets)
@@ -241,7 +241,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             label_pose_annotations=(spine_geometry or {}).get("filtered_annotation_centroids"),
             label_indices_zyx=(
                 {name: region.indices_zyx for name, region in label_regions.items()}
-                if slice_part in {"颈椎", "胸椎", "腰椎"} else None
+                if slice_part in {"颈椎", "胸椎", "腰椎", "脊柱"} else None
             ),
             lung_pose_support_mask=lung_pose_support_mask,
             lung_pose_support_labels=lung_pose_support_labels,

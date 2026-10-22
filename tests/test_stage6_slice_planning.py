@@ -2232,6 +2232,24 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 self.assertEqual(plan.localizer_plane, "冠状位")
                 self.assertEqual(plan.offset_axis, Point3D(1.0, 0.0, 0.0))
 
+    def test_whole_spine_coronal_mpr_keeps_cpr_excluded_endpoint(self):
+        """CPR 排除项不能把冠状位 MPR 的整体目标终点缩到 L5。"""
+
+        labels = ("C7", "L5", "S1")
+        localization_result = self._spine_localization_result(labels, "脊柱")
+        localization_result["spine_cpr_config"]["excluded_labels"] = ["vertebrae_S1"]
+        request = Request(
+            dicom_dir="/tmp/dicom", output_dir="/tmp/output",
+            slice_part=SlicePartEnum.脊柱,
+            plane_configs=[PlaneConfig(
+                PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"], slice_type=SliceType.MPR,
+            )],
+        )
+
+        plan = select_planner("脊柱", "MPR").build_plans(request, localization_result).plans[0]
+
+        self.assertEqual(plan.source_labels, [f"vertebrae_{label}" for label in labels])
+
     def test_spine_sagittal_cpr_reads_sagittal_range_extension(self):
         """矢状位 CPR 的 offset 范围应读取矢状位自身的扩展配置。"""
 
@@ -2266,22 +2284,23 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertGreaterEqual(plan.extent_mm.width, 10.0)
 
     def test_cervical_cpr_label_sequence_excludes_c1_ring(self):
-        """颈椎 CPR 从 C2 开始，并包含整体范围新增的 T1。"""
+        """颈椎 CPR 从 C2 开始，并覆盖 T1、T2。"""
 
         localization_result = self._spine_localization_result(
-            ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1"),
+            ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1", "T2"),
             "颈椎",
         )
         self.assertEqual(
             configured_spine_cpr_labels(localization_result),
-            [f"vertebrae_C{index}" for index in range(2, 8)] + ["vertebrae_T1"],
+            [f"vertebrae_C{index}" for index in range(2, 8)]
+            + ["vertebrae_T1", "vertebrae_T2"],
         )
 
     def test_default_cpr_plans_include_extended_spine_endpoints(self):
         """冠状位和矢状位 CPR 均随默认范围纳入新增交界椎体。"""
 
         for part, labels in (
-            (SlicePartEnum.颈椎, ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1")),
+            (SlicePartEnum.颈椎, ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1", "T2")),
             (SlicePartEnum.腰椎, ("T12", "L1", "L2", "L3", "L4", "L5", "S1")),
         ):
             localization = self._spine_localization_result(labels, part.value)
@@ -2382,7 +2401,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         ]
 
         self.assertEqual(set(whole_range_slice_parts), {
-            "颈椎", "胸椎", "腰椎", "肺部", "颅脑", "髋骨",
+            "颈椎", "胸椎", "腰椎", "脊柱", "肺部", "颅脑", "髋骨",
         })
 
         for slice_part in whole_range_slice_parts:
@@ -3508,13 +3527,13 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertGreater(len(plans[0].offsets_mm), 3)
 
     def test_checked_in_spine_cpr_full_label_config_lives_under_spine_targets(self):
-        """CPR 范围配置只放在三个脊柱部位下，且必须使用 bool。"""
+        """CPR 范围配置只放在脊柱部位下，且必须使用 bool。"""
 
         config_path = Path("src/config/slice_part_config.json")
         config = json.loads(config_path.read_text(encoding="utf-8"))
 
         self.assertNotIn("spine_cpr", config)
-        for slice_part in ("颈椎", "胸椎", "腰椎"):
+        for slice_part in ("颈椎", "胸椎", "腰椎", "脊柱"):
             with self.subTest(slice_part=slice_part):
                 self.assertIsInstance(
                     config["slice_parts"][slice_part]["localization"]

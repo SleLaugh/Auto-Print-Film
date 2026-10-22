@@ -326,14 +326,14 @@ def build_spine_localizer_surface(
     localization_result: dict | None = None,
     anatomical_analysis: dict | None = None,
 ) -> SpineLocalizerSurface | None:
-    """为三个脊柱部位的矢状位 MPR / CPR 构建冠状定位图曲面。
+    """为脊柱整段及颈胸腰部位的矢状位 MPR / CPR 构建冠状定位图曲面。
 
     缺少可靠主体锚点时返回 None，调用方继续使用原有固定层定位图。
     该回退只涉及定位图，不改变正式切片，也不借用后方附件的全量质心。
     """
 
     if (
-        plan.get("slice_part") not in {"颈椎", "胸椎", "腰椎"}
+        plan.get("slice_part") not in {"颈椎", "胸椎", "腰椎", "脊柱"}
         or plan.get("plane") != "矢状位"
         or plan.get("localizer_plane") != "冠状位"
         or plan.get("slice_type") not in {"MPR", "CPR"}

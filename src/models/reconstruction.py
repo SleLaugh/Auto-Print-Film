@@ -88,9 +88,11 @@ class SlicePlan:
     window_presets: List[str]
     source_labels: List[str]
     curve_points: List[Point3D] | None = None
-    """CPR 中心曲线物理点；仅 curved_stack 使用。"""
+    """CPR 真实三维中心曲线物理点；仅 curved_stack 使用。"""
     curve_spacing_mm: float | None = None
-    """CPR 沿曲线弧长方向的输出采样间距。"""
+    """CPR 沿采样曲线（矢状位为冠状投影）弧长方向的输出间距。"""
+    curve_projection_axis: Point3D | None = None
+    """矢状位 CPR 的患者前后轴；采样前固定该坐标，仅展开左右侧弯。"""
     offset_axis: Point3D | None = None
     """CPR 首选堆叠方向：矢状位为左右轴，冠状位为前后轴。"""
     offsets_mm: List[float] | None = None
@@ -155,6 +157,8 @@ class SlicePlan:
             data["curve_points"] = [point.to_dict() for point in self.curve_points]
         if self.curve_spacing_mm is not None:
             data["curve_spacing_mm"] = self.curve_spacing_mm
+        if self.curve_projection_axis is not None:
+            data["curve_projection_axis"] = self.curve_projection_axis.to_dict()
         if self.offset_axis is not None:
             data["offset_axis"] = self.offset_axis.to_dict()
         if self.offsets_mm is not None:

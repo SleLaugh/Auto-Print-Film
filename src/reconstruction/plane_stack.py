@@ -61,8 +61,8 @@ class PlaneStackResampler:
             )
         else:
             offsets = self._slab_offsets(image, thickness)
-            plane_arrays = [
-                self._sample_plane(
+            sampled_planes = [
+                self._sample_supported_plane(
                     image=image,
                     first_pixel=first_pixel,
                     normal=normal,
@@ -76,7 +76,19 @@ class PlaneStackResampler:
                 )
                 for offset in offsets
             ]
+            plane_arrays = [plane for plane, _ in sampled_planes]
             averaged = np.mean(plane_arrays, axis=0)
+            support_count = np.sum(
+                [supported for _, supported in sampled_planes], axis=0,
+            )
+            partial = (support_count > 0) & (support_count < len(sampled_planes))
+            if np.any(partial):
+                valid_sum = np.zeros_like(averaged)
+                for plane, supported in sampled_planes:
+                    valid_sum += np.where(supported, plane, 0.0)
+                # 越界补空气不属于 CT 采样；真实空气仍是有效源像素。
+                # 全支持像素沿用上面的原 float32 mean，避免改变既有精度。
+                np.divide(valid_sum, support_count, out=averaged, where=partial)
         output = sitk.GetImageFromArray(
             np.asarray(averaged, dtype=np.float32)[np.newaxis, ...]
         )
@@ -129,7 +141,7 @@ class PlaneStackResampler:
         thickness: float,
         axis_info: Tuple[int, float],
     ) -> np.ndarray:
-        """按原始层与目标 slab 的实际重叠厚度做精确轴向加权。"""
+        """按原始层与目标 slab 的有效重叠厚度归一，越界补值不参与。"""
 
         axis, _ = axis_info
         source_spacing = float(image.GetSpacing()[axis])
@@ -140,6 +152,10 @@ class PlaneStackResampler:
             default_value * thickness,
             dtype=np.float32,
         )
+        valid_sum = np.zeros((rows, columns), dtype=np.float32)
+        supported_thickness = np.zeros((rows, columns), dtype=np.float64)
+        missing_plane = np.zeros((rows, columns), dtype=bool)
+        total_overlap = 0.0
 
         for index in range(image.GetSize()[axis]):
             voxel_index = [0, 0, 0]
@@ -163,7 +179,7 @@ class PlaneStackResampler:
             if overlap <= 0:
                 continue
 
-            plane = self._sample_plane(
+            plane, supported = self._sample_supported_plane(
                 image=image,
                 first_pixel=first_pixel,
                 normal=normal,
@@ -176,8 +192,37 @@ class PlaneStackResampler:
                 normal_offset=center_offset,
             )
             weighted_sum += (plane - default_value) * overlap
+            valid_sum += np.where(supported, plane, 0.0) * overlap
+            supported_thickness += supported * overlap
+            missing_plane |= ~supported
+            total_overlap += overlap
 
-        return weighted_sum / thickness
+        averaged = weighted_sum / thickness
+        # 法向近轴时，重叠量可略大于层厚；这不是源数据缺失，保留旧计算。
+        # 源法向范围不足与面内某些子平面越界则须按实际支持归一。
+        missing_depth = total_overlap < thickness and not math.isclose(
+            total_overlap, thickness, rel_tol=1e-7, abs_tol=1e-7,
+        )
+        partial = (supported_thickness > 0) & (missing_plane | missing_depth)
+        np.divide(valid_sum, supported_thickness, out=averaged, where=partial)
+        return averaged
+
+    def _sample_supported_plane(self, image: sitk.Image, **geometry) -> tuple[np.ndarray, np.ndarray]:
+        """返回 HU 和实际源支持，避免把补空气或真实空气按像素值混淆。"""
+
+        plane = self._sample_plane(image=image, **geometry, default_value=float("nan"))
+        supported = ~np.isnan(plane)
+        # 整数 CT 不可能含 NaN，一次重采样即可识别越界。浮点源可能本来
+        # 就含 NaN，用另一默认值复查歧义，不能把源 NaN/Inf 当作无数据。
+        floating_types = {sitk.sitkFloat32, sitk.sitkFloat64}
+        if image.GetPixelID() in floating_types and not np.all(supported):
+            verification = self._sample_plane(
+                image=image, **geometry, default_value=float("inf"),
+            )
+            ambiguous = ~supported
+            supported[ambiguous] = ~np.isposinf(verification[ambiguous])
+        plane[~supported] = -1024.0
+        return plane, supported
 
     @staticmethod
     def _sample_plane(
@@ -191,6 +236,7 @@ class PlaneStackResampler:
         spacing_x: float,
         spacing_y: float,
         normal_offset: float,
+        default_value: float = -1024.0,
     ) -> np.ndarray:
         """在给定法向偏移处重采样一个二维物理平面并返回浮点像素数组。"""
 
@@ -206,7 +252,7 @@ class PlaneStackResampler:
         resampler = sitk.ResampleImageFilter()
         resampler.SetReferenceImage(reference)
         resampler.SetInterpolator(sitk.sitkLinear)
-        resampler.SetDefaultPixelValue(-1024.0)
+        resampler.SetDefaultPixelValue(default_value)
         resampler.SetOutputPixelType(sitk.sitkFloat32)
         sampled = resampler.Execute(image)
         return sitk.GetArrayFromImage(sampled)[0].astype(np.float32)

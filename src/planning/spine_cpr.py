@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import numpy as np
 import SimpleITK as sitk
+from scipy.spatial import cKDTree
 
 from src.anatomy.orientation import patient_reference_axes
 from src.anatomy.spine_labels import resolve_spine_label_name
@@ -1525,20 +1526,60 @@ def _raw_label_physical_points(
 
 
 def _nearest_curve_indices(points: np.ndarray, curve: np.ndarray) -> np.ndarray:
-    """分块查找每个原始体素点最近的 CPR 曲线采样点。"""
+    """精确查找最近曲线点；等距时仍取原曲线中最先出现的点。"""
 
     nearest = np.empty((len(points),), dtype=int)
-    chunk_size = 4096
+    if not len(points):
+        return nearest
+
+    def resolve_directly(query_points: np.ndarray) -> np.ndarray:
+        """保留原平方距离和 argmin 的数值及同距离顺序语义。"""
+
+        resolved = np.empty((len(query_points),), dtype=int)
+        for start in range(0, len(query_points), 4096):
+            stop = min(start + 4096, len(query_points))
+            distances = np.sum(
+                (query_points[start:stop, np.newaxis, :] - curve[np.newaxis, :, :]) ** 2,
+                axis=2,
+            )
+            resolved[start:stop] = np.argmin(distances, axis=1)
+        return resolved
+
+    # KD 树按 float64 算距离。其他 dtype 保留原来的精度、舍入和溢出
+    # 行为；正式物理坐标由上游统一生成 float64，使用下面的快速路径。
+    if (
+        not len(curve)
+        or np.result_type(points.dtype, curve.dtype) != np.dtype(np.float64)
+        or not np.all(np.isfinite(curve))
+        or not np.all(np.isfinite(points))
+    ):
+        return resolve_directly(points)
+
+    # 投影可能产生重复坐标；预先合并并映射回首个原索引，避免重复点令
+    # 每次查询都被判定为等距，同时保持 np.argmin 的原顺序。
+    unique_curve, original_indices = np.unique(curve, axis=0, return_index=True)
+    if len(unique_curve) == 1:
+        nearest.fill(int(original_indices[0]))
+        return nearest
+
+    tree = cKDTree(unique_curve)
+    chunk_size = 65536
     for start in range(0, len(points), chunk_size):
         stop = min(start + chunk_size, len(points))
-        distances = np.sum(
-            (
-                points[start:stop, np.newaxis, :]
-                - curve[np.newaxis, :, :]
-            ) ** 2,
-            axis=2,
+        query_points = points[start:stop]
+        distances, indices = tree.query(query_points, k=2, eps=0.0, workers=1)
+        finite = np.all(np.isfinite(distances), axis=1)
+        # KD 树的等距返回顺序没有保证。两名候选在浮点误差范围内时用
+        # 原算法重算，既处理精确等距，也避免开方/加法尾差改变最近点。
+        tolerance = np.finfo(float).eps * 64.0 * np.maximum(1.0, distances[:, 0])
+        ambiguous = ~finite
+        ambiguous[finite] = (
+            distances[finite, 1] - distances[finite, 0] <= tolerance[finite]
         )
-        nearest[start:stop] = np.argmin(distances, axis=1)
+        result = nearest[start:stop]
+        result[finite] = original_indices[indices[finite, 0]]
+        if np.any(ambiguous):
+            result[ambiguous] = resolve_directly(query_points[ambiguous])
     return nearest
 
 

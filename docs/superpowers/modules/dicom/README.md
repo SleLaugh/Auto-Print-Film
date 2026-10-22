@@ -32,6 +32,9 @@
   深度仍来自真实三维 `curve_points`，两者不能混用。
 - 正式切片按实际窗宽窗位将未取整的重建 HU 映射为 uint16 灰度；GDCM 写盘后补入实际
   `WindowWidth`、`WindowCenter`、`LINEAR_EXACT` 以及对应 Rescale 标签，`RescaleType=HU`。
+  普通平面先按有效源支持完成厚层平均，再由各窗共用这份 HU；越界填充值不参与平均，
+  源内真实空气仍参与，零支持像素保留空气。`SliceThickness` 记录计划厚层范围，
+  不能将边缘像素的实际支持厚度当作整张图的新层厚；切面、层间距及张数不变。
   这些派生显示片的窗外数值已截断，定量数据应读取原始 CT 序列。
 - GDCM 写盘必须经由串行保护入口，具体跨模块约束读 `../../architecture/2026-07-20-GDCM写盘串行保护设计.md`。
 - 同一计划各窗 Localizer 必须使用主线程冻结的同一份 `ImagePositionPatient` 和

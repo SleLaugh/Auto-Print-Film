@@ -62,7 +62,7 @@ class VerticalFramingSupportTest(unittest.TestCase):
         original_plan, original_item = copy.deepcopy(plan), copy.deepcopy(item)
         sampled = PlaneStackResampler().sample_slice(source, plan, item)
         array = sitk.GetArrayFromImage(sampled)[0]
-        # 部分厚层的平均值可能小于 0，不能将正 HU 当作源支持的条件。
+        # 此 fixture 的源像素均大于补值；真实 CT 仍不能以正 HU 判定源支持。
         occupied = np.flatnonzero(np.any(array > -1024 + 1e-3, axis=1))
 
         cropped, updated = crop_vertical_padding(source, plan, item, sampled)
@@ -354,8 +354,8 @@ class VerticalFramingSupportTest(unittest.TestCase):
         plan = _plan([item], width=60, height=120, thickness=4)
         sampled = PlaneStackResampler().sample_slice(image, plan, item)
         array = sitk.GetArrayFromImage(sampled)[0]
-        self.assertLess(array.max(), 0)
-        self.assertGreater(array.max(), -1024)
+        # 即使中心面越界，只要厚层还有源支持就保留真实源值，不能混入补空气。
+        self.assertEqual(array.max(), 1.0)
 
         cropped, updated = self.assert_crop_preserves_supported_pixels(image, plan, item)
 

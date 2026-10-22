@@ -130,7 +130,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             self.assertEqual(request.output_dir, str(root / "output"))
 
     def test_missing_segmentation_cache_writes_under_model_directory(self):
-        """-c 未命中时推理写入 -c/模型ID/segmentation。"""
+        """-c 未命中时隔离推理输出，完成后发布到模型缓存目录。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -147,7 +147,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             context.set_result("preprocessing", {"nifti_path": str(nifti_path)})
 
             def write_fake_segmentation(**kwargs):
-                kwargs["output_path"].touch()
+                kwargs["output_path"].write_bytes(b"complete segmentation")
 
             with patch.object(
                 self.stage,
@@ -159,8 +159,14 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             result = context.get_result("segmentation")
             expected = root / "cache" / "292" / "segmentation" / "seg.nii.gz"
             self.assertEqual(result["seg_path"], str(expected))
-            self.assertTrue(expected.exists())
-            self.assertEqual(run_inference.call_args.kwargs["output_path"], expected)
+            self.assertEqual(expected.read_bytes(), b"complete segmentation")
+            temporary_output = run_inference.call_args.kwargs["output_path"]
+            self.assertNotEqual(temporary_output, expected)
+            self.assertFalse(temporary_output.exists())
+            self.assertEqual(
+                json.loads((expected.parent / "model.json").read_text()),
+                {"model_id": "292"},
+            )
 
     def test_output_directory_remains_the_original_output_root(self):
         """第三阶段输出根目录仍是 -o，不会切换到模型目录。"""

@@ -7,12 +7,16 @@ from pathlib import Path
 from typing import Dict, Any, Mapping
 import json
 import math
+import os
 import re
 import shlex
 import subprocess
 import shutil
+from tempfile import NamedTemporaryFile
 
 from src.core.base_stage import BaseStage
+from src.core.cache_lock import cache_lock
+from src.core.cache_workspace import cache_workspace, cleanup_cache_workspaces
 from src.core.context import ProcessingContext
 from src.core.errors import ExternalProcessError
 from src.core.nnunet_command import nnunet_command_prefix
@@ -161,41 +165,22 @@ class SegmentationStage(BaseStage):
         else:
             # 未传 -c 时保留原有行为，分割结果写入 -o/segmentation。
             output_dir = Path(request.output_dir) / "segmentation"
-        output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "seg.nii.gz"
 
-        cached_path = output_path if self._can_reuse_segmentation(
-            output_dir, output_path, dataset_id
-        ) else None
-        if cached_path is not None:
-            DebugLog(f"    已找到现成分割结果，跳过推理: {cached_path}")
+        cleanup_cache_workspaces(output_dir.parent, ".segmentation-")
+        if self._can_reuse_segmentation(output_dir, output_path, dataset_id):
+            # 已发布的缓存保持只读，多个切割部位可以同时复用。
+            DebugLog(f"    已找到现成分割结果，跳过推理: {output_path}")
         else:
-            if output_path.exists() or (output_dir / "model.json").exists():
-                # 旧缓存属于其他模型时，清理第二阶段目录后重新推理。
-                for child in output_dir.iterdir():
-                    if child.is_dir() and not child.is_symlink():
-                        shutil.rmtree(child)
-                    else:
-                        child.unlink()
-            output_dir.mkdir(parents=True, exist_ok=True)
-            DebugLog(f"    未找到现成分割结果，将写入: {output_path}")
-
-        # [2] run_nnunet_inference: 执行推理
-        if cached_path is None:
-            DebugLog("  [2] run_nnunet_inference: 执行nnUNet推理...")
-            self._run_nnunet_inference(
-                input_dir=input_path.parent,
-                input_path=input_path,
-                output_path=output_path,
-                dataset_id=dataset_id,
-                configuration=configuration,
-                fold=fold,
-                continue_mode=self._continue
-            )
-        else:
-            DebugLog("  [2] run_nnunet_inference: 复用现有分割结果")
-
-        self._write_model_marker(output_dir, dataset_id)
+            lock_root = Path(request.cache_dir or request.output_dir) / ".locks"
+            with cache_lock(lock_root / f"segmentation-{dataset_id}.lock"):
+                # 等待锁的任务可能已生成缓存，必须复查，避免重复推理。
+                if not self._can_reuse_segmentation(output_dir, output_path, dataset_id):
+                    self._generate_segmentation(
+                        output_dir, input_path, dataset_id, configuration, fold
+                    )
+                else:
+                    DebugLog(f"    复用其他任务已完成的分割结果: {output_path}")
 
         result = {
             'seg_path': str(output_path),
@@ -212,6 +197,52 @@ class SegmentationStage(BaseStage):
         
         return context
 
+    def _generate_segmentation(
+        self,
+        output_dir: Path,
+        input_path: Path,
+        dataset_id: Any,
+        configuration: str,
+        fold: str,
+    ) -> None:
+        """锁内生成独立推理结果，最后发布 seg，避免半成品被当作缓存。"""
+
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        with cache_workspace(output_dir.parent, ".segmentation-") as workspace:
+            work_path = workspace.path
+            temporary_seg = work_path / "seg.nii.gz"
+            DebugLog("  [2] run_nnunet_inference: 执行nnUNet推理...")
+            self._run_nnunet_inference(
+                input_dir=input_path.parent,
+                input_path=input_path,
+                output_path=temporary_seg,
+                dataset_id=dataset_id,
+                configuration=configuration,
+                fold=fold,
+                continue_mode=self._continue,
+                cache_pass_fds=workspace.pass_fds,
+            )
+            if not temporary_seg.is_file():
+                raise FileNotFoundError(f"未找到nnUNet输出文件: {temporary_seg}")
+            self._write_model_marker(work_path, dataset_id)
+
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / "seg.nii.gz"
+            # 此处只处理已确认失效的缓存。先移除旧seg，再发布标记和完整seg；
+            # 即使发布中途退出，也不会把旧seg与新标记配对后误判为命中。
+            output_path.unlink(missing_ok=True)
+            # 新命令可能只输出seg，旧dataset.json等附属文件不能留给新分割使用。
+            for child in output_dir.iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            for child in work_path.iterdir():
+                if (child.is_file() and child != temporary_seg
+                        and not child.name.startswith(".cache-workspace.")):
+                    child.replace(output_dir / child.name)
+            temporary_seg.replace(output_path)
+
     @staticmethod
     def _can_reuse_segmentation(
         output_dir: Path,
@@ -225,10 +256,12 @@ class SegmentationStage(BaseStage):
         marker = output_dir / "model.json"
         if not marker.is_file():
             # 兼容没有模型标记的历史缓存：文件存在即可复用。
-            return True
+            return output_path.is_file()
         try:
             with marker.open("r", encoding="utf-8") as file:
-                return str(json.load(file).get("model_id")) == str(dataset_id)
+                matches_model = str(json.load(file).get("model_id")) == str(dataset_id)
+            # 读取标记期间失效缓存可能正在被替换，最终seg必须仍已发布。
+            return matches_model and output_path.is_file()
         except (OSError, ValueError, TypeError):
             return False
 
@@ -237,10 +270,18 @@ class SegmentationStage(BaseStage):
         """记录模型缓存对应的模型，避免模型切换时误复用。"""
 
         marker = output_dir / "model.json"
-        temporary = output_dir / ".model.json.tmp"
-        with temporary.open("w", encoding="utf-8") as file:
-            json.dump({"model_id": str(dataset_id)}, file, ensure_ascii=False)
-        temporary.replace(marker)
+        temporary = None
+        try:
+            with NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=output_dir,
+                prefix=".model.", suffix=".tmp", delete=False,
+            ) as file:
+                temporary = Path(file.name)
+                json.dump({"model_id": str(dataset_id)}, file, ensure_ascii=False)
+            temporary.replace(marker)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
     
     def _match_model(
         self,
@@ -423,7 +464,8 @@ class SegmentationStage(BaseStage):
                               dataset_id: str, 
                               configuration: str, 
                               fold: str, 
-                              continue_mode: bool):
+                              continue_mode: bool,
+                              cache_pass_fds: tuple[int, ...] = ()):
         """
         执行nnUNet推理命令
         
@@ -435,6 +477,7 @@ class SegmentationStage(BaseStage):
             configuration: 模型配置（如 3d_fullres）
             fold: 训练折数
             continue_mode: 是否启用继续模式
+            cache_pass_fds: POSIX预测子进程继承工作目录租约，父进程退出后仍保护写入目录
         """
         # 构建命令
         cmd = nnunet_command_prefix(self._predict_command, self._predict_python) + [
@@ -466,6 +509,9 @@ class SegmentationStage(BaseStage):
         
         try:
             # 执行命令
+            process_options = {}
+            if os.name == "posix" and cache_pass_fds:
+                process_options["pass_fds"] = cache_pass_fds
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -473,7 +519,8 @@ class SegmentationStage(BaseStage):
                 encoding="utf-8",
                 errors="replace",
                 check=False,
-                env=env  # 传入自定义环境变量
+                env=env,  # 传入自定义环境变量
+                **process_options,
             )
             
             # 检查执行结果

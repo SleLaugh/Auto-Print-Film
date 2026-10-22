@@ -15,6 +15,8 @@ import numpy as np
 import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
+from src.core.cache_lock import cache_lock
+from src.core.cache_workspace import cache_workspace, cleanup_cache_workspaces
 from src.core.context import ProcessingContext
 from src.models import DicomMetadata, PreprocessingResult
 from src.reconstruction.dicom import read_source_dicom_metadata
@@ -97,55 +99,86 @@ class PreprocessingStage(BaseStage):
         DebugLog(f"  输出NIfTI: {output_file}")
         
         
-        output_file.parent.mkdir(parents=True, exist_ok=True) # 确保目标路径存在
-        if output_file.is_file():
-            # 第一阶段缓存位于 -c/nifti，存在时直接复用，避免再次读取和转换 DICOM。
-            source_metadata = read_source_dicom_metadata(input_dir)
-            metadata_path = str(metadata_file) if metadata_file.is_file() else ""
-            context.set_stage_result(PreprocessingResult(
-                nifti_path=str(output_file),
-                metadata_path=metadata_path,
-                source_dicom_metadata=source_metadata,
-            ))
-            DebugLog(f"  已找到现成NIfTI，跳过转换: {output_file}")
+        try:
+            result = self._get_or_create_cache(
+                input_dir, output_root, output_file, metadata_file
+            )
+            context.set_stage_result(result)
             DebugLog("  第一阶段完成")
             DebugLog("=" * 60)
-            return context
-
-        if is_debug_file_enabled():
-            metadata_file.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            read_result = self._read_dicom_series(str(input_dir)) # 读取dicom序列
-            image = read_result['image'] if read_result else None
-            if image is not None:
-                image = self._ensure_3d(image) # 确保图像为3D格式
-                
-                sitk.WriteImage(image, str(output_file)) # 保存为NIfTI格式
-                source_metadata = read_source_dicom_metadata(
-                    read_result['series_file_names'][0]
-                )
-                metadata_path = ""
-                if is_debug_file_enabled():
-                    metadata = self._build_metadata(image, read_result['series_file_names'])
-                    with open(metadata_file, 'w', encoding='utf-8') as f:
-                        json.dump(metadata.to_dict(), f, ensure_ascii=False, indent=2)
-                    metadata_path = str(metadata_file)
-                
-                context.set_stage_result(PreprocessingResult(
-                    nifti_path=str(output_file),
-                    metadata_path=metadata_path,
-                    source_dicom_metadata=source_metadata,
-                ))
-                DebugLog("  第一阶段完成")
-                DebugLog("=" * 60)
-            else:
-                raise ValueError('读取DICOM失败：未找到有效的DICOM序列')
-                
         except Exception as e:
             ErrorLog("预处理失败", e)
             raise
         
         return context
+
+    def _get_or_create_cache(
+        self, input_dir: Path, output_root: Path, output_file: Path, metadata_file: Path
+    ) -> PreprocessingResult:
+        """缓存只读复用；缺失时跨进程单写，最后原子发布完整的 NIfTI。"""
+
+        cleanup_cache_workspaces(output_root / ".work", "preprocessing-")
+        if output_file.is_file():
+            return self._reuse_cache(input_dir, output_file, metadata_file)
+
+        with cache_lock(output_root / ".locks" / "preprocessing.lock"):
+            # 其他进程可能已经在等待期间完成了转换。
+            if output_file.is_file():
+                return self._reuse_cache(input_dir, output_file, metadata_file)
+
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            work_root = output_root / ".work"
+            with cache_workspace(work_root, "preprocessing-") as work:
+                return self._create_cache(
+                    input_dir, output_file, metadata_file, work.path
+                )
+
+    @staticmethod
+    def _reuse_cache(
+        input_dir: Path, output_file: Path, metadata_file: Path
+    ) -> PreprocessingResult:
+        source_metadata = read_source_dicom_metadata(input_dir)
+        metadata_path = str(metadata_file) if metadata_file.is_file() else ""
+        DebugLog(f"  已找到现成NIfTI，跳过转换: {output_file}")
+        return PreprocessingResult(
+            nifti_path=str(output_file),
+            metadata_path=metadata_path,
+            source_dicom_metadata=source_metadata,
+        )
+
+    def _create_cache(
+        self, input_dir: Path, output_file: Path, metadata_file: Path, work_dir: Path
+    ) -> PreprocessingResult:
+        """所有生成步骤成功后才使最终 NIfTI 对其他任务可见。"""
+
+        read_result = self._read_dicom_series(str(input_dir)) # 读取dicom序列
+        image = read_result['image'] if read_result else None
+        if image is None:
+            raise ValueError('读取DICOM失败：未找到有效的DICOM序列')
+
+        image = self._ensure_3d(image) # 确保图像为3D格式
+        temporary_nifti = work_dir / output_file.name
+        sitk.WriteImage(image, str(temporary_nifti))
+        source_metadata = read_source_dicom_metadata(
+            read_result['series_file_names'][0]
+        )
+        metadata_path = ""
+        if is_debug_file_enabled():
+            metadata = self._build_metadata(image, read_result['series_file_names'])
+            temporary_metadata = work_dir / metadata_file.name
+            with temporary_metadata.open('w', encoding='utf-8') as f:
+                json.dump(metadata.to_dict(), f, ensure_ascii=False, indent=2)
+            metadata_file.parent.mkdir(parents=True, exist_ok=True)
+            temporary_metadata.replace(metadata_file)
+            metadata_path = str(metadata_file)
+
+        # raw 沿用旧缓存兼容规则作为完成标记，在图像和元数据完成后发布。
+        temporary_nifti.replace(output_file)
+        return PreprocessingResult(
+            nifti_path=str(output_file),
+            metadata_path=metadata_path,
+            source_dicom_metadata=source_metadata,
+        )
 
     def _read_dicom_series(self, filepath: str) -> Optional[Dict[str, Any]]:
         """

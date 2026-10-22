@@ -5,7 +5,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable
+from typing import Any, Callable, Dict, Iterable
 import json
 import math
 
@@ -36,6 +36,7 @@ from src.runtime import config_candidates, resolve_application_path
 from .localization_contracts import LocalizationContractMixin
 from .localization_execution import LocalizationExecutionMixin
 from .localization_geometry import LocalizationSpineGeometryMixin
+from .localization_spine_density import si_pillar_continuous_support
 
 
 @dataclass(frozen=True)
@@ -1482,6 +1483,7 @@ class LocalizationOperations(
                 body_mask = LocalizationStage._vertebral_body_candidate_mask(
                     seg_array,
                     target,
+                    spacing_zyx=tuple(reversed(reference_image.GetSpacing())),
                 )
             if body_mask is None or not target.label_ids:
                 continue
@@ -1543,6 +1545,7 @@ class LocalizationOperations(
         ] | None = None,
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
         excluded_labels: Iterable[str] = (),
+        body_diagnostics: dict[str, dict] | None = None,
     ) -> tuple[
         dict[str, np.ndarray],
         dict[str, tuple[np.ndarray, np.ndarray] | None],
@@ -1577,6 +1580,7 @@ class LocalizationOperations(
             region_minimum, local_seg_array = label_region
             # S1 的骶骨方向和腰椎不同，不能套用“前方稳定行 + 中央 x 行”
             # 的普通腰椎启发式；改用专用左右支撑筛选和局部上缘补回。
+            extraction_diagnostic = {}
             if vertebra_key == "S1":
                 body_mask = cls._s1_body_candidate_mask(
                     local_seg_array,
@@ -1586,7 +1590,17 @@ class LocalizationOperations(
                 body_mask = cls._vertebral_body_candidate_mask(
                     local_seg_array,
                     target,
+                    spacing_zyx=tuple(reversed(image.GetSpacing())),
+                    diagnostics=extraction_diagnostic,
                 )
+            if body_diagnostics is not None and extraction_diagnostic:
+                core_bbox = extraction_diagnostic.get("core_bbox_zyx")
+                if core_bbox is not None:
+                    extraction_diagnostic["core_bbox_zyx"] = {
+                        side: (np.asarray(core_bbox[side]) + region_minimum).tolist()
+                        for side in ("min", "max")
+                    }
+                body_diagnostics[label_name] = extraction_diagnostic
             indices = (
                 np.argwhere(body_mask) + region_minimum
                 if body_mask is not None
@@ -2234,6 +2248,7 @@ class LocalizationOperations(
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
         excluded_labels: Iterable[str] = (),
         interspace_regions: Iterable[Dict[str, Any]] | None = None,
+        raw_array_loader: Callable[[], np.ndarray] | None = None,
     ) -> Dict[str, Any] | None:
         """
         为第五阶段生成脊柱过滤主体、四棱柱和相邻主体间隙几何。
@@ -2252,6 +2267,7 @@ class LocalizationOperations(
             str,
             tuple[np.ndarray, np.ndarray, np.ndarray] | None,
         ] = {}
+        body_diagnostics: dict[str, dict] = {}
         body_indices, prism_regions = cls._build_spine_body_prism_regions(
             seg_array,
             label_targets,
@@ -2259,7 +2275,18 @@ class LocalizationOperations(
             sagittal_geometries=sagittal_geometries,
             label_regions=label_regions,
             excluded_labels=excluded_label_set,
+            body_diagnostics=body_diagnostics,
         )
+
+        raw_array = None
+        if raw_array_loader is not None and body_diagnostics:
+            try:
+                loaded = raw_array_loader()
+                if loaded.shape != seg_array.shape:
+                    raise ValueError("端面密度验证的原图与分割形状不一致")
+                raw_array = loaded
+            except (RuntimeError, OSError, ValueError) as error:
+                DebugLog(f"  原图端面密度验证不可用，保留几何回退: {error}")
 
         filtered_annotation_centroids: Dict[str, Dict[str, Any]] = {}
         for label_name, target in label_targets.items():
@@ -2447,13 +2474,23 @@ class LocalizationOperations(
                     else None
                 ),
             }
-            # 完整椎体的左右对称面与过滤主体端面职责不同，不能用主体
-            # 截面最长轴代替左右方向。将可靠姿态传给整切和椎间斜切规划。
             full_indices = (
                 label_regions[label_name].indices_zyx
                 if label_regions is not None and label_name in label_regions
                 else np.argwhere(np.isin(seg_array, target.label_ids))
             )
+            extraction_diagnostic = body_diagnostics.get(label_name)
+            if extraction_diagnostic:
+                filtered_annotation_centroids[label_name]["body_extraction"] = extraction_diagnostic
+                endplates = cls._estimate_supported_body_endplates(
+                    indices, image, extraction_diagnostic,
+                    source_indices_zyx=full_indices,
+                    raw_array=raw_array,
+                )
+                if endplates is not None:
+                    filtered_annotation_centroids[label_name]["sagittal_body_endplates"] = endplates
+            # 完整椎体的左右对称面与过滤主体端面职责不同，不能用主体
+            # 截面最长轴代替左右方向。将可靠姿态传给整切和椎间斜切规划。
             filtered_annotation_centroids[label_name].update(
                 estimate_spine_label_symmetry(full_indices, image)
             )
@@ -2501,6 +2538,41 @@ class LocalizationOperations(
                     )
                 )
 
+        recovered_labels = {
+            name for name, diagnostic in body_diagnostics.items()
+            if diagnostic.get("method") == "density_core_recovery"
+        }
+        for _, upper_label, lower_label in pair_definitions:
+            if not recovered_labels.intersection((upper_label, lower_label)):
+                continue
+            for label_name in (upper_label, lower_label):
+                if cls._vertebra_key(label_name) in {"C1", "C2", "S1"}:
+                    continue
+                annotation = filtered_annotation_centroids.get(label_name, {})
+                indices = body_indices.get(label_name)
+                if annotation.get("sagittal_body_endplates") or indices is None or not indices.size:
+                    continue
+                # 覆盖包络的端边可能被裁平；恢复体的正常邻体也需用自然
+                # 边界配对。只补充端面证据，主体 mask 和质心不改变。
+                minimum, maximum = np.quantile(indices, (0.25, 0.75), axis=0)
+                support = {
+                    "method": "adjacent_recovered_body",
+                    "core_bbox_zyx": {"min": np.ceil(minimum).astype(int).tolist(),
+                                       "max": np.floor(maximum).astype(int).tolist()},
+                }
+                source_indices = (
+                    label_regions[label_name].indices_zyx
+                    if label_regions is not None and label_name in label_regions
+                    else np.argwhere(np.isin(seg_array, label_targets[label_name].label_ids))
+                )
+                endplates = cls._estimate_supported_body_endplates(
+                    indices, image, support, source_indices_zyx=source_indices,
+                    raw_array=raw_array,
+                )
+                if endplates is not None:
+                    annotation["sagittal_body_endplates"] = endplates
+                    annotation["sagittal_endplate_support"] = support
+
         for group_name, upper_label, lower_label in pair_definitions:
             upper_indices = body_indices.get(upper_label)
             lower_indices = body_indices.get(lower_label)
@@ -2526,7 +2598,7 @@ class LocalizationOperations(
 
         return {
             "filtered_annotation": {
-                "method": "vertebral_body_candidate_v1",
+                "method": "vertebral_body_candidate_v3",
                 "source": "full_nnunet_label",
                 "target": "vertebral_body",
             },
@@ -2988,6 +3060,58 @@ class LocalizationOperations(
         return retained_mask
 
     @staticmethod
+    def _estimate_supported_body_endplates(
+        body_indices_zyx: np.ndarray,
+        image: sitk.Image,
+        extraction_diagnostic: dict,
+        *,
+        source_indices_zyx: np.ndarray | None = None,
+        raw_array: np.ndarray | None = None,
+    ) -> list[dict] | None:
+        """把密实核心支撑的真实上下边界转换到当前工作物理空间。"""
+
+        if extraction_diagnostic.get("method") not in {
+            "density_core_recovery", "adjacent_recovered_body",
+        }:
+            return None
+        if raw_array is None:
+            return None
+        from .spine_body_core import fit_body_endplates_from_core
+
+        faces = fit_body_endplates_from_core(
+            body_indices_zyx,
+            tuple(reversed(image.GetSpacing())),
+            extraction_diagnostic.get("core_bbox_zyx", {}),
+            source_indices_zyx=source_indices_zyx,
+            raw_array=raw_array,
+        )
+        if faces is None:
+            return None
+        direction = np.asarray(image.GetDirection()).reshape(3, 3)
+        result = []
+        for face in faces:
+            endpoints = [
+                image.TransformContinuousIndexToPhysicalPoint(tuple(point[::-1]))
+                for point in face["endpoints_zyx"]
+            ]
+            normal = direction @ np.asarray(face["normal_zyx"])[::-1]
+            result.append({
+                "side": face["side"],
+                "endpoints": [dict(zip("xyz", point)) for point in endpoints],
+                "normal": dict(zip("xyz", map(float, normal))),
+                "point_count": face["point_count"],
+                "median_residual_mm": face["median_residual_mm"],
+                "method": face["method"],
+                "source": face.get("source", "original_label"),
+                **{key: face[key] for key in (
+                    "lr_profile_count", "lr_profile_available", "lr_profile_extent_voxels",
+                    "ct_validation", "ct_min_positive_fraction", "ct_min_normalized_drop",
+                    "median_profile_residual_mm",
+                ) if key in face},
+            })
+        return result
+
+    @staticmethod
     def _estimate_sagittal_body_faces(
         indices_zyx: np.ndarray,
         image: sitk.Image,
@@ -3231,56 +3355,24 @@ class LocalizationOperations(
     def _vertebral_body_candidate_mask(
         seg_array: np.ndarray,
         target: LabelTarget,
+        *,
+        spacing_zyx: tuple[float, float, float] | None = None,
+        diagnostics: dict | None = None,
     ) -> np.ndarray | None:
-        """从完整椎体 label 中估计前方宽主体的体素 mask。"""
+        """从连续左右支撑和三维体量中选择前方椎体主体。"""
 
         mask = np.isin(seg_array, target.label_ids)
         if not np.any(mask):
             return None
-        mask = LocalizationStage._discard_small_3d_components(mask)
-        indices = np.argwhere(mask)
-        if indices.size == 0:
-            return None
-
-        center_x = float(np.median(indices[:, 2]))
-        body_mask = np.zeros_like(mask, dtype=bool)
-        for z_index in np.unique(indices[:, 0]):
-            slice_mask = mask[int(z_index), :, :]
-            row_widths = LocalizationStage._slice_row_widths(slice_mask)
-            row_run_counts = LocalizationStage._slice_row_run_counts(slice_mask)
-            if not row_widths:
-                continue
-            row_run = LocalizationStage._first_anterior_body_row_run(
-                row_widths,
-                row_run_counts,
-            )
-            if not row_run:
-                continue
-            y_min = min(row_run)
-            y_max = max(row_run)
-            stable_width = LocalizationStage._stable_central_run_width(
-                slice_mask,
-                row_run,
-                center_x,
-            )
-            for y_index in range(y_min, y_max + 1):
-                x_run = LocalizationStage._central_x_run(
-                    slice_mask[int(y_index), :],
-                    center_x,
-                )
-                if not x_run:
-                    continue
-                x_run = LocalizationStage._clip_run_to_width(
-                    x_run,
-                    center_x,
-                    stable_width,
-                )
-                x_min = min(x_run)
-                x_max = max(x_run)
-                body_mask[int(z_index), y_index, x_min:x_max + 1] = slice_mask[
-                    int(y_index),
-                    x_min:x_max + 1,
-                ]
+        # 原始 label 的最大块可能是后方附件。先保留每个块的前方支撑候选，
+        # 再比较主体证据，不能在识别主体前按原始最大块的体量删除小块。
+        candidates = LocalizationStage._vertebral_body_support_candidates(
+            mask, spacing_zyx=spacing_zyx,
+        )
+        body_mask = LocalizationStage._select_vertebral_body_support(
+            candidates, center_x=float(np.median(np.argwhere(mask)[:, 2])),
+            spacing_zyx=spacing_zyx,
+        )
 
         if not np.any(body_mask):
             return body_mask
@@ -3293,7 +3385,259 @@ class LocalizationOperations(
         body_mask = LocalizationStage._trim_lr_edge_columns_by_si_height(body_mask)
         # 横向断崖裁剪后，末端残留的相对支撑度会重新下降；再做一次端部
         # 检查，处理“薄片-小回增-薄片”这类分段残留。
-        return LocalizationStage._trim_thin_terminal_si_slices(body_mask)
+        body_mask = LocalizationStage._trim_thin_terminal_si_slices(body_mask)
+        # 密度只附加验证已保留的边缘，不能降低原参考高度或放宽旧裁剪。
+        body_mask = LocalizationStage._trim_transverse_edges_by_density(body_mask)
+        if spacing_zyx is not None and LocalizationStage._vertebra_key(target.label_name) != "C2":
+            from .spine_body_core import recover_body_from_dense_core
+
+            recovered = recover_body_from_dense_core(
+                mask, body_mask, spacing_zyx, diagnostics=diagnostics,
+            )
+            if recovered is not None:
+                # 已确认旧主体漏掉密实内部。恢复受原 label 和物理窗口限制，
+                # 不再用旧的全局 SI 柱高把倾斜端部或 LR 裂开的主体删掉。
+                body_mask = recovered
+        body_indices = np.argwhere(body_mask)
+        raw_indices = np.argwhere(mask)
+        if len(body_indices) and (
+            len(body_indices) < len(raw_indices) * 0.1
+            and np.ptp(body_indices[:, 0]) + 1 < (np.ptp(raw_indices[:, 0]) + 1) * 0.5
+        ):
+            # 同时丢失绝大部分体量和头脚支撑时，只剩短残块；不能把它
+            # 当作完整主体生成端面。完整的小主体不按原始最大块比例淘汰。
+            body_mask[:] = False
+        return body_mask
+
+    @staticmethod
+    def _vertebral_body_support_candidates(
+        mask: np.ndarray,
+        *,
+        spacing_zyx: tuple[float, float, float] | None = None,
+    ) -> np.ndarray:
+        """用连续 LR 段提取前方带，跨层确认后再跳过薄前突起。"""
+
+        spacing = LocalizationStage._normalized_voxel_spacing_zyx(spacing_zyx)
+        # AP/LR 物理长度比较，两边同时除以 LR spacing；等距采样时
+        # 比值恰为 1，保留原有阈值的浮点边界行为。
+        ap_lr_spacing_ratio = float(spacing[1] / spacing[2])
+
+        def relatively_small_front(bands) -> bool:
+            if len(bands) < 2:
+                return False
+            front, rear = bands[:2]
+            # 比较同一轴的前后两带，spacing 因子分别抵消。相近 LR
+            # 宽度且 AP 深度不足一半，才能把前带视为相对小的前突起；
+            # 大而宽的后方附件、AP 深度相近的真前主体不满足此条件。
+            return (len(front[0]) * 2 <= len(rear[0])
+                    and front[1] * 3 >= rear[1] * 2
+                    and front[1] * 2 <= rear[1] * 3)
+
+        components = sitk.GetArrayFromImage(sitk.ConnectedComponent(
+            sitk.GetImageFromArray(mask.astype(np.uint8)), True,
+        ))
+        indices = np.argwhere(mask)
+        component_ids = components[tuple(indices.T)]
+        order = np.argsort(component_ids)
+        boundaries = np.flatnonzero(np.diff(component_ids[order])) + 1
+        candidates = np.zeros_like(mask, dtype=bool)
+        for member_indices in np.split(order, boundaries):
+            points = indices[member_indices]
+            if len(points) < 2:
+                continue
+            minimum = points.min(axis=0)
+            local_points = points - minimum
+            local_mask = np.zeros(tuple(local_points.max(axis=0) + 1), dtype=bool)
+            local_mask[tuple(local_points.T)] = True
+            center_x = float(np.median(local_points[:, 2]))
+            si_support_by_y = local_mask.any(axis=2).sum(axis=0)
+            stable_si_support = float(si_support_by_y.max())
+            slices = []
+            for z_index in np.unique(local_points[:, 0]):
+                slice_mask = local_mask[int(z_index)]
+                row_runs = {
+                    int(y): LocalizationStage._central_x_run(slice_mask[int(y)], center_x)
+                    for y in np.flatnonzero(slice_mask.any(axis=1))
+                }
+                # 左右分叉之间的空白不计入主体宽度；少数宽翼也不决定阈值。
+                stable_scale = float(np.percentile(
+                    [len(run) for run in row_runs.values()], 90,
+                ))
+                threshold = max(2, int(math.ceil(stable_scale * 0.35)))
+                supported = np.asarray([
+                    y for y, run in row_runs.items() if len(run) >= threshold
+                ], dtype=int)
+                if not len(supported):
+                    continue
+                groups = np.split(supported, np.flatnonzero(np.diff(supported) > 1) + 1)
+                row_counts = LocalizationStage._slice_row_run_counts(slice_mask)
+                bands = []
+                for group in groups:
+                    rows = group.tolist()
+                    while len(rows) > 1 and row_counts[rows[-1]] > 1:
+                        rows.pop()
+                    widths = np.array([len(row_runs[y]) for y in rows])
+                    median_width = float(np.median(widths))
+                    stable_width = int(max(widths[widths <= median_width * 1.25]))
+                    # 前后两个宽块之间的细桥只在少数层出现时，不能把整段
+                    # AP 当成一个主体。仅切开两端均有宽支撑的连续内部窄颈；
+                    # 单侧渐窄的端缘及单行凹陷仍保留。
+                    narrow = np.flatnonzero(widths < stable_width * 0.5)
+                    necks = np.split(narrow, np.flatnonzero(np.diff(narrow) > 1) + 1)
+                    cuts = [neck for neck in necks if len(neck) >= 2
+                            and neck[0] > 0 and neck[-1] < len(rows) - 1
+                            and np.max(si_support_by_y[np.asarray(rows)[neck]])
+                            < stable_si_support * 0.25]
+                    keep = np.ones(len(rows), dtype=bool)
+                    for neck in cuts:
+                        keep[neck] = False
+                    kept_rows = np.asarray(rows)[keep]
+                    for part in np.split(kept_rows, np.flatnonzero(np.diff(kept_rows) > 1) + 1):
+                        if not len(part):
+                            continue
+                        part_widths = np.array([len(row_runs[int(y)]) for y in part])
+                        middle = float(np.median(part_widths))
+                        width = int(max(part_widths[part_widths <= middle * 1.25]))
+                        bands.append((part.tolist(), width))
+                if bands:
+                    slices.append((int(z_index), row_runs, bands))
+            if not slices:
+                continue
+            # 先以完整跨层候选判定“前方薄突起”，不能因为某个真实端层较薄
+            # 就把该层切换到后方附件。替代带本身也必须有跨层体量支撑。
+            front_ratios = [len(bands[0][0]) * ap_lr_spacing_ratio / bands[0][1]
+                            for _, _, bands in slices]
+            front_volume = sum(len(bands[0][0]) * bands[0][1] for _, _, bands in slices)
+            alternatives = [(z, runs, bands) for z, runs, bands in slices if len(bands) > 1]
+            alternative_volume = sum(len(bands[1][0]) * bands[1][1]
+                                     for _, _, bands in alternatives)
+            skip_front = (float(np.median(front_ratios)) < 0.35
+                          and len(alternatives) >= len(slices) * 0.5
+                          and alternative_volume >= front_volume)
+            relative_alternatives = [item for item in alternatives if relatively_small_front(item[2])]
+            relative_alternative_volume = sum(
+                len(bands[1][0]) * bands[1][1] for _, _, bands in relative_alternatives
+            )
+            relative_front_rows = {
+                y for _, _, bands in relative_alternatives for y in bands[0][0]
+            }
+            tracked_front_volume = sum(
+                len(bands[0][0]) * bands[0][1] for _, _, bands in slices
+                if any(y in relative_front_rows for y in bands[0][0])
+            )
+            # 物理 AP/LR 比未必很扁的前突起，也可能远小于同块内真正
+            # 主体。先取得跨层关系和至少两倍体量的证据，不能因一两张
+            # 端层出现较大的后带，就把真主体切到后方附件。同一前带
+            # 在其他层可能更厚，仍需按 AP 交叠跟踪并计入全部体量；
+            # 与前突起无 AP 交叠的主体-only 端层不混入前突起评分。
+            skip_relative_front = (
+                len(relative_alternatives) >= len(slices) * 0.5
+                and relative_alternative_volume >= tracked_front_volume * 2
+            )
+            for z_index, row_runs, bands in slices:
+                replace_front = (
+                    len(bands) > 1
+                    and len(bands[1][0]) * ap_lr_spacing_ratio >= bands[1][1] * 0.35
+                    and (
+                        (len(bands[0][0]) * ap_lr_spacing_ratio < bands[0][1] * 0.35
+                         and (skip_front or len(bands[0][0]) * bands[0][1]
+                              < len(bands[1][0]) * bands[1][1] * 0.1))
+                        or (skip_relative_front and relatively_small_front(bands))
+                    )
+                )
+                # 全局识别到薄前突起，也不能删除只有一个主体带的端层，
+                # 或替换本层已有充分 AP 支撑的前方主体。
+                rows, width = bands[1 if replace_front else 0]
+                for y in rows:
+                    x_run = LocalizationStage._clip_run_to_width(row_runs[y], center_x, width)
+                    candidates[
+                        z_index + minimum[0], y + minimum[1],
+                        x_run[0] + minimum[2]:x_run[-1] + minimum[2] + 1,
+                    ] = True
+        return candidates
+
+    @staticmethod
+    def _select_vertebral_body_support(
+        candidates: np.ndarray,
+        *,
+        center_x: float | None = None,
+        spacing_zyx: tuple[float, float, float] | None = None,
+    ) -> np.ndarray:
+        """比较跨 SI 支撑与主体形态，避免把第一段小突起当作主体。"""
+
+        if not np.any(candidates):
+            return candidates
+        spacing = LocalizationStage._normalized_voxel_spacing_zyx(spacing_zyx)
+        ap_lr_spacing_ratio = float(spacing[1] / spacing[2])
+        components = sitk.GetArrayFromImage(sitk.ConnectedComponent(
+            sitk.GetImageFromArray(candidates.astype(np.uint8)), True,
+        ))
+        indices = np.argwhere(candidates)
+        if center_x is None:
+            center_x = float(np.median(indices[:, 2]))
+        component_ids = components[tuple(indices.T)]
+        order = np.argsort(component_ids)
+        boundaries = np.flatnonzero(np.diff(component_ids[order])) + 1
+        records = []
+        for member_indices in np.split(order, boundaries):
+            points = indices[member_indices]
+            minimum = points.min(axis=0)
+            maximum = points.max(axis=0)
+            projections, row_widths = np.unique(points[:, :2], axis=0, return_counts=True)
+            _, ap_depths = np.unique(projections[:, 0], return_counts=True)
+            slice_counts = np.bincount(points[:, 0] - minimum[0])
+            supported_z = np.flatnonzero(slice_counts >= max(1.0, slice_counts.max() * 0.1))
+            z_groups = np.split(supported_z, np.flatnonzero(np.diff(supported_z) > 1) + 1)
+            records.append({
+                "id": int(component_ids[member_indices[0]]),
+                "volume": len(points),
+                "si_support": max(len(group) for group in z_groups),
+                "ap_depth": float(np.median(ap_depths)),
+                "lr_width": float(np.median(row_widths)),
+                "lr_center": float(np.median(points[:, 2])),
+                "anterior": float(np.median(points[:, 1])),
+                "minimum": minimum,
+                "maximum": maximum,
+            })
+
+        # 完整主体应有稳定的 AP 面积；少数宽而薄的前方突起或后方横桥，
+        # 即使与主体同高，也不能凭“最靠前”抢占主体。比例只用同平面的
+        # AP/LR 物理长度比较，避免仅改变左右或前后采样就切换主体。
+        # 同轴中心距离及同图组件的体量比例中，spacing 的共同因子抵消。
+        central = [
+            record for record in records
+            if abs(record["lr_center"] - center_x) <= record["lr_width"] * 0.75
+        ]
+        aligned = central or records
+        compact = [
+            record for record in aligned
+            if record["ap_depth"] * ap_lr_spacing_ratio >= record["lr_width"] * 0.35
+        ]
+        supported = compact or aligned
+        maximum_volume = max(record["volume"] for record in supported)
+        substantial = [
+            record for record in supported
+            if record["volume"] >= maximum_volume * 0.1
+        ]
+        maximum_area = max(record["volume"] / record["si_support"] for record in substantial)
+        substantial = [record for record in substantial
+                       if record["volume"] / record["si_support"] >= maximum_area * 0.2]
+        reference = max(substantial, key=lambda record: record["volume"])
+        credible = [record for record in substantial
+                    if record["si_support"] >= reference["si_support"] * 0.5]
+        selected = min(credible, key=lambda record: (
+            record["anterior"], -record["volume"], -record["si_support"], record["id"],
+        ))
+        selected_ids = [selected["id"]]
+        for record in records:
+            if record["id"] == selected["id"] or record["volume"] < selected["volume"] * 0.1:
+                continue
+            if LocalizationStage._is_aligned_terminal_component_bbox(
+                selected["minimum"], selected["maximum"],
+                record["minimum"], record["maximum"], transverse_axes=(1, 2),
+            ):
+                selected_ids.append(record["id"])
+        return np.isin(components, selected_ids)
 
     @staticmethod
     def _s1_body_candidate_mask(
@@ -3724,6 +4068,76 @@ class LocalizationOperations(
         else:
             trimmed[:, :, :trimmed_minimum] = False
             trimmed[:, :, trimmed_maximum + 1:] = False
+        return trimmed
+
+    @staticmethod
+    def _trim_transverse_edges_by_density(mask: np.ndarray) -> np.ndarray:
+        """从稳定主体向外验证连续占据密度，只裁除严重空壳外缘。"""
+
+        if mask.ndim != 3 or not np.any(mask):
+            return mask
+        spans = LocalizationStage._si_pillar_heights(mask)
+        continuous = si_pillar_continuous_support(mask)
+        occupied_counts = np.count_nonzero(mask, axis=0)
+        # 几何跨度仍保留正常孔洞、倾斜端缘和分段主体。只有跨度内大半
+        # 为空、最长可容短缺口链也不足三分之一时，才把首尾残片降权。
+        hollow = (continuous * 3 < spans) & (occupied_counts * 2 < spans)
+        if not np.any(hollow):
+            return mask
+        supported = np.where(hollow, continuous, spans)
+        bounds = {}
+        minimum_core_height = 0
+        for axis in (1, 2):
+            reduce_axis = 2 if axis == 1 else 1
+            positions = np.flatnonzero(mask.any(axis=(0, reduce_axis)))
+            if len(positions) < 4:
+                continue
+            reference = np.zeros(len(positions), dtype=float)
+            verified = np.zeros_like(reference)
+            for index, position in enumerate(positions):
+                original_column = spans[position, :] if axis == 1 else spans[:, position]
+                verified_column = (supported[position, :] if axis == 1
+                                   else supported[:, position])
+                occupied = original_column > 0
+                reference[index] = np.percentile(original_column[occupied], 75)
+                verified[index] = np.percentile(verified_column[occupied], 75)
+            # 参考来自未经降权的跨度，不能因空壳多就降低整个主体门槛。
+            stable_height = float(np.percentile(reference, 75))
+            if stable_height < 3.0:
+                continue
+            minimum_height = max(2, int(math.ceil(stable_height * 0.6)))
+            if not np.any(verified >= minimum_height):
+                # 找不到可信核心时不凭密度挑出任意一行，保留上游结果。
+                continue
+            minimum_core_height = max(minimum_core_height, minimum_height)
+            unsupported = (verified < minimum_height) & (verified < reference)
+            left, right = 0, len(positions) - 1
+            while left < right and unsupported[left]:
+                left += 1
+            while right > left and unsupported[right]:
+                right -= 1
+            if left > 0 or right < len(positions) - 1:
+                bounds[axis] = (int(positions[left]), int(positions[right]))
+        if not bounds:
+            return mask
+        # 两个方向分别可靠的区域可能互不重叠，交集也必须保留真正的核心。
+        core_slice = tuple(
+            slice(bounds[axis][0], bounds[axis][1] + 1)
+            if axis in bounds else slice(None)
+            for axis in (1, 2)
+        )
+        if not np.any(
+            (supported[core_slice] >= minimum_core_height) & ~hollow[core_slice]
+        ):
+            return mask
+        trimmed = mask.copy()
+        for axis, (minimum, maximum) in bounds.items():
+            before = [slice(None)] * 3
+            after = [slice(None)] * 3
+            before[axis] = slice(None, minimum)
+            after[axis] = slice(maximum + 1, None)
+            trimmed[tuple(before)] = False
+            trimmed[tuple(after)] = False
         return trimmed
 
     @staticmethod

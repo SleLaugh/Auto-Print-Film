@@ -134,6 +134,8 @@ class LocalizationExecutionMixin:
             "is_skewed": correction_result["is_skewed"],
             "skew_params": correction_result["skew_params"],
         }
+        if correction_result.get("spine_label_sequence") is not None:
+            payload["spine_label_sequence"] = correction_result["spine_label_sequence"]
         context.set_stage_result(LocalizationStageResult(payload=payload))
 
         DebugLog(f"  已定位 {len(label_coordinates)} 个 label")

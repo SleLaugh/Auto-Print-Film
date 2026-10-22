@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import SimpleITK as sitk
+import numpy as np
 
 from src.core.context import ProcessingContext
 from src.models import SpatialCorrectionStageResult
@@ -13,6 +14,7 @@ from .stage_localization import (
     LocalizationOperations,
     _LOCALIZATION_WORKSPACE_KEY,
 )
+from .spine_label_sequence import repair_lumbar_body_sequence
 
 
 class SpatialCorrectionStage(LocalizationOperations):
@@ -20,6 +22,66 @@ class SpatialCorrectionStage(LocalizationOperations):
 
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(config, stage_name="spatial_correction")
+
+    def _repair_spine_body_sequence(
+        self, *, image, seg_array, raw_path, seg_path, output_dir,
+        slice_part, label_map, label_targets,
+    ):
+        """仅在 CT 和主体序列共同支持时修正前方椎体的语义编号。"""
+
+        if slice_part not in {"腰椎", "脊柱"}:
+            return image, seg_array, str(seg_path), None
+
+        def load_aligned_raw():
+            try:
+                raw_image = sitk.ReadImage(str(raw_path))
+            except RuntimeError as error:
+                raise ValueError("无法读取原图核实椎体序列") from error
+            if raw_image.GetSize() != image.GetSize() or any(
+                not np.allclose(actual, expected, rtol=0.0, atol=1e-5)
+                for actual, expected in (
+                    (raw_image.GetSpacing(), image.GetSpacing()),
+                    (raw_image.GetOrigin(), image.GetOrigin()),
+                    (raw_image.GetDirection(), image.GetDirection()),
+                )
+            ):
+                raise ValueError("原图与分割空间不一致，不能核实椎体序列")
+            return sitk.GetArrayFromImage(raw_image)
+
+        def extract_body(array, target):
+            if target.label_name.endswith("_S1"):
+                return self._s1_body_candidate_mask(array, target)
+            return self._vertebral_body_candidate_mask(
+                array, target, spacing_zyx=tuple(reversed(image.GetSpacing())),
+            )
+
+        repaired, diagnostic = repair_lumbar_body_sequence(
+            seg_array, load_aligned_raw, image, label_map,
+            label_targets=label_targets, body_extractor=extract_body,
+        )
+        diagnostic = {
+            **diagnostic,
+            "source_seg_path": str(seg_path),
+            "working_seg_path": str(seg_path),
+        }
+        if repaired is None:
+            return image, seg_array, str(seg_path), diagnostic
+        if repaired.shape != seg_array.shape or not np.array_equal(
+            repaired != 0, seg_array != 0,
+        ):
+            raise ValueError("椎体序列修正改变了分割前景范围")
+
+        repaired_image = sitk.GetImageFromArray(repaired)
+        repaired_image.CopyInformation(image)
+        output_path = Path(output_dir) / "nifti" / "seg_spine_sequence_corrected.nii.gz"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        sitk.WriteImage(repaired_image, str(output_path))
+        diagnostic["working_seg_path"] = str(output_path)
+        DebugLog(
+            "  已按连续椎体主体与 CT 椎间隙证据修正前方标签序列: "
+            f"{diagnostic.get('changed_voxels', diagnostic.get('changed_voxel_count', 0))} 体素"
+        )
+        return repaired_image, repaired, str(output_path), diagnostic
 
     def execute(self, context: ProcessingContext) -> ProcessingContext:
         """从分割结果生成校正候选，并保存可序列化的空间契约。"""
@@ -70,6 +132,16 @@ class SpatialCorrectionStage(LocalizationOperations):
 
         image = sitk.ReadImage(str(seg_path))
         seg_array = sitk.GetArrayFromImage(image)
+        image, seg_array, working_seg_path, sequence_diagnostic = self._repair_spine_body_sequence(
+            image=image,
+            seg_array=seg_array,
+            raw_path=raw_path,
+            seg_path=seg_path,
+            output_dir=request.output_dir,
+            slice_part=request.slice_part.value,
+            label_map=label_map,
+            label_targets=label_targets,
+        )
         label_regions = self._build_label_voxel_regions(
             seg_array,
             label_targets,
@@ -98,7 +170,7 @@ class SpatialCorrectionStage(LocalizationOperations):
 
         correction_result = self._write_xy_correction_candidate_images(
             raw_path=str(raw_path),
-            seg_path=str(seg_path),
+            seg_path=working_seg_path,
             output_dir=Path(request.output_dir) / "nifti",
             candidate=candidate,
             correction_center_bbox=correction_scope_bbox,
@@ -128,6 +200,12 @@ class SpatialCorrectionStage(LocalizationOperations):
         else:
             DebugLog("  未启用校正，后续阶段使用原始空间")
 
+        if sequence_diagnostic is not None:
+            sequence_diagnostic["sequence_seg_path"] = working_seg_path
+            sequence_diagnostic["working_seg_path"] = correction_result[
+                "seg_for_reconstruction_path"
+            ]
+
         # 快照只在本次进程内复用，不进入 manifest 或阶段 JSON。
         context.metadata[_LOCALIZATION_WORKSPACE_KEY] = {
             "seg_path": correction_result["seg_for_reconstruction_path"],
@@ -147,6 +225,7 @@ class SpatialCorrectionStage(LocalizationOperations):
             "resolved_cut_configs": resolved_cut_configs,
             "slice_rules": slice_rules,
             "candidate": candidate,
+            "spine_label_sequence": sequence_diagnostic,
         }
 
         payload = {
@@ -178,6 +257,8 @@ class SpatialCorrectionStage(LocalizationOperations):
             "is_skewed": correction_result["correction_applied"],
             "skew_params": correction_result["correction_params"],
         }
+        if sequence_diagnostic is not None:
+            payload["spine_label_sequence"] = sequence_diagnostic
         context.set_stage_result(SpatialCorrectionStageResult(payload=payload))
 
         DebugLog("  第三阶段完成")

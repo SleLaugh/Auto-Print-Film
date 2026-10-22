@@ -205,7 +205,7 @@ class LocalizationSpineGeometryMixin:
         points: np.ndarray,
         reference_quadrilateral: np.ndarray,
     ) -> np.ndarray | None:
-        """沿主体主边方向生成紧包络，保留椎体自身倾斜角度。"""
+        """沿参考凸包的边方向选紧包络，完整覆盖主体投影。"""
 
         points = np.asarray(points, dtype=float)
         reference = np.asarray(reference_quadrilateral, dtype=float)
@@ -213,45 +213,62 @@ class LocalizationSpineGeometryMixin:
             points.ndim != 2
             or points.shape[1] != 2
             or len(points) == 0
-            or reference.shape != (4, 2)
+            or reference.ndim != 2
+            or reference.shape[1] != 2
+            or len(reference) < 3
+            or not np.all(np.isfinite(points))
+            or not np.all(np.isfinite(reference))
         ):
             return None
 
         edges = np.roll(reference, -1, axis=0) - reference
         lengths = np.linalg.norm(edges, axis=1)
-        if np.any(~np.isfinite(lengths)) or np.any(lengths <= 1e-9):
+        valid_edges = np.isfinite(lengths) & (lengths > 1e-9)
+        if not np.any(valid_edges):
             return None
-        candidate_indices = sorted(
-            range(len(edges)),
-            key=lambda index: float(lengths[index]),
-            reverse=True,
-        )
-        first_index = candidate_indices[0]
-        for index in candidate_indices:
-            edge = edges[index]
-            if (
-                abs(float(edge[0])) > 1e-6
-                and abs(float(edge[1])) > 1e-6
-                and float(lengths[index]) >= float(lengths[first_index]) * 0.5
-            ):
-                first_index = index
-                break
-        axis = edges[first_index] / float(lengths[first_index])
-        transverse_axis = np.asarray([-axis[1], axis[0]], dtype=float)
 
+        # 调用方传入的是完整凸包，可能有四个以上顶点。枚举其边方向
+        # 选择面积最小的包围矩形，避免单个倒角把整体端面方向拉偏。
+        # 选方向只需小凸包；确定方向后再用全部原始点求界，保留物理
+        # 坐标舍入前的边界点，也避免为每个候选方向扫描全部体素。
+        axes = edges[valid_edges] / lengths[valid_edges, None]
+        transverse_axes = np.column_stack((-axes[:, 1], axes[:, 0]))
+        origin = reference[0]
+        relative_reference = reference - origin
+        along = relative_reference @ axes.T
+        across = relative_reference @ transverse_axes.T
+        spans_along = np.ptp(along, axis=0)
+        spans_across = np.ptp(across, axis=0)
+        areas = spans_along * spans_across
+        valid_candidates = (
+            np.isfinite(areas)
+            & (spans_along > 1e-9)
+            & (spans_across > 1e-9)
+        )
+        if not np.any(valid_candidates):
+            return None
+        areas[~valid_candidates] = np.inf
+        best_index = int(np.argmin(areas))
+        axis = axes[best_index]
+        transverse_axis = transverse_axes[best_index]
+
+        relative_points = points - origin
         projections = np.column_stack((
-            points @ axis,
-            points @ transverse_axis,
+            relative_points @ axis,
+            relative_points @ transverse_axis,
         ))
         minimum = np.min(projections, axis=0)
         maximum = np.max(projections, axis=0)
-        if np.any(maximum - minimum <= 1e-9):
+        if (
+            np.any(~np.isfinite(projections))
+            or np.any(maximum - minimum <= 1e-9)
+        ):
             return None
         return np.asarray([
-            axis * minimum[0] + transverse_axis * minimum[1],
-            axis * maximum[0] + transverse_axis * minimum[1],
-            axis * maximum[0] + transverse_axis * maximum[1],
-            axis * minimum[0] + transverse_axis * maximum[1],
+            origin + axis * minimum[0] + transverse_axis * minimum[1],
+            origin + axis * maximum[0] + transverse_axis * minimum[1],
+            origin + axis * maximum[0] + transverse_axis * maximum[1],
+            origin + axis * minimum[0] + transverse_axis * maximum[1],
         ], dtype=float)
 
 
@@ -261,12 +278,13 @@ class LocalizationSpineGeometryMixin:
 
         if len(points) < 3:
             return 0.0
-        x_values = points[:, 0]
-        y_values = points[:, 1]
+        # 先平移到局部坐标，避免大物理原点使鞋带公式的两大数相减归零。
+        relative_points = np.asarray(points, dtype=float) - points[0]
+        x_values = relative_points[:, 0]
+        y_values = relative_points[:, 1]
         return float(
             0.5 * np.sum(
                 x_values * np.roll(y_values, -1)
                 - y_values * np.roll(x_values, -1)
             )
         )
-

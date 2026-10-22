@@ -2189,7 +2189,7 @@ class LocalizationGeometryTest(unittest.TestCase):
 
         self.assertEqual(
             geometry["filtered_annotation"]["method"],
-            "vertebral_body_candidate_v1",
+            "vertebral_body_candidate_v3",
         )
         self.assertNotIn("vertebrae_C1", geometry["filtered_annotation_centroids"])
         c2 = geometry["filtered_annotation_centroids"]["vertebrae_C2"]
@@ -2397,7 +2397,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         with patch.object(
             LocalizationStage,
             "_vertebral_body_candidate_mask",
-            side_effect=lambda local_seg_array, _target: local_seg_array == 20,
+            side_effect=lambda local_seg_array, _target, **_kwargs: local_seg_array == 20,
         ):
             _, prism_regions = (
                 LocalizationStage._build_spine_body_prism_regions(
@@ -3229,7 +3229,7 @@ class LocalizationGeometryTest(unittest.TestCase):
                     ))
             self.assertEqual(
                 result["spine_geometry"]["filtered_annotation"]["method"],
-                "vertebral_body_candidate_v1",
+                "vertebral_body_candidate_v3",
             )
             self.assertIn(
                 "vertebrae_L1",

@@ -210,6 +210,19 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             # 仅解析本次已验证的标签，不改写持久配置或缺标签校验政策。
             start_label = self._resolve_spine_endpoint_label(start_label, label_targets)
             end_label = self._resolve_spine_endpoint_label(end_label, label_targets)
+        def load_spine_raw_array():
+            raw_image = sitk.ReadImage(localization_result["raw_for_reconstruction_path"])
+            if raw_image.GetSize() != image.GetSize() or any(
+                not np.allclose(actual, expected, rtol=0.0, atol=1e-5)
+                for actual, expected in (
+                    (raw_image.GetSpacing(), image.GetSpacing()),
+                    (raw_image.GetOrigin(), image.GetOrigin()),
+                    (raw_image.GetDirection(), image.GetDirection()),
+                )
+            ):
+                raise ValueError("端面密度验证的原图与工作分割空间不一致")
+            return sitk.GetArrayFromImage(raw_image)
+
         spine_geometry = self._build_spine_body_geometry(
             slice_part=slice_part,
             image=image,
@@ -218,7 +231,10 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             label_regions=label_regions,
             excluded_labels=excluded_spine_labels,
             interspace_regions=interspace_regions,
+            raw_array_loader=load_spine_raw_array,
         )
+        if spine_geometry is not None and localization_result.get("spine_label_sequence") is not None:
+            spine_geometry["label_sequence"] = localization_result["spine_label_sequence"]
         lung_pose_support_mask, lung_pose_support_labels = (None, ())
         if slice_part == "肺部":
             lung_pose_support_mask, lung_pose_support_labels = self._lung_pose_support(

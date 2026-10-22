@@ -185,9 +185,15 @@ class ReportingStage(BaseStage):
                 item['FillPercent'] = config['FillPercent']
             plane_list.append(item)
 
+        planning = context.get_result('planning') or {}
+        skipped_interspaces = dict.fromkeys(
+            warning
+            for warning in planning.get('warnings', [])
+            if isinstance(warning, str) and warning.startswith('跳过脊柱区间 ')
+        )
         return build_status_report(
             success=True,
-            message='',
+            message='；'.join(skipped_interspaces),
             request=context.request,
             plane_list=plane_list,
         )

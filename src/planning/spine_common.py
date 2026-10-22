@@ -24,6 +24,8 @@ _INTERSPACE_BODY_PAIR_MIN_SUPPORT_POINTS = 8
 _INTERSPACE_PROJECTED_GAP_UNDERESTIMATE_MM = 1.0
 _CERVICAL_TERMINAL_CENTER_OFFSET_TRIGGER_MM = 0.25
 _CERVICAL_TERMINAL_INFERIOR_MARGIN_MM = 0.5
+_INTERSPACE_SIDEWALL_MAX_BODY_VOLUME_RATIO = 0.25
+_INTERSPACE_SIDEWALL_MAX_SI_ALIGNMENT = 0.5
 
 
 def voxel_centroid_to_physical(
@@ -559,6 +561,9 @@ def _facing_convex_polygon_boundary_pair_2d(
     upper: Sequence[tuple[float, float]],
     lower: Sequence[tuple[float, float]],
     permit_inverted_gap: bool = False,
+    *,
+    upper_boundary=None,
+    lower_boundary=None,
 ) -> Optional[tuple[tuple[float, float], tuple[float, float], float]]:
     """在两条相向端边的共同覆盖中段构造代表性边界对。"""
 
@@ -629,8 +634,8 @@ def _facing_convex_polygon_boundary_pair_2d(
         _, start, end, outward = max(candidates, key=lambda item: item[0])
         return start, end, outward
 
-    upper_edge = facing_edge(upper, interval_unit)
-    lower_edge = facing_edge(
+    upper_edge = upper_boundary or facing_edge(upper, interval_unit)
+    lower_edge = lower_boundary or facing_edge(
         lower,
         (-interval_unit[0], -interval_unit[1]),
     )
@@ -1177,6 +1182,46 @@ def _parse_sagittal_prism(
     return polygon, (minimum, maximum)
 
 
+def _supported_sagittal_endplate_edge(
+    annotation: Dict[str, Any],
+    frame: StraightPlaneFrame,
+    toward: tuple[float, float],
+):
+    """读取主体恢复后独立拟合的端面，覆盖包络仍由四棱柱负责。"""
+
+    faces = annotation.get("sagittal_body_endplates")
+    if not isinstance(faces, list) or len(faces) != 2:
+        return None
+    toward_length = math.hypot(*toward)
+    if toward_length <= 1e-8:
+        return None
+    candidates = []
+    for face in faces:
+        if not isinstance(face, dict):
+            return None
+        endpoints = face.get("endpoints")
+        if not isinstance(endpoints, list) or len(endpoints) != 2:
+            return None
+        points = [_parse_xyz_point(point) for point in endpoints]
+        normal = _parse_xyz_point(face.get("normal"))
+        if any(point is None for point in points) or normal is None:
+            return None
+        start, end = [(_dot(point, frame.col_dir), _dot(point, frame.normal)) for point in points]
+        vector = (end[0] - start[0], end[1] - start[1])
+        length = math.hypot(*vector)
+        normal_2d = (_dot(normal, frame.col_dir), _dot(normal, frame.normal))
+        normal_length = math.hypot(*normal_2d)
+        if length <= 1e-8 or normal_length <= 1e-8:
+            return None
+        normal_2d = (normal_2d[0] / normal_length, normal_2d[1] / normal_length)
+        if abs(vector[0] * normal_2d[0] + vector[1] * normal_2d[1]) > length * 1e-5:
+            return None
+        alignment = (normal_2d[0] * toward[0] + normal_2d[1] * toward[1]) / toward_length
+        candidates.append((alignment, start, end, normal_2d))
+    best = max(candidates, key=lambda item: item[0])
+    return best[1:] if best[0] > 0.0 else None
+
+
 def _resolve_interspace_prism_geometry(
     localization_result: Dict[str, Any],
     upper_label: str,
@@ -1215,19 +1260,40 @@ def _resolve_interspace_prism_geometry(
     # 不能代表本椎间的横切端面，交给旧 bbox 逻辑回退并报警。
     if overlap_minimum >= overlap_maximum:
         return None
-    closest = _closest_convex_polygon_pair_2d(upper_polygon, lower_polygon)
-    if closest is not None:
-        representative = _facing_convex_polygon_boundary_pair_2d(
-            upper_polygon,
-            lower_polygon,
+    upper_center = tuple(sum(p[axis] for p in upper_polygon) / 4 for axis in (0, 1))
+    lower_center = tuple(sum(p[axis] for p in lower_polygon) / 4 for axis in (0, 1))
+    toward_lower = (lower_center[0] - upper_center[0], lower_center[1] - upper_center[1])
+    recovered_pair = any(
+        isinstance(annotation.get("body_extraction"), dict)
+        and annotation["body_extraction"].get("method") == "density_core_recovery"
+        for annotation in (upper_annotation, lower_annotation)
+    )
+    upper_boundary = _supported_sagittal_endplate_edge(
+        upper_annotation, default_frame, toward_lower,
+    ) if recovered_pair else None
+    lower_boundary = _supported_sagittal_endplate_edge(
+        lower_annotation, default_frame, (-toward_lower[0], -toward_lower[1]),
+    ) if recovered_pair else None
+    closest = None
+    if upper_boundary is not None or lower_boundary is not None:
+        closest = _facing_convex_polygon_boundary_pair_2d(
+            upper_polygon, lower_polygon,
+            upper_boundary=upper_boundary, lower_boundary=lower_boundary,
         )
-        if representative is not None:
-            closest = representative
-    else:
-        closest = _overlapping_convex_polygon_boundary_pair_2d(
-            upper_polygon,
-            lower_polygon,
-        )
+    if closest is None:
+        closest = _closest_convex_polygon_pair_2d(upper_polygon, lower_polygon)
+        if closest is not None:
+            representative = _facing_convex_polygon_boundary_pair_2d(
+                upper_polygon,
+                lower_polygon,
+            )
+            if representative is not None:
+                closest = representative
+        else:
+            closest = _overlapping_convex_polygon_boundary_pair_2d(
+                upper_polygon,
+                lower_polygon,
+            )
     if closest is None or closest[2] <= 1e-8:
         return None
     upper_2d, lower_2d, _ = closest
@@ -1269,6 +1335,53 @@ def _resolve_interspace_prism_geometry(
         target_start,
         target_end,
         candidate_frame,
+    )
+
+
+def _interspace_sidewall_geometry_warning(
+    localization_result: Dict[str, Any],
+    upper_label: str,
+    lower_label: str,
+    frame: StraightPlaneFrame,
+) -> Optional[str]:
+    """拒绝小残块与相邻主体侧壁之间的伪椎间隙，不凭空补出缺失主体。
+
+    体积悬殊、前后投影无交集、候选法向远离头脚轴必须同时成立，避免
+    仅因椎体偏小或正常斜切就丢弃间隙。缺少体积证据的旧结果保持兼容。
+    """
+
+    annotations = _filtered_spine_annotations(localization_result)
+    labels = (upper_label, lower_label)
+    bodies = [annotations.get(label) for label in labels]
+    if not all(isinstance(body, dict) for body in bodies):
+        return None
+    try:
+        counts = [int(body["voxel_count"]) for body in bodies]
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if min(counts) <= 0 or min(counts) / max(counts) >= (
+        _INTERSPACE_SIDEWALL_MAX_BODY_VOLUME_RATIO
+    ):
+        return None
+    reference = default_straight_frame(PlaneTypeEnum.横状位, localization_result["image"])
+    if abs(_dot(frame.normal, reference.normal)) >= _INTERSPACE_SIDEWALL_MAX_SI_ALIGNMENT:
+        return None
+    prisms = [_parse_sagittal_prism(body, reference) for body in bodies]
+    if any(prism is None for prism in prisms):
+        return None
+    anterior_posterior_ranges = [
+        (min(point[0] for point in prism[0]), max(point[0] for point in prism[0]))
+        for prism in prisms
+    ]
+    if max(interval[0] for interval in anterior_posterior_ranges) <= (
+        min(interval[1] for interval in anterior_posterior_ranges) + 1e-6
+    ):
+        return None
+    smaller_index = counts.index(min(counts))
+    return (
+        f"{labels[smaller_index]} 主体分割不足（{min(counts)} 体素，"
+        f"相邻主体 {max(counts)} 体素），四棱柱前后范围不重叠，"
+        "候选切面来自侧壁，无法可靠确定椎间隙"
     )
 
 
@@ -1541,6 +1654,15 @@ def resolve_spine_interspace_segments(
             if invalid_face_interval:
                 face_geometry = None
                 using_prism_geometry = False
+            elif using_prism_geometry:
+                quality_warning = _interspace_sidewall_geometry_warning(
+                    localization_result, upper_label, lower_label, candidate_frame,
+                )
+                if quality_warning:
+                    # 已确认是残块侧壁，不能再用同一坏标签的 bbox/质心
+                    # 伪造另一套间隙，也不能把切面强行压回固定横状位。
+                    warnings.append(f"跳过脊柱区间 {group_name}: {quality_warning}")
+                    continue
         upper_bbox = _label_bbox(localization_result, upper_label)
         lower_bbox = _label_bbox(localization_result, lower_label)
         if upper_bbox is not None and lower_bbox is not None:

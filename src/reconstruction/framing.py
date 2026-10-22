@@ -349,6 +349,22 @@ class TargetFramer:
         if self.shared_geometry is None:
             size, spacing = _plane_matrix(plan)
             new_spacing, scale = fitted_spacing(size, spacing, framing_target_size, plan.get("fill_percent"))
+            if (
+                self._body_points is not None
+                and plan.get("slice_part") == "肺部"
+                and plan.get("plane") == "横状位"
+                and percent is not None and percent > 0
+            ):
+                # 保留共同采样间距，只去掉共同画布的多余空气。近方形画布
+                # 放进宽胶片格时会按高度再次缩小，导致 100% 的胸廓仍显得很小。
+                # 尺寸包含百分比所需留白和半体素外缘，并向上取整保护轮廓。
+                required_pixels = framing_target_size / (percent / 100.0) / new_spacing
+                tolerance = np.maximum(1e-9, np.abs(required_pixels) * np.finfo(float).eps * 32)
+                compact_size = np.maximum(1, np.ceil(required_pixels - tolerance).astype(int))
+                # 两侧各裁整数个像素，保持原采样网格相位，避免薄体表因
+                # 半像素平移发生新的部分容积变化。最多额外保留一个像素空气。
+                compact_size += (size - compact_size) % 2
+                size = np.minimum(size, compact_size)
         else:
             size = np.asarray(self.shared_geometry.size_xy)
             new_spacing = np.asarray(self.shared_geometry.spacing_xy)
@@ -370,6 +386,7 @@ class TargetFramer:
             "center": framed_slice["center"],
             "extent_mm": framed_plan["extent_mm"],
             "output_spacing_mm": framed_plan["output_spacing_mm"],
+            "output_size_xy": list(map(int, size)),
         }
         if self.shared_geometry is not None:
             framed_slice["framing"].update({

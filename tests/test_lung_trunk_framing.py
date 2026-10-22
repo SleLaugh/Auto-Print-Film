@@ -143,7 +143,9 @@ def test_lung_trunk_uses_common_scale_without_arm_padding_and_keeps_terminal_con
         plan, framed = framer.plane_geometry(case.plan, item)
         image = sampler.sample_slice(case.raw, plan, framed)
         lower, upper = _slab_bounds(case, item)
-        image_center = np.asarray(image.TransformContinuousIndexToPhysicalPoint((159.5, 159.5, 0)))
+        image_center = np.asarray(image.TransformContinuousIndexToPhysicalPoint(
+            ((image.GetSize()[0] - 1) / 2, (image.GetSize()[1] - 1) / 2, 0),
+        ))
         local_center = image_center @ case.axes[:, :2]
         output_spacing = np.asarray(image.GetSpacing()[:2])
         fov = np.asarray(image.GetSize()[:2]) * output_spacing
@@ -215,7 +217,9 @@ def test_coarse_target_geometry_and_raw_storage_flips_keep_the_same_physical_tru
             plan, framed = framer.plane_geometry(case.plan, item)
             image = PlaneStackResampler().sample_slice(raw, plan, framed)
             lower, upper = _slab_bounds(case, item)
-            center = np.asarray(image.TransformContinuousIndexToPhysicalPoint((159.5, 159.5, 0)))
+            center = np.asarray(image.TransformContinuousIndexToPhysicalPoint(
+                ((image.GetSize()[0] - 1) / 2, (image.GetSize()[1] - 1) / 2, 0),
+            ))
             local_center = center @ case.axes[:, :2]
             spacing = np.asarray(image.GetSpacing()[:2])
             fov = np.asarray(image.GetSize()[:2]) * spacing
@@ -225,13 +229,14 @@ def test_coarse_target_geometry_and_raw_storage_flips_keep_the_same_physical_tru
             spacings.append(spacing)
             occupancy.append(np.max((upper - lower) / fov))
             if flipped:
-                expected_center, expected_spacing, expected_pixels = baseline[index]
+                expected_center, expected_spacing, expected_size, expected_pixels = baseline[index]
                 np.testing.assert_allclose(center, expected_center, atol=1e-8)
                 np.testing.assert_allclose(spacing, expected_spacing, atol=1e-10)
+                assert image.GetSize() == expected_size
                 # 不同存储次序重采样同一CT，最终HU像素也须保持一致。
                 np.testing.assert_allclose(sitk.GetArrayFromImage(image), expected_pixels, atol=0.005)
             else:
-                baseline.append((center, spacing, sitk.GetArrayFromImage(image)))
+                baseline.append((center, spacing, image.GetSize(), sitk.GetArrayFromImage(image)))
         np.testing.assert_allclose(spacings, [spacings[0]] * len(spacings), atol=1e-10)
         assert max(occupancy) == pytest.approx(1.0, abs=0.015)
 
@@ -259,5 +264,6 @@ def test_native_xy_axis_permutation_keeps_physical_trunk_support_and_final_pixel
         actual_image = sampler.sample_slice(transposed_raw, actual_plan, actual_slice)
         np.testing.assert_allclose(actual_image.GetOrigin(), expected_image.GetOrigin(), atol=1e-8)
         np.testing.assert_allclose(actual_image.GetSpacing(), expected_image.GetSpacing(), atol=1e-10)
+        assert actual_image.GetSize() == expected_image.GetSize()
         np.testing.assert_allclose(sitk.GetArrayFromImage(actual_image),
                                    sitk.GetArrayFromImage(expected_image), atol=0.005)

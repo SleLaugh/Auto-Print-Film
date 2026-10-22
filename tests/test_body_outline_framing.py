@@ -96,7 +96,9 @@ def _fixture(part="肺部", fill_percent=80, *, oblique=False, flipped=False):
 def _assert_body_visible(image, source_body, depth, physical, direction):
     """从源体素和最终图像各自计算覆盖，不读取 framing 的范围元数据。"""
 
-    center = np.array(image.TransformContinuousIndexToPhysicalPoint((71.5, 55.5, 0)))
+    center = np.array(image.TransformContinuousIndexToPhysicalPoint(
+        ((image.GetSize()[0] - 1) / 2, (image.GetSize()[1] - 1) / 2, 0),
+    ))
     expected_center = physical((68.0, 48.0, depth))
     np.testing.assert_allclose(center, expected_center, atol=1e-6)
     yx = np.argwhere(source_body)
@@ -202,7 +204,9 @@ def test_partial_body_recognition_cannot_crop_a_previously_visible_outer_shell(p
         for framer in (baseline, supported):
             framed_plan, framed = framer.plane_geometry(plan, item)
             image = PlaneStackResampler().sample_slice(raw, framed_plan, framed)
-            center = np.array(image.TransformContinuousIndexToPhysicalPoint((159.5, 159.5, 0)))[:2]
+            center = np.array(image.TransformContinuousIndexToPhysicalPoint(
+                ((image.GetSize()[0] - 1) / 2, (image.GetSize()[1] - 1) / 2, 0),
+            ))[:2]
             half_fov = np.array(image.GetSize()[:2]) * image.GetSpacing()[:2] / 2
             assert np.all(center - half_fov <= lower + 1e-6)
             assert np.all(center + half_fov >= upper - 1e-6)
@@ -374,7 +378,9 @@ def test_relative_oblique_thick_slabs_cover_real_body_voxel_intersections(
         lower, upper = _clipped_body_voxel_bounds(body, raw, item, thickness)
         framed_plan, framed = framer.plane_geometry(plan, item)
         image = PlaneStackResampler().sample_slice(raw, framed_plan, framed)
-        center = np.array(image.TransformContinuousIndexToPhysicalPoint((71.5, 55.5, 0)))
+        center = np.array(image.TransformContinuousIndexToPhysicalPoint(
+            ((image.GetSize()[0] - 1) / 2, (image.GetSize()[1] - 1) / 2, 0),
+        ))
         fov_half = np.array(image.GetSize()[:2]) * image.GetSpacing()[:2] / 2
         projected_center = center @ rotation[:, :2]
         assert np.all(projected_center - fov_half <= lower + 1e-6)

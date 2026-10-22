@@ -24,9 +24,7 @@ import SimpleITK as sitk
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.models import ReconstructionStageResult, WindowPreset
-from src.models.request import parse_fill_percent
 from src.reconstruction import CurvedStackResampler, PlaneStackResampler
-from src.reconstruction.body_framing import build_body_framing_support
 from src.reconstruction.dicom import (
     new_uid,
     read_source_dicom_metadata,
@@ -46,6 +44,7 @@ from src.reconstruction.framing import (
     frame_curved_slice,
     curved_group_bounds,
     prepare_interspace_framing,
+    uses_target_centered_canvas,
 )
 from src.utils import DebugLog, is_debug_file_enabled
 from src.runtime import window_worker_count
@@ -152,44 +151,7 @@ class ReconstructionStage(BaseStage):
         # 与第六阶段消费相同的展平结果。脑区仍是独立切割目标，骨性支持
         # 只能在最终脑 SI 范围及计划允许的颅顶余量内取景，不通过坐标表扩展层组。
         loc_result = {**loc_result, **anatomical_analysis}
-        body_plans = {
-            str(plan["plan_id"])
-            for plan in plans
-            if plan.get("slice_part") in {"肺部", "髋骨"}
-            and plan.get("slice_type") == "MPR"
-            and plan.get("geometry_type") == "plane_stack"
-            and (parse_fill_percent(plan.get("fill_percent")) or 0) > 0
-        }
-        # 身体轮廓仅约束肺/髋正数取景，不成为分割标签或切割范围。
-        # 多状位、窗位共享一次源 CT 轮廓提取，不能逐层/逐窗重复计算。
-        body_start = time.perf_counter()
-        body_support = None
-        if body_plans and request.slice_part.value == "肺部":
-            target_ids = {
-                int(value) for coord in loc_result.get("coords", {}).values()
-                for value in coord.get("label_ids", []) if int(value) != 0
-            }
-            target_mask = sitk.GetImageFromArray(
-                np.isin(sitk.GetArrayViewFromImage(segmentation), list(target_ids)).astype(np.uint8),
-            )
-            target_mask.CopyInformation(segmentation)
-            body_support = build_body_framing_support(
-                image, target_mask=target_mask, exclude_arms=True,
-            )
-            del target_mask
-        elif body_plans:
-            body_support = build_body_framing_support(image)
-        if body_plans and body_support is None:
-            warning = "未能从 CT 提取可靠身体轮廓，取景回退目标标签，周边轮廓可能不完整"
-            DebugLog(f"  警告: {warning}")
-            context.warnings.append({"code": "BODY_FRAMING_SUPPORT_UNAVAILABLE", "message": warning})
-        elif body_support is not None:
-            DebugLog(
-                "  [身体轮廓取景] "
-                f"区域={body_support.region}, 边界点数={len(body_support.points_xyz)}, "
-                f"计划数={len(body_plans)}, "
-                f"提取耗时={time.perf_counter() - body_start:.3f}s"
-            )
+        # 正式成片始终按请求选定的目标取景，体表和扫描床不改变目标中心或倍率。
         framing_context = load_framing_context(
             loc_result.get("dataset_json_path"), loc_result.get("coords", {}),
         ) if any(plan.get("fill_percent") for plan in plans) else None
@@ -258,7 +220,6 @@ class ReconstructionStage(BaseStage):
                             ),
                             merge_context_into_target=merge_framing_support,
                             symmetry_plane=symmetry_planes.get(str(plan.get("plan_id", ""))),
-                            body_support=body_support if str(plan["plan_id"]) in body_plans else None,
                             shared_geometry=shared_geometries.get(
                                 self._interspace_framing_key(plan),
                             ),
@@ -336,8 +297,8 @@ class ReconstructionStage(BaseStage):
 
         resampler = self._resampler_for_plan(plan)
 
-        # 第一步：按计划完成 HU 厚层采样，再裁首尾无源支持行，以整幅有效图
-        # 居中；允许逐层 Rows 不同，保留未窗化的 float32 像素及共同采样间距。
+        # 第一步：按计划完成 HU 厚层采样。肺/髋正数 MPR 已按目标对称收紧
+        # 画布，不能再单侧裁行覆盖既定取景中心；其余计划沿用原有上下裁空。
         # 所有采样完成之前不会开始任何窗宽窗位映射。
         DebugLog(f"    [1] MPR采样: 共 {len(plan['slices'])} 张")
         sampling_start = time.perf_counter()
@@ -358,6 +319,7 @@ class ReconstructionStage(BaseStage):
             sampled_image = resampler.sample_slice(image, sampling_plan, planned_slice)
             if (
                 plan.get("geometry_type") != "curved_stack"
+                and not uses_target_centered_canvas(plan)
                 and isinstance(image, sitk.Image)
                 and isinstance(sampled_image, sitk.Image)
             ):

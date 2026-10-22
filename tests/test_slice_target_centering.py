@@ -1,4 +1,4 @@
-"""弯曲目标在相同物理比例下逐层居中，且不能改变原切面。"""
+"""弯曲目标保持共同倍率：肺固定参考偏移，其余部位逐层居中，切面不变。"""
 
 import copy
 import unittest
@@ -26,7 +26,7 @@ def _plan(slices, spacing=(1, 1), thickness=1):
 class SliceTargetCenteringTest(unittest.TestCase):
     coords = {"target": {"label_ids": [1]}}
 
-    def test_bent_asymmetric_target_is_centered_in_all_planes_with_rotated_source_axes(self):
+    def test_bent_asymmetric_target_uses_part_centering_with_rotated_source_axes(self):
         angle = np.deg2rad(28)
         tilt = np.deg2rad(17)
         rotation = np.array([
@@ -81,13 +81,28 @@ class SliceTargetCenteringTest(unittest.TestCase):
                 original = copy.deepcopy(plan)
                 framer = TargetFramer(segmentation, coords, plan)
                 output_spacings = []
-                for item, expected_center in zip(slices, expected):
+                reference_shift = expected[0] - np.array(list(slices[0]["center"].values()))
+                for item, target_center in zip(slices, expected):
                     framed_plan, framed_slice = framer.plane_geometry(plan, item)
                     image = PlaneStackResampler().sample_slice(raw, framed_plan, framed_slice)
-                    actual_center = image.TransformContinuousIndexToPhysicalPoint((31.5, 31.5, 0))
+                    # 肺/髋目标画布会对称收紧，实际中点不再固定为64×64矩阵的31.5。
+                    size = np.array(image.GetSize()[:2])
+                    midpoint = (size - 1) / 2
+                    actual_center = image.TransformContinuousIndexToPhysicalPoint((*midpoint, 0))
+                    expected_center = (
+                        np.array(list(item["center"].values())) + reference_shift
+                        if part == "肺部" else target_center
+                    )
                     np.testing.assert_allclose(actual_center, expected_center, atol=1e-8)
                     shift = np.array(actual_center) - list(item["center"].values())
                     self.assertAlmostEqual(np.dot(shift, rotation[:, normal_axis]), 0, places=9)
+                    if part == "肺部":
+                        # 三张目标面积相同，最先一张作为参考；偏心末层不能另行追标签居中。
+                        np.testing.assert_allclose(shift, reference_shift, atol=1e-8)
+                        self.assertEqual(framed_slice["framing"]["center_source"], "group_reference_slice")
+                        self.assertEqual(framed_slice["framing"]["reference_slice_index"], 1)
+                    else:
+                        self.assertEqual(framed_slice["framing"]["center_source"], "slice_target")
                     for field in ("normal", "row_dir", "col_dir"):
                         self.assertEqual(framed_slice[field], item[field])
                     self.assertEqual(framed_plan["slice_thickness"], plan["slice_thickness"])
@@ -96,9 +111,20 @@ class SliceTargetCenteringTest(unittest.TestCase):
                     visible = np.argwhere(sitk.GetArrayViewFromImage(image)[0] > 0)
                     self.assertGreater(len(visible), 0)
                     lower, upper = visible.min(axis=0), visible.max(axis=0)
-                    np.testing.assert_allclose((lower + upper) / 2, [31.5, 31.5], atol=1)
-                    self.assertTrue(np.all(lower > 0))
-                    self.assertTrue(np.all(upper < 63))
+                    if part == "肺部":
+                        target_pixel_center = image.TransformPhysicalPointToContinuousIndex(tuple(target_center))
+                        np.testing.assert_allclose((lower + upper) / 2, target_pixel_center[1::-1], atol=1)
+                    else:
+                        np.testing.assert_allclose((lower + upper) / 2, midpoint[::-1], atol=1)
+                    # 100%允许目标贴边，但全部标签体素的物理外缘必须仍在画布内。
+                    target_span = np.array([10, 8]) * source_spacing[[row_axis, col_axis]]
+                    fov = size * image.GetSpacing()[:2]
+                    self.assertTrue(np.all(fov >= target_span - 1e-8))
+                    axes = rotation[:, [row_axis, col_axis]]
+                    projected_target = target_center @ axes
+                    projected_center = np.array(actual_center) @ axes
+                    self.assertTrue(np.all(projected_center - fov / 2 <= projected_target - target_span / 2 + 1e-8))
+                    self.assertTrue(np.all(projected_center + fov / 2 >= projected_target + target_span / 2 - 1e-8))
                 self.assertEqual(output_spacings[0], output_spacings[1])
                 self.assertEqual(output_spacings[1], output_spacings[2])
                 self.assertEqual(plan, original)

@@ -114,7 +114,7 @@ class SlicePlan:
     sampling_details: Dict[str, Any] | None = None
     """实际层厚、层间距、数量、有效范围和总范围的计算详情。"""
     fill_percent: float | None = None
-    """第七阶段目标取景占比；None/0 不缩放，平面成片仍独立执行上下裁空。"""
+    """第七阶段目标取景占比；None/0 不缩放；平面裁空按部位与取景策略执行。"""
     framing_superior_extension_mm: float | None = None
     """颅脑横状位获准的颅顶取景余量；同步范围扩展，不包含下端或取整余量。"""
 

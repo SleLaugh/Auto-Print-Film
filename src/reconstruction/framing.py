@@ -1,4 +1,4 @@
-"""按计划统一比例，以目标和部位所需显示轮廓居中，不依赖窗宽窗位。"""
+"""按计划统一比例，按选定部位的目标取景，不依赖窗宽窗位。"""
 
 from dataclasses import dataclass
 
@@ -24,7 +24,7 @@ class InterspaceFramingGeometry:
 
 
 class TargetFramer:
-    """正 FillPercent 容纳目标及显示支持，肺用躯干、髋用完整身体轮廓。"""
+    """按选定目标取景；显式传入的轮廓支持仅供独立调用使用。"""
 
     def __init__(
         self,
@@ -157,6 +157,7 @@ class TargetFramer:
         self._body_half_voxel = None
         self._body_group_bounds = None
         self._framing_target_size = None
+        self._reference_framing = None
 
     @staticmethod
     def _vector(point: dict) -> np.ndarray:
@@ -196,6 +197,7 @@ class TargetFramer:
                     projected_body.max(axis=0) + self._body_half_voxel[:2],
                 )
             self._framing_target_size = None
+            self._reference_framing = None
             self._projection_key = key
         return self._bounds
 
@@ -252,6 +254,17 @@ class TargetFramer:
         lower, upper = self.plane_target_bounds(planned_slice)
         if self._framing_target_size is None:
             target_size = upper - lower
+            target_canvas = self._body_points is None and uses_target_centered_canvas(plan)
+            if target_canvas and plan.get("slice_part") == "肺部":
+                self._reference_framing = self._lung_reference_geometry(plan)
+                if self._reference_framing is not None:
+                    target_size = self._reference_framing["required_size"]
+                self._framing_target_size = target_size
+                return target_size
+            if target_canvas:
+                # 各层已经独立居中，跨层的位置漂移不能再撑大共同视野。
+                # 只用实际计划厚层的目标尺寸定倍率，避免部位始终达不到 Fill。
+                target_size = np.zeros(2, dtype=float)
             if self._body_group_bounds is not None:
                 body_lower, body_upper = self._body_group_bounds
                 # 各层已分别居中，位置漂移不能再撑大共同视野。
@@ -259,7 +272,7 @@ class TargetFramer:
                 target_size = np.zeros(2, dtype=float)
             percent = parse_fill_percent(plan.get("fill_percent"))
             use_symmetry = self.symmetry_plane is not None and percent is not None and percent > 0
-            if self._context_points is not None or use_symmetry or self._body_points is not None:
+            if self._context_points is not None or use_symmetry or self._body_points is not None or target_canvas:
                 # 计划内通常方向一致；有不同方向时各方向使用自己的投影缓存。
                 normal = self._projection_axes[:, 2]
                 for item in plan["slices"]:
@@ -288,21 +301,65 @@ class TargetFramer:
             if self._body_group_bounds is not None and not np.any(target_size > 0):
                 # 所有计划层均无交集时沿用整组回退中心的范围，避免零尺寸倍率。
                 target_size = np.maximum(upper, body_upper) - np.minimum(lower, body_lower)
+            elif target_canvas and not np.any(target_size > 0):
+                target_size = upper - lower
             self._framing_target_size = target_size
         return self._framing_target_size
 
-    def plane_geometry(self, plan: dict, planned_slice: dict) -> tuple[dict, dict]:
-        """整组共用比例，正 FillPercent 时按当前厚层目标与上下文联合取景。
+    def _lung_reference_geometry(self, plan: dict) -> dict | None:
+        """以最大实际目标厚层固定面内平移，并一次容纳其他层的完整目标。"""
 
-        一般计划保留原目标整组投影基准，肺/髋有身体支持时改用实际各厚层
-        联合尺寸的最大值，避免把跨层位置漂移计入倍率。肺部保护躯干轮廓，
-        髋骨保护完整身体轮廓，使末端小目标不把轮廓拉出画面；
-        完整联合 bbox 中心令左右留白平衡，不能缩放或镜像解剖结构本身。
+        axes = self._projection_axes
+        slabs = []
+        reference = None
+        reference_area = -1.0
+        for item in plan["slices"]:
+            item_axes = np.column_stack([
+                self._vector(item[key]) for key in ("row_dir", "col_dir", "normal")
+            ])
+            item_axes /= np.linalg.norm(item_axes, axis=0)
+            if not np.allclose(item_axes, axes, rtol=0, atol=1e-12):
+                continue
+            center = self._vector(item["center"])
+            bounds = self._slab_target_bounds(plan, center)
+            if bounds is None:
+                continue
+            lower, upper = bounds
+            slabs.append((center, lower, upper))
+            area = float(np.prod(upper - lower))
+            # 相同截面的浮点投影舍入不改变参考层；面积并列时取计划中最先一层。
+            tolerance = max(1e-9, np.finfo(float).eps * max(area, reference_area, 1.0) * 64)
+            if area > reference_area + tolerance:
+                reference = (item, center, lower, upper)
+                reference_area = area
+        if reference is None:
+            return None
+        item, center, lower, upper = reference
+        shift = (lower + upper) / 2 - center @ axes[:, :2]
+        required_size = upper - lower
+        for planned_center, slab_lower, slab_upper in slabs:
+            fixed_center = planned_center @ axes[:, :2] + shift
+            required_size = np.maximum(required_size, 2 * np.maximum(
+                slab_upper - fixed_center, fixed_center - slab_lower,
+            ))
+        return {
+            "slice_index": item["index"], "shift": shift,
+            "target_size": upper - lower, "required_size": required_size,
+        }
+
+    def plane_geometry(self, plan: dict, planned_slice: dict) -> tuple[dict, dict]:
+        """整组共用比例；肺部固定参考层偏移，髋骨逐层目标居中。
+
+        正式流水线不让体表改变选定部位的倍率或中心。肺部正数 MPR 以最大
+        目标厚层的面内偏移取景，所有层沿用该偏移，一次放宽视野保护其他层。
+        髋骨正数 MPR 仍按各实际厚层目标居中、以最大尺寸确定共同间距。
+        独立调用显式提供身体支持时，才按实际厚层联合尺寸及轮廓中心取景。
         椎间隙配置可共用矩阵及比例；逐层只移动面内中心，不改变切平面。
         可靠镜像面只约束面内左右中心，其余方向继续使用当前厚层 bbox 中心。
-        当前层无目标及显示支持时回退整组中心；FillPercent 未设置/为零时
-        保留原有整组目标中心。本方法确定裁空前的采样几何；HU 采样后的
-        上下无源支持行裁剪仍可改变最终 Rows 和图像垂直中心。
+        肺部没有实际参考层时、其余计划当前层没有目标时回退整组中心；
+        FillPercent 未设置/为零时
+        保留原有整组目标中心。肺/髋正数 MPR 成片不再单侧裁空；其余平面
+        HU 采样后的上下无源支持行裁剪仍可改变最终 Rows 和图像垂直中心。
         """
 
         lower, upper = self.plane_target_bounds(planned_slice)
@@ -317,7 +374,12 @@ class TargetFramer:
         percent = parse_fill_percent(plan.get("fill_percent"))
         if percent is not None and percent > 0:
             slice_bounds = self._slab_target_bounds(plan, center)
-            if slice_bounds is None:
+            if self._reference_framing is not None:
+                target_center = center_local[:2] + self._reference_framing["shift"]
+                center_source = "group_reference_slice"
+                if slice_bounds is not None:
+                    slice_target_size = list(map(float, slice_bounds[1] - slice_bounds[0]))
+            elif slice_bounds is None:
                 center_source = "group_fallback"
                 if self._body_group_bounds is not None:
                     body_lower, body_upper = self._body_group_bounds
@@ -351,13 +413,16 @@ class TargetFramer:
             size, spacing = _plane_matrix(plan)
             new_spacing, scale = fitted_spacing(size, spacing, framing_target_size, plan.get("fill_percent"))
             if (
-                self._body_points is not None
-                and plan.get("slice_part") == "肺部"
-                and plan.get("plane") == "横状位"
-                and percent is not None and percent > 0
+                (self._body_points is None and uses_target_centered_canvas(plan))
+                or (
+                    self._body_points is not None
+                    and plan.get("slice_part") == "肺部"
+                    and plan.get("plane") == "横状位"
+                    and percent is not None and percent > 0
+                )
             ):
-                # 保留共同采样间距，只去掉共同画布的多余空气。近方形画布
-                # 放进宽胶片格时会按高度再次缩小，导致 100% 的胸廓仍显得很小。
+                # 保留目标中心和共同采样间距，只对称去掉画布的多余空气。
+                # 近方形画布在宽胶片格内按高度缩小时会压低目标的显示占比。
                 # 尺寸包含百分比所需留白和半体素外缘，并向上取整保护轮廓。
                 required_pixels = framing_target_size / (percent / 100.0) / new_spacing
                 tolerance = np.maximum(1e-9, np.abs(required_pixels) * np.finfo(float).eps * 32)
@@ -402,7 +467,24 @@ class TargetFramer:
         if self._body_points is not None:
             framed_slice["framing"]["body_support_source"] = "ct_body_contour"
             framed_slice["framing"]["body_support_region"] = self._body_region
+        if self._reference_framing is not None:
+            framed_slice["framing"].update({
+                "reference_slice_index": self._reference_framing["slice_index"],
+                "reference_shift_mm": list(map(float, self._reference_framing["shift"])),
+                "reference_target_size_mm": list(map(float, self._reference_framing["target_size"])),
+            })
         return framed_plan, framed_slice
+
+
+def uses_target_centered_canvas(plan: dict) -> bool:
+    """肺正数 MPR 固定参考偏移、髋正数 MPR 逐层居中，均收紧目标画布。"""
+
+    return (
+        plan.get("slice_part") in {"肺部", "髋骨"}
+        and plan.get("slice_type") == "MPR"
+        and plan.get("geometry_type") == "plane_stack"
+        and (parse_fill_percent(plan.get("fill_percent")) or 0) > 0
+    )
 
 
 def _plane_matrix(plan: dict) -> tuple[np.ndarray, np.ndarray]:

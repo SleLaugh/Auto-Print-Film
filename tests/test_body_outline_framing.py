@@ -1,26 +1,19 @@
-"""肺/髋末端的小截面不能把同层身体轮廓推到画外。"""
+"""显式传入身体支持时的独立取景 API；正式流水线只使用目标标签。"""
 
 import copy
 from itertools import product
-from pathlib import Path
-from unittest.mock import patch
 
 import numpy as np
-import pydicom
 import pytest
 import SimpleITK as sitk
 from scipy import ndimage
 
-from src.core.context import ProcessingContext
-from src.models import PlaneConfig, Request
-from src.models.enums import PlaneTypeEnum, SlicePartEnum
 from src.reconstruction.body_framing import (
     BodyFramingSupport,
     build_body_framing_support,
 )
 from src.reconstruction.framing import TargetFramer
 from src.reconstruction.plane_stack import PlaneStackResampler
-from src.stages.stage_reconstruction import ReconstructionStage
 
 
 def _point(values):
@@ -195,37 +188,46 @@ def test_partial_body_recognition_cannot_crop_a_previously_visible_outer_shell(p
         } for z in range(3)],
     }
     coords = {"target_left": {"label_ids": [1]}, "target_right": {"label_ids": [2]}}
-    baseline = TargetFramer(seg, coords, plan)
-    supported = TargetFramer(seg, coords, plan, body_support=build_body_framing_support(raw))
+    support = build_body_framing_support(raw)
+    supported = TargetFramer(seg, coords, plan, body_support=support)
     body_yx = np.argwhere(body)
     lower = body_yx.min(axis=0)[::-1] - 0.5
     upper = body_yx.max(axis=0)[::-1] + 0.5
     for item in plan["slices"]:
-        for framer in (baseline, supported):
-            framed_plan, framed = framer.plane_geometry(plan, item)
-            image = PlaneStackResampler().sample_slice(raw, framed_plan, framed)
-            center = np.array(image.TransformContinuousIndexToPhysicalPoint(
-                ((image.GetSize()[0] - 1) / 2, (image.GetSize()[1] - 1) / 2, 0),
-            ))[:2]
-            half_fov = np.array(image.GetSize()[:2]) * image.GetSpacing()[:2] / 2
-            assert np.all(center - half_fov <= lower + 1e-6)
-            assert np.all(center + half_fov >= upper - 1e-6)
+        framed_plan, framed = supported.plane_geometry(plan, item)
+        image = PlaneStackResampler().sample_slice(raw, framed_plan, framed)
+        center = np.array(image.TransformContinuousIndexToPhysicalPoint(
+            ((image.GetSize()[0] - 1) / 2, (image.GetSize()[1] - 1) / 2, 0),
+        ))[:2]
+        half_fov = np.array(image.GetSize()[:2]) * image.GetSpacing()[:2] / 2
+        if support is None:
+            # 被可靠性检查拒绝的外壳不构成显示支持；此时恢复目标取景，
+            # 不再要求未选中的体表被目标画布完整容纳。
+            target = np.argwhere(labels[0] > 0)[:, ::-1]
+            target_lower, target_upper = target.min(axis=0) - 0.5, target.max(axis=0) + 0.5
+            np.testing.assert_allclose(center, (target_lower + target_upper) / 2)
+            assert np.all(center - half_fov <= target_lower + 1e-6)
+            assert np.all(center + half_fov >= target_upper - 1e-6)
+            assert framed["framing"]["center_source"] == ("group_reference_slice" if part == "肺部" else "slice_target")
+            assert "body_support_source" not in framed["framing"]
+            continue
+        assert np.all(center - half_fov <= lower + 1e-6)
+        assert np.all(center + half_fov >= upper - 1e-6)
 
-            # 从最终采样像素反查体表四向覆盖，不能只相信 framing 的范围声明。
-            visible = np.argwhere(sitk.GetArrayViewFromImage(image)[0] > -400)
-            assert len(visible) > 0
-            pixel_lower = visible.min(axis=0)[::-1]
-            pixel_upper = visible.max(axis=0)[::-1]
-            spacing = np.array(image.GetSpacing()[:2])
-            visible_lower = np.array(image.GetOrigin()[:2]) + pixel_lower * spacing
-            visible_upper = np.array(image.GetOrigin()[:2]) + pixel_upper * spacing
-            tolerance = 2 * spacing + 0.5
-            assert np.all(visible_lower <= lower + tolerance)
-            assert np.all(visible_upper >= upper - tolerance)
-            if framed["framing"]["center_source"] == "slice_body_contour":
-                # 混合好/坏层的共用倍率可能掩盖裁切，但内部块仍不能冒充身体居中。
-                np.testing.assert_allclose(center, (lower + upper) / 2, atol=1.0)
-
+        # 从最终采样像素反查体表四向覆盖，不能只相信 framing 的范围声明。
+        visible = np.argwhere(sitk.GetArrayViewFromImage(image)[0] > -400)
+        assert len(visible) > 0
+        pixel_lower = visible.min(axis=0)[::-1]
+        pixel_upper = visible.max(axis=0)[::-1]
+        spacing = np.array(image.GetSpacing()[:2])
+        visible_lower = np.array(image.GetOrigin()[:2]) + pixel_lower * spacing
+        visible_upper = np.array(image.GetOrigin()[:2]) + pixel_upper * spacing
+        tolerance = 2 * spacing + 0.5
+        assert np.all(visible_lower <= lower + tolerance)
+        assert np.all(visible_upper >= upper - tolerance)
+        if framed["framing"]["center_source"] == "slice_body_contour":
+            # 混合好/坏层的共用倍率可能掩盖裁切，但内部块仍不能冒充身体居中。
+            np.testing.assert_allclose(center, (lower + upper) / 2, atol=1.0)
 
 @pytest.mark.parametrize("part,fill_percent", (
     ("肺部", 0), ("肺部", None), ("髋骨", 0), ("髋骨", None),
@@ -399,83 +401,3 @@ def test_relative_oblique_thick_slabs_cover_real_body_voxel_intersections(
     original_depth_steps = np.diff([_vector(item["center"]) @ rotation[:, 2] for item in plan["slices"]])
     np.testing.assert_allclose(actual_depth_steps, original_depth_steps, atol=1e-7)
     assert plan == original
-
-
-def _run_stage(tmp_path: Path, part, fill_percent, *, oblique=False, two_plans=False):
-    raw, seg, plan, coords, body, physical, direction = _fixture(
-        part, fill_percent, oblique=oblique, flipped=oblique,
-    )
-    raw_path, seg_path = tmp_path / "raw.nii.gz", tmp_path / "seg.nii.gz"
-    sitk.WriteImage(raw, str(raw_path))
-    sitk.WriteImage(seg, str(seg_path))
-    request = Request(
-        str(tmp_path / "source"), str(tmp_path / "out"), slice_part=SlicePartEnum(part),
-        plane_configs=[PlaneConfig(PlaneTypeEnum.横状位, 0.5, 1.7, ["软组织窗"], fill_percent=fill_percent)],
-    )
-    context = ProcessingContext(request)
-    context.set_result("localization", {
-        "raw_for_reconstruction_path": str(raw_path),
-        "seg_for_reconstruction_path": str(seg_path), "coords": coords,
-    })
-    plans = [plan]
-    if two_plans:
-        plans.append({**copy.deepcopy(plan), "plan_id": "body_outline_second",
-                      "output_plane": "横状位_重复配置", "config_id": "second"})
-    context.set_result("planning", {"plans": plans})
-    context.set_result("preprocessing", {"source_dicom_metadata": {"0020|000d": "1.2.3.4.5"}})
-    with patch("src.stages.stage_reconstruction.build_body_framing_support",
-               wraps=build_body_framing_support) as build:
-        ReconstructionStage({"parallel": False}).execute(context)
-    return context, plan, body, physical, direction, build.call_count
-
-
-@pytest.mark.parametrize("part,fill_percent,expected_calls", (
-    ("肺部", 80, 1), ("髋骨", 80, 1), ("肺部", 0, 0), ("肺部", None, 0),
-    ("髋骨", 0, 0), ("颅脑", 80, 0), ("腰椎", 80, 0),
-))
-def test_stage_builds_optional_body_support_only_for_applicable_parts(tmp_path, part, fill_percent, expected_calls):
-    _, _, _, _, _, calls = _run_stage(tmp_path, part, fill_percent)
-    assert calls == expected_calls
-
-
-def test_stage_shares_one_body_extraction_between_multiple_plans(tmp_path):
-    context, _, _, _, _, calls = _run_stage(tmp_path, "肺部", 80, two_plans=True)
-    assert calls == 1
-    outputs = context.get_result("reconstruction")["outputs"]
-    assert len(outputs) == 2
-    for output in outputs:
-        assert all(frame["body_support_source"] == "ct_body_contour" for frame in output["framing"])
-
-
-@pytest.mark.parametrize("part", ("肺部", "髋骨"))
-def test_dicom_pixels_and_geometry_preserve_body_outline_on_terminal_layers(tmp_path, part):
-    context, plan, body, physical, direction, calls = _run_stage(tmp_path, part, 100, oblique=True)
-    assert calls == 1
-    output = context.get_result("reconstruction")["outputs"][0]
-    directory = Path(output["window_outputs"]["软组织窗"])
-    spacings = []
-    previous_depth = None
-    for item, depth in zip(plan["slices"], (3, 6, 7)):
-        ds = pydicom.dcmread(directory / f"{item['index']}.dcm")
-        row, col = np.array(ds.ImageOrientationPatient, dtype=float).reshape(2, 3)
-        spacing_yx = np.array(ds.PixelSpacing, dtype=float)
-        center = np.array(ds.ImagePositionPatient, dtype=float)
-        center += row * (ds.Columns - 1) * spacing_yx[1] / 2
-        center += col * (ds.Rows - 1) * spacing_yx[0] / 2
-        np.testing.assert_allclose(center, physical((68, 48, depth)), atol=1e-5)
-        np.testing.assert_allclose(np.column_stack((row, col)), direction[:, :2], atol=1e-7)
-        spacings.append(spacing_yx)
-        normal = np.cross(row, col)
-        if previous_depth is not None:
-            assert center @ normal > previous_depth
-        previous_depth = center @ normal
-        assert float(ds.SliceThickness) == plan["slice_thickness"]
-        visible = np.argwhere(ds.pixel_array > 100)
-        lower, upper = visible.min(axis=0), visible.max(axis=0)
-        np.testing.assert_allclose((lower + upper) / 2,
-                                   [(ds.Rows - 1) / 2, (ds.Columns - 1) / 2], atol=1)
-        body_indices = np.argwhere(body)
-        expected_span_yx = (body_indices.max(axis=0) - body_indices.min(axis=0)) * [1.2, 0.9]
-        actual_span_yx = (upper - lower) * spacing_yx
-        assert np.all(actual_span_yx >= expected_span_yx - 2 * spacing_yx)
-    np.testing.assert_allclose(spacings, [spacings[0]] * 3)

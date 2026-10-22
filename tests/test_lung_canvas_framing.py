@@ -1,20 +1,14 @@
-"""肺横状位去除画布空气后，胶片宽格仍按共同倍率显示完整躯干。"""
+"""显式身体支持 API 的肺横状位画布压紧；生产目标取景另行验收。"""
 
 import copy
-from pathlib import Path
 
 import numpy as np
-import pydicom
 import pytest
 import SimpleITK as sitk
 
-from src.core.context import ProcessingContext
-from src.models import PlaneConfig, Request
-from src.models.enums import PlaneTypeEnum, SlicePartEnum
 from src.reconstruction.body_framing import build_body_framing_support
 from src.reconstruction.framing import TargetFramer, frame_curved_slice
 from src.reconstruction.plane_stack import PlaneStackResampler
-from src.stages.stage_reconstruction import ReconstructionStage
 
 
 def _point(values):
@@ -166,10 +160,10 @@ def test_lung_canvas_removes_air_without_changing_common_sampling_scale(fill_per
 
 @pytest.mark.parametrize("part,plane,percent,with_body", (
     ("肺部", "横状位", 0, True), ("肺部", "横状位", None, True),
-    ("肺部", "横状位", 100, False), ("髋骨", "横状位", 100, True),
+    ("髋骨", "横状位", 100, True),
     ("肺部", "冠状位", 100, True), ("肺部", "矢状位", 100, True),
 ))
-def test_air_canvas_compaction_is_limited_to_supported_positive_lung_axial_mpr(part, plane, percent, with_body):
+def test_explicit_body_canvas_compaction_keeps_its_original_scope(part, plane, percent, with_body):
     raw, seg, plan, coords, _, _, _, _ = _fixture(percent)
     plan.update(slice_part=part, plane=plane)
     framer = TargetFramer(
@@ -188,54 +182,3 @@ def test_cpr_keeps_its_unfolded_canvas(fill_percent):
     mask = sitk.Cast(seg[:, :, 2:3] > 0, sitk.sitkUInt8)
     framed, _ = frame_curved_slice(image, mask, fill_percent)
     assert framed.GetSize() == image.GetSize()
-
-
-@pytest.mark.parametrize("fill_percent", (80, 100))
-def test_reconstruction_dicom_windows_share_compact_matrix_scale_and_full_terminal_contour(tmp_path: Path, fill_percent):
-    raw, seg, plan, coords, bodies, depths, physical, direction = _fixture(fill_percent, oblique=True)
-    raw_path, seg_path = tmp_path / "raw.nii.gz", tmp_path / "seg.nii.gz"
-    sitk.WriteImage(raw, str(raw_path))
-    sitk.WriteImage(seg, str(seg_path))
-    request = Request(
-        str(tmp_path / "source"), str(tmp_path / "out"), slice_part=SlicePartEnum.肺部,
-        plane_configs=[PlaneConfig(
-            PlaneTypeEnum.横状位, 0.5, 2.5, ["纵隔窗", "肺窗"], fill_percent=fill_percent,
-        )],
-    )
-    context = ProcessingContext(request)
-    context.set_result("localization", {
-        "raw_for_reconstruction_path": str(raw_path), "seg_for_reconstruction_path": str(seg_path),
-        "coords": coords,
-    })
-    context.set_result("planning", {"plans": [plan]})
-    context.set_result("preprocessing", {"source_dicom_metadata": {"0020|000d": "1.2.3.4.5"}})
-    ReconstructionStage({"parallel": False}).execute(context)
-    output = context.get_result("reconstruction")["outputs"][0]
-    bounds, maximum = _truth(bodies, depths)
-    expected_spacing = max(maximum / 200) / (fill_percent / 100)
-    geometry = []
-    for window in ("纵隔窗", "肺窗"):
-        directory = Path(output["window_outputs"][window])
-        for item, z, (lower, upper) in zip(plan["slices"], depths, bounds):
-            ds = pydicom.dcmread(directory / f"{item['index']}.dcm")
-            row, col = np.array(ds.ImageOrientationPatient, dtype=float).reshape(2, 3)
-            spacing_yx = np.array(ds.PixelSpacing, dtype=float)
-            center = np.array(ds.ImagePositionPatient, dtype=float)
-            center += row * (ds.Columns - 1) * spacing_yx[1] / 2
-            center += col * (ds.Rows - 1) * spacing_yx[0] / 2
-            np.testing.assert_allclose(center, physical((*((lower + upper) / 2), z)), atol=1e-5)
-            np.testing.assert_allclose(np.column_stack((row, col)), direction[:, :2], atol=1e-7)
-            np.testing.assert_allclose(spacing_yx, expected_spacing, rtol=1e-6)
-            assert ds.Rows < 110
-            assert ds.Columns == 200
-            assert float(ds.SliceThickness) == plan["slice_thickness"]
-            projected_center = (center - raw.GetOrigin()) @ direction[:, :2]
-            half_fov = np.array([ds.Columns, ds.Rows]) * spacing_yx[::-1] / 2
-            assert np.all(projected_center - half_fov <= lower + 1e-5)
-            assert np.all(projected_center + half_fov >= upper - 1e-5)
-            # 两种窗都检查实际四向体表，防止只有几何声明完整。
-            visible_yx = np.argwhere(ds.pixel_array > 100)
-            span = (visible_yx.max(axis=0) - visible_yx.min(axis=0))[::-1] * spacing_yx[::-1]
-            assert np.all(span >= upper - lower - 2 - 3 * spacing_yx[::-1])
-            geometry.append((ds.Columns, ds.Rows, *spacing_yx, *ds.ImagePositionPatient, *ds.ImageOrientationPatient))
-    np.testing.assert_allclose(geometry[:len(depths)], geometry[len(depths):], atol=1e-8)

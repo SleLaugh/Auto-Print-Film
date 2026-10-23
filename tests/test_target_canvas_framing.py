@@ -1,6 +1,7 @@
-"""肺/髋最终 DICOM 按选定目标居中、共同倍率适配胶片格。"""
+"""肺/髋以选定目标为取景基础，Fill100再按完整皮肤包络修正画布。"""
 
 import copy
+from itertools import product
 from pathlib import Path
 from unittest.mock import patch
 
@@ -55,10 +56,10 @@ def _fixture(part, plane, percent, *, oblique=False, drifting=False):
     seg.SetSpacing(tuple(spacing))
     seg.SetOrigin(tuple(origin))
     seg.SetDirection(tuple(direction.ravel()))
-    # 偏心、很宽的体表和扫描床都不是此次选定部位。
+    # 偏心、很宽的体表不是此次选定部位；所有标签均位于实体人体内。
+    # 去床与小组件分类另由 body_preserving_canvas 的独立真值病例验证。
     raw_array = np.full(array.shape, -1024.0, dtype=np.float32)
-    raw_array[:, 3:76, 3:96] = 60.0
-    raw_array[:, 77:79, 1:99] = 700.0
+    raw_array[:, 3:80, 3:96] = 60.0
     raw_array[array == 1] = -600.0 if part == "肺部" else 1200.0
     raw = sitk.GetImageFromArray(raw_array)
     raw.CopyInformation(seg)
@@ -131,8 +132,7 @@ def _run_stage(tmp_path, raw, seg, plan):
         "coords": {"target": {"label_ids": [1]}},
     })
     context.set_result("planning", {"plans": [plan]})
-    with patch("src.reconstruction.body_framing.build_body_framing_support", side_effect=AssertionError("体表不参与正式取景")):
-        ReconstructionStage({"parallel": plan["fill_percent"] == 100}).execute(context)
+    ReconstructionStage({"parallel": plan["fill_percent"] == 100}).execute(context)
     return context.get_result("reconstruction")["outputs"][0]
 
 
@@ -160,18 +160,41 @@ def _expected_centers_and_size(plan, axes, group, slabs):
 @pytest.mark.parametrize("percent,oblique,drifting", (
     (80, False, False), (100, False, False), (80, True, True), (100, True, True),
 ))
-def test_final_dicom_centers_selected_target_and_fits_film_cell(tmp_path, part, plane, percent, oblique, drifting):
+def test_final_dicom_uses_target_basis_and_complete_body_canvas(tmp_path, part, plane, percent, oblique, drifting):
     raw, seg, plan, coords, original_size = _fixture(part, plane, percent, oblique=oblique, drifting=drifting)
     original = copy.deepcopy(plan)
     axes, group, slabs = _target_truth(seg, plan)
     expected_centers, maximum, reference, shift = _expected_centers_and_size(plan, axes, group, slabs)
     sizes = np.array([upper - lower for bounds in slabs if bounds is not None for lower, upper in [bounds]])
     base_spacing = np.array([plan["output_spacing_mm"][axis] for axis in "xy"])
-    expected_spacing = base_spacing * max(maximum / (original_size * base_spacing)) / (percent / 100)
+    # 目标决定基准中心和期望倍率；Fill100再按人体紧包络修正最终中心。
+    # 独立定义的人体矩形及2mm余量保护未选组织。
+    # 此 fixture 的切面与源轴一致，人体每层是相同实心矩形。
+    source_indices = np.array(list(product(*[(-0.5, size - 0.5) for size in raw.GetSize()])))
+    source_points = source_indices @ (np.array(raw.GetDirection()).reshape(3, 3) * raw.GetSpacing()).T + raw.GetOrigin()
+    source_projected = source_points @ axes[:, :2]
+    source_lower, source_upper = source_projected.min(axis=0), source_projected.max(axis=0)
+    body_indices = np.array(list(product((2.5, 95.5), (2.5, 79.5), (-0.5, 49.5))))
+    body_points = body_indices @ (np.array(raw.GetDirection()).reshape(3, 3) * raw.GetSpacing()).T + raw.GetOrigin()
+    body_projected = body_points @ axes[:, :2]
+    body_lower = np.maximum(body_projected.min(axis=0) - 2.0, source_lower)
+    body_upper = np.minimum(body_projected.max(axis=0) + 2.0, source_upper)
+    body_required = np.max(2 * np.maximum(body_upper - expected_centers, expected_centers - body_lower), axis=0)
+    previous_centers = expected_centers.copy()
+    if percent == 100:
+        from tests.test_skin_edge_framing import _skin_expected
+
+        protected = [(np.minimum(body_lower, bounds[0]), np.maximum(body_upper, bounds[1]))
+                     if bounds is not None else (body_lower, body_upper) for bounds in slabs]
+        expected_centers, required_fov = _skin_expected(part, expected_centers, protected)
+        body_required = required_fov
+    else:
+        required_fov = np.maximum(maximum / (percent / 100), body_required)
+    expected_spacing = base_spacing * max(required_fov / (original_size * base_spacing))
     output = _run_stage(tmp_path, raw, seg, plan)
     geometries = []
     display_occupancy = {cell: [] for cell in ((188, 112), (136, 104), (112, 188))}
-    framer = TargetFramer(seg, coords, plan)
+    framer = TargetFramer(seg, coords, plan, source_image=raw)
     for window in plan["window_presets"]:
         for item, bounds, expected_center in zip(plan["slices"], slabs, expected_centers):
             ds = pydicom.dcmread(Path(output["window_outputs"][window]) / f"{item['index']}.dcm")
@@ -199,22 +222,28 @@ def test_final_dicom_centers_selected_target_and_fits_film_cell(tmp_path, part, 
             geometries.append((ds.Columns, ds.Rows, *spacing))
     np.testing.assert_allclose(geometries, [geometries[0]] * len(geometries))
     for cell, occupancy in display_occupancy.items():
-        ideal_fov = maximum / (percent / 100)
+        ideal_fov = required_fov
         ideal_fit = min(np.array(cell) / ideal_fov)
         expected_fill = max(np.max(sizes * ideal_fit / cell, axis=1))
         assert max(occupancy) == pytest.approx(expected_fill, abs=0.035)
         assert max(occupancy) <= percent / 100 + 1e-5
-    for details, bounds in zip(output["framing"], slabs):
+    for index, (details, bounds) in enumerate(zip(output["framing"], slabs)):
         assert "body_support_source" not in details
         assert "vertical_source_support" not in details
+        assert details["source_preservation"]["mode"] == "complete_body_slab"
+        np.testing.assert_allclose(details["source_preservation"]["required_size_mm"], body_required)
         if part == "肺部":
-            assert details["center_source"] == "group_reference_slice"
+            assert details["center_source"] == ("group_skin_edge" if percent == 100 else "group_reference_slice")
             assert details["reference_slice_index"] == plan["slices"][reference]["index"]
             assert details["reference_slice_index"] == 1  # 两个同面积主体并列，取最先计划层。
-            np.testing.assert_allclose(details["reference_shift_mm"], shift, atol=1e-8)
+            if percent == 100:
+                np.testing.assert_allclose(details["reference_target_shift_mm"], shift, atol=1e-8)
+                np.testing.assert_allclose(details["reference_shift_mm"], shift + expected_centers[index] - previous_centers[index], atol=1e-8)
+            else:
+                np.testing.assert_allclose(details["reference_shift_mm"], shift, atol=1e-8)
             np.testing.assert_allclose(details["reference_target_size_mm"], slabs[reference][1] - slabs[reference][0])
         else:
-            assert details["center_source"] == ("group_fallback" if bounds is None else "slice_target")
+            assert details["center_source"] == ("slice_skin_edge" if percent == 100 else ("group_fallback" if bounds is None else "slice_target"))
             assert "reference_slice_index" not in details
     assert plan == original
 
@@ -245,11 +274,19 @@ def test_empty_planned_slabs_keep_finite_group_target_fallback(part):
 
 
 @pytest.mark.parametrize("part", ("肺部", "髋骨"))
-def test_zero_fill_stage_keeps_existing_vertical_source_crop(tmp_path, part):
-    raw, seg, plan, _, _ = _fixture(part, "冠状位", 0)
+def test_zero_fill_stage_preserves_source_without_changing_spacing_or_center(tmp_path, part):
+    raw, seg, plan, _, original_size = _fixture(part, "冠状位", 0)
+    axes, group, _ = _target_truth(seg, plan)
     output = _run_stage(tmp_path, raw, seg, plan)
-    assert any(frame.get("vertical_source_support", {}).get("crop_top_rows", 0) > 0
-               for frame in output["framing"])
+    for details in output["framing"]:
+        assert "vertical_source_support" not in details
+        assert details["center_source"] == "group_target"
+        assert details["scale"] == 1.0
+        assert np.all(np.array(details["output_size_xy"]) >= original_size)
+        np.testing.assert_allclose(np.array([details["center"][axis] for axis in "xyz"]) @ axes[:, :2], (group[0] + group[1]) / 2)
+        assert details["output_spacing_mm"] == plan["output_spacing_mm"]
+        assert details["source_preservation"]["mode"] == "complete_source_slab"
+        assert details["source_preservation"]["zoom_limited"] is False
 
 
 @pytest.mark.parametrize("part", ("肺部", "髋骨"))

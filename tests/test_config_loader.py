@@ -369,6 +369,74 @@ class ConfigLoaderTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     validate_slice_part_config(config)
 
+    def test_framing_policy_validates_selected_region_options(self):
+        """部位取景必须显式声明依据和非负有限的毫米余量。"""
+
+        for margin in (0, 0.0, 5, 5.5):
+            config = load_slice_part_config()
+            config["slice_parts"]["髋骨"]["slice_rules"]["冠状位"]["MPR"][
+                "framing_policy"
+            ] = {"basis": "selected_region", "margin_mm": margin}
+            with self.subTest(valid_margin=margin):
+                validate_slice_part_config(config)
+
+        invalid = [
+            None, [], "selected_region", True, 5,
+            {}, {"basis": "selected_region"}, {"margin_mm": 5.0},
+            {"basis": "skin", "margin_mm": 5.0},
+            {"basis": ["selected_region"], "margin_mm": 5.0},
+            {"basis": "selected_region", "margin_mm": 5.0, "unused": 1},
+        ]
+        invalid.extend(
+            {"basis": "selected_region", "margin_mm": margin}
+            for margin in (
+                None, True, False, "5", [], {}, -0.1,
+                float("nan"), float("inf"), float("-inf"), 10 ** 1000,
+            )
+        )
+        for value in invalid:
+            config = load_slice_part_config()
+            config["slice_parts"]["髋骨"]["slice_rules"]["冠状位"]["MPR"][
+                "framing_policy"
+            ] = value
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "framing_policy"):
+                    validate_slice_part_config(config)
+
+    def test_framing_policy_is_only_allowed_on_mpr(self):
+        """CPR 和椎间隙不能静默接收普通 MPR 专属的取景规则。"""
+
+        for plane, slice_type in (("冠状位", "CPR"), ("横状位", "椎间隙")):
+            config = load_slice_part_config()
+            config["slice_parts"]["颈椎"]["slice_rules"][plane][slice_type][
+                "framing_policy"
+            ] = {"basis": "selected_region", "margin_mm": 5.0}
+            with self.subTest(slice_type=slice_type):
+                with self.assertRaisesRegex(ValueError, "framing_policy 仅支持 MPR"):
+                    validate_slice_part_config(config)
+
+    def test_default_selected_region_framing_only_applies_to_hip_coronal(self):
+        """默认只给髋骨冠状位启用部位取景，并保留已确认的颈椎端点。"""
+
+        config = load_slice_part_config()
+        configured = [
+            (part, plane, slice_type, rule["framing_policy"])
+            for part, part_config in config["slice_parts"].items()
+            for plane, rules in part_config["slice_rules"].items()
+            for slice_type, rule in rules.items()
+            if "framing_policy" in rule
+        ]
+        self.assertEqual(configured, [(
+            "髋骨", "冠状位", "MPR",
+            {"basis": "selected_region", "margin_mm": 5.0},
+        )])
+        cervical = config["slice_parts"]["颈椎"]
+        self.assertEqual(cervical["localization"]["regions"]["default"]["end_label"], "T1")
+        self.assertEqual(
+            cervical["slice_rules"]["横状位"]["MPR"]["range_extension"]["end_mm"],
+            5.0,
+        )
+
     def test_removed_study_part_config_files_do_not_exist(self):
         """旧切割部位配置文件和模块不再保留。"""
 

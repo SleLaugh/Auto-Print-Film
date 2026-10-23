@@ -90,7 +90,8 @@ class PlaneConfig:
     slice_spacing: Optional[float]
     # 一个状位可以同时输出多套窗宽窗位图像，例如骨窗和纵隔窗。
     window_presets: List[str]
-    # 共同目标尺寸相对输出画布的占比；None/0 不缩放，裁空按部位与取景策略执行。
+    # 共同取景比例；普通 MPR 的正数占比可按部位配置优先所选标签，否则肺/髋保护人体。
+    # None/0 不缩放；肺/髋保源时可扩大矩阵，其余按各自规则裁空。
     fill_percent: Optional[float] = None
     # 切片方式由调用方显式选择；普通直线重建默认使用 MPR。
     slice_type: SliceType = SliceType.MPR

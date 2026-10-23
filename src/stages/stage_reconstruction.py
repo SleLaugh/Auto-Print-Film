@@ -35,6 +35,7 @@ from src.reconstruction.windowing import apply_window_to_image, unique_window_pr
 from src.reconstruction.vertical_support import crop_vertical_padding
 from src.reconstruction.framing_context import FramingContext, load_framing_context
 from src.reconstruction.symmetry_framing import resolve_symmetry_framing_plane
+from src.reconstruction.source_framing import BodyImageSupport
 from src.reconstruction.spine_localizer import (
     SpineLocalizerSurface,
     build_spine_localizer_surface,
@@ -45,6 +46,7 @@ from src.reconstruction.framing import (
     curved_group_bounds,
     prepare_interspace_framing,
     uses_target_centered_canvas,
+    selected_region_framing,
 )
 from src.utils import DebugLog, is_debug_file_enabled
 from src.runtime import window_worker_count
@@ -151,10 +153,17 @@ class ReconstructionStage(BaseStage):
         # 与第六阶段消费相同的展平结果。脑区仍是独立切割目标，骨性支持
         # 只能在最终脑 SI 范围及计划允许的颅顶余量内取景，不通过坐标表扩展层组。
         loc_result = {**loc_result, **anatomical_analysis}
-        # 正式成片始终按请求选定的目标取景，体表和扫描床不改变目标中心或倍率。
+        # 默认肺/髋正数 Fill 用完整人体限制放大，空气和薄床板不撑大视野。
+        # selected_region 按选定标签取景，不提取人体；其余每源只提取一次共用。
+        body_source_support = (
+            BodyImageSupport(image)
+            if any(uses_target_centered_canvas(plan) and selected_region_framing(plan) is None
+                   for plan in plans) else None
+        )
         framing_context = load_framing_context(
             loc_result.get("dataset_json_path"), loc_result.get("coords", {}),
-        ) if any(plan.get("fill_percent") for plan in plans) else None
+        ) if any(plan.get("fill_percent") and selected_region_framing(plan) is None
+                 for plan in plans) else None
         merge_framing_support = False
         if request.slice_part.value == "颅脑" and anatomical_analysis.get("framing_label_ids"):
             frame = anatomical_analysis["anatomical_geometry"]["global_frame"]
@@ -211,6 +220,10 @@ class ReconstructionStage(BaseStage):
                             segmentation,
                             loc_result.get("coords", {}),
                             plan,
+                            source_image=image,
+                            source_support=(
+                                body_source_support if uses_target_centered_canvas(plan) else None
+                            ),
                             context=(
                                 FramingContext(
                                     label_ids=framing_context.label_ids,
@@ -297,8 +310,8 @@ class ReconstructionStage(BaseStage):
 
         resampler = self._resampler_for_plan(plan)
 
-        # 第一步：按计划完成 HU 厚层采样。肺/髋正数 MPR 已按目标对称收紧
-        # 画布，不能再单侧裁行覆盖既定取景中心；其余计划沿用原有上下裁空。
+        # 第一步：按计划完成 HU 厚层采样。肺/髋人体/完整源保护画布不能单侧
+        # 裁行覆盖既定取景中心；其余计划沿用原有上下裁空。
         # 所有采样完成之前不会开始任何窗宽窗位映射。
         DebugLog(f"    [1] MPR采样: 共 {len(plan['slices'])} 张")
         sampling_start = time.perf_counter()
@@ -320,6 +333,7 @@ class ReconstructionStage(BaseStage):
             if (
                 plan.get("geometry_type") != "curved_stack"
                 and not uses_target_centered_canvas(plan)
+                and "source_preservation" not in planned_slice.get("framing", {})
                 and isinstance(image, sitk.Image)
                 and isinstance(sampled_image, sitk.Image)
             ):

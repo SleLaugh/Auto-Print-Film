@@ -103,7 +103,7 @@
                     "excluded_labels": ["C1"]
                 },
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "C1", "end_label": "T2" },
+                    "default": { "type": "whole_range", "start_label": "C1", "end_label": "T1" },
                     "C2_C3": { "type": "interspace", "start_label": "C2", "end_label": "C3" },
                     "C3_C4": { "type": "interspace", "start_label": "C3", "end_label": "C4" },
                     "C4_C5": { "type": "interspace", "start_label": "C4", "end_label": "C5" },
@@ -115,7 +115,7 @@
                 "横状位": {
                     "MPR": {
                         "regions": ["default"],
-                        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
+                        "range_extension": { "start_mm": 0.0, "end_mm": 5.0 },
                         "localizer_plane": "矢状位"
                     },
                     "椎间隙": {
@@ -437,7 +437,8 @@
                     "MPR": {
                         "regions": ["default"],
                         "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
-                        "localizer_plane": "矢状位"
+                        "localizer_plane": "矢状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 5.0 }
                     }
                 },
                 "矢状位": {

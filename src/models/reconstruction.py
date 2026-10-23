@@ -5,11 +5,13 @@
 重建规划模型
 
 这些实体是第六阶段输出给第七阶段的稳定契约。第六阶段负责把切割路径展开成
-具体切片清单；第七阶段保持切面、层厚、层间距和张数，仅按整组目标范围
-调整面内中心与取景比例，再执行采样。
+具体切片清单；第七阶段保持切面、层厚、层间距和张数，按目标及获准人体支持
+调整面内中心与共同取景比例，再执行采样。普通 MPR 的正数占比可配置优先所选标签；
+其余肺/髋100按紧致人体边界校正中心。
 """
 
 from dataclasses import dataclass, field
+from copy import deepcopy
 from typing import Any, Dict, List
 
 
@@ -114,7 +116,9 @@ class SlicePlan:
     sampling_details: Dict[str, Any] | None = None
     """实际层厚、层间距、数量、有效范围和总范围的计算详情。"""
     fill_percent: float | None = None
-    """第七阶段目标取景占比；None/0 不缩放；平面裁空按部位与取景策略执行。"""
+    """请求取景比例；正数可按配置优先所选标签，否则肺/髋保护人体，None/0保源与间距。"""
+    framing_policy: Dict[str, Any] | None = None
+    """普通 MPR 正数 FillPercent 使用的取景快照；selected_region按整组原标签包络。"""
     framing_superior_extension_mm: float | None = None
     """颅脑横状位获准的颅顶取景余量；同步范围扩展，不包含下端或取整余量。"""
 
@@ -143,6 +147,8 @@ class SlicePlan:
         }
         if self.fill_percent is not None:
             data["fill_percent"] = self.fill_percent
+        if self.framing_policy is not None:
+            data["framing_policy"] = deepcopy(self.framing_policy)
         if self.framing_superior_extension_mm is not None:
             data["framing_superior_extension_mm"] = self.framing_superior_extension_mm
         if self.target_start is not None:

@@ -2,6 +2,7 @@ import json
 import math
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2284,7 +2285,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertGreaterEqual(plan.extent_mm.width, 10.0)
 
     def test_cervical_cpr_label_sequence_excludes_c1_ring(self):
-        """颈椎 CPR 从 C2 开始，并覆盖 T1、T2。"""
+        """颈椎 CPR 从 C2 开始，默认覆盖到 T1，不纳入源中额外的 T2。"""
 
         localization_result = self._spine_localization_result(
             ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1", "T2"),
@@ -2293,14 +2294,14 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertEqual(
             configured_spine_cpr_labels(localization_result),
             [f"vertebrae_C{index}" for index in range(2, 8)]
-            + ["vertebrae_T1", "vertebrae_T2"],
+            + ["vertebrae_T1"],
         )
 
     def test_default_cpr_plans_include_extended_spine_endpoints(self):
         """冠状位和矢状位 CPR 均随默认范围纳入新增交界椎体。"""
 
         for part, labels in (
-            (SlicePartEnum.颈椎, ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1", "T2")),
+            (SlicePartEnum.颈椎, ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1")),
             (SlicePartEnum.腰椎, ("T12", "L1", "L2", "L3", "L4", "L5", "S1")),
         ):
             localization = self._spine_localization_result(labels, part.value)
@@ -3779,6 +3780,99 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             [plan.localizer_plane for plan in (axial, sagittal, coronal)],
             ["冠状位", "冠状位", "矢状位"],
         )
+
+    def test_selected_region_framing_snapshot_preserves_planned_geometry(self):
+        """取景快照只交给重建阶段，不改变任意 FillPercent 下的切片计划。"""
+
+        for fill_percent in (None, 0, 80, 100):
+            request = Request(
+                dicom_dir="/tmp/dicom",
+                output_dir="/tmp/output",
+                slice_part=SlicePartEnum.髋骨,
+                plane_configs=[PlaneConfig(
+                    plane, 2.0, 5.0, ["骨窗"], fill_percent=fill_percent,
+                ) for plane in (
+                    PlaneTypeEnum.横状位,
+                    PlaneTypeEnum.冠状位,
+                    PlaneTypeEnum.矢状位,
+                )],
+            )
+            localization = self._lumbar_localization_result()
+            localization.update(self._configured_localization_contract("髋骨"))
+            before = deepcopy(localization)
+            baseline = deepcopy(localization)
+            del baseline["slice_rules"]["冠状位"]["MPR"]["framing_policy"]
+            actual_plans = SingleLabelWholeRangePlanner().build_plans(
+                request, localization,
+            ).plans
+            baseline_plans = SingleLabelWholeRangePlanner().build_plans(
+                request, baseline,
+            ).plans
+            with self.subTest(fill_percent=fill_percent):
+                self.assertEqual(localization, before)
+                for actual, original in zip(actual_plans, baseline_plans):
+                    expected = (
+                        {"basis": "selected_region", "margin_mm": 5.0}
+                        if actual.plane == "冠状位" else None
+                    )
+                    self.assertEqual(actual.framing_policy, expected)
+                    actual_dict = actual.to_dict()
+                    if expected is None:
+                        self.assertNotIn("framing_policy", actual_dict)
+                    else:
+                        self.assertEqual(actual_dict.pop("framing_policy"), expected)
+                    self.assertEqual(actual_dict, original.to_dict())
+
+    def test_selected_region_framing_snapshot_does_not_alias_config_or_serialization(self):
+        """计划间、定位规则和序列化结果不能共享可变取景配置。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            slice_part=SlicePartEnum.髋骨,
+            plane_configs=[PlaneConfig(
+                PlaneTypeEnum.冠状位, 2.0, 5.0, ["骨窗"], fill_percent=100,
+            )],
+        )
+        localization = self._lumbar_localization_result()
+        localization.update(self._configured_localization_contract("髋骨"))
+        planner = SingleLabelWholeRangePlanner()
+        first = planner.build_plans(request, localization).plans[0]
+        second = planner.build_plans(request, localization).plans[0]
+        rule = localization["slice_rules"]["冠状位"]["MPR"]["framing_policy"]
+        serialized = first.to_dict()
+        serialized["framing_policy"]["margin_mm"] = 50.0
+        self.assertEqual(first.framing_policy["margin_mm"], 5.0)
+        first.framing_policy["margin_mm"] = 10.0
+        self.assertEqual(rule["margin_mm"], 5.0)
+        self.assertEqual(second.framing_policy["margin_mm"], 5.0)
+        rule["margin_mm"] = 20.0
+        self.assertEqual(second.to_dict()["framing_policy"]["margin_mm"], 5.0)
+
+    def test_selected_region_framing_snapshot_does_not_leak_to_cpr(self):
+        """普通 MPR 的取景依据不参与同状位 CPR 计划。"""
+
+        request = Request(
+            dicom_dir="/tmp/dicom",
+            output_dir="/tmp/output",
+            slice_part=SlicePartEnum.颈椎,
+            plane_configs=[PlaneConfig(
+                PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"],
+                slice_type=SliceType.CPR,
+            )],
+        )
+        localization = self._spine_localization_result(
+            ("C1", "C2", "C3", "C4"), "颈椎",
+        )
+        localization["slice_rules"]["冠状位"]["MPR"]["framing_policy"] = {
+            "basis": "selected_region", "margin_mm": 5.0,
+        }
+        plan = SingleLabelWholeRangePlanner().build_plans(
+            request, localization,
+        ).plans[0]
+
+        self.assertIsNone(plan.framing_policy)
+        self.assertNotIn("framing_policy", plan.to_dict())
 
     def test_single_label_planner_builds_sagittal_whole_range_plan(self):
         """单目标整切 planner 应把矢状位交给通用直线构造器。"""

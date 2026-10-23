@@ -299,9 +299,22 @@ def _validate_slice_rule(
         raise ValueError(f"{prefix} 切法规则必须是对象")
     _reject_unknown_fields(
         rule,
-        {"regions", "range_extension", "localizer_plane"},
+        {"regions", "range_extension", "localizer_plane", "framing_policy"},
         prefix,
     )
+    if "framing_policy" in rule:
+        if slice_type != "MPR":
+            raise ValueError(f"{prefix}.framing_policy 仅支持 MPR")
+        framing = rule["framing_policy"]
+        framing_prefix = f"{prefix}.framing_policy"
+        if not isinstance(framing, Mapping):
+            raise ValueError(f"{framing_prefix} 必须是对象")
+        _reject_unknown_fields(framing, {"basis", "margin_mm"}, framing_prefix)
+        if framing.get("basis") != "selected_region":
+            raise ValueError(f"{framing_prefix}.basis 仅支持 selected_region")
+        _non_negative_finite_number(
+            framing.get("margin_mm"), f"{framing_prefix}.margin_mm",
+        )
     localizer_plane = rule.get("localizer_plane")
     if not isinstance(localizer_plane, str) or localizer_plane not in _PLANES:
         raise ValueError(
@@ -343,7 +356,10 @@ def _non_negative_finite_number(value: Any, field_name: str) -> float:
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{field_name} 必须是非负有限数字")
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{field_name} 必须是非负有限数字") from error
     if not math.isfinite(parsed) or parsed < 0:
         raise ValueError(f"{field_name} 必须是非负有限数字")
     return parsed

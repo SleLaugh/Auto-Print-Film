@@ -3,6 +3,7 @@
 
 """普通整切与显式脊柱 CPR 规划。"""
 
+from copy import deepcopy
 from typing import Any, Dict
 
 from src.models.enums import PlaneTypeEnum, SliceType
@@ -78,6 +79,16 @@ class SingleLabelWholeRangePlanner:
                 source_labels=source_labels,
                 target_region_bbox=target_region_bbox,
             )
+            if plane_config.slice_type is SliceType.MPR:
+                slice_rules = localization_result.get("slice_rules")
+                if isinstance(slice_rules, dict):
+                    plane_rules = slice_rules.get(plane_config.plane.value)
+                    if isinstance(plane_rules, dict):
+                        rule = plane_rules.get("MPR")
+                        if isinstance(rule, dict):
+                            plan.framing_policy = deepcopy(
+                                rule.get("framing_policy"),
+                            )
             if (
                 request.slice_part.value == "颅脑"
                 and plane_config.plane == PlaneTypeEnum.横状位

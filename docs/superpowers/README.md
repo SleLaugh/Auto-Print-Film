@@ -11,7 +11,7 @@
 | 持久缓存、按模型复用分割、缓存失效边界 | `architecture/2026-10-08-预处理与分割缓存设计.md` | 缓存不是整任务断点续跑 |
 | 交付报告、Python Response、重复状位、报告对比 | `architecture/2026-10-08-交付报告与响应契约设计.md` | 区分医学状位与输出目录名 |
 | 批量脚本、并发病例、FillPercent 配置透传 | `architecture/2026-10-08-批量执行与配置透传设计.md` | 不读取 launch.json |
-| 整组倍率、肺参考层平移与逐层中心、0/80/100、上下裁空 | `modules/reconstruction/2026-10-08-整组居中与FillPercent取景设计.md` | 肺参考层共同平移，髋逐层目标中心；正数三状位共同画布；其他适用平面按源支持裁空 |
+| 整组倍率、肺参考层平移与逐层中心、0/80/100、上下裁空 | `modules/reconstruction/2026-10-08-整组居中与FillPercent取景设计.md` | 未配置部位策略的肺髋保留原规则；髋冠正数按标签整组包络加5mm除以占比连续取景，0/null保源 |
 | GDCM、SimpleITK、DICOM 写盘并发安全 | `architecture/README.md` + `modules/dicom/README.md` | 写盘锁属于跨模块约束 |
 | DICOM 文件名、定位图、InstanceNumber | `modules/dicom/README.md` | 不涉及 MPR 几何时不读 reconstruction |
 | 第三至五阶段校正、label/bbox、解剖几何 | `modules/localization/README.md` | 只处理目标范围或四棱柱时从这里开始 |

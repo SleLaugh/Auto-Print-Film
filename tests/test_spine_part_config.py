@@ -5,6 +5,7 @@ from src.config import (
     load_slice_part_config,
     localization_for,
     localization_profiles_for,
+    slice_rules_for,
 )
 from src.models import Request, SlicePartEnum
 from src.stages.stage_segmentation import SegmentationStage
@@ -58,6 +59,25 @@ class SpinePartConfigTest(unittest.TestCase):
         cpr = localization_for(self.config, "脊柱")["spine_cpr"]
         self.assertTrue(cpr["full_label"])
         self.assertEqual(cpr.get("excluded_labels", []), [])
+
+    def test_cervical_default_stops_at_t1_with_axial_mpr_end_extension(self):
+        """默认整段为 C1–T1，横状位 MPR 仅在末端增加 5 mm。"""
+
+        self.assertEqual(
+            localization_profiles_for(self.config, "颈椎")["whole_range"],
+            {"region": "default", "start": "C1", "end": "T1"},
+        )
+        rules = slice_rules_for(self.config, "颈椎")
+        self.assertEqual(
+            rules["横状位"]["MPR"]["range_extension"],
+            {"start_mm": 0.0, "end_mm": 5.0},
+        )
+        for plane in ("冠状位", "矢状位"):
+            for rule in rules[plane].values():
+                self.assertEqual(
+                    rule.get("range_extension", {}),
+                    {"start_mm": 0.0, "end_mm": 0.0},
+                )
 
     def test_spine_capabilities_include_exactly_the_requested_five_combinations(self):
         self.assertEqual(

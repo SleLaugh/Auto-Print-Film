@@ -347,7 +347,7 @@ def test_hip_does_not_use_lung_reference_strategy():
     _, seg, plan, coords, _ = _fixture("髋骨", "横状位", 100, drifting=True)
     axes, group, slabs = _target_truth(seg, plan)
     framer = TargetFramer(seg, coords, plan)
-    with patch.object(framer, "_lung_reference_geometry", side_effect=AssertionError("髋骨保持逐层目标居中")):
+    with patch.object(framer, "_reference_slice_geometry", side_effect=AssertionError("髋骨保持逐层目标居中")):
         for item, bounds in zip(plan["slices"], slabs):
             _, framed = framer.plane_geometry(plan, item)
             expected = group if bounds is None else bounds

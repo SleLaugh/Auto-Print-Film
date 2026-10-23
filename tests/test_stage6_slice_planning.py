@@ -3784,44 +3784,34 @@ class Stage6SlicePlanningTest(unittest.TestCase):
     def test_selected_region_framing_snapshot_preserves_planned_geometry(self):
         """取景快照只交给重建阶段，不改变任意 FillPercent 下的切片计划。"""
 
-        for fill_percent in (None, 0, 80, 100):
-            request = Request(
-                dicom_dir="/tmp/dicom",
-                output_dir="/tmp/output",
-                slice_part=SlicePartEnum.髋骨,
-                plane_configs=[PlaneConfig(
-                    plane, 2.0, 5.0, ["骨窗"], fill_percent=fill_percent,
-                ) for plane in (
-                    PlaneTypeEnum.横状位,
-                    PlaneTypeEnum.冠状位,
-                    PlaneTypeEnum.矢状位,
-                )],
-            )
-            localization = self._lumbar_localization_result()
-            localization.update(self._configured_localization_contract("髋骨"))
-            before = deepcopy(localization)
-            baseline = deepcopy(localization)
-            del baseline["slice_rules"]["冠状位"]["MPR"]["framing_policy"]
-            actual_plans = SingleLabelWholeRangePlanner().build_plans(
-                request, localization,
-            ).plans
-            baseline_plans = SingleLabelWholeRangePlanner().build_plans(
-                request, baseline,
-            ).plans
-            with self.subTest(fill_percent=fill_percent):
-                self.assertEqual(localization, before)
-                for actual, original in zip(actual_plans, baseline_plans):
-                    expected = (
-                        {"basis": "selected_region", "margin_mm": 5.0}
-                        if actual.plane == "冠状位" else None
-                    )
-                    self.assertEqual(actual.framing_policy, expected)
-                    actual_dict = actual.to_dict()
-                    if expected is None:
-                        self.assertNotIn("framing_policy", actual_dict)
-                    else:
+        for part in (SlicePartEnum.肺部, SlicePartEnum.髋骨):
+            for fill_percent in (None, 0, 50, 80, 100):
+                request = Request(
+                    dicom_dir="/tmp/dicom",
+                    output_dir="/tmp/output",
+                    slice_part=part,
+                    plane_configs=[PlaneConfig(
+                        plane, 2.0, 5.0, ["骨窗"], fill_percent=fill_percent,
+                    ) for plane in PlaneTypeEnum],
+                )
+                localization = self._lumbar_localization_result()
+                localization.update(self._configured_localization_contract(part.value))
+                localization["slice_part"] = part.value
+                before = deepcopy(localization)
+                baseline = deepcopy(localization)
+                for rules in baseline["slice_rules"].values():
+                    rules["MPR"].pop("framing_policy")
+                planner = select_planner(part.value, "MPR")
+                actual_plans = planner.build_plans(request, localization).plans
+                baseline_plans = planner.build_plans(request, baseline).plans
+                with self.subTest(part=part.value, fill_percent=fill_percent):
+                    self.assertEqual(localization, before)
+                    for actual, original in zip(actual_plans, baseline_plans):
+                        expected = {"basis": "selected_region", "margin_mm": 5.0, "canvas": "original"}
+                        self.assertEqual(actual.framing_policy, expected)
+                        actual_dict = actual.to_dict()
                         self.assertEqual(actual_dict.pop("framing_policy"), expected)
-                    self.assertEqual(actual_dict, original.to_dict())
+                        self.assertEqual(actual_dict, original.to_dict())
 
     def test_selected_region_framing_snapshot_does_not_alias_config_or_serialization(self):
         """计划间、定位规则和序列化结果不能共享可变取景配置。"""

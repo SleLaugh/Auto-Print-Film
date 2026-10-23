@@ -260,7 +260,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 }
 
                 // 一个序列可能命中多个切割部位；每个部位单独调用一次 Python，
-                // 但共用 cacheDir，从而复用 NIfTI 和模型分割缓存。
+                // 同序列共用缓存并逐个执行，不同序列可在全局名额内并行。
                 foreach (var slicePartGroup in matchedPlans.GroupBy(item => item.SlicePartName, StringComparer.OrdinalIgnoreCase))
                 {
                     List<SlicePlanConfigInfo> currentPlans = slicePartGroup.ToList();
@@ -270,9 +270,9 @@ namespace ElincloudAISliceServer.AISliceDicomService
                     {
                         continue;
                     }
-                    string cacheDir = ElincloudServer.Common.Utils.StringUtil.Combine(examinationoutputDir, seriesInstanceUID, "cache");
-                    // 输出路径
+                    // 输出按部位隔离；同序列共用缓存，缓存独立于会被清理的输出目录。
                     string outputDir = ElincloudServer.Common.Utils.StringUtil.Combine(examinationoutputDir, seriesInstanceUID, slicePartGroup.Key);
+                    string cacheDir = GetSeriesCacheDirectory(outputDir);
 
                     // 转换成切割服务要的结构
                     List<PythonPlaneConfig> planeConfigs = currentPlans
@@ -304,7 +304,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
                         message = $"DICOM目录不存在：{inputDir}";
                         AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{examination.ID}]序列[{seriesInstanceUID}]{message}", true);
                     }
-                    // 共享缓存允许同序列并行，所有切割部位共同遵守真实进程总数上限。
+                    // 同序列任务逐个启动，不同序列共同遵守真实进程总数上限。
                     else if (CanStartProcess(AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.MaxConcurrentCount, outputDir))
                     {
                         try
@@ -424,7 +424,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 }
 
                 // 序列状态为“未切割”时，说明之前并发数量已满或旧进程已经消失，
-                // 每条记录按可用的全局名额启动，不按序列限制并发。
+                // 每条记录按全局名额和序列占用启动，同序列一次只运行一个任务。
                 if (record.SliceImageStatus == (int)SliceImageStatus.未切割)
                 {
                     StartUnprocessedSeries(record, recordSlecePlan, serviceConfig.MaxConcurrentCount, instance);
@@ -456,7 +456,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 return;
             }
 
-            // 全局名额已满或同一输出仍有任务运行时等待；不同部位仍可并行。
+            // 全局名额已满或同一序列仍有任务运行时等待，继续扫描其他序列。
             if (!CanStartProcess(maxConcurrentCount, record.OutputDir))
             {
                 return;
@@ -464,7 +464,15 @@ namespace ElincloudAISliceServer.AISliceDicomService
 
             try
             {
-                using Process process = StartAutoPrintFilm(record.InputDir, record.CacheDir, record.OutputDir, record.StudyTypeName, record.SlicePartName, record.ScanThickness, record.PlaneConfigJson, BuildWindowPresetJson(slicePlans));
+                // 旧记录只在真正重新启动前切换缓存，不修改仍在运行的进程。
+                string cacheDir = GetSeriesCacheDirectory(record.OutputDir);
+                if (!string.Equals(record.CacheDir, cacheDir, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                {
+                    record.CacheDir = cacheDir;
+                    instance.Update<AIFilmSliceRecord>(record, item => item.ID == record.ID, nameof(AIFilmSliceRecord.CacheDir));
+                }
+
+                using Process process = StartAutoPrintFilm(record.InputDir, cacheDir, record.OutputDir, record.StudyTypeName, record.SlicePartName, record.ScanThickness, record.PlaneConfigJson, BuildWindowPresetJson(slicePlans));
                 UpdateSeriesRecordStatus(record, SliceImageStatus.正在切割, process.Id, process.StartTime, string.Empty, instance);
             }
             catch (Exception ex)
@@ -694,12 +702,27 @@ namespace ElincloudAISliceServer.AISliceDicomService
         private bool CanStartProcess(int maxConcurrentCount, string outputDir)
         {
             RestoreRunningProcesses();
-            string outputKey = NormalizeOutputDirectory(outputDir);
+            string cacheKey = GetSeriesCacheDirectory(outputDir);
             lock (ProcessNumLock)
             {
                 RefreshRunningProcesses();
-                return RunningProcesses.Count < maxConcurrentCount && !RunningOutputs.ContainsKey(outputKey);
+                // 输出占用表已覆盖恢复的存活PID及数据库保存失败的进程。
+                // 按序列缓存根目录判断占用，不受旧记录CacheDir布局影响。
+                return RunningProcesses.Count < maxConcurrentCount
+                    && !RunningOutputs.Keys.Any(activeOutput =>
+                        RunningOutputs.Comparer.Equals(GetSeriesCacheDirectory(activeOutput), cacheKey));
             }
+        }
+
+        /// <summary>
+        /// 输出为“序列/部位”，缓存固定为“序列/cache”，重建任务记录后仍可复用。
+        /// </summary>
+        private static string GetSeriesCacheDirectory(string outputDir)
+        {
+            string outputPath = NormalizeOutputDirectory(outputDir);
+            string seriesDirectory = Path.GetDirectoryName(outputPath)
+                ?? throw new InvalidOperationException("无法根据输出目录确定序列缓存路径");
+            return Path.Combine(seriesDirectory, "cache");
         }
 
         private static string NormalizeOutputDirectory(string outputDir)

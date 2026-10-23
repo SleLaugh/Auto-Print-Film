@@ -360,21 +360,24 @@
                     "MPR": {
                         "regions": ["default"],
                         "range_extension": { "start_mm": 3.0, "end_mm": 3.0 },
-                        "localizer_plane": "冠状位"
+                        "localizer_plane": "冠状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 5.0, "canvas": "original" }
                     }
                 },
                 "冠状位": {
                     "MPR": {
                         "regions": ["default"],
                         "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
-                        "localizer_plane": "矢状位"
+                        "localizer_plane": "矢状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 5.0, "canvas": "original" }
                     }
                 },
                 "矢状位": {
                     "MPR": {
                         "regions": ["default"],
                         "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
-                        "localizer_plane": "冠状位"
+                        "localizer_plane": "冠状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 5.0, "canvas": "original" }
                     }
                 }
             }
@@ -430,7 +433,8 @@
                     "MPR": {
                         "regions": ["default"],
                         "range_extension": { "start_mm": 3.0, "end_mm": 3.0 },
-                        "localizer_plane": "冠状位"
+                        "localizer_plane": "冠状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 5.0, "canvas": "original" }
                     }
                 },
                 "冠状位": {
@@ -438,14 +442,15 @@
                         "regions": ["default"],
                         "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
                         "localizer_plane": "矢状位",
-                        "framing_policy": { "basis": "selected_region", "margin_mm": 5.0 }
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 5.0, "canvas": "original" }
                     }
                 },
                 "矢状位": {
                     "MPR": {
                         "regions": ["default"],
                         "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
-                        "localizer_plane": "冠状位"
+                        "localizer_plane": "冠状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 5.0, "canvas": "original" }
                     }
                 }
             }

@@ -380,6 +380,22 @@ class ConfigLoaderTest(unittest.TestCase):
             with self.subTest(valid_margin=margin):
                 validate_slice_part_config(config)
 
+        for centering in ("group", "reference_slice", "slice_target"):
+            config = load_slice_part_config()
+            config["slice_parts"]["髋骨"]["slice_rules"]["冠状位"]["MPR"][
+                "framing_policy"
+            ] = {"basis": "selected_region", "margin_mm": 5.0, "centering": centering}
+            with self.subTest(valid_centering=centering):
+                validate_slice_part_config(config)
+
+        for canvas in ("target", "original"):
+            config = load_slice_part_config()
+            config["slice_parts"]["髋骨"]["slice_rules"]["冠状位"]["MPR"][
+                "framing_policy"
+            ] = {"basis": "selected_region", "margin_mm": 5.0, "canvas": canvas}
+            with self.subTest(valid_canvas=canvas):
+                validate_slice_part_config(config)
+
         invalid = [
             None, [], "selected_region", True, 5,
             {}, {"basis": "selected_region"}, {"margin_mm": 5.0},
@@ -393,6 +409,14 @@ class ConfigLoaderTest(unittest.TestCase):
                 None, True, False, "5", [], {}, -0.1,
                 float("nan"), float("inf"), float("-inf"), 10 ** 1000,
             )
+        )
+        invalid.extend(
+            {"basis": "selected_region", "margin_mm": 5.0, "centering": value}
+            for value in (None, "", "skin", "GROUP", True, 0, [], {})
+        )
+        invalid.extend(
+            {"basis": "selected_region", "margin_mm": 5.0, "canvas": value}
+            for value in (None, "", "source", "ORIGINAL", True, 0, [], {})
         )
         for value in invalid:
             config = load_slice_part_config()
@@ -415,8 +439,8 @@ class ConfigLoaderTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "framing_policy 仅支持 MPR"):
                     validate_slice_part_config(config)
 
-    def test_default_selected_region_framing_only_applies_to_hip_coronal(self):
-        """默认只给髋骨冠状位启用部位取景，并保留已确认的颈椎端点。"""
+    def test_default_selected_region_framing_applies_to_lung_and_hip_only(self):
+        """肺髋保留原画框并按整组部位居中，其他部位不启用。"""
 
         config = load_slice_part_config()
         configured = [
@@ -426,10 +450,11 @@ class ConfigLoaderTest(unittest.TestCase):
             for slice_type, rule in rules.items()
             if "framing_policy" in rule
         ]
-        self.assertEqual(configured, [(
-            "髋骨", "冠状位", "MPR",
-            {"basis": "selected_region", "margin_mm": 5.0},
-        )])
+        self.assertCountEqual(configured, [
+            (part, plane, "MPR", {"basis": "selected_region", "margin_mm": 5.0, "canvas": "original"})
+            for part in ("肺部", "髋骨")
+            for plane in ("横状位", "冠状位", "矢状位")
+        ])
         cervical = config["slice_parts"]["颈椎"]
         self.assertEqual(cervical["localization"]["regions"]["default"]["end_label"], "T1")
         self.assertEqual(

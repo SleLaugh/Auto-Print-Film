@@ -309,12 +309,22 @@ def _validate_slice_rule(
         framing_prefix = f"{prefix}.framing_policy"
         if not isinstance(framing, Mapping):
             raise ValueError(f"{framing_prefix} 必须是对象")
-        _reject_unknown_fields(framing, {"basis", "margin_mm"}, framing_prefix)
+        _reject_unknown_fields(framing, {"basis", "margin_mm", "centering", "canvas"}, framing_prefix)
         if framing.get("basis") != "selected_region":
             raise ValueError(f"{framing_prefix}.basis 仅支持 selected_region")
         _non_negative_finite_number(
             framing.get("margin_mm"), f"{framing_prefix}.margin_mm",
         )
+        centering = framing.get("centering", "group")
+        if not isinstance(centering, str) or centering not in {
+            "group", "reference_slice", "slice_target",
+        }:
+            raise ValueError(
+                f"{framing_prefix}.centering 仅支持 group/reference_slice/slice_target"
+            )
+        canvas = framing.get("canvas", "target")
+        if not isinstance(canvas, str) or canvas not in {"target", "original"}:
+            raise ValueError(f"{framing_prefix}.canvas 仅支持 target/original")
     localizer_plane = rule.get("localizer_plane")
     if not isinstance(localizer_plane, str) or localizer_plane not in _PLANES:
         raise ValueError(

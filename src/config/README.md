@@ -232,102 +232,75 @@ CPR 的 `range_extension` 沿当前输出状位的切片偏移轴扩展，分别
 
 ### `framing_policy`
 
-普通 MPR 可在对应状位规则中配置以下对象；当前默认只在
-`slice_parts.髋骨.slice_rules.冠状位.MPR` 中启用：
+普通MPR可在对应状位规则中配置：
 
 ```json
 {
   "regions": ["default"],
   "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
   "localizer_plane": "矢状位",
-  "framing_policy": { "basis": "selected_region", "margin_mm": 5.0 }
+  "framing_policy": { "basis": "selected_region", "margin_mm": 5.0, "canvas": "original" }
 }
 ```
 
 | 字段 | 约束 |
 | --- | --- |
-| `basis` | 必需，当前只能为 `selected_region`。 |
-| `margin_mm` | 必需，每侧余量，必须是非负有限数字，0 允许；拒绝 bool、字符串、负数及非有限值。 |
+| `basis` | 必需，当前只能为`selected_region`。 |
+| `margin_mm` | 必需，每侧余量，非负有限数字；允许0，拒绝bool、字符串、负数、非有限值。 |
+| `centering` | 可选，`group`、`reference_slice`、`slice_target`；缺省`group`。 |
+| `canvas` | 可选，`target`、`original`；缺省`target`，兼容旧紧致画布。 |
 
-对象不接受其他字段，也不接受 null、数组或非对象值；CPR、椎间隙不能配置该对象。
-它不是 `plane_configs` 请求字段，不增加部位专属倍率。第六阶段将当前状位规则深拷贝为
-计划快照，第七阶段在所有正数 `FillPercent` 下使用；0、null或省略忽略该策略，保留各部位
-原行为，默认髋骨冠状位仍保留完整源切面和基础间距。
+对象不接受其他字段、null、数组或非对象值，CPR和椎间隙不能配置。它不是请求字段，
+第六阶段深拷贝为计划快照，第七阶段仅在正数FillPercent的普通plane_stack MPR使用。
 
-`selected_region` 把本次所选原标签的整组物理包络投影到行、列轴，以包络宽高加
-每侧 `margin_mm` 作为目标基准。任意正数占比 p 的视野为该基准除以 `p/100`，面内中心
-始终取包络中点。所有层及各窗共用中心、倍率、PixelSpacing 和
-矩阵，末层只剩小标签或空目标层时仍保持同一取景。该分支优先完整容纳所选标签，允许
-腹部、外围皮肤、大腿及目标包络之外的股骨远端越框，不再以完整体表限制放大。
-100优先完整显示所选部位；降低正数占比时直接从未预裁的原 CT 采样更大的外围范围，
-皮肤、腹部和大腿逐渐露出，不保证80已包含全部体表；视野超出原扫描处保留正常无数据背景。
-`source_labels`、切面、法向范围、层厚、层间距、张数及定位图均不改变。
+当前肺部、髋骨三个状位的六条普通MPR规则都使用上述配置：`selected_region`、每侧5mm、
+缺省group中心及`canvas=original`。其余五部位配置不变。整组原标签物理包络中点为固定中心，
+包络宽高加两侧余量为共同目标尺寸T，小标签末层及空目标层同样保持组中心和倍率。
+不再使用肺参考层或髋横/矢逐层目标中心，不以完整人体、皮肤或肩臂限制倍率。
 
-重建诊断为 `center_source=group_selected_region`，`framing.selected_region` 记录
-`basis`、`margin_mm` 及未加余量的 `lower_in_plane_mm`、`upper_in_plane_mm`（行、列轴顺序）。
-`framing_target_size_mm` 记录整组原标签包络加两侧余量，`slice_target_size_mm` 仍为当前
-厚层尺寸或空值。本分支不加入自动相邻标签或人体支持，不输出 `source_preservation`、
-`skin_edge` 字段。
+`original`保留第六阶段原画框矩阵N和基础像素纵横比s，不把画布收紧到目标包络。
+基础画框在原图尺寸可用时由完整源CT中心角点投影确定；保留的是原画框物理宽高比，
+不复制原CT中心、不要求保全整个源范围。正数q=FillPercent/100时：
 
-当前模型294没有独立 `sacrum`、`coccyx`，不能把左右髋骨/股骨包络等同于所有骶尾结构
-的标签保护。本次两份真实源另核对了骶骨中线、髋臼和股骨头。配置可用于其他部位的普通
-MPR；未启用该对象的计划继续使用原规则。肺部正式策略维持整组固定倍率与偏移，平滑
-变倍率只作独立预览。公式及诊断见[整组取景设计](../../docs/superpowers/modules/reconstruction/2026-10-08-整组居中与FillPercent取景设计.md)。
+```text
+f = max(T/(N*s))/q
+output_spacing_mm = s*f
+FOV = N*output_spacing_mm
+```
+
+100的FOV是在原画框比例内完整容纳T的矩形，不一定两轴都等于T；70、50保持组中心及矩阵，
+宽高同时扩大为100的1/0.7、2倍，向四周扩展，80为1.25倍。各层、各窗同倍率；
+两轴使用同一缩放因子，不拉伸。直接从完整原CT采样，不预裁外围图像再缩小补框。
+小截面和不限制目标适配的一轴仍可留空气，冠状位100也不承诺零空气或胶片格四边满铺。
+
+高占比允许包络外皮肤、肋骨、腹部、大腿或骶尾结构越框，低占比逐渐露出；
+80不保证已包含全体表，扫描外仍为正常无数据背景。模型294无独立sacrum/coccyx，
+左右髋骨包络不等于所有骶尾结构保护；所选标签及余量完整保留，不补全扫描外数据。
+
+诊断selected_region记录basis、margin_mm、centering、canvas及未加余量的
+lower_in_plane_mm/upper_in_plane_mm整组边界（行列顺序）。默认肺/髋统一
+center_source=group_selected_region，不记录参考层字段；framing_target_size_mm为组标签尺寸加余量，
+slice_target_size_mm只记录每层诊断。实际间距字段为output_spacing_mm，不是spacing。
+当前正数策略不自动加入相邻标签/人体，也不输出source_preservation或skin_edge字段。
+
+显式兼容配置可选择reference_slice参考层共同偏移、slice_target当前厚层中心或target紧致画布，
+不是当前六条生产默认。0/null/省略忽略策略，肺/髋仍完整保源、基础间距、scale=1、整组中心，
+必要时扩共同矩阵，不做上下ROI。其他部位、CPR、椎间隙、定位图、source_labels、方向、
+法向范围、层厚、层间距、数量不变。
 
 ## 显示取景支持
 
-以下完整人体保护、`skin_edge` 及髋骨逐层中心说明，均排除上节已启用 `selected_region` 的正数计划。
+正数肺/髋普通MPR按上节部位策略取景，保留共同画布；不自动提取人体或作100专属中心修正。
+其他部位继续原有规则：脑区与有界skull、脊柱有界相邻椎体及可靠椎间镜像面保持不变。
+其他适用平面与椎间隙在HU采样后、窗化前逐张以ROI裁去首尾完全无源支持行，包括0/null/省略。
+裁后整幅图居中，Rows、垂直视野及中心可逐层不同；有效像素、Columns、PixelSpacing、
+采样相位及同层跨窗几何保留。不按黑色或HU阈值裁剪，不取全组最短高度，不拉伸或补框。
+CPR、Localizer不执行上下裁空，整张无支持层保留并标记`no_source_support`。
 
-肺部正数 `FillPercent` 的 `plane_stack` MPR 对横、冠、矢三状位分别选择实际厚层内
-选定目标与获准有界标签 bbox 面积（宽×高）最大的一张作参考层，面积相同取计划中
-靠前的层。由参考 bbox 中点相对原计划中心的行、列偏移确定整组共同平移，所有层
-和空目标层均使用同一平移，不逐层追随标签。共同取景尺寸按所有实际厚层相对该固定
-平移后中心的两侧最大距离乘二逐轴取最大值，必要时将整组视野一次放宽以保留全部目标。
-这仍是其他正数比例的取景规则和 100 的标签诊断基准；100 实际采用下述紧致人体公式。
-全部实际厚层无目标时原目标中心回退整组。
-
-髋骨正数普通 MPR 先按当前厚层联合 bbox 逐层部位居中，100 再作下述必要校正，以实际各厚层联合尺寸
-逐轴最大值作为共同目标尺寸，不计跨层位置漂移。肺部、髋骨正数普通 MPR 同时保护
-实际采样 CT 在各厚层的完整人体范围：每个源 CT 按 HU 提取一次人体支持，去掉外部
-空气和可可靠分离的薄床板，保留肩臂、双腿、皮肤、肋骨及骶尾骨，边界加 `2 mm` 余量。
-源几何与实际厚层采样决定各层支持范围。80 等其他正数比例围绕既定中心计算对称保护尺寸；
-100 采用下述紧致视野及必要中心校正。人体不参与肺参考层或标签目标尺寸计算；无法识别人体的源层局部
-回退完整源盒，与身体相连或不能可靠分离的设备保守保留，不发身体不可用告警。
-显式 `body_support`、`trunk_framing.py` 保留内部工具语义，生产不启用排臂躯干取景。
-
-两部位 `0<FillPercent<100` 普通 MPR 三状位的共同视野仍取“标签目标尺寸/请求占比”与
-“既定中心下人体保护尺寸”的逐轴较大值。100 改用人体与目标并集的紧致包络：肺部对原
-参考偏移追加整组同一中心校正，共同视野取所有层相对边界的包络宽高；髋骨共同视野取
-各层并集尺寸最大值，仅将原中心超出完整容纳人体合法区间的坐标移入区间。100 不再与
-旧标签对称视野取较大值，目标可以偏离绝对正中。两者再统一 PixelSpacing 并收紧共同画布。
-像素数向上取整并保持原矩阵各轴奇偶性，不重新计算倍率。100 中心校正不保证原源图
-网格相位；组内及各窗 Rows、Columns、PixelSpacing 一致；DICOM 原点按实际
-矩阵和每层真实中心重算，`framing.output_size_xy` 记录实际列数、行数。这些计划随后
-不执行逐张上下无源支持行 ROI，保持肺部整组共同偏移，髋骨 100 为最近合法中心、其他正数为原目标中心。
-人体保护可统一限制放大，使实际目标占比低于请求值，100% 也不例外；不要求每张
-小截面或任意胶片格宽高同时铺满。`framing_target_size_mm` 保留标签尺寸，
-`source_preservation` 以 `mode=complete_body_slab` 另记录 `required_size_mm`、
-`field_of_view_mm`、`zoom_limited`、`body_margin_mm=2` 和 `fallback_source_slice_count`
-（回退完整源盒的源层数），`scale` 是实际倍率。100 另记录 `canvas_mode=skin_edge`、
-`centering_policy`（肺 `group_offset`，髋 `nearest_body_fitting_center`）、`center_adjustment_mm`；
-`center_source` 分别为 `group_skin_edge`、`slice_skin_edge`，原中心信息保存在
-`target_center_source`、`target_center_before_skin_edge`。肺部 `reference_shift_mm` 为最终实际偏移，
-100 新增 `reference_target_shift_mm` 保存原标签参考偏移。具体公式见
-[整组取景设计](../../docs/superpowers/modules/reconstruction/2026-10-08-整组居中与FillPercent取景设计.md)。
-
-肺部、髋骨普通 MPR 在 0/null/省略时也保护完整源切面：保留基础 PixelSpacing、scale=1
-和整组目标中心，必要时对称扩大共同矩阵，允许超过原矩阵并保持奇偶性，不执行上下 ROI，
-诊断模式为 `complete_source_slab`，外部空气和床板可保留。
-其他部位、CPR、椎间隙及 Localizer 保留各自规则，不增加请求开关。
-脑区仍用脑区与有界 skull，脊柱仍用有界相邻椎体和可靠椎间镜像面。除上述肺部、髋骨
-普通 MPR 外，平面成片在 HU 采样后、窗化前逐张以 ROI 裁去首尾完全无源支持行，
-包括 0/null/省略。裁后整幅图居中，Rows、垂直视野及中心可逐层不同，有效像素、Columns、
-PixelSpacing 和采样网格相位保留，同层各窗共用实际几何。不按黑色或 HU 阈值裁剪、
-不取全组最短高度、不补框。CPR、Localizer 不执行上下裁空，整张无源支持层保留并标记 `no_source_support`。
-
-所有 `plane_stack` 厚层只平均有效源采样：轴对齐按有效重叠厚度、斜切按有效子平面数归一，
-真实空气参与、越界填充值不参与，零支持仍保留空气；不补出扫描外组织，不改变切割范围、
-方向、层厚、层间距或张数。此规则不改变 CPR 的曲面厚层融合。
+未配置策略的旧肺/髋计划及显式`body_support`、`trunk_framing.py`内部工具可继续使用旧人体
+保护、肺参考层/髋逐层中心或`skin_edge`；这些不是默认正数肺/髋普通MPR规则。
+所有`plane_stack`厚层只平均有效源采样，真实空气参与、越界填充值不参与，零支持保持空气；
+不补扫描外组织、不改切割范围或参数，不影响CPR曲面厚层融合。
 详见[整组取景设计](../../docs/superpowers/modules/reconstruction/2026-10-08-整组居中与FillPercent取景设计.md)。
 
 ## 当前能力矩阵

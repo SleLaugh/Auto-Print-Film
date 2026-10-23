@@ -9,13 +9,13 @@
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "args": [
-                "-i", "/home/peng/03_data/demo/Image/dicom/盆2_1.5mm",
-                "-c", "/home/peng/03_data/demo/Image/缓存/盆2_1.5mm",
-                "-o", "/home/peng/03_data/demo/Image/result__/盆2_1.5mm/100",
-                "--slice_part", "髋骨",
+                "-i", "/home/peng/03_data/demo/Image/dicom/颈到盆4_1mm",
+                "-c", "/home/peng/03_data/demo/Image/缓存/颈到盆4_1mm",
+                "-o", "/home/peng/03_data/demo/Image/result__/颈到盆4_1mm/0",
+                "--slice_part", "脊柱",
                 "--study_type", "CT",
                 "--scan_thickness", "1.0",
-                "--plane_configs", "[{\"Plane\":\"横状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"FillPercent\":100,\"SliceType\":\"MPR\"},{\"Plane\":\"矢状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"FillPercent\":100,\"SliceType\":\"MPR\"},{\"Plane\":\"冠状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"FillPercent\":100,\"SliceType\":\"MPR\"}]",
+                "--plane_configs", "[{\"Plane\":\"横状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"FillPercent\":0,\"SliceType\":\"MPR\"},{\"Plane\":\"矢状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"FillPercent\":0,\"SliceType\":\"MPR\"},{\"Plane\":\"矢状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"FillPercent\":0,\"SliceType\":\"CPR\"},{\"Plane\":\"冠状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"FillPercent\":0,\"SliceType\":\"MPR\"},{\"Plane\":\"冠状位\",\"SliceThickness\":5,\"SliceSpacing\":5,\"WindowPresets\":[\"骨窗\",\"肺窗\",\"纵隔窗\",\"软组织窗\"],\"FillPercent\":0,\"SliceType\":\"CPR\"}]",
                 "--window_presets", "[{\"Name\": \"骨窗\",\"windowWidth\":2500,\"windowLevel\":400}]"
             ],
             "env": {

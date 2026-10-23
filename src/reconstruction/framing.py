@@ -271,14 +271,15 @@ class TargetFramer:
         lower, upper = self.plane_target_bounds(planned_slice)
         if self._framing_target_size is None:
             if self._selected_region is not None:
-                # 明确选择解剖区域时，整组包络及固定余量决定共同视野；
-                # 不能随末层剩余的小标签收缩，也不再由外围体表撑大画布。
-                self._framing_target_size = upper - lower + 2 * self._selected_region["margin_mm"]
+                # 按配置的中心容纳整组标签，再加每侧物理余量。尺寸与占比无关，
+                # 不能随末层小标签缩放，也不由外围体表撑大画布。
+                target_size = self._selected_region_target_size(plan, lower, upper)
+                self._framing_target_size = target_size + 2 * self._selected_region["margin_mm"]
                 return self._framing_target_size
             target_size = upper - lower
             target_canvas = self._body_points is None and uses_target_centered_canvas(plan)
             if target_canvas and plan.get("slice_part") == "肺部":
-                self._reference_framing = self._lung_reference_geometry(plan)
+                self._reference_framing = self._reference_slice_geometry(plan)
                 if self._reference_framing is not None:
                     target_size = self._reference_framing["required_size"]
                 self._framing_target_size = target_size
@@ -328,7 +329,34 @@ class TargetFramer:
             self._framing_target_size = target_size
         return self._framing_target_size
 
-    def _lung_reference_geometry(self, plan: dict) -> dict | None:
+    def _selected_region_target_size(
+        self, plan: dict, lower: np.ndarray, upper: np.ndarray,
+    ) -> np.ndarray:
+        """在各层既定目标中心下求共同视野，不把跨层位置漂移当成组织大小。"""
+
+        mode = self._selected_region.get("centering", "group")
+        if mode == "group":
+            return upper - lower
+        if mode == "reference_slice":
+            self._reference_framing = self._reference_slice_geometry(plan)
+            return (
+                self._reference_framing["required_size"]
+                if self._reference_framing is not None else upper - lower
+            )
+        target_size = np.zeros(2, dtype=float)
+        for item in plan["slices"]:
+            item_axes = np.column_stack([
+                self._vector(item[key]) for key in ("row_dir", "col_dir", "normal")
+            ])
+            item_axes /= np.linalg.norm(item_axes, axis=0)
+            if not np.allclose(item_axes, self._projection_axes, rtol=0, atol=1e-12):
+                continue
+            bounds = self._slab_target_bounds(plan, self._vector(item["center"]))
+            if bounds is not None:
+                target_size = np.maximum(target_size, bounds[1] - bounds[0])
+        return target_size if np.any(target_size > 0) else upper - lower
+
+    def _reference_slice_geometry(self, plan: dict) -> dict | None:
         """以最大实际目标厚层固定面内平移，并一次容纳其他层的完整目标。"""
 
         axes = self._projection_axes
@@ -437,11 +465,14 @@ class TargetFramer:
         return self._skin_edge_geometry
 
     def plane_geometry(self, plan: dict, planned_slice: dict) -> tuple[dict, dict]:
-        """整组共用比例；肺部固定参考层偏移，髋骨逐层目标居中。
+        """整组共用比例，按配置选择整组、参考层或逐层目标居中。
 
         显式 selected_region 对正数占比启用：以原选定标签的整组包络和物理
-        余量为基准，按占比连续放宽视野，始终从完整原 CT 采样；同组固定
-        面内中心，不先裁目标图再缩小。100% 时允许外围非目标组织越框。
+        余量为基准，按占比同时扩大宽高，始终从完整原 CT 采样。整组共用
+        倍率；居中可选整组包络、参考厚层固定偏移或逐层目标中心，均不随
+        占比变化，不先裁目标图再缩小。100% 时允许外围非目标组织越框。
+        默认肺/髋使用整组中心与 original 画框，保留第六阶段原矩阵的物理
+        宽高比；参考层、逐层目标与紧致 target 画框仅为显式兼容模式。
         未启用该配置的肺/髋正数 MPR 用完整人体约束倍率，排除外部空气和可
         分离的薄床板，不能为目标占比裁掉皮肤、肋骨或骶尾骨。肺部以最大
         目标厚层的面内偏移取景，所有层沿用该偏移，一次放宽视野保护其他层。
@@ -471,6 +502,16 @@ class TargetFramer:
             slice_bounds = self._slab_target_bounds(plan, center)
             if slice_bounds is not None:
                 slice_target_size = list(map(float, slice_bounds[1] - slice_bounds[0]))
+            centering = self._selected_region.get("centering", "group")
+            if centering == "reference_slice" and self._reference_framing is not None:
+                target_center = center_local[:2] + self._reference_framing["shift"]
+                center_source = "group_reference_slice"
+            elif centering != "group":
+                if slice_bounds is None:
+                    center_source = "group_fallback"
+                else:
+                    target_center = (slice_bounds[0] + slice_bounds[1]) / 2
+                    center_source = "slice_target"
         if percent is not None and percent > 0 and self._selected_region is None:
             slice_bounds = self._slab_target_bounds(plan, center)
             if self._reference_framing is not None:
@@ -576,6 +617,8 @@ class TargetFramer:
                         ),
                         center_adjustment_mm=list(map(float, center_adjustment)),
                     )
+            # original 保留第六阶段完整源图投影画框的矩阵与像素比例，只改变
+            # 两轴共同的间距倍率；不能再按目标宽高裁成扁长框。
             if (
                 (self._body_points is None and uses_target_centered_canvas(plan))
                 or (
@@ -584,6 +627,9 @@ class TargetFramer:
                     and plan.get("plane") == "横状位"
                     and percent is not None and percent > 0
                 )
+            ) and not (
+                self._selected_region is not None
+                and self._selected_region.get("canvas", "target") == "original"
             ):
                 # 保留已确定的中心和共同间距，对称收紧最终所需视野外的画布。
                 # selected_region 只保选定区域，其余保护路径还包含完整人体。
@@ -623,6 +669,8 @@ class TargetFramer:
             framed_slice["framing"]["selected_region"] = {
                 "basis": "selected_region",
                 "margin_mm": self._selected_region["margin_mm"],
+                "centering": self._selected_region.get("centering", "group"),
+                "canvas": self._selected_region.get("canvas", "target"),
                 "lower_in_plane_mm": list(map(float, lower)),
                 "upper_in_plane_mm": list(map(float, upper)),
             }
@@ -698,7 +746,7 @@ class TargetFramer:
 
 
 def uses_target_centered_canvas(plan: dict) -> bool:
-    """需要共同收紧画布的目标区域模式，或默认肺/髋正数普通 MPR。"""
+    """需要共同画布的部位模式，或未配置策略的肺/髋正数兼容计划。"""
 
     return (
         selected_region_framing(plan) is not None
@@ -708,7 +756,7 @@ def uses_target_centered_canvas(plan: dict) -> bool:
 
 
 def uses_source_preserving_canvas(plan: dict) -> bool:
-    """肺/髋 MPR 保护人体；0/null 仍保留完整源切面和原间距。"""
+    """未启用部位策略的肺/髋 MPR 保护人体；0/null 保留完整源切面。"""
 
     return (
         plan.get("slice_part") in {"肺部", "髋骨"}
@@ -725,7 +773,9 @@ def selected_region_framing(plan: dict) -> dict | None:
     if (policy is None or (parse_fill_percent(plan.get("fill_percent")) or 0) <= 0
             or plan.get("slice_type") != "MPR" or plan.get("geometry_type") != "plane_stack"):
         return None
-    if (not isinstance(policy, dict) or set(policy) != {"basis", "margin_mm"}
+    if (not isinstance(policy, dict)
+            or not {"basis", "margin_mm"} <= set(policy)
+            or set(policy) - {"basis", "margin_mm", "centering", "canvas"}
             or policy.get("basis") != "selected_region"):
         raise ValueError("framing_policy 必须指定 selected_region 与 margin_mm")
     margin = policy["margin_mm"]
@@ -737,7 +787,19 @@ def selected_region_framing(plan: dict) -> dict | None:
         raise ValueError("framing_policy.margin_mm 必须是非负有限数字") from error
     if not np.isfinite(margin) or margin < 0:
         raise ValueError("framing_policy.margin_mm 必须是非负有限数字")
-    return {"basis": "selected_region", "margin_mm": margin}
+    centering = policy.get("centering", "group")
+    if not isinstance(centering, str) or centering not in {
+        "group", "reference_slice", "slice_target",
+    }:
+        raise ValueError("framing_policy.centering 仅支持 group/reference_slice/slice_target")
+    canvas = policy.get("canvas", "target")
+    if not isinstance(canvas, str) or canvas not in {"target", "original"}:
+        raise ValueError("framing_policy.canvas 仅支持 target/original")
+    return {
+        "basis": "selected_region", "margin_mm": margin,
+        **({"centering": centering} if "centering" in policy else {}),
+        **({"canvas": canvas} if "canvas" in policy else {}),
+    }
 
 
 def _plane_matrix(plan: dict) -> tuple[np.ndarray, np.ndarray]:

@@ -9,18 +9,28 @@ import pydicom
 import pytest
 import SimpleITK as sitk
 
-from src.reconstruction.framing import TargetFramer
+from src.reconstruction.framing import TargetFramer, selected_region_framing
 from src.reconstruction.plane_stack import PlaneStackResampler
 from src.reconstruction.windowing import apply_window_to_image
-from tests.test_body_preserving_canvas import _fixture, _geometry, _stage, _vector
+from tests.test_body_preserving_canvas import _body_vertices, _fixture, _geometry, _stage, _vector
 
 
 POLICY = {"basis": "selected_region", "margin_mm": 5.0}
+LUNG_HIP_MODES = (
+    ("肺部", "横状位", "reference_slice"),
+    ("肺部", "冠状位", "reference_slice"),
+    ("肺部", "矢状位", "reference_slice"),
+    ("髋骨", "横状位", "slice_target"),
+    ("髋骨", "矢状位", "slice_target"),
+    ("髋骨", "冠状位", "group"),
+)
 
 
-def _region_fixture(part="髋骨", percent=100, *, tilted=False, plane="冠状位"):
+def _region_fixture(part="髋骨", percent=100, *, tilted=False, plane="冠状位", centering=None):
     raw, seg, plan, coords, body, axes = _fixture(part, percent, plane=plane, tilted=tilted)
     plan["framing_policy"] = copy.deepcopy(POLICY)
+    if centering is not None:
+        plan["framing_policy"]["centering"] = centering
     return raw, seg, plan, coords, body, axes
 
 
@@ -64,6 +74,7 @@ def test_selected_region_has_global_bounds_and_static_center_even_for_small_or_e
         assert np.all(upper <= expected_center + fov / 2 - 5 + 1e-8)
         assert details["center_source"] == "group_selected_region"
         assert details["selected_region"]["basis"] == "selected_region"
+        assert details["selected_region"]["centering"] == "group"
         np.testing.assert_allclose(details["selected_region"]["lower_in_plane_mm"], lower)
         np.testing.assert_allclose(details["selected_region"]["upper_in_plane_mm"], upper)
         assert "source_preservation" not in details
@@ -149,8 +160,12 @@ def test_region_dicom_keeps_unlabelled_midline_bone_and_shared_windows_without_b
 
 @pytest.mark.parametrize("part", ("肺部", "髋骨", "颈椎"))
 @pytest.mark.parametrize("percent", (None, 0))
-def test_zero_or_null_ignores_policy_and_preserves_exact_geometry_and_window_pixels(part, percent):
-    raw, seg, configured, coords, _, _ = _region_fixture(part, percent, tilted=True)
+@pytest.mark.parametrize("centering", (None, "group", "reference_slice", "slice_target"))
+@pytest.mark.parametrize("canvas", (None, "original"))
+def test_zero_or_null_ignores_policy_and_preserves_exact_geometry_and_window_pixels(part, percent, centering, canvas):
+    raw, seg, configured, coords, _, _ = _region_fixture(part, percent, tilted=True, centering=centering)
+    if canvas is not None:
+        configured["framing_policy"]["canvas"] = canvas
     baseline = copy.deepcopy(configured)
     baseline.pop("framing_policy")
     before = TargetFramer(seg, coords, baseline, source_image=raw)
@@ -197,15 +212,162 @@ def test_region_policy_does_not_enable_non_mpr_paths(overrides):
     assert framer._selected_region is None
 
 
-def test_lower_occupancy_reveals_original_hu_outside_100_region_without_precropping(tmp_path):
-    raw, seg, original_plan, coords, _, axes = _region_fixture()
+@pytest.mark.parametrize("centering", (None, "", "skin", "GROUP", True, 0, [], {}))
+def test_runtime_policy_rejects_invalid_centering_in_external_plan(centering):
+    _, _, plan, _, _, _ = _region_fixture()
+    plan["framing_policy"]["centering"] = centering
+    with pytest.raises(ValueError, match="centering"):
+        selected_region_framing(plan)
+
+
+@pytest.mark.parametrize("centering", ("group", "reference_slice", "slice_target"))
+def test_runtime_policy_preserves_explicit_centering_and_legacy_default_shape(centering):
+    _, _, plan, _, _, _ = _region_fixture()
+    assert selected_region_framing(plan) == POLICY
+    plan["framing_policy"]["centering"] = centering
+    assert selected_region_framing(plan) == {**POLICY, "centering": centering}
+
+
+@pytest.mark.parametrize("part,plane,centering", LUNG_HIP_MODES)
+@pytest.mark.parametrize("tilted", (False, True))
+def test_lung_hip_region_modes_preserve_target_centers_and_all_slab_labels_across_fill(part, plane, centering, tilted):
+    raw, seg, original, coords, _, axes = _region_fixture(
+        part, plane=plane, centering=centering, tilted=tilted,
+    )
+    # The unchanged no-source, non-100 path is an independent legacy centering
+    # contract. It has no skin adjustment and uses the original target mode.
+    legacy = copy.deepcopy(original)
+    legacy.pop("framing_policy")
+    legacy["fill_percent"] = 80
+    old = TargetFramer(seg, coords, legacy)
+    expected_centers = []
+    for item in legacy["slices"]:
+        _, framed = old.plane_geometry(legacy, item)
+        expected_centers.append(_vector(framed["center"]))
+    if centering == "group":
+        group_center, _, _, _ = _expected_region(seg, axes)
+        expected_centers = [
+            _vector(item["center"]) + axes[:, :2] @ (
+                group_center - _vector(item["center"]) @ axes[:, :2]
+            ) for item in original["slices"]
+        ]
+    truth = [
+        _body_vertices(sitk.GetArrayViewFromImage(seg) == 1, seg, item, axes, original["slice_thickness"])
+        for item in original["slices"]
+    ]
+    recorded = []
+    for percent in (100, 80, 50):
+        plan = copy.deepcopy(original)
+        plan["fill_percent"] = percent
+        framer = TargetFramer(seg, coords, plan, source_image=raw)
+        records = []
+        for number, item in enumerate(plan["slices"]):
+            sampling, framed = framer.plane_geometry(plan, item)
+            details = framed["framing"]
+            center = _vector(framed["center"])
+            spacing = np.asarray([sampling["output_spacing_mm"][axis] for axis in "xy"])
+            size = np.asarray(details["output_size_xy"])
+            fov = size * spacing
+            np.testing.assert_allclose(center, expected_centers[number], atol=1e-8)
+            np.testing.assert_allclose((center - _vector(item["center"])) @ axes[:, 2], 0, atol=1e-8)
+            if len(truth[number]):
+                # Exact clipped voxel boxes provide label truth independently
+                # of the production target/slab bounding-box implementation.
+                projected = (truth[number] - center) @ axes[:, :2]
+                assert np.all(np.abs(projected) <= fov / 2 - 5. + 1e-7)
+            assert details["selected_region"]["centering"] == centering
+            assert details["context_label_ids"] == []
+            assert not {"source_preservation", "target_center_before_skin_edge", "vertical_source_support"} & details.keys()
+            if centering == "reference_slice":
+                assert details["center_source"] == "group_reference_slice"
+                if plane == "横状位" and not tilted:
+                    assert details["reference_slice_index"] == 2
+                    if number == len(plan["slices"]) - 1:
+                        assert details["slice_target_size_mm"] is None
+            elif centering == "slice_target":
+                expected_source = "slice_target" if len(truth[number]) else "group_fallback"
+                assert details["center_source"] == expected_source
+            else:
+                assert details["center_source"] == "group_selected_region"
+            records.append((center, spacing, size, fov))
+        for _, spacing, size, _ in records[1:]:
+            np.testing.assert_allclose(spacing, records[0][1], atol=1e-10)
+            np.testing.assert_array_equal(size, records[0][2])
+        if centering == "reference_slice":
+            shifts = [(record[0] - _vector(item["center"])) @ axes[:, :2]
+                      for record, item in zip(records, plan["slices"])]
+            np.testing.assert_allclose(shifts, [shifts[0]] * len(shifts), atol=1e-8)
+        recorded.append(records)
+    for records, factor in zip(recorded[1:], (1.25, 2.)):
+        for current, base in zip(records, recorded[0]):
+            np.testing.assert_allclose(current[0], base[0], atol=1e-8)
+            np.testing.assert_allclose(current[1], base[1] * factor, atol=1e-8)
+            np.testing.assert_array_equal(current[2], base[2])
+            np.testing.assert_allclose(current[3], base[3] * factor, atol=1e-8)
+
+
+@pytest.mark.parametrize("centering", ("reference_slice", "slice_target"))
+def test_target_free_group_uses_full_region_fallback_without_collapsing_or_moving_center(centering):
+    raw, seg, original, coords, _, axes = _region_fixture("肺部", centering=centering)
+    group_center, group_size, _, _ = _expected_region(seg, axes)
+    for item in original["slices"]:
+        center = _vector(item["center"]) + axes[:, 2] * 1000.
+        item["center"] = dict(zip("xyz", map(float, center)))
+    for percent in (100, 80, 50):
+        plan = copy.deepcopy(original)
+        plan["fill_percent"] = percent
+        framer = TargetFramer(seg, coords, plan, source_image=raw)
+        for item in plan["slices"]:
+            sampling, framed = framer.plane_geometry(plan, item)
+            details = framed["framing"]
+            spacing = np.asarray([sampling["output_spacing_mm"][a] for a in "xy"])
+            fov = np.asarray(details["output_size_xy"]) * spacing
+            np.testing.assert_allclose(_vector(framed["center"]) @ axes[:, :2], group_center)
+            np.testing.assert_allclose(details["framing_target_size_mm"], group_size)
+            assert np.all(fov >= group_size / (percent / 100) - 1e-8)
+            assert details["center_source"] == "group_fallback"
+            assert details["slice_target_size_mm"] is None
+            assert "reference_slice_index" not in details
+
+
+@pytest.mark.parametrize("part,plane,centering", LUNG_HIP_MODES)
+def test_lower_occupancy_reveals_original_hu_outside_100_region_without_precropping(
+    tmp_path, monkeypatch, part, plane, centering,
+):
+    import src.reconstruction.framing as framing_module
+    import src.stages.stage_reconstruction as stage_module
+
+    raw, seg, original_plan, coords, _, axes = _region_fixture(part, plane=plane, centering=centering)
     source_array = sitk.GetArrayFromImage(raw)
-    markers = [(58, 2100.0), (44, 2300.0)]
-    for x, hu in markers:
-        source_array[10:14, 64:73, x-2:x+3] = hu
-        assert not np.any(sitk.GetArrayViewFromImage(seg)[10:14, 64:73, x-2:x+3])
+    markers = [(34, 2100.0), (26, 2300.0)] if plane == "矢状位" else [(58, 2100.0), (44, 2300.0)]
+    marker_points = []
+    for index, hu in markers:
+        if plane == "横状位":
+            region = (slice(7, 12), slice(64, 73), slice(index-2, index+3))
+            point_index = (float(index), 68., 9.)
+        elif plane == "冠状位":
+            region = (slice(10, 14), slice(64, 73), slice(index-2, index+3))
+            point_index = (float(index), 68., 11.5)
+        else:
+            region = (slice(10, 14), slice(index-1, index+2), slice(94, 103))
+            point_index = (98., float(index), 11.5)
+        source_array[region] = hu
+        assert not np.any(sitk.GetArrayViewFromImage(seg)[region])
+        marker_points.append(np.asarray(raw.TransformContinuousIndexToPhysicalPoint(point_index)))
     source = sitk.GetImageFromArray(source_array)
     source.CopyInformation(raw)
+
+    class ForbiddenBodySupport:
+        def __init__(self, *args, **kwargs):
+            pytest.fail("selected-region zoom must not inspect body or skin")
+
+    def forbidden_automatic_framing(*args, **kwargs):
+        pytest.fail("selected-region zoom must not add neighboring labels or crop padding")
+
+    monkeypatch.setattr(framing_module, "BodyImageSupport", ForbiddenBodySupport)
+    monkeypatch.setattr(stage_module, "BodyImageSupport", ForbiddenBodySupport)
+    monkeypatch.setattr(stage_module, "load_framing_context", forbidden_automatic_framing)
+    monkeypatch.setattr(stage_module, "crop_vertical_padding", forbidden_automatic_framing)
     original_array = sitk.GetArrayFromImage(source)
     original_geometry = (source.GetOrigin(), source.GetDirection(), source.GetSpacing(), source.GetSize())
     centers, fovs, matrix, spacings = [], [], [], []
@@ -215,7 +377,7 @@ def test_lower_occupancy_reveals_original_hu_outside_100_region_without_precropp
         directory = tmp_path / str(percent)
         directory.mkdir()
         output = _stage(directory, source, seg, plan)
-        item = plan["slices"][1]  # y=68: both HU sentinels lie in this original slab
+        item = plan["slices"][1]  # Both HU sentinels lie in this original slab.
         dataset = pydicom.dcmread(Path(output["window_outputs"]["骨窗"]) / "2.dcm")
         size, spacing, output_axes, origin, center = _geometry(dataset)
         centers.append(center @ axes[:, :2]);fovs.append(size * spacing)
@@ -227,8 +389,7 @@ def test_lower_occupancy_reveals_original_hu_outside_100_region_without_precropp
         sampled = PlaneStackResampler().sample_slice(source, sampling_plan, sampling_item)
         hu_pixels = sitk.GetArrayFromImage(sampled)[0]
         expected_visible = (False, False) if percent == 100 else ((True, False) if percent == 80 else (True, True))
-        for (x_index, expected_hu), visible in zip(markers, expected_visible):
-            point = np.asarray(source.TransformContinuousIndexToPhysicalPoint((float(x_index), 68.0, 11.5)))
+        for point, (_, expected_hu), visible in zip(marker_points, markers, expected_visible):
             xy = (point - origin) @ output_axes / spacing
             x, y = np.rint(xy).astype(int)
             inside = 0 <= x < int(dataset.Columns) and 0 <= y < int(dataset.Rows)

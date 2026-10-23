@@ -99,6 +99,8 @@ class DocumentationConsistencyTests(unittest.TestCase):
 
         forbidden_statements = (
             "当前冠状位仍为直线 MPR，曲线 CPR 尚未实现",
+            "默认仅髋骨冠状位启用",
+            "当前仅髋骨冠状位默认启用此分支",
             "胸椎任务的输出目标段只使用 T1 到 T12",
             "C7/L1 不进入 CPR 曲线",
             "胸椎：T1 到 T12。",
@@ -118,7 +120,10 @@ class DocumentationConsistencyTests(unittest.TestCase):
             "颈胸腰结合首尾轴",
             "整体坐标结合配置首尾椎体轴",
         )
-        current_documents = [PROJECT_ROOT / "README.md", DOCS_ROOT / "production.md"]
+        current_documents = [
+            PROJECT_ROOT / "README.md", PROJECT_ROOT / "src/config/README.md",
+            DOCS_ROOT / "production.md",
+        ]
         current_documents.extend(
             path
             for path in SUPERPOWERS_ROOT.rglob("*.md")
@@ -387,6 +392,25 @@ class DocumentationConsistencyTests(unittest.TestCase):
             "不能承诺与原 CT 精确三维联动",
         ):
             self.assertIn(statement, design)
+
+    def test_lung_hip_framing_docs_describe_centering_and_continuous_raw_view(self):
+        """取景入口说明应同时覆盖三种中心、双向视野扩展和原始 CT 来源。"""
+
+        current_documents = (
+            PROJECT_ROOT / "README.md",
+            PROJECT_ROOT / "src/config/README.md",
+            SUPERPOWERS_ROOT / "modules/reconstruction"
+            / "2026-10-08-整组居中与FillPercent取景设计.md",
+        )
+        for path in current_documents:
+            with self.subTest(path=path.relative_to(PROJECT_ROOT)):
+                text = path.read_text(encoding="utf-8")
+                for statement in (
+                    "`centering`", '"canvas":', "`group`", "`reference_slice`", "`slice_target`",
+                    "1.25", "70", "原画框", "物理宽高比", "向四周", "完整原",
+                    "0/null/省略", "不承诺零空气",
+                ):
+                    self.assertIn(statement, text)
 
     def test_all_markdown_relative_links_exist(self):
         """全部当前和历史文档的相对 Markdown 链接都必须解析到真实目标。"""

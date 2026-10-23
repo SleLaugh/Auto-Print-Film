@@ -153,8 +153,8 @@ class ReconstructionStage(BaseStage):
         # 与第六阶段消费相同的展平结果。脑区仍是独立切割目标，骨性支持
         # 只能在最终脑 SI 范围及计划允许的颅顶余量内取景，不通过坐标表扩展层组。
         loc_result = {**loc_result, **anatomical_analysis}
-        # 默认肺/髋正数 Fill 用完整人体限制放大，空气和薄床板不撑大视野。
-        # selected_region 按选定标签取景，不提取人体；其余每源只提取一次共用。
+        # 默认肺/髋正数 Fill 以选定部位计算视野，不提取完整人体支持。
+        # 未配置 selected_region 的兼容计划仍可每源提取一次共用。
         body_source_support = (
             BodyImageSupport(image)
             if any(uses_target_centered_canvas(plan) and selected_region_framing(plan) is None
@@ -310,8 +310,8 @@ class ReconstructionStage(BaseStage):
 
         resampler = self._resampler_for_plan(plan)
 
-        # 第一步：按计划完成 HU 厚层采样。肺/髋人体/完整源保护画布不能单侧
-        # 裁行覆盖既定取景中心；其余计划沿用原有上下裁空。
+        # 第一步：按计划完成 HU 厚层采样。肺/髋部位画框和完整源保护画布
+        # 保留共同矩阵与既定中心；其余计划沿用原有上下裁空。
         # 所有采样完成之前不会开始任何窗宽窗位映射。
         DebugLog(f"    [1] MPR采样: 共 {len(plan['slices'])} 张")
         sampling_start = time.perf_counter()

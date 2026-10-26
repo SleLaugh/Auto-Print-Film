@@ -52,6 +52,8 @@ _TERMINAL_EXTENSION_MINIMUM_COMPONENT_FRACTION = 0.10
 _TERMINAL_EXTENSION_MAXIMUM_SI_GAP = 1
 _TERMINAL_EXTENSION_MINIMUM_TRANSVERSE_OVERLAP_FRACTION = 0.75
 _TERMINAL_EXTENSION_MINIMUM_SI_SPAN = 2
+_BODY_REMNANT_MAX_LABEL_VOLUME_FRACTION = 0.10
+_BODY_REMNANT_MAX_LABEL_SI_SPAN_FRACTION = 0.5
 _PRISM_SEPARATOR_MAXIMUM_PROJECTION_INTRUSION_FRACTION = 0.05
 _LOCALIZATION_WORKSPACE_KEY = "localization_workspace_v1"
 
@@ -3380,9 +3382,15 @@ class LocalizationOperations(
         candidates = LocalizationStage._vertebral_body_support_candidates(
             mask, spacing_zyx=spacing_zyx,
         )
+        raw_indices = np.argwhere(mask)
+        label_voxel_count = len(raw_indices)
+        label_si_span = int(np.ptp(raw_indices[:, 0]) + 1)
+        center_x = float(np.median(raw_indices[:, 2]))
+        del raw_indices
         body_mask = LocalizationStage._select_vertebral_body_support(
-            candidates, center_x=float(np.median(np.argwhere(mask)[:, 2])),
+            candidates, center_x=center_x,
             spacing_zyx=spacing_zyx,
+            label_voxel_count=label_voxel_count, label_si_span=label_si_span,
         )
 
         if not np.any(body_mask):
@@ -3410,10 +3418,10 @@ class LocalizationOperations(
                 # 不再用旧的全局 SI 柱高把倾斜端部或 LR 裂开的主体删掉。
                 body_mask = recovered
         body_indices = np.argwhere(body_mask)
-        raw_indices = np.argwhere(mask)
         if len(body_indices) and (
-            len(body_indices) < len(raw_indices) * 0.1
-            and np.ptp(body_indices[:, 0]) + 1 < (np.ptp(raw_indices[:, 0]) + 1) * 0.5
+            len(body_indices) < label_voxel_count * _BODY_REMNANT_MAX_LABEL_VOLUME_FRACTION
+            and np.ptp(body_indices[:, 0]) + 1
+            < label_si_span * _BODY_REMNANT_MAX_LABEL_SI_SPAN_FRACTION
         ):
             # 同时丢失绝大部分体量和头脚支撑时，只剩短残块；不能把它
             # 当作完整主体生成端面。完整的小主体不按原始最大块比例淘汰。
@@ -3573,6 +3581,8 @@ class LocalizationOperations(
         *,
         center_x: float | None = None,
         spacing_zyx: tuple[float, float, float] | None = None,
+        label_voxel_count: int | None = None,
+        label_si_span: int | None = None,
     ) -> np.ndarray:
         """比较跨 SI 支撑与主体形态，避免把第一段小突起当作主体。"""
 
@@ -3584,6 +3594,10 @@ class LocalizationOperations(
             sitk.GetImageFromArray(candidates.astype(np.uint8)), True,
         ))
         indices = np.argwhere(candidates)
+        if label_voxel_count is None:
+            label_voxel_count = len(indices)
+        if label_si_span is None:
+            label_si_span = int(np.ptp(indices[:, 0]) + 1)
         if center_x is None:
             center_x = float(np.median(indices[:, 2]))
         component_ids = components[tuple(indices.T)]
@@ -3620,9 +3634,20 @@ class LocalizationOperations(
             if abs(record["lr_center"] - center_x) <= record["lr_width"] * 0.75
         ]
         aligned = central or records
+        # 末端安全检查会丢弃的短小后方残块，不能先靠紧凑形状淘汰前体。
+        # 复用原标签的体量/跨度判据，避免按大附件的体量误删可用小主体。
+        dominant = max(aligned, key=lambda record: record["volume"])
         compact = [
             record for record in aligned
             if record["ap_depth"] * ap_lr_spacing_ratio >= record["lr_width"] * 0.35
+            and not (
+                record["anterior"] > dominant["anterior"]
+                and record["si_support"] < dominant["si_support"] * 0.5
+                and record["volume"]
+                < label_voxel_count * _BODY_REMNANT_MAX_LABEL_VOLUME_FRACTION
+                and record["maximum"][0] - record["minimum"][0] + 1
+                < label_si_span * _BODY_REMNANT_MAX_LABEL_SI_SPAN_FRACTION
+            )
         ]
         supported = compact or aligned
         maximum_volume = max(record["volume"] for record in supported)

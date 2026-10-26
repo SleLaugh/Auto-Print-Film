@@ -15,6 +15,7 @@ from .stage_localization import (
     _LOCALIZATION_WORKSPACE_KEY,
 )
 from .spine_label_sequence import repair_lumbar_body_sequence
+from .spine_mixed_labels import repair_mixed_spine_body_labels
 
 
 class SpatialCorrectionStage(LocalizationOperations):
@@ -29,7 +30,11 @@ class SpatialCorrectionStage(LocalizationOperations):
     ):
         """仅在 CT 和主体序列共同支持时修正前方椎体的语义编号。"""
 
-        if slice_part not in {"腰椎", "脊柱"}:
+        if slice_part not in {"颈椎", "腰椎", "脊柱"}:
+            return image, seg_array, str(seg_path), None
+        if slice_part == "颈椎" and not any(
+            name.startswith("vertebrae_C") for name in label_targets
+        ):
             return image, seg_array, str(seg_path), None
 
         def load_aligned_raw():
@@ -55,10 +60,26 @@ class SpatialCorrectionStage(LocalizationOperations):
                 array, target, spacing_zyx=tuple(reversed(image.GetSpacing())),
             )
 
-        repaired, diagnostic = repair_lumbar_body_sequence(
-            seg_array, load_aligned_raw, image, label_map,
-            label_targets=label_targets, body_extractor=extract_body,
-        )
+        repaired, diagnostic = None, None
+        if slice_part in {"腰椎", "脊柱"}:
+            repaired, diagnostic = repair_lumbar_body_sequence(
+                seg_array, load_aligned_raw, image, label_map,
+                label_targets=label_targets, body_extractor=extract_body,
+            )
+        if repaired is None:
+            mixed_repaired, mixed_diagnostic = repair_mixed_spine_body_labels(
+                seg_array, load_aligned_raw, image, label_map,
+                label_targets=label_targets,
+                support_extractor=self._vertebral_body_support_candidates,
+            )
+            if mixed_repaired is not None:
+                repaired, diagnostic = mixed_repaired, {
+                    **mixed_diagnostic, "empty_slot_check": diagnostic,
+                }
+            elif diagnostic is not None:
+                diagnostic["mixed_body_labels"] = mixed_diagnostic
+            else:
+                diagnostic = mixed_diagnostic
         diagnostic = {
             **diagnostic,
             "source_seg_path": str(seg_path),

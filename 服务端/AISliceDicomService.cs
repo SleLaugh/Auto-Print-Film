@@ -59,7 +59,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
 
         // PID保存实际启动时间：相同进程的多条记录只计一次，也能识别PID复用。
         private readonly Dictionary<int, DateTime> RunningProcesses = new Dictionary<int, DateTime>();
-        // 不同部位可并行，但同一输出目录只能由现有任务持有；保留恢复时已重复的全部PID。
+        // 同序列不同部位可并行，但同一输出目录只能由现有任务持有；保留恢复时已重复的全部PID。
         private readonly Dictionary<string, Dictionary<int, DateTime>> RunningOutputs =
             new Dictionary<string, Dictionary<int, DateTime>>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         private bool RunningProcessesRestored;
@@ -113,7 +113,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 {
                     AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]需要处理{list.Count()}条数据！");
                     // 每次循环处理的数量
-                    int handleCount = 8;
+                    int handleCount = 1;
                     // 循环次数
                     int loopCount = (int)Math.Ceiling((double)list.Count / handleCount);
                     // 大循环
@@ -233,6 +233,17 @@ namespace ElincloudAISliceServer.AISliceDicomService
                     ScanThickness = scanThickness,
                 };
 
+                // 数量小于10，不做任何处理
+                if (series.SeriesImageCount < 10)
+                {
+                    record.SliceImageStatus = (int)SliceImageStatus.不切割;
+                    record.Message = $"检查部位[{sourceStudyPartName}]    层厚[{scanThickness}mm]   影像数量不到10张，跳过！";
+                    instance.Insert<AIFilmSliceRecord>(record);
+                    records.Add(record);
+                    AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{examination.ID}]  序列[{seriesInstanceUID}]${record.Message}");
+                    continue;
+                }
+
                 BodyPartMapping? mapping = AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.BodyPartMappings?
                                                                     .FirstOrDefault(i => string.Equals(i.SeriesStudyPartTag?.Trim(), sourceStudyPartName, StringComparison.OrdinalIgnoreCase));
 
@@ -277,7 +288,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 }
 
                 // 一个序列可能命中多个切割部位；每个部位单独调用一次 Python，
-                // 同序列共用缓存并逐个执行，不同序列可在全局名额内并行。
+                // 同序列共用缓存，各部位任务可在全局名额内并行。
                 foreach (var slicePartGroup in matchedPlans.GroupBy(item => item.SlicePartName, StringComparer.OrdinalIgnoreCase))
                 {
                     List<SlicePlanConfigInfo> currentPlans = slicePartGroup.ToList();
@@ -513,23 +524,24 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 return;
             }
 
-            // 全局名额已满或同一序列仍有任务运行时等待，继续扫描其他序列。
-            if (!CanStartProcess(maxConcurrentCount, record.OutputDir))
-            {
-                return;
-            }
-
             try
             {
-                // 旧记录只在真正重新启动前切换缓存，不修改仍在运行的进程。
                 string cacheDir = GetSeriesCacheDirectory(record.OutputDir);
+                // 同序列任务继续复用同一缓存；先保存旧记录的缓存迁移，失败时不启动新进程。
+                // 数据库写入在调度锁外，之后由启动方法原子检查最终名额及输出目录占用。
                 if (!string.Equals(record.CacheDir, cacheDir, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                 {
                     record.CacheDir = cacheDir;
                     instance.Update<AIFilmSliceRecord>(record, item => item.ID == record.ID, nameof(AIFilmSliceRecord.CacheDir));
                 }
 
-                using Process process = StartAutoPrintFilm(record.InputDir, cacheDir, record.OutputDir, record.StudyTypeName, record.SlicePartName, record.ScanThickness, record.PlaneConfigJson, BuildWindowPresetJson(slicePlans));
+                using Process? process = StartAutoPrintFilm(maxConcurrentCount, record.InputDir, cacheDir, record.OutputDir, record.StudyTypeName, record.SlicePartName, record.ScanThickness, record.PlaneConfigJson, BuildWindowPresetJson(slicePlans));
+                // 全局名额已满或相同输出目录仍有任务运行时等待，继续扫描其他任务。
+                if (process == null)
+                {
+                    return;
+                }
+
                 UpdateSeriesRecordStatus(record, SliceImageStatus.正在切割, process.Id, process.StartTime, string.Empty, instance);
             }
             catch (Exception ex)
@@ -754,24 +766,6 @@ namespace ElincloudAISliceServer.AISliceDicomService
         }
 
         /// <summary>
-        /// 当前业务循环按检查串行派发（handleCount = 1），启动成功后立即登记真实PID。
-        /// </summary>
-        private bool CanStartProcess(int maxConcurrentCount, string outputDir)
-        {
-            RestoreRunningProcesses();
-            string cacheKey = GetSeriesCacheDirectory(outputDir);
-            lock (ProcessNumLock)
-            {
-                RefreshRunningProcesses();
-                // 输出占用表已覆盖恢复的存活PID及数据库保存失败的进程。
-                // 按序列缓存根目录判断占用，不受旧记录CacheDir布局影响。
-                return RunningProcesses.Count < maxConcurrentCount
-                    && !RunningOutputs.Keys.Any(activeOutput =>
-                        RunningOutputs.Comparer.Equals(GetSeriesCacheDirectory(activeOutput), cacheKey));
-            }
-        }
-
-        /// <summary>
         /// 输出为“序列/部位”，缓存固定为“序列/cache”，重建任务记录后仍可复用。
         /// </summary>
         private static string GetSeriesCacheDirectory(string outputDir)
@@ -865,11 +859,14 @@ namespace ElincloudAISliceServer.AISliceDicomService
         }
 
         /// <summary>
-        /// 启动一个序列的 AutoPrintFilm Python 进程，但不等待进程结束。
+        /// 原子检查全局名额及输出目录占用、启动并登记真实PID，不等待进程结束。
+        /// 同序列不同输出目录可并行；共享缓存的写入由 Python 缓存锁保护。
         /// </summary>
-        /// <returns>启动成功后的操作系统进程 ID。</returns>
-        private Process StartAutoPrintFilm(string inputDir, string cacheDir, string outDir, string studyType, string slicePart, double scanThickness, string planeConfigJson, string windowPresetJson)
+        /// <returns>启动成功后的进程；并发名额已满或同一输出目录被占用时返回null。</returns>
+        private Process? StartAutoPrintFilm(int maxConcurrentCount, string inputDir, string cacheDir, string outDir, string studyType, string slicePart, double scanThickness, string planeConfigJson, string windowPresetJson)
         {
+            // 首次恢复涉及数据库读取；业务循环在并发派发前已完成恢复。
+            RestoreRunningProcesses();
             string executablePath = Path.GetFullPath(
                 AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.ExecutablePath);
             string outputKey = NormalizeOutputDirectory(outDir);
@@ -899,21 +896,32 @@ namespace ElincloudAISliceServer.AISliceDicomService
             startInfo.ArgumentList.Add("--window_presets");
             startInfo.ArgumentList.Add(windowPresetJson);
 
-            Process process = Process.Start(startInfo)
-                ?? throw new InvalidOperationException("AutoPrintFilm进程启动失败");
+            lock (ProcessNumLock)
+            {
+                RefreshRunningProcesses();
+                // 检查、启动和登记必须持同一把锁，避免多个派发线程同时占用最后一个名额。
+                // 只互斥规范化后的同一输出目录，不按共享序列缓存互斥。
+                if (RunningProcesses.Count >= maxConcurrentCount || RunningOutputs.ContainsKey(outputKey))
+                {
+                    return null;
+                }
 
-            // 先跟踪真实进程，再返回调用方写数据库；写入失败也不会漏计活进程。
-            TrackRunningProcess(process.Id, MinStartDate, outputKey);
-            try
-            {
-                DateTime startDate = process.StartTime;
-                TrackRunningProcess(process.Id, startDate, outputKey);
-                return process;
-            }
-            catch
-            {
-                process.Dispose();
-                throw;
+                Process process = Process.Start(startInfo)
+                    ?? throw new InvalidOperationException("AutoPrintFilm进程启动失败");
+
+                // 先跟踪真实进程，再返回调用方写数据库；写入失败也不会漏计活进程。
+                TrackRunningProcess(process.Id, MinStartDate, outputKey);
+                try
+                {
+                    DateTime startDate = process.StartTime;
+                    TrackRunningProcess(process.Id, startDate, outputKey);
+                    return process;
+                }
+                catch
+                {
+                    process.Dispose();
+                    throw;
+                }
             }
         }
         #endregion

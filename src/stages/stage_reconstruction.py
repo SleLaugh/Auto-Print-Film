@@ -580,10 +580,11 @@ class ReconstructionStage(BaseStage):
         *,
         localizer_surface: SpineLocalizerSurface | None = None,
     ) -> _LocalizerRender | None:
-        """在固定原图网格上绘制切片平面交线，仅按背景边界裁线。
+        """在固定参考面上绘制细定位线，仅按背景物理边界裁线。
 
         定位线表示平面位置与倾角，不表示正式切片的有限取景矩形。
         背景参考层、物理大小和线长均不能随 FillPercent 改变。
+        粗网格先细化显示轴，再绘线，避免原始层厚放大线宽。
         """
 
         axes = cls._LOCALIZER_DRAW_AXES.get(str(plan.get("plane", "")))
@@ -627,6 +628,9 @@ class ReconstructionStage(BaseStage):
             roi_size[fixed_axis] = 1
             representative_slice = sitk.RegionOfInterest(image, roi_size, roi_index)
             representative_slice = sitk.Cast(representative_slice, sitk.sitkFloat32)
+        representative_slice = cls._refine_localizer_display_grid(
+            representative_slice, fixed_axis=fixed_axis,
+        )
         line_alpha_array = np.zeros(
             sitk.GetArrayViewFromImage(representative_slice).shape,
             dtype=np.float32,
@@ -641,8 +645,14 @@ class ReconstructionStage(BaseStage):
             if localizer_surface is not None:
                 # 曲面背景的前后深度随行变化；斜切 MPR 不能继续使用旧平面交线。
                 for indices in localizer_surface.plane_intersections(image, planned_slice):
+                    # 曲面交点使用原图连续索引；只把显示轴换算到细网格。
+                    # y 深度仍来自真实曲面，不能搬到固定参考层后重新求交。
+                    display_indices = np.asarray(indices, dtype=float) * (
+                        np.asarray(image.GetSpacing())
+                        / np.asarray(representative_slice.GetSpacing())
+                    )
                     cls._paint_antialiased_polyline(
-                        line_alpha_array, indices,
+                        line_alpha_array, display_indices,
                         display_axes=(stack_axis, line_axis), fixed_axis=fixed_axis,
                     )
                 continue
@@ -655,11 +665,11 @@ class ReconstructionStage(BaseStage):
                 continue
             start_point, end_point = segment
             start_xyz = np.asarray(
-                image.TransformPhysicalPointToContinuousIndex(tuple(start_point)),
+                representative_slice.TransformPhysicalPointToContinuousIndex(tuple(start_point)),
                 dtype=float,
             )
             end_xyz = np.asarray(
-                image.TransformPhysicalPointToContinuousIndex(tuple(end_point)),
+                representative_slice.TransformPhysicalPointToContinuousIndex(tuple(end_point)),
                 dtype=float,
             )
             cls._paint_antialiased_polyline(
@@ -676,6 +686,48 @@ class ReconstructionStage(BaseStage):
             fixed_axis=fixed_axis,
             legacy_line_value=line_value,
             localizer_surface=localizer_surface,
+        )
+
+    @staticmethod
+    def _refine_localizer_display_grid(
+        background: sitk.Image,
+        *,
+        fixed_axis: int,
+    ) -> sitk.Image:
+        """在烧线前细化定位图粗显示轴，线宽不再受原始层厚影响。
+
+        显示轴间距超过最细轴两倍或超过 2 mm 时，将该轴线性细化到
+        min(最细显示轴间距, 1 mm)。近等距薄层保持原网格。首末像素
+        的物理位置、方向和固定参考层不变，曲面同样只细化显示网格。
+        只插值单层背景，不重采样三维原图，不改变正式切片采样。
+        定位线随后在细网格重新绘制，不能缩放已烧线的粗网格图像。
+        """
+
+        size = list(background.GetSize())
+        spacing = list(background.GetSpacing())
+        display_axes = [
+            axis for axis in range(3)
+            if axis != fixed_axis and size[axis] > 1
+        ]
+        if not display_axes:
+            return background
+        finest_spacing = min(spacing[axis] for axis in display_axes)
+        coarse_axes = [
+            axis for axis in display_axes
+            if spacing[axis] > 2.0 * finest_spacing or spacing[axis] > 2.0
+        ]
+        if not coarse_axes:
+            return background
+        target_spacing = min(finest_spacing, 1.0)
+        for axis in coarse_axes:
+            span = (size[axis] - 1) * spacing[axis]
+            intervals = int(math.ceil(span / target_spacing))
+            size[axis] = intervals + 1
+            spacing[axis] = span / intervals
+        return sitk.Resample(
+            background, size, sitk.Transform(3, sitk.sitkIdentity), sitk.sitkLinear,
+            background.GetOrigin(), spacing, background.GetDirection(),
+            -1024.0, sitk.sitkFloat32,
         )
 
     @classmethod
@@ -723,6 +775,9 @@ class ReconstructionStage(BaseStage):
             roi_size[fixed_axis] = 1
             representative_slice = sitk.RegionOfInterest(image, roi_size, roi_index)
             representative_slice = sitk.Cast(representative_slice, sitk.sitkFloat32)
+        representative_slice = cls._refine_localizer_display_grid(
+            representative_slice, fixed_axis=fixed_axis,
+        )
         line_alpha_array = np.zeros(
             sitk.GetArrayViewFromImage(representative_slice).shape,
             dtype=np.float32,
@@ -739,7 +794,7 @@ class ReconstructionStage(BaseStage):
         coordinate_transform_start = time.perf_counter()
         for projected_points in projected_curves.values():
             projected_indices = cls._physical_points_to_continuous_indices(
-                image,
+                representative_slice,
                 projected_points,
             )
             if len(projected_indices) < 2:

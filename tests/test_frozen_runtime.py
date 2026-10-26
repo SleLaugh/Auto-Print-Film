@@ -185,7 +185,7 @@ class FrozenRuntimeTest(unittest.TestCase):
         with self._frozen(), patch.object(sys, "platform", "linux"), patch.dict(os.environ, environment, clear=True), redirect_stdout(io.StringIO()):
             stage = SegmentationStage()
             output = self.root / "output/seg.nii.gz"
-            with patch("src.stages.stage_segmentation.subprocess.run") as run, patch.object(stage, "_normalize_output_file"):
+            with patch("src.stages.stage_segmentation.run_inference_process") as run, patch.object(stage, "_normalize_output_file"):
                 run.return_value = subprocess.CompletedProcess([], 0, "", "")
                 stage._run_nnunet_inference(self.root / "input", self.root / "input/raw_0000.nii.gz", output, "292", "3d_fullres", "0", True)
             child = run.call_args.kwargs["env"]

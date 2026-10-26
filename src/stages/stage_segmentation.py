@@ -7,18 +7,18 @@ from pathlib import Path
 from typing import Dict, Any, Mapping
 import json
 import math
-import os
 import re
 import shlex
-import subprocess
 import shutil
 from tempfile import NamedTemporaryFile
+from uuid import uuid4
 
 from src.core.base_stage import BaseStage
 from src.core.cache_lock import cache_lock
 from src.core.cache_workspace import cache_workspace, cleanup_cache_workspaces
 from src.core.context import ProcessingContext
 from src.core.errors import ExternalProcessError
+from src.core.inference_process import InferenceProcessAborted, run_inference_process
 from src.core.nnunet_command import nnunet_command_prefix
 from src.config import (
     load_app_config,
@@ -28,7 +28,7 @@ from src.config import (
 )
 from src.models import SegmentationResult
 from src.runtime import config_candidates, external_process_environment, resolve_application_path
-from src.utils import DebugLog, ErrorLog
+from src.utils import DebugLog, ErrorLog, RunLog
 
 
 class SegmentationStage(BaseStage):
@@ -51,6 +51,9 @@ class SegmentationStage(BaseStage):
             "step_size": 0.5,  # 滑窗步长比例，范围为 (0, 1]
             "num_processes_preprocessing": 1,  # 限制预处理后台进程数
             "num_processes_segmentation_export": 1,  # 限制导出后台进程数
+            "inference_timeout_seconds": 1800.0,
+            "inference_timeout_seconds_by_model": {},
+            "inference_max_retries": 1,
             # nnUNet 环境变量。为空时沿用系统环境变量；相对路径按应用根目录解析。
             "nnUNet_raw": "",
             "nnUNet_preprocessed": "",
@@ -90,6 +93,8 @@ class SegmentationStage(BaseStage):
         inference_keys = (
             "disable_tta", "step_size",
             "num_processes_preprocessing", "num_processes_segmentation_export",
+            "inference_timeout_seconds", "inference_timeout_seconds_by_model",
+            "inference_max_retries",
         )
         inference_options = {key: default_config[key] for key in inference_keys}
         nested_config = default_config.get("nnunet")
@@ -102,6 +107,11 @@ class SegmentationStage(BaseStage):
         self._step_size = inference_config.step_size
         self._num_processes_preprocessing = inference_config.num_processes_preprocessing
         self._num_processes_segmentation_export = inference_config.num_processes_segmentation_export
+        self._inference_timeout_seconds = inference_config.inference_timeout_seconds
+        self._inference_timeout_seconds_by_model = (
+            inference_config.inference_timeout_seconds_by_model
+        )
+        self._inference_max_retries = inference_config.inference_max_retries
         self._slice_part_config = (
             default_config.get('slice_part_config')
             or load_slice_part_config()
@@ -177,7 +187,8 @@ class SegmentationStage(BaseStage):
                 # 等待锁的任务可能已生成缓存，必须复查，避免重复推理。
                 if not self._can_reuse_segmentation(output_dir, output_path, dataset_id):
                     self._generate_segmentation(
-                        output_dir, input_path, dataset_id, configuration, fold
+                        output_dir, input_path, dataset_id, configuration, fold,
+                        inference_log_dir=Path(request.output_dir) / "log",
                     )
                 else:
                     DebugLog(f"    复用其他任务已完成的分割结果: {output_path}")
@@ -204,8 +215,36 @@ class SegmentationStage(BaseStage):
         dataset_id: Any,
         configuration: str,
         fold: str,
+        inference_log_dir: Path | None = None,
     ) -> None:
         """锁内生成独立推理结果，最后发布 seg，避免半成品被当作缓存。"""
+
+        for attempt in range(1, self._inference_max_retries + 2):
+            try:
+                self._generate_segmentation_attempt(
+                    output_dir, input_path, dataset_id, configuration, fold,
+                    inference_log_dir=inference_log_dir, attempt=attempt,
+                )
+                return
+            except ExternalProcessError as error:
+                recoverable = error.details.get("reason") in {
+                    "inference_timeout", "native_worker_crash",
+                    "inference_signal", "background_worker_failed",
+                }
+                if (not recoverable or not error.details.get("cleanup_succeeded")
+                        or attempt > self._inference_max_retries):
+                    raise
+                RunLog(
+                    f"[nnUNet] 模型 {dataset_id} 第 {attempt} 次推理异常，"
+                    "旧推理进程已清理，使用新的临时目录重试一次。"
+                )
+
+    def _generate_segmentation_attempt(
+        self, output_dir: Path, input_path: Path, dataset_id: Any,
+        configuration: str, fold: str, *,
+        inference_log_dir: Path | None, attempt: int,
+    ) -> None:
+        """每次尝试使用新工作目录，避免继续模式复用上一次的半成品。"""
 
         output_dir.parent.mkdir(parents=True, exist_ok=True)
         with cache_workspace(output_dir.parent, ".segmentation-") as workspace:
@@ -221,6 +260,8 @@ class SegmentationStage(BaseStage):
                 fold=fold,
                 continue_mode=self._continue,
                 cache_pass_fds=workspace.pass_fds,
+                inference_log_dir=inference_log_dir,
+                attempt=attempt,
             )
             if not temporary_seg.is_file():
                 raise FileNotFoundError(f"未找到nnUNet输出文件: {temporary_seg}")
@@ -465,7 +506,9 @@ class SegmentationStage(BaseStage):
                               configuration: str, 
                               fold: str, 
                               continue_mode: bool,
-                              cache_pass_fds: tuple[int, ...] = ()):
+                              cache_pass_fds: tuple[int, ...] = (),
+                              inference_log_dir: Path | None = None,
+                              attempt: int = 1):
         """
         执行nnUNet推理命令
         
@@ -478,6 +521,8 @@ class SegmentationStage(BaseStage):
             fold: 训练折数
             continue_mode: 是否启用继续模式
             cache_pass_fds: POSIX预测子进程继承工作目录租约，父进程退出后仍保护写入目录
+            inference_log_dir: 独立于临时缓存的原始推理日志目录，失败及重试日志均保留
+            attempt: 当前尝试序号
         """
         # 构建命令
         cmd = nnunet_command_prefix(self._predict_command, self._predict_python) + [
@@ -499,6 +544,9 @@ class SegmentationStage(BaseStage):
         
         # 设置环境变量（合并当前环境变量和nnUNet环境变量）
         env = external_process_environment()
+        # 所有 spawn worker 都继承诊断开关；原生崩溃及时打印 Python 调用栈。
+        env["PYTHONFAULTHANDLER"] = "1"
+        env["PYTHONUNBUFFERED"] = "1"
         for key, value in self._nnunet_env_vars.items():
             if value:  # 如果值不为空
                 env[key] = value
@@ -506,45 +554,86 @@ class SegmentationStage(BaseStage):
         
         command_text = shlex.join(cmd)
         DebugLog(f"    执行命令: {command_text}")
+        timeout_seconds = self._inference_timeout_seconds_by_model.get(
+            str(dataset_id), self._inference_timeout_seconds,
+        )
+        log_dir = Path(inference_log_dir or output_path.parent / "log")
+        log_name = f"nnunet-{dataset_id}-{uuid4().hex}-attempt-{attempt}"
+        stdout_path = log_dir / f"{log_name}.stdout.log"
+        stderr_path = log_dir / f"{log_name}.stderr.log"
+        RunLog(
+            f"[nnUNet] 模型 {dataset_id} 第 {attempt} 次推理开始，"
+            f"单次超时 {timeout_seconds:g}s；"
+            f"标准输出: {stdout_path}；标准错误: {stderr_path}"
+        )
         
         try:
             # 执行命令
-            process_options = {}
-            if os.name == "posix" and cache_pass_fds:
-                process_options["pass_fds"] = cache_pass_fds
-            result = subprocess.run(
+            result = run_inference_process(
                 cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-                env=env,  # 传入自定义环境变量
-                **process_options,
+                env=env,
+                timeout_seconds=timeout_seconds,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                pass_fds=cache_pass_fds,
             )
             
             # 检查执行结果
             if result.returncode != 0:
-                # 报告只携带可读摘要，原始输出走错误日志，不依赖调试日志开关。
+                # 报告只携带可读摘要，完整输出保存在独立日志，错误日志保留末尾。
                 ErrorLog(
                     f"nnUNet 推理失败：模型 {dataset_id}，退出码 {result.returncode}\n"
                     f"执行命令: {command_text}\n"
-                    f"标准错误输出:\n{result.stderr or ''}\n"
-                    f"标准输出:\n{result.stdout or ''}"
+                    f"标准错误日志: {stderr_path}\n标准输出日志: {stdout_path}\n"
+                    f"标准错误末尾:\n{result.stderr or ''}\n"
+                    f"标准输出末尾:\n{result.stdout or ''}"
                 )
-                raise self._describe_inference_failure(
+                error = self._describe_inference_failure(
                     dataset_id, result.returncode, result.stderr or '', env,
                     stdout=result.stdout or '',
                 )
+                error.details.update(
+                    cleanup_succeeded=getattr(result, "cleanup_succeeded", True), attempt=attempt,
+                    stdout_log=stdout_path.name, stderr_log=stderr_path.name,
+                )
+                if result.returncode < 0:
+                    error.details["reason"] = "inference_signal"
+                raise error
             
             DebugLog("    ✅ nnUNet推理完成")
-            if result.stdout:
-                DebugLog(f"    输出信息: {result.stdout}")
+            RunLog(f"[nnUNet] 模型 {dataset_id} 第 {attempt} 次推理完成。")
             
             case_id = self._get_case_id(input_path)
             expected_output = output_path.parent / f"{case_id}.nii.gz"
             self._normalize_output_file(expected_output, output_path)
             
+        except InferenceProcessAborted as error:
+            reasons = {
+                "timeout": ("inference_timeout", f"超过单次推理时限 {timeout_seconds:g}s"),
+                "native_worker_crash": ("native_worker_crash", "推理进程发生原生崩溃"),
+                "cleanup_failed": ("process_cleanup_failed", "推理进程未能完全清理"),
+            }
+            reason, description = reasons.get(
+                error.reason, ("inference_failed", "外部推理中止"),
+            )
+            cleanup = (
+                "已清理本次推理进程。" if error.cleanup_succeeded
+                else "未确认本次推理进程全部退出，停止自动重试。"
+            )
+            message = f"nnUNet 模型 {dataset_id} {description}；{cleanup}详细输出见任务 log 目录。"
+            ErrorLog(
+                f"{message}\n执行命令: {command_text}\n"
+                f"标准错误日志: {stderr_path}\n标准输出日志: {stdout_path}\n"
+                f"标准错误末尾:\n{error.stderr or ''}\n标准输出末尾:\n{error.stdout or ''}"
+            )
+            raise ExternalProcessError(
+                message, stage="segmentation", details={
+                    "model_id": int(dataset_id), "reason": reason,
+                    "timeout_seconds": timeout_seconds, "attempt": attempt,
+                    "cleanup_succeeded": error.cleanup_succeeded,
+                    "stdout_log": stdout_path.name, "stderr_log": stderr_path.name,
+                },
+            ) from error
         except ExternalProcessError:
             # 失败进程的原始输出已记录，避免再把业务摘要和堆栈重复写入日志。
             raise
@@ -598,11 +687,12 @@ class SegmentationStage(BaseStage):
                     'EOFError', 'BrokenPipeError', 'ConnectionResetError',
                 }
             ]
-            if worker_failed and not exceptions:
+            if worker_failed and not primary_exceptions:
                 message = (
                     f"nnUNet 推理失败（模型 {model_id}，退出码 {returncode}）："
-                    "预处理后台进程异常退出，可能是进程内部异常或内存不足导致被系统终止。"
-                    "请查看控制台或错误日志中的完整输出及更早的异常。"
+                    "推理后台进程异常退出，可能是进程内部异常或内存不足导致被系统终止。"
+                    "完整输出及更早的异常请查看任务 log 目录中的 "
+                    "nnunet-*.stdout.log 和 nnunet-*.stderr.log。"
                 )
                 details['reason'] = 'background_worker_failed'
                 return ExternalProcessError(message, stage='segmentation', details=details)
@@ -617,7 +707,8 @@ class SegmentationStage(BaseStage):
                 reason = reason[:300] + "…"
             message = (
                 f"nnUNet 推理失败（模型 {model_id}，退出码 {returncode}）：{reason}。"
-                "详细输出请查看控制台或错误日志。"
+                "详细输出请查看任务 log 目录中的 "
+                "nnunet-*.stdout.log 和 nnunet-*.stderr.log。"
             )
             details["reason"] = "inference_failed"
         return ExternalProcessError(message, stage="segmentation", details=details)

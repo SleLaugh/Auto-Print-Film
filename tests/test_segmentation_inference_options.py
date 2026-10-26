@@ -39,7 +39,7 @@ class SegmentationInferenceOptionsTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             with patch(
-                "src.stages.stage_segmentation.subprocess.run", side_effect=predict,
+                "src.stages.stage_segmentation.run_inference_process", side_effect=predict,
             ) as run:
                 stage.execute(context)
             run.assert_called_once()
@@ -81,7 +81,7 @@ class SegmentationInferenceOptionsTest(unittest.TestCase):
             for value in (0, -1, True, False, 1.5, 1.0, "1.5", "nan", float("inf")):
                 for options in ({field: value}, {"nnunet": {field: value}}):
                     with self.subTest(field=field, value=value, options=options):
-                        with patch("src.stages.stage_segmentation.subprocess.run") as run:
+                        with patch("src.stages.stage_segmentation.run_inference_process") as run:
                             with self.assertRaisesRegex(ValueError, field):
                                 SegmentationStage(options)
                             run.assert_not_called()
@@ -108,7 +108,7 @@ class SegmentationInferenceOptionsTest(unittest.TestCase):
         for value in values:
             for options in ({"step_size": value}, {"nnunet": {"step_size": value}}):
                 with self.subTest(options=options):
-                    with patch("src.stages.stage_segmentation.subprocess.run") as run:
+                    with patch("src.stages.stage_segmentation.run_inference_process") as run:
                         with self.assertRaisesRegex(ValueError, "step_size"):
                             SegmentationStage(options)
                         run.assert_not_called()
@@ -116,7 +116,7 @@ class SegmentationInferenceOptionsTest(unittest.TestCase):
     def test_invalid_disable_tta_is_rejected_before_inference(self):
         for value in (0, 1, "yes", "0"):
             with self.subTest(value=value):
-                with patch("src.stages.stage_segmentation.subprocess.run") as run:
+                with patch("src.stages.stage_segmentation.run_inference_process") as run:
                     with self.assertRaisesRegex(ValueError, "disable_tta"):
                         SegmentationStage({"disable_tta": value})
                     run.assert_not_called()

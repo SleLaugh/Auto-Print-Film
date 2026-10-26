@@ -103,6 +103,11 @@ class Pipeline:
             "step_size": config.nnunet.step_size,
             "num_processes_preprocessing": config.nnunet.num_processes_preprocessing,
             "num_processes_segmentation_export": config.nnunet.num_processes_segmentation_export,
+            "inference_timeout_seconds": config.nnunet.inference_timeout_seconds,
+            "inference_timeout_seconds_by_model": dict(
+                config.nnunet.inference_timeout_seconds_by_model
+            ),
+            "inference_max_retries": config.nnunet.inference_max_retries,
             "nnUNet_raw": config.nnunet.raw,
             "nnUNet_preprocessed": config.nnunet.preprocessed,
             "nnUNet_results": config.nnunet.results,

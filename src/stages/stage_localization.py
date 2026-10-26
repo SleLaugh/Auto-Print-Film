@@ -13,6 +13,7 @@ import numpy as np
 import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
+from src.core.resources import resource_operation
 from src.config import (
     load_slice_part_config,
     validate_slice_part_config,
@@ -1134,8 +1135,9 @@ class LocalizationOperations(
         corrected_raw_path = output_dir / 'raw_corrected.nii.gz'
         corrected_seg_path = output_dir / 'seg_corrected.nii.gz'
 
-        raw_image = sitk.ReadImage(raw_path)
-        seg_image = sitk.ReadImage(seg_path)
+        with resource_operation("spatial_correction", "read_rotation_inputs"):
+            raw_image = sitk.ReadImage(raw_path)
+            seg_image = sitk.ReadImage(seg_path)
         # SimpleITK Resample 的 transform 是“输出坐标 -> 输入坐标”。
         # 因此这里传入检测角度本身，图像内容会朝相反方向被采样回正。
         applied_rotation_degrees = angle_degrees
@@ -1285,24 +1287,33 @@ class LocalizationOperations(
             raw_image,
         )
         angle_degrees = float(candidate.get('angle_degrees', 0.0))
-        corrected_raw = self._rotate_image_xy(
-            image=raw_image,
-            rotation_degrees=angle_degrees,
-            interpolator=sitk.sitkLinear,
-            default_value=self._image_min_value(raw_image),
-            center_index_xyz=center_index_xyz,
-        )
-        corrected_seg = self._rotate_image_xy(
-            image=seg_image,
-            rotation_degrees=angle_degrees,
-            interpolator=sitk.sitkNearestNeighbor,
-            default_value=0,
-            center_index_xyz=center_index_xyz,
-        )
-        corrected_seg = sitk.Cast(corrected_seg, seg_image.GetPixelID())
+        with resource_operation(
+            "spatial_correction", "rotate_raw", size_xyz=raw_image.GetSize(),
+            angle_degrees=angle_degrees,
+        ):
+            corrected_raw = self._rotate_image_xy(
+                image=raw_image,
+                rotation_degrees=angle_degrees,
+                interpolator=sitk.sitkLinear,
+                default_value=self._image_min_value(raw_image),
+                center_index_xyz=center_index_xyz,
+            )
+        with resource_operation(
+            "spatial_correction", "rotate_segmentation", size_xyz=seg_image.GetSize(),
+        ):
+            corrected_seg = self._rotate_image_xy(
+                image=seg_image,
+                rotation_degrees=angle_degrees,
+                interpolator=sitk.sitkNearestNeighbor,
+                default_value=0,
+                center_index_xyz=center_index_xyz,
+            )
+            corrected_seg = sitk.Cast(corrected_seg, seg_image.GetPixelID())
 
-        sitk.WriteImage(corrected_raw, str(candidate_raw_path))
-        sitk.WriteImage(corrected_seg, str(candidate_seg_path))
+        with resource_operation("spatial_correction", "write_rotated_raw"):
+            sitk.WriteImage(corrected_raw, str(candidate_raw_path))
+        with resource_operation("spatial_correction", "write_rotated_segmentation"):
+            sitk.WriteImage(corrected_seg, str(candidate_seg_path))
 
         params.update({
             'candidate_raw_path': str(candidate_raw_path),

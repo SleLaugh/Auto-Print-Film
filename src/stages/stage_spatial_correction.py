@@ -7,6 +7,7 @@ import SimpleITK as sitk
 import numpy as np
 
 from src.core.context import ProcessingContext
+from src.core.resources import resource_operation
 from src.models import SpatialCorrectionStageResult
 from src.utils import DebugLog
 
@@ -38,27 +39,35 @@ class SpatialCorrectionStage(LocalizationOperations):
             return image, seg_array, str(seg_path), None
 
         def load_aligned_raw():
-            try:
-                raw_image = sitk.ReadImage(str(raw_path))
-            except RuntimeError as error:
-                raise ValueError("无法读取原图核实椎体序列") from error
-            if raw_image.GetSize() != image.GetSize() or any(
-                not np.allclose(actual, expected, rtol=0.0, atol=1e-5)
-                for actual, expected in (
-                    (raw_image.GetSpacing(), image.GetSpacing()),
-                    (raw_image.GetOrigin(), image.GetOrigin()),
-                    (raw_image.GetDirection(), image.GetDirection()),
-                )
-            ):
-                raise ValueError("原图与分割空间不一致，不能核实椎体序列")
-            return sitk.GetArrayFromImage(raw_image)
+            with resource_operation(
+                "spatial_correction", "sequence_read_raw", path=str(raw_path),
+            ) as details:
+                try:
+                    raw_image = sitk.ReadImage(str(raw_path))
+                except RuntimeError as error:
+                    raise ValueError("无法读取原图核实椎体序列") from error
+                details.update(self._image_resource_details(raw_image))
+                if raw_image.GetSize() != image.GetSize() or any(
+                    not np.allclose(actual, expected, rtol=0.0, atol=1e-5)
+                    for actual, expected in (
+                        (raw_image.GetSpacing(), image.GetSpacing()),
+                        (raw_image.GetOrigin(), image.GetOrigin()),
+                        (raw_image.GetDirection(), image.GetDirection()),
+                    )
+                ):
+                    raise ValueError("原图与分割空间不一致，不能核实椎体序列")
+                return sitk.GetArrayFromImage(raw_image)
 
         def extract_body(array, target):
-            if target.label_name.endswith("_S1"):
-                return self._s1_body_candidate_mask(array, target)
-            return self._vertebral_body_candidate_mask(
-                array, target, spacing_zyx=tuple(reversed(image.GetSpacing())),
-            )
+            with resource_operation(
+                "spatial_correction", "sequence_extract_body",
+                label=target.label_name, shape_zyx=array.shape,
+            ):
+                if target.label_name.endswith("_S1"):
+                    return self._s1_body_candidate_mask(array, target)
+                return self._vertebral_body_candidate_mask(
+                    array, target, spacing_zyx=tuple(reversed(image.GetSpacing())),
+                )
 
         repaired, diagnostic = None, None
         if slice_part in {"腰椎", "脊柱"}:
@@ -103,6 +112,16 @@ class SpatialCorrectionStage(LocalizationOperations):
             f"{diagnostic.get('changed_voxels', diagnostic.get('changed_voxel_count', 0))} 体素"
         )
         return repaired_image, repaired, str(output_path), diagnostic
+
+    @staticmethod
+    def _image_resource_details(image: sitk.Image) -> dict[str, Any]:
+        """Describe the loaded image and effective ITK default without changing it."""
+
+        return {
+            "size_xyz": image.GetSize(),
+            "pixel_type": image.GetPixelIDTypeAsString(),
+            "itk_threads": sitk.ProcessObject.GetGlobalDefaultNumberOfThreads(),
+        }
 
     def execute(self, context: ProcessingContext) -> ProcessingContext:
         """从分割结果生成校正候选，并保存可序列化的空间契约。"""
@@ -151,60 +170,28 @@ class SpatialCorrectionStage(LocalizationOperations):
             label_map,
         )
 
-        image = sitk.ReadImage(str(seg_path))
-        seg_array = sitk.GetArrayFromImage(image)
-        image, seg_array, working_seg_path, sequence_diagnostic = self._repair_spine_body_sequence(
-            image=image,
-            seg_array=seg_array,
-            raw_path=raw_path,
-            seg_path=seg_path,
-            output_dir=request.output_dir,
-            slice_part=request.slice_part.value,
-            label_map=label_map,
-            label_targets=label_targets,
-        )
-        label_regions = self._build_label_voxel_regions(
-            seg_array,
-            label_targets,
-        )
-        label_coordinates = self._extract_label_coordinates(
-            seg_array,
-            label_targets,
-            label_regions=label_regions,
-        )
-        self._validate_found_labels(label_coordinates)
-        target_mask = self._build_target_mask(seg_array, label_targets)
-        correction_scope_bbox = self._build_target_bbox(target_mask)
-
-        candidate = self._build_xy_correction_candidate(
-            seg_array,
-            label_targets,
-            slice_part=request.slice_part.value,
-            label_regions=label_regions,
-            image=image,
-        )
-        DebugLog(
-            "  横状位 XY 候选角: "
-            f"{candidate['angle_degrees']:.3f}°, "
-            f"status={candidate['correction_status']}"
-        )
-
-        correction_result = self._write_xy_correction_candidate_images(
-            raw_path=str(raw_path),
-            seg_path=working_seg_path,
-            output_dir=Path(request.output_dir) / "nifti",
-            candidate=candidate,
-            correction_center_bbox=correction_scope_bbox,
-        )
-        correction_result = self._promote_xy_correction_candidate_if_available(
-            correction_result,
-        )
-
-        if correction_result["correction_applied"]:
-            image = sitk.ReadImage(
-                str(correction_result["seg_for_reconstruction_path"])
-            )
+        with resource_operation(
+            "spatial_correction", "read_segmentation", path=str(seg_path),
+        ) as details:
+            image = sitk.ReadImage(str(seg_path))
+            details.update(self._image_resource_details(image))
             seg_array = sitk.GetArrayFromImage(image)
+        with resource_operation("spatial_correction", "verify_spine_sequence") as details:
+            image, seg_array, working_seg_path, sequence_diagnostic = self._repair_spine_body_sequence(
+                image=image,
+                seg_array=seg_array,
+                raw_path=raw_path,
+                seg_path=seg_path,
+                output_dir=request.output_dir,
+                slice_part=request.slice_part.value,
+                label_map=label_map,
+                label_targets=label_targets,
+            )
+            if sequence_diagnostic is not None:
+                details["status"] = sequence_diagnostic.get("status")
+        with resource_operation(
+            "spatial_correction", "index_labels", label_count=len(label_targets),
+        ):
             label_regions = self._build_label_voxel_regions(
                 seg_array,
                 label_targets,
@@ -215,8 +202,68 @@ class SpatialCorrectionStage(LocalizationOperations):
                 label_regions=label_regions,
             )
             self._validate_found_labels(label_coordinates)
+        with resource_operation("spatial_correction", "target_bbox"):
             target_mask = self._build_target_mask(seg_array, label_targets)
             correction_scope_bbox = self._build_target_bbox(target_mask)
+
+        with resource_operation("spatial_correction", "estimate_xy_candidate") as details:
+            candidate = self._build_xy_correction_candidate(
+                seg_array,
+                label_targets,
+                slice_part=request.slice_part.value,
+                label_regions=label_regions,
+                image=image,
+            )
+            details.update(
+                angle_degrees=candidate["angle_degrees"],
+                status=candidate["correction_status"],
+            )
+        DebugLog(
+            "  横状位 XY 候选角: "
+            f"{candidate['angle_degrees']:.3f}°, "
+            f"status={candidate['correction_status']}"
+        )
+
+        with resource_operation(
+            "spatial_correction", "write_xy_candidate", status=candidate["correction_status"],
+        ):
+            correction_result = self._write_xy_correction_candidate_images(
+                raw_path=str(raw_path),
+                seg_path=working_seg_path,
+                output_dir=Path(request.output_dir) / "nifti",
+                candidate=candidate,
+                correction_center_bbox=correction_scope_bbox,
+            )
+        correction_result = self._promote_xy_correction_candidate_if_available(
+            correction_result,
+        )
+
+        if correction_result["correction_applied"]:
+            with resource_operation(
+                "spatial_correction", "read_corrected_segmentation",
+                path=str(correction_result["seg_for_reconstruction_path"]),
+            ) as details:
+                image = sitk.ReadImage(
+                    str(correction_result["seg_for_reconstruction_path"])
+                )
+                details.update(self._image_resource_details(image))
+                seg_array = sitk.GetArrayFromImage(image)
+            with resource_operation(
+                "spatial_correction", "index_corrected_labels", label_count=len(label_targets),
+            ):
+                label_regions = self._build_label_voxel_regions(
+                    seg_array,
+                    label_targets,
+                )
+                label_coordinates = self._extract_label_coordinates(
+                    seg_array,
+                    label_targets,
+                    label_regions=label_regions,
+                )
+                self._validate_found_labels(label_coordinates)
+            with resource_operation("spatial_correction", "corrected_target_bbox"):
+                target_mask = self._build_target_mask(seg_array, label_targets)
+                correction_scope_bbox = self._build_target_bbox(target_mask)
             DebugLog("  已启用校正候选，后续阶段统一使用候选空间")
         else:
             DebugLog("  未启用校正，后续阶段使用原始空间")

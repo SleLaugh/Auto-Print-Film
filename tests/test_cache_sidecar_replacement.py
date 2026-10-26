@@ -66,7 +66,7 @@ def _fake_command(monkeypatch, sidecars=None, returncode=0):
             (output_dir / name).write_bytes(content)
         return subprocess.CompletedProcess(command, returncode, "", "intentional fake failure" if returncode else "")
 
-    monkeypatch.setattr(segmentation_module.subprocess, "run", predict)
+    monkeypatch.setattr(segmentation_module, "run_inference_process", predict)
     return called
 
 

@@ -75,6 +75,22 @@ def _coerce_int(value: Any, field_name: str) -> int:
     raise ValueError(f"{field_name} 必须是正整数")
 
 
+def _coerce_timeout_map(value: Any) -> Dict[str, float]:
+    """环境变量支持 JSON 对象文本；其他来源也可直接传入映射。"""
+    field_name = "nnunet.inference_timeout_seconds_by_model"
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{field_name} 必须是有效 JSON 对象") from error
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} 必须是模型 ID 到秒数的对象")
+    return {
+        key: _coerce_float(timeout, f"{field_name}.{key}")
+        for key, timeout in value.items()
+    }
+
+
 def load_app_config(
     *,
     explicit: Optional[Mapping[str, Any]] = None,
@@ -149,6 +165,15 @@ def load_app_config(
         num_processes_segmentation_export=_coerce_int(nn_value(
             "num_processes_segmentation_export", "num_processes_segmentation_export", fallback=1
         ), "nnunet.num_processes_segmentation_export"),
+        inference_timeout_seconds=_coerce_float(nn_value(
+            "inference_timeout_seconds", "inference_timeout_seconds", fallback=1800.0
+        ), "nnunet.inference_timeout_seconds"),
+        inference_timeout_seconds_by_model=_coerce_timeout_map(nn_value(
+            "inference_timeout_seconds_by_model", "inference_timeout_seconds_by_model", fallback={}
+        )),
+        inference_max_retries=_coerce_int(nn_value(
+            "inference_max_retries", "inference_max_retries", fallback=1
+        ), "nnunet.inference_max_retries"),
     )
     logging_values = {
         key: explicit_logging.get(key, default_logging.get(key, default))

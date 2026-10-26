@@ -125,6 +125,29 @@ src/config/nnuNet_config.json
 }
 ```
 
+Python 分割阶段会把每次推理的标准输出、标准错误实时保存到任务的
+`log/nnunet-*.stdout.log`、`log/nnunet-*.stderr.log`，不依赖 DebugLog 开关。
+原始进度不再同步转发到控制台或 DebugLog；监测循环直接读取原始日志检测致命崩溃，
+并检查单次推理时限，避免控制台读取阻塞监测。需要实时进度时查看这两个日志文件。
+外部 Python 及其 worker 启用 `PYTHONFAULTHANDLER=1`，发现段错误等致命崩溃日志后
+中止本次推理；即使没有崩溃日志，也有按模型配置的单次推理超时兜底：
+
+```json
+{
+  "inference_timeout_seconds": 1800,
+  "inference_timeout_seconds_by_model": {"315": 180},
+  "inference_max_retries": 1
+}
+```
+
+时限单位为秒，必须为有限正数；模型覆盖项的键为模型 ID 字符串。仓库配置中肺部模型
+`315` 每次最多 180 秒，其他模型默认 1800 秒，可根据实际数据调整。
+Linux 下超时、原生崩溃或后台 worker 异常退出后，只有确认本次推理进程组已清理，
+才会用全新的临时目录额外重试一次；`inference_max_retries=0` 可关闭重试。
+缺少模型等明确配置错误直接失败，重试仍失败时写入失败报告。计时只覆盖单次外部推理，
+不包括缓存锁等待和后续重建。C# 不参与超时或重试判断。
+这些改动需要重新构建并更新应用包，之后调整 JSON 无需重新打包。
+
 JSON 中 `disable_tta` 使用布尔值，默认 `false`，设为 `true` 会关闭镜像增强、减少重复推理。
 `step_size` 使用数值，范围为 `0 < step_size <= 1`，默认 `0.5`；增大步长可以减少
 滑窗重叠。`num_processes_preprocessing` 和 `num_processes_segmentation_export`
@@ -342,10 +365,12 @@ log/ErrorLog.txt
 log/BatchLog.txt
 ```
 
-默认 `error_log_file_enabled=true`，推理失败时 `log/ErrorLog.txt` 记录实际命令和完整
-stdout/stderr，其余日志开关保持原值；显式关闭错误日志时仍遵守该配置。
+默认 `error_log_file_enabled=true`，推理失败时 `log/ErrorLog.txt` 记录实际命令和
+stdout/stderr 各自末尾最多 64 KiB，其余日志开关保持原值；显式关闭错误日志时仍遵守该配置。
+完整原始输出实时保存在 `log/nnunet-*.stdout.log` 和 `log/nnunet-*.stderr.log`，
+每次尝试使用独立文件名，失败与重试日志均保留，不依赖上述日志开关。
 报告摘要优先保留 stdout/stderr 中的具体异常。仅有 `Background workers died`
-不能判断为内存不足，也可能是后台进程自身的 Python 异常；应先查看完整错误日志，
+不能判断为内存不足，也可能是后台进程自身的 Python 异常；应收集本次尝试的两份原始推理日志，
 再结合系统的内存终止记录排查。将上述两个进程数设为 1 可减少并发资源占用，不能保证
 解决所有后台进程退出。
 
@@ -390,8 +415,13 @@ AUTOPRINTFILM_NATIVE_THREADS=4 AUTOPRINTFILM_WINDOW_WORKERS=1 \
 `log/RunLog.txt`；发布环境保留的日志开关仍以外置配置为准。
 `RunLog` 的 `[资源]` 行记录每个阶段开始、完成或失败时的进程资源快照。Linux 下包含
 PID、当前 RSS、进程整个运行期间的峰值 RSS、线程数、系统可用内存和已用 swap，
-内存单位为 MiB。快照用于对照停在哪个阶段；它不是阶段内部的持续采样，不能仅凭
+内存单位为 MiB。第三阶段另外记录带 `step=` 的读取分割、椎体序列核实、逐标签主体提取、
+标签索引、目标 bbox、镜像候选估计，以及原图/分割旋转与写盘的开始、完成或失败。
+完成行包含耗时；读取分割后记录图像尺寸、像素类型和实际 ITK 线程数。这些信息通过
+RunLog 保存，不需要开启调试影像或 DebugLog。快照不是阶段内部的持续采样，不能仅凭
 缺少 OOM 日志或一次低内存读数排除系统问题。已有发布包需重新构建后才包含这些改动。
+桌面和服务一起卡住时，还应保留系统 journal 与 `/var/lib/systemd/pstore/` 中的内核转储，
+详见[系统卡死排查](docs/production.md#系统卡死时保留内核证据)。
 
 ### 当前能力范围
 

@@ -158,6 +158,14 @@ class SegmentationFailureReportTest(unittest.TestCase):
             self.assertNotIn(unexpected, message)
         self.assertEqual(error.details["reason"], "background_worker_failed")
 
+    def test_secondary_pipe_errors_do_not_hide_recoverable_worker_failure(self):
+        for secondary in ("EOFError", "BrokenPipeError: [Errno 32] Broken pipe",
+                          "ConnectionResetError: connection reset"):
+            error = SegmentationStage._describe_inference_failure(
+                292, 1, f"{secondary}\n{self.WORKER_FAILURE}", {},
+            )
+            self.assertEqual(error.details["reason"], "background_worker_failed")
+
     def test_specific_stdout_failure_takes_priority_over_secondary_pipe_error(self):
         cause = "numpy.core._exceptions._ArrayMemoryError: Unable to allocate 8.00 GiB"
         for secondary in ("EOFError", "BrokenPipeError: [Errno 32] Broken pipe"):
@@ -183,7 +191,7 @@ class SegmentationFailureReportTest(unittest.TestCase):
         stderr = self.missing_trace(298)
         with patch.dict("os.environ", {
             "nnUNet_results": "/old/results", "nnUNet_raw": "/inherited/raw",
-        }), patch("src.stages.stage_segmentation.subprocess.run") as run:
+        }), patch("src.stages.stage_segmentation.run_inference_process") as run:
             run.return_value = subprocess.CompletedProcess([], 1, "predict startup", stderr)
             with self.assertRaises(ExternalProcessError) as caught:
                 stage._run_nnunet_inference(
@@ -209,7 +217,7 @@ class SegmentationFailureReportTest(unittest.TestCase):
         cause = "FileNotFoundError: [Errno 2] Missing input: '/tmp/input case/raw_0000.nii.gz'"
         stdout = f'preprocessing started\nTraceback (most recent call last):\n{cause}\n'
         stderr = f"progress: 1/1\n{self.WORKER_FAILURE}\n"
-        with patch("src.stages.stage_segmentation.subprocess.run") as run:
+        with patch("src.stages.stage_segmentation.run_inference_process") as run:
             run.return_value = subprocess.CompletedProcess([], 1, stdout, stderr)
             with self.assertRaises(ExternalProcessError) as caught:
                 stage._run_nnunet_inference(
@@ -234,7 +242,7 @@ class SegmentationFailureReportTest(unittest.TestCase):
                 config=AppConfig(pipeline=PipelineConfig(run_preflight=False)),
             )
             request = Request("/tmp/dicom", temp_dir, scan_thickness=5.0)
-            with patch("src.stages.stage_segmentation.subprocess.run") as run:
+            with patch("src.stages.stage_segmentation.run_inference_process") as run:
                 run.return_value = subprocess.CompletedProcess([], 1, "", self.missing_trace(298))
                 response = pipeline.run(request)
             report = json.loads((Path(temp_dir) / "report.json").read_text(encoding="utf-8"))
@@ -250,7 +258,7 @@ class SegmentationFailureReportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             (root / "raw.nii.gz").write_bytes(b"fake segmentation")
-            with patch("src.stages.stage_segmentation.subprocess.run") as run:
+            with patch("src.stages.stage_segmentation.run_inference_process") as run:
                 run.return_value = subprocess.CompletedProcess([], 0, "ok", "")
                 stage._run_nnunet_inference(
                     root, root / "raw_0000.nii.gz", root / "seg.nii.gz",

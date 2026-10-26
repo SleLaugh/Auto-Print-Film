@@ -121,6 +121,118 @@ class ConfigLoaderTest(unittest.TestCase):
                 elif expected == 6:
                     sources["defaults"].pop(name)
 
+    def test_watchdog_defaults_and_summary(self):
+        config = load_app_config(environ={}, defaults={})
+
+        self.assertEqual(config.nnunet.inference_timeout_seconds, 1800.0)
+        self.assertEqual(config.nnunet.inference_timeout_seconds_by_model, {})
+        self.assertEqual(config.nnunet.inference_max_retries, 1)
+        for name in (
+            "inference_timeout_seconds",
+            "inference_timeout_seconds_by_model",
+            "inference_max_retries",
+        ):
+            self.assertEqual(config.summary()["nnunet"][name], getattr(config.nnunet, name))
+
+    def test_watchdog_options_follow_all_configuration_priorities(self):
+        cases = (
+            ("inference_timeout_seconds", [30, 40, 50, 60, 70, 1800.0]),
+            ("inference_timeout_seconds_by_model", [
+                {"315": 30}, {"315": 40}, {"315": 50},
+                {"315": 60}, {"315": 70}, {},
+            ]),
+            ("inference_max_retries", [0, 1, 0, 1, 0, 1]),
+        )
+        for name, values in cases:
+            sources = {
+                "explicit": {"nnunet": {name: values[0]}, name: values[1]},
+                "environ": {name: json.dumps(values[2])},
+                "defaults": {"nnunet": {name: values[3]}, name: values[4]},
+            }
+            for index, expected in enumerate(values):
+                with self.subTest(name=name, priority=index):
+                    config = load_app_config(**sources)
+                    self.assertEqual(getattr(config.nnunet, name), expected)
+                    self.assertEqual(config.summary()["nnunet"][name], expected)
+                if index == 0:
+                    sources["explicit"].pop("nnunet")
+                elif index == 1:
+                    sources["explicit"].pop(name)
+                elif index == 2:
+                    sources["environ"].pop(name)
+                elif index == 3:
+                    sources["defaults"].pop("nnunet")
+                elif index == 4:
+                    sources["defaults"].pop(name)
+
+    def test_watchdog_environment_text_is_normalized(self):
+        config = load_app_config(environ={
+            "inference_timeout_seconds": "120.5",
+            "inference_timeout_seconds_by_model": '{"315": 60.5, "1": "90"}',
+            "inference_max_retries": "0",
+        }, defaults={})
+
+        self.assertEqual(config.nnunet.inference_timeout_seconds, 120.5)
+        self.assertEqual(
+            config.nnunet.inference_timeout_seconds_by_model, {"315": 60.5, "1": 90.0}
+        )
+        self.assertEqual(config.nnunet.inference_max_retries, 0)
+
+    def test_watchdog_rejects_invalid_timeout_values(self):
+        invalid = (
+            True, False, 0, -1, float("nan"), float("inf"), float("-inf"),
+            "nan", "inf", "0", "-1", "fast", " ", [], {}, 10 ** 1000,
+        )
+        for value in invalid:
+            for name, supplied_value in (
+                ("inference_timeout_seconds", value),
+                ("inference_timeout_seconds_by_model", {"315": value}),
+            ):
+                with self.subTest(name=name, value=value):
+                    with self.assertRaisesRegex(ValueError, name):
+                        load_app_config(environ={}, defaults={name: supplied_value})
+        for value in (*invalid, None, "30"):
+            for name, supplied_value in (
+                ("inference_timeout_seconds", value),
+                ("inference_timeout_seconds_by_model", {"315": value}),
+            ):
+                with self.subTest(typed_name=name, value=value):
+                    with self.assertRaisesRegex(ValueError, name):
+                        NnUNetConfig(**{name: supplied_value})
+
+    def test_watchdog_rejects_invalid_model_maps_and_keys(self):
+        invalid = [True, False, 1, [], "bad json", "[]", "null", None]
+        invalid.extend(
+            {key: 30} for key in ("0", "-1", "0315", "+315", "315.0", " 315", "", 315, True)
+        )
+        for value in invalid:
+            with self.subTest(typed_value=value):
+                with self.assertRaisesRegex(ValueError, "inference_timeout_seconds_by_model"):
+                    NnUNetConfig(inference_timeout_seconds_by_model=value)
+            if value is not None:
+                with self.subTest(loader_value=value):
+                    with self.assertRaisesRegex(ValueError, "inference_timeout_seconds_by_model"):
+                        load_app_config(environ={}, defaults={
+                            "inference_timeout_seconds_by_model": value,
+                        })
+
+    def test_watchdog_rejects_invalid_retry_counts(self):
+        for value in (True, False, -1, 2, 1.0, "1.0", "2", "retry", [], {}, float("inf")):
+            with self.subTest(loader_value=value):
+                with self.assertRaisesRegex(ValueError, "inference_max_retries"):
+                    load_app_config(environ={}, defaults={"inference_max_retries": value})
+        for value in (True, False, -1, 2, 1.0, "1", None):
+            with self.subTest(typed_value=value):
+                with self.assertRaisesRegex(ValueError, "inference_max_retries"):
+                    NnUNetConfig(inference_max_retries=value)
+
+    def test_repository_watchdog_limits_lung_separately(self):
+        config = load_app_config(environ={})
+
+        self.assertEqual(config.nnunet.inference_timeout_seconds, 1800.0)
+        self.assertEqual(config.nnunet.inference_timeout_seconds_by_model, {"315": 180.0})
+        self.assertEqual(config.nnunet.inference_max_retries, 1)
+
     def test_worker_counts_accept_integer_text(self):
         for value in ("2", " 3 ", "+4", "005"):
             with self.subTest(value=value):
@@ -258,6 +370,9 @@ class ConfigLoaderTest(unittest.TestCase):
                 "step_size": 0.75,
                 "num_processes_preprocessing": 2,
                 "num_processes_segmentation_export": 4,
+                "inference_timeout_seconds": 600,
+                "inference_timeout_seconds_by_model": {"315": 90},
+                "inference_max_retries": 0,
             },
         )
 
@@ -275,6 +390,9 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(segmentation._step_size, 0.75)
         self.assertEqual(segmentation._num_processes_preprocessing, 2)
         self.assertEqual(segmentation._num_processes_segmentation_export, 4)
+        self.assertEqual(segmentation.config["inference_timeout_seconds"], 600)
+        self.assertEqual(segmentation.config["inference_timeout_seconds_by_model"], {"315": 90})
+        self.assertEqual(segmentation.config["inference_max_retries"], 0)
 
     def test_default_loader_combines_nnunet_and_logger_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:

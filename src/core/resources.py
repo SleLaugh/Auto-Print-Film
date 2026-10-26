@@ -1,8 +1,12 @@
 """Low-cost resource snapshots for diagnosing concurrent CPU jobs."""
 
+from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import sys
+import time
+from typing import Any, Iterator
 
 
 def _read_proc_fields(path: Path, keys: set[str]) -> dict[str, int]:
@@ -56,3 +60,50 @@ def resource_usage_summary(proc_root: Path = Path("/proc")) -> str:
         used = memory["SwapTotal"] - memory["SwapFree"]
         values.append(f"system_swap_used_mib={used / 1024:.1f}")
     return " ".join(values)
+
+
+def _log_operation(stage: str, step: str, phase: str, details: dict[str, Any]) -> None:
+    """Keep optional diagnostics from changing the operation's outcome."""
+
+    try:
+        # Import lazily: resources is also imported while the pipeline is loading.
+        from src.utils import RunLog
+
+        fields = " ".join(
+            f"{key}={json.dumps(value, ensure_ascii=False, default=str, separators=(',', ':'))}"
+            for key, value in details.items()
+        )
+        RunLog(
+            f"[资源] stage={stage} step={step} phase={phase} "
+            f"{fields} {resource_usage_summary()}".strip()
+        )
+    except Exception:
+        # A disabled/unavailable logger must never mask the processing exception.
+        pass
+
+
+@contextmanager
+def resource_operation(stage: str, step: str, **details: Any) -> Iterator[dict[str, Any]]:
+    """Log a bounded processing step, preserving its result and original exception.
+
+    The yielded details can be extended with image dimensions or other metadata
+    discovered by the operation. These additions appear in its completion log.
+    """
+
+    operation_details = dict(details)
+    started = time.monotonic()
+    _log_operation(stage, step, "start", operation_details)
+    try:
+        yield operation_details
+    except BaseException as error:
+        _log_operation(stage, step, "failed", {
+            **operation_details,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "error_type": type(error).__name__,
+        })
+        raise
+    else:
+        _log_operation(stage, step, "complete", {
+            **operation_details,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        })

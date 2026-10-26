@@ -227,8 +227,39 @@ Python 显式配置支持顶层字段和 `nnunet` 嵌套段，优先于环境变
 `dev build`，按第 3 节更新完整应用目录。升级后只改外置 JSON，下一次任务启动生效，
 无需再次打包；模型无需重新训练，外部 nnUNet 环境无需重新安装，当前 Worker 无需改造。
 
+Python 分割阶段的保护参数也放在 `nnuNet_config.json` 中，C# 不增加超时或重试判断：
+
+```json
+{
+  "inference_timeout_seconds": 1800,
+  "inference_timeout_seconds_by_model": {"315": 180},
+  "inference_max_retries": 1
+}
+```
+
+两个时限字段的单位均为秒，数值必须有限且大于 0；按模型覆盖项的键必须是无前导零的
+正整数 ID 字符串。仓库配置为肺部模型 `315` 单次 180 秒，其他模型单次 1800 秒，
+按实际影像规模调整即可。计时不包括缓存锁等待或后续重建。环境变量支持同名参数，
+模型时限映射使用 JSON 对象文本；映射整体覆盖，`{}` 可清空模型覆盖项。
+`inference_max_retries` 只允许 `0` 或 `1`，表示失败后的额外重试次数。
+
+外部 Python 及其 spawn worker 继承 `PYTHONFAULTHANDLER=1`、`PYTHONUNBUFFERED=1`。
+发现段错误等致命崩溃日志后立即中止本次推理，未输出崩溃信息时由单次时限兜底。
+Linux 下会先终止本次推理进程组，必要时强制结束，并确认没有活动成员后才重试。
+重试使用新临时目录；旧进程清理未确认、模型缺失或其他明确配置错误均不自动重试。
+重试仍失败时生成失败 `report.json`，每次尝试的日志均保留。
+Windows 源码运行保留正常推理和有时限的 `taskkill /T /F` 清理尝试；由于未使用
+Windows Job Object 验证孤儿进程树，清理结果不会标记为已确认，因此不自动重试。
+
+原始 stdout/stderr 实时写入任务的 `log/nnunet-*.stdout.log` 和
+`log/nnunet-*.stderr.log`，不依赖 DebugLog 或调试影像开关；开始、结束和重试写入
+RunLog。原始进度不再同步转发到控制台或 DebugLog，监测循环从原始日志检测致命崩溃并
+检查单次时限，避免控制台读取阻塞监测；需要实时进度时可查看对应日志文件。
+新增保护需要重新构建并更新完整应用包，之后改外置 JSON 无需重新打包。
+
 遇到 `Background workers died` 时，先查看本次任务输出目录的 `log/ErrorLog.txt`：
-其中记录实际命令和完整 stdout/stderr，报告摘要会优先显示更具体的异常。该提示本身
+其中记录实际命令和 stdout/stderr 各自末尾最多 64 KiB，报告摘要会优先显示更具体的异常。
+排障时同时收集本次尝试对应的两份原始推理日志，完整早期异常可能不在 ErrorLog 的末尾摘要中。该提示本身
 不能证明主机内存不足，后台进程也可能因 Python 异常退出；没有具体异常时再结合系统的
 内存终止记录排查。两个进程数设为 1 只能减少并发资源占用，不能保证解决所有失败。
 仓库默认 `logger_config.json` 开启 `error_log_file_enabled` 和 `run_log_file_enabled`；
@@ -247,7 +278,10 @@ OMP/BLAS 等线程默认值也会继承，除非其启动器自行覆盖；`-npp
 非法应用线程配置仍会在指定的输出目录下尽力生成失败 `report.json`。
 阶段资源快照写入 `RunLog` 的 `[资源]` 行；需要外置 `logger_config.json` 中的
 `run_log_file_enabled=true` 才保存到文件，仓库配置已开启此项。Linux 下记录 RSS、进程累计峰值 RSS、
-线程数、系统可用内存和 swap，内存单位 MiB。快照只发生在阶段边界。
+线程数、系统可用内存和 swap，内存单位 MiB。除阶段边界外，第三阶段记录带 `step=` 的
+子步骤：读取分割、椎体序列核实及逐标签主体提取、标签索引、目标 bbox、镜像候选估计、
+原图/分割旋转与写盘。每步记录开始、完成或失败及耗时；读图后记录尺寸、像素类型和
+实际 ITK 线程数。普通 RunLog 即可保留这些诊断，不需要开启 DebugLog 或调试影像。
 这部分涉及应用代码，已有程序须重新构建并更新完整应用包后生效。
 
 在 Linux 下，外部推理子进程会恢复 PyInstaller 启动前的动态库搜索路径；父进程仍使用自己的打包库。[PyInstaller 外部程序调用说明](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#launching-external-programs-from-the-frozen-application)
@@ -285,3 +319,22 @@ dev build --refresh-runtime
 - 确认包内不含 torch、nnunetv2 或应用源码入口。
 
 验证不使用患者数据，不检查外部模型，不运行 nnUNet 推理。构建日志位于 `.build-cache/last-build.log`。
+
+### 系统卡死时保留内核证据
+
+桌面和 Web 请求一起卡住时，除了病例日志，还要保存系统日志。TCP 端口可连接只说明
+连接当时被接受，不能确认应用仍能完成请求。重启后先查看事故所在 boot：
+
+```bash
+journalctl --list-boots
+journalctl -b -1 -k --no-pager
+sudo ls -l /var/lib/systemd/pstore
+```
+
+`-1` 指上一次启动；多次重启后应改用 `--list-boots` 中对应的 boot ID。
+有些内核崩溃来不及写入 journal，只留在 pstore。`systemd-pstore` 归档的
+`/var/lib/systemd/pstore/<编号>/dmesg.txt` 可能需要本机 sudo 才能读取；保留原始文件供复核。
+转储若明确包含 `Kernel panic`、`Fatal exception in interrupt`，说明发生了内核层故障。
+应结合完整堆栈检查内核版本、驱动及硬件/固件稳定性，不能仅因当时正在切割或某驱动
+出现在已加载模块列表中，就认定对应应用算法或驱动是根因。
+不要用反复运行曾导致卡死的完整病例代替取证；应用步骤日志也不能替代内核转储。

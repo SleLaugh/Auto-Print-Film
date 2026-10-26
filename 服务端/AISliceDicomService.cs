@@ -113,7 +113,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 {
                     AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]需要处理{list.Count()}条数据！");
                     // 每次循环处理的数量
-                    int handleCount = 1;
+                    int handleCount = 8;
                     // 循环次数
                     int loopCount = (int)Math.Ceiling((double)list.Count / handleCount);
                     // 大循环
@@ -147,23 +147,26 @@ namespace ElincloudAISliceServer.AISliceDicomService
         }
 
         /// <summary>
-        /// 处理单个检查数据
+        /// 处理单个检查数据。
+        /// 按照“补齐缺失任务 -> 启动待处理任务 -> 监测任务完成情况”的顺序执行。
+        /// 未切割和正在切割的检查都需要检查是否存在尚未创建任务的原始序列。
         /// </summary>
-        /// <param name="examination"></param>
+        /// <param name="examination">当前待处理的 RIS 检查。</param>
+        /// <param name="slicePlans">切割方案。</param>
+        /// <param name="instance">当前医院的数据库访问对象。</param>
+        /// <param name="hospital">当前医院信息。</param>
         private void ProcessSingleStudy(RISExamination examination, List<SlicePlanConfigInfo> slicePlans, SqlAccess instance, HospitalInfo hospital)
         {
             try
             {
-                SliceImageStatus status = ElincloudServer.Common.Utils.EnumUtil.GetEnumValue<SliceImageStatus>(examination.SliceImageStatus);
-                switch (status)
-                {
-                    case SliceImageStatus.未切割:
-                        ProcessUnprocessedStudy(examination, slicePlans, instance, hospital);
-                        break;
-                    case SliceImageStatus.正在切割:
-                        ProcessProcessingStudy(examination, slicePlans, instance);
-                        break;
-                }
+                SliceImageStatus originalStatus = ElincloudServer.Common.Utils.EnumUtil.GetEnumValue<SliceImageStatus>(examination.SliceImageStatus);
+                // 第一步：扫描原始序列，为尚未创建任务的序列补建任务记录。
+                // 返回的记录集合在后两个阶段复用，避免为了拆分方法重复查询任务表。
+                List<AIFilmSliceRecord> records = CreateMissingSeriesTasks(examination, slicePlans, instance, hospital);
+                // 第二步：启动已经创建、当前仍处于“未切割”状态的任务。
+                StartUnprocessedTasks(records, slicePlans, instance);
+                // 第三步：基于任务记录监测进程、处理报告并更新检查整体状态。
+                MonitorTaskCompletion(examination, records, slicePlans, instance, originalStatus);
             }
             catch (Exception ex)
             {
@@ -172,12 +175,16 @@ namespace ElincloudAISliceServer.AISliceDicomService
         }
 
         /// <summary>
-        /// 处理一条未切割检查。
+        /// 创建缺失的序列切割任务。
+        /// 只负责扫描原始 DICOM 序列、比对已有任务记录并创建缺失记录，不在此方法中启动 Python。
+        /// 未切割和正在切割的检查都会调用此方法，以便发现检查处理过程中后来出现的序列。
         /// </summary>
         /// <param name="examination">当前待处理的 RIS 检查。</param>
         /// <param name="slicePlans">切割方案。</param>
         /// <param name="instance">当前医院的数据库访问对象。</param>
-        private void ProcessUnprocessedStudy(RISExamination examination, List<SlicePlanConfigInfo> slicePlans, SqlAccess instance, HospitalInfo hospital)
+        /// <param name="hospital">当前医院信息。</param>
+        /// <returns>本轮检查的全部切割任务记录，包括原有记录和本次新建的记录。</returns>
+        private List<AIFilmSliceRecord> CreateMissingSeriesTasks(RISExamination examination, List<SlicePlanConfigInfo> slicePlans, SqlAccess instance, HospitalInfo hospital)
         {
             // 当前检查的根路径
             string examinationoutputDir = ElincloudServer.Common.Utils.StringUtil.Combine(AISliceDicomServiceUtil.Instance.ServiceCommonConfigInfo.FileStoragePath, AISliceDicomServiceUtil.Instance.ServiceCommonConfigInfo.FileCacheFolder, ApplicationEx.AISliceImageCacheFolder, hospital.ID, examination.ID);
@@ -186,10 +193,12 @@ namespace ElincloudAISliceServer.AISliceDicomService
             List<ExaminationImage> seriesList = instance.GetMuch<ExaminationImage>(item => item.ExaminationID == examination.ImageExaminationID && item.PatientID == examination.ImagePatientID && item.IsArchived == (int)DataStoreStatus.未归档 && item.Category == (int)DicomImageCategories.原始影像);
 
             // 检查状态更新失败或服务中断时，序列记录可能已经写入。
-            // 这里先查询已有记录，防止同一序列重复启动Python和重复写入记录。
-            List<AIFilmSliceRecord> existingRecords = instance.GetMuch<AIFilmSliceRecord>(item => item.ExaminationID == examination.ID && item.PatientID == examination.PatientID);
-
-            bool slice = existingRecords.Count > 0;
+            // 先查询已有记录，后续直接复用这个集合，防止重复创建任务。
+            List<AIFilmSliceRecord> records = instance.GetMuch<AIFilmSliceRecord>(item => item.ExaminationID == examination.ID && item.PatientID == examination.PatientID);
+            if (records == null)
+            {
+                records = new List<AIFilmSliceRecord>();
+            }
             foreach (ExaminationImage series in seriesList)
             {
                 float scanThickness = 0f;
@@ -227,13 +236,17 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 BodyPartMapping? mapping = AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.BodyPartMappings?
                                                                     .FirstOrDefault(i => string.Equals(i.SeriesStudyPartTag?.Trim(), sourceStudyPartName, StringComparison.OrdinalIgnoreCase));
 
-                // 无映射部位
+                // 无映射部位：同一序列已经有“不切割”记录时，不再重复插入。
                 if (mapping == null || string.IsNullOrWhiteSpace(mapping.StudyPartName))
                 {
+                    if (records.Any(item => item.SeriesInstanceUID == seriesInstanceUID && item.SliceImageStatus == (int)SliceImageStatus.不切割))
+                    {
+                        continue;
+                    }
                     record.SliceImageStatus = (int)SliceImageStatus.不切割;
                     record.Message = $"检查部位[{sourceStudyPartName}]    层厚[{scanThickness}mm]   未映射到检查部位，跳过！";
                     instance.Insert<AIFilmSliceRecord>(record);
-
+                    records.Add(record);
                     AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{examination.ID}]  序列[{seriesInstanceUID}]${record.Message}");
                     continue;
                 }
@@ -248,13 +261,17 @@ namespace ElincloudAISliceServer.AISliceDicomService
                                                                                                             && scanThickness <= i.MaxScanThickness
                                                                                                         );
 
-                // 无切割方案
+                // 无切割方案：同一序列已经有“不切割”记录时，不再重复插入。
                 if (matchedPlans.Count == 0)
                 {
+                    if (records.Any(item => item.SeriesInstanceUID == seriesInstanceUID && item.SliceImageStatus == (int)SliceImageStatus.不切割))
+                    {
+                        continue;
+                    }
                     record.SliceImageStatus = (int)SliceImageStatus.不切割;
                     record.Message = $"检查部位[{sourceStudyPartName}]   层厚[{scanThickness}mm]   没有对应切割方案，跳过！";
                     instance.Insert<AIFilmSliceRecord>(record);
-
+                    records.Add(record);
                     AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{examination.ID}]  序列[{seriesInstanceUID}]${record.Message}");
                     continue;
                 }
@@ -264,7 +281,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 foreach (var slicePartGroup in matchedPlans.GroupBy(item => item.SlicePartName, StringComparer.OrdinalIgnoreCase))
                 {
                     List<SlicePlanConfigInfo> currentPlans = slicePartGroup.ToList();
-                    if (existingRecords.Any(item =>
+                    if (records.Any(item =>
                         item.SeriesInstanceUID == seriesInstanceUID
                         && string.Equals(item.SlicePartName, slicePartGroup.Key, StringComparison.OrdinalIgnoreCase)))
                     {
@@ -291,12 +308,11 @@ namespace ElincloudAISliceServer.AISliceDicomService
                     string planeConfigJson = JsonConvert.SerializeObject(planeConfigs);
 
                     int processID = -1;
-                    DateTime startDate = MinStartDate;
                     SliceImageStatus sliceImageStatus = SliceImageStatus.未切割;
                     string message = string.Empty;
 
-                    // DICOM目录不存在时不启动Python，但仍然保存该序列的失败记录，
-                    // 便于后续通过记录表查看具体失败原因。
+                    // 创建阶段只创建任务记录，不启动 Python。
+                    // DICOM目录不存在时直接保存失败记录，便于后续通过记录表查看具体失败原因。
                     if (!Directory.Exists(inputDir))
                     {
                         processID = 0;
@@ -304,93 +320,107 @@ namespace ElincloudAISliceServer.AISliceDicomService
                         message = $"DICOM目录不存在：{inputDir}";
                         AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{examination.ID}]序列[{seriesInstanceUID}]{message}", true);
                     }
-                    // 同序列任务逐个启动，不同序列共同遵守真实进程总数上限。
-                    else if (CanStartProcess(AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.MaxConcurrentCount, outputDir))
-                    {
-                        try
-                        {
-                            using Process process = StartAutoPrintFilm(inputDir, cacheDir, outputDir, studyType, slicePartGroup.Key, scanThickness, planeConfigJson, BuildWindowPresetJson(currentPlans));
-                            processID = process.Id;
-                            startDate = process.StartTime;   // 用真实进程启动时间
-                            sliceImageStatus = SliceImageStatus.正在切割;
-                        }
-                        catch (Exception ex)
-                        {
-                            // 启动后即使数据库写入失败，仍按真实PID保留名额直到退出。
-                            RefreshRunningProcesses();
-                            processID = 0;
-                            sliceImageStatus = SliceImageStatus.切割失败;
-                            message = ex.Message;
-                            AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{examination.ID}]序列[{seriesInstanceUID}]启动Python失败！", true, null, ex);
-                        }
-                    }
-                    else
-                    {
-                        // 当前Python进程数量已达上限时，并未执行失败，
-                        // 只保存为“未切割”，等待后续在“正在切割”逻辑中重新启动。
-                        processID = -1;
-                        sliceImageStatus = SliceImageStatus.未切割;
-                        message = string.Empty;
-                    }
 
-                    record.ID = instance.GetID<AIFilmSliceRecord>();
-                    record.SliceImageStatus = (int)sliceImageStatus;
-                    record.Message = message;
-                    record.SlicePath = Path.GetRelativePath(AISliceDicomServiceUtil.Instance.ServiceCommonConfigInfo.FileStoragePath, outputDir);
-                    record.StudyPartName = studyPartName;
-                    record.SlicePartName = slicePartGroup.Key;
-                    record.ProcessID = processID;
-                    record.SliceConfigIDs = string.Join(",", currentPlans.Select(i => i.ID));
-                    record.InputDir = inputDir;
-                    record.CacheDir = cacheDir;
-                    record.OutputDir = outputDir;
-                    record.PlaneConfigJson = planeConfigJson;
-                    record.CreateDate = DateTime.Now;
-                    if (sliceImageStatus == SliceImageStatus.正在切割)
+                    // 每个切割部位都必须使用独立的记录对象，避免一个序列命中多个部位时复用同一个对象。
+                    AIFilmSliceRecord taskRecord = new AIFilmSliceRecord()
                     {
-                        record.StartDate = startDate;
-                    }
-
-                    slice = true;
-
-                    instance.Insert<AIFilmSliceRecord>(record);
+                        ID = instance.GetID<AIFilmSliceRecord>(),
+                        PatientID = examination.PatientID,
+                        ExaminationID = examination.ID,
+                        SeriesInstanceUID = seriesInstanceUID,
+                        StudyTypeName = studyType,
+                        ScanThickness = scanThickness,
+                        SliceImageStatus = (int)sliceImageStatus,
+                        Message = message,
+                        SlicePath = Path.GetRelativePath(AISliceDicomServiceUtil.Instance.ServiceCommonConfigInfo.FileStoragePath, outputDir),
+                        StudyPartName = studyPartName,
+                        SlicePartName = slicePartGroup.Key,
+                        ProcessID = processID,
+                        SliceConfigIDs = string.Join(",", currentPlans.Select(i => i.ID)),
+                        InputDir = inputDir,
+                        CacheDir = cacheDir,
+                        OutputDir = outputDir,
+                        PlaneConfigJson = planeConfigJson,
+                        CreateDate = DateTime.Now,
+                    };
+                    instance.Insert<AIFilmSliceRecord>(taskRecord);
+                    records.Add(taskRecord);
                 }
             }
 
-            // “正在切割”，等待后续轮询所有序列的 report.json。
-            examination.SliceImageStatus = slice ? (int)SliceImageStatus.正在切割 : (int)SliceImageStatus.不切割;
-            instance.Update<RISExamination>(examination, item => item.ID == examination.ID, RISExamination._SliceImageStatus);
+            return records;
         }
 
         /// <summary>
-        /// 处理一条正在切割的检查
+        /// 启动本轮已经创建、处于“未切割”状态的任务。
+        /// 此方法不扫描原始 DICOM 序列，只根据任务记录启动任务。
         /// </summary>
-        /// <param name="examination">当前正在处理的RIS检查</param>
-        /// <param name="slicePlans">切割方案</param>
-        /// <param name="instance">当前医院的数据库访问对象</param>
-        private void ProcessProcessingStudy(RISExamination examination, List<SlicePlanConfigInfo> slicePlans, SqlAccess instance)
+        /// <param name="records">当前检查的全部切割任务记录。</param>
+        /// <param name="slicePlans">切割方案列表。</param>
+        /// <param name="instance">当前医院的数据库访问对象。</param>
+        private void StartUnprocessedTasks(List<AIFilmSliceRecord> records, List<SlicePlanConfigInfo> slicePlans, SqlAccess instance)
         {
-            AIDicomSliceConfigInfo serviceConfig = AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo;
+            int maxConcurrentCount = AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.MaxConcurrentCount;
 
-            // 获取当前检查的切割记录
-            List<AIFilmSliceRecord> records = instance.GetMuch<AIFilmSliceRecord>(item => item.ExaminationID == examination.ID && item.PatientID == examination.PatientID);
+            foreach (AIFilmSliceRecord record in records)
+            {
+                // 只启动“未切割”状态的任务；已运行、已完成、失败和不切割的记录均不在此处启动。
+                if (record.SliceImageStatus != (int)SliceImageStatus.未切割)
+                {
+                    continue;
+                }
+
+                // 任务配置 ID 可能为空（例如不切割记录），先判断状态后再解析配置。
+                List<SlicePlanConfigInfo> recordSlicePlans = string.IsNullOrWhiteSpace(record.SliceConfigIDs)
+                    ? new List<SlicePlanConfigInfo>()
+                    : slicePlans.FindAll(i => record.SliceConfigIDs.Split(',').Contains(i.ID));
+
+                if (recordSlicePlans.Count == 0)
+                {
+                    // 正常情况下，未切割任务必须具有切割方案；避免空配置启动 Python。
+                    continue;
+                }
+
+                StartUnprocessedSeries(record, recordSlicePlans, maxConcurrentCount, instance);
+            }
+        }
+
+        /// <summary>
+        /// 基于任务记录监测任务完成情况。
+        /// 只监测已有任务，不扫描原始序列，也不负责启动待处理任务。
+        /// </summary>
+        /// <param name="examination">当前正在处理的 RIS 检查。</param>
+        /// <param name="records">当前检查的全部切割任务记录。</param>
+        /// <param name="slicePlans">切割方案列表。</param>
+        /// <param name="instance">当前医院的数据库访问对象。</param>
+        /// <param name="originalStatus">本轮处理前的检查状态。</param>
+        private void MonitorTaskCompletion(RISExamination examination, List<AIFilmSliceRecord> records, List<SlicePlanConfigInfo> slicePlans, SqlAccess instance, SliceImageStatus originalStatus)
+        {
             if (records.Count == 0)
             {
-                // 检查处于“正在切割”但没有任何切割记录时，还原为“未切割”等待重新分析。
-                examination.SliceImageStatus = (int)SliceImageStatus.未切割;
-                instance.Update<RISExamination>(examination, item => item.ID == examination.ID, RISExamination._SliceImageStatus);
+                // 正在切割但没有任何任务记录时，还原为“未切割”，等待下一轮重新分析；
+                // 原本未切割且没有可创建任务的序列时，则标记为“不切割”。
+                examination.SliceImageStatus = originalStatus == SliceImageStatus.正在切割
+                    ? (int)SliceImageStatus.未切割
+                    : (int)SliceImageStatus.不切割;
+                instance.Update<RISExamination>(
+                    examination, item => item.ID == examination.ID, RISExamination._SliceImageStatus);
                 return;
             }
 
             foreach (AIFilmSliceRecord record in records)
             {
-                // 已切割 切割失败的直接跳过
-                if (record.SliceImageStatus == (int)SliceImageStatus.已切割 || record.SliceImageStatus == (int)SliceImageStatus.切割失败)
+                // 已切割、切割失败和不切割都是终态，不需要继续监测。
+                if (record.SliceImageStatus == (int)SliceImageStatus.已切割
+                    || record.SliceImageStatus == (int)SliceImageStatus.切割失败
+                    || record.SliceImageStatus == (int)SliceImageStatus.不切割)
                 {
                     continue;
                 }
 
-                List<SlicePlanConfigInfo> recordSlecePlan = slicePlans.FindAll(i => record.SliceConfigIDs.Split(",").Contains(i.ID));
+                List<SlicePlanConfigInfo> recordSlicePlans = string.IsNullOrWhiteSpace(record.SliceConfigIDs)
+                    ? new List<SlicePlanConfigInfo>()
+                    : slicePlans.FindAll(i => record.SliceConfigIDs.Split(',').Contains(i.ID));
 
                 string reportFile = ElincloudServer.Common.Utils.StringUtil.Combine(record.OutputDir, ResultFileName);
 
@@ -403,43 +433,70 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 // 进程已退出，优先处理已经生成的报告。
                 if (File.Exists(reportFile))
                 {
-                    ProcessSliceReport(reportFile, record, recordSlecePlan, instance);
+                    ProcessSliceReport(reportFile, record, recordSlicePlans, instance);
                     RefreshRunningProcesses();
                     continue;
                 }
 
-                // 进程仍然存在则继续等待；进程已经消失则整组还原为“未切割”。
+                // 进程已经退出且没有报告时，将任务还原为“未切割”，下一轮再尝试启动。
+                // 本轮不在监测阶段重新启动任务，保持“创建、启动、监测”三个阶段职责分离。
                 if (record.SliceImageStatus == (int)SliceImageStatus.正在切割)
                 {
-                    if (IsProcessRunning(record.ProcessID, record.StartDate))
-                    {
-                        continue;
-                    }
-
                     UpdateSeriesRecordStatus(record, SliceImageStatus.未切割, -1, MinStartDate, string.Empty, instance);
                     RefreshRunningProcesses();
-
-                    // 进程消失后本轮只还原状态，不立即重新启动，等待下一轮处理。
-                    continue;
-                }
-
-                // 序列状态为“未切割”时，说明之前并发数量已满或旧进程已经消失，
-                // 每条记录按全局名额和序列占用启动，同序列一次只运行一个任务。
-                if (record.SliceImageStatus == (int)SliceImageStatus.未切割)
-                {
-                    StartUnprocessedSeries(record, recordSlecePlan, serviceConfig.MaxConcurrentCount, instance);
                 }
             }
 
             // 检查表只记录当前检查是否已经全部处理完成。
-            // 当前检查任何序列无论是“已切割”还是“切割失败”都属于终态。
-            if (records.All(item => item.SliceImageStatus == (int)SliceImageStatus.不切割 || item.SliceImageStatus == (int)SliceImageStatus.已切割 || item.SliceImageStatus == (int)SliceImageStatus.切割失败))
+            // “不切割”“已切割”和“切割失败”均属于任务终态。
+            bool allFinished = records.All(item =>
+                item.SliceImageStatus == (int)SliceImageStatus.不切割
+                || item.SliceImageStatus == (int)SliceImageStatus.已切割
+                || item.SliceImageStatus == (int)SliceImageStatus.切割失败);
+
+            if (allFinished)
             {
-                examination.SliceImageStatus = (int)SliceImageStatus.已切割;
+                bool allNotCut = records.All(item => item.SliceImageStatus == (int)SliceImageStatus.不切割);
+                bool anyCut = records.Any(item => item.SliceImageStatus == (int)SliceImageStatus.已切割);
+                bool anyFailed = records.Any(item => item.SliceImageStatus == (int)SliceImageStatus.切割失败);
+
+                // 规则：
+                // 1. 全部不切割 -> 不切割
+                // 2. 只要存在已切割 -> 已切割（即使同时有失败/不切割）
+                // 3. 没有已切割，但存在切割失败（含“不切割+切割失败”混合、全部失败）-> 切割失败
+                SliceImageStatus finalStatus;
+                if (allNotCut)
+                {
+                    finalStatus = SliceImageStatus.不切割;
+                }
+                else if (anyCut)
+                {
+                    finalStatus = SliceImageStatus.已切割;
+                }
+                else if (anyFailed)
+                {
+                    finalStatus = SliceImageStatus.切割失败;
+                }
+                else
+                {
+                    // 理论上不会走到这里：allFinished 且非 allNotCut、无已切割、无失败，
+                    // 只可能是 records 为空，但前面已处理 records.Count == 0。
+                    finalStatus = SliceImageStatus.不切割;
+                }
+
+                examination.SliceImageStatus = (int)finalStatus;
+                instance.Update<RISExamination>(
+                    examination, item => item.ID == examination.ID, RISExamination._SliceImageStatus);
+            }
+            else if (examination.SliceImageStatus != (int)SliceImageStatus.正在切割)
+            {
+                // 只要还有任务未进入终态（未切割/正在切割），检查整体状态就应保持“正在切割”。
+                // 例如并发名额已满时，任务记录仍是“未切割”，但检查已经进入任务处理流程。
+                // 特别注意：只要存在“正在切割”，即使同时已有“已切割”，检查也保持“正在切割”。
+                examination.SliceImageStatus = (int)SliceImageStatus.正在切割;
                 instance.Update<RISExamination>(examination, item => item.ID == examination.ID, RISExamination._SliceImageStatus);
             }
         }
-
         /// <summary>
         /// 启动处于“未切割”状态的序列记录
         /// </summary>

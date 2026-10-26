@@ -1,6 +1,7 @@
 """应用级不可变配置模型，负责描述一次 Pipeline 运行期间不会变化的设置。"""
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict
 
@@ -33,6 +34,12 @@ class NnUNetConfig:
     """预处理进程数，对应 -npp；默认单进程以控制主机内存占用。"""
     num_processes_segmentation_export: int = 1
     """分割导出进程数，对应 -nps；默认单进程以控制主机内存占用。"""
+    inference_timeout_seconds: float = 1800.0
+    """每次外部推理允许的最长秒数；各模型可独立覆盖。"""
+    inference_timeout_seconds_by_model: dict[str, float] = field(default_factory=dict)
+    """模型 ID 到单次推理最长秒数的映射，键为无前导零的正整数字符串。"""
+    inference_max_retries: int = 1
+    """外部推理失败后的额外重试次数，只允许 0 或 1。"""
 
     def __post_init__(self) -> None:
         """在构造配置时拒绝非法推理选项，避免启动外部推理后才失败。"""
@@ -52,6 +59,32 @@ class NnUNetConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"nnunet.{name} 必须是正整数")
+        self._validate_timeout(self.inference_timeout_seconds, "inference_timeout_seconds")
+        if not isinstance(self.inference_timeout_seconds_by_model, dict):
+            raise ValueError("nnunet.inference_timeout_seconds_by_model 必须是模型 ID 到秒数的对象")
+        for model_id, timeout in self.inference_timeout_seconds_by_model.items():
+            if not isinstance(model_id, str) or not re.fullmatch(r"[1-9][0-9]*", model_id):
+                raise ValueError(
+                    "nnunet.inference_timeout_seconds_by_model 的模型 ID 必须是无前导零的正整数字符串"
+                )
+            self._validate_timeout(timeout, f"inference_timeout_seconds_by_model.{model_id}")
+        if (
+            isinstance(self.inference_max_retries, bool)
+            or not isinstance(self.inference_max_retries, int)
+            or self.inference_max_retries not in (0, 1)
+        ):
+            raise ValueError("nnunet.inference_max_retries 只允许整数 0 或 1")
+
+    @staticmethod
+    def _validate_timeout(value: Any, name: str) -> None:
+        valid = False
+        if not isinstance(value, bool) and isinstance(value, (int, float)):
+            try:
+                valid = value > 0 and math.isfinite(value)
+            except OverflowError:
+                pass
+        if not valid:
+            raise ValueError(f"nnunet.{name} 必须是有限正数（秒）")
 
 
 @dataclass(frozen=True)
@@ -113,6 +146,11 @@ class AppConfig:
                 "num_processes_segmentation_export": (
                     self.nnunet.num_processes_segmentation_export
                 ),
+                "inference_timeout_seconds": self.nnunet.inference_timeout_seconds,
+                "inference_timeout_seconds_by_model": dict(
+                    self.nnunet.inference_timeout_seconds_by_model
+                ),
+                "inference_max_retries": self.nnunet.inference_max_retries,
                 "raw_configured": bool(self.nnunet.raw),
                 "preprocessed_configured": bool(self.nnunet.preprocessed),
                 "results_configured": bool(self.nnunet.results),

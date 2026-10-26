@@ -121,7 +121,7 @@ class ExternalNnUNetTest(unittest.TestCase):
         input_dir = self.root / "中文 input"
         output = self.root / "segmentation/seg.nii.gz"
         with (
-            patch("src.stages.stage_segmentation.subprocess.run") as run,
+            patch("src.stages.stage_segmentation.run_inference_process") as run,
             patch.object(stage, "_normalize_output_file"),
         ):
             run.return_value = subprocess.CompletedProcess([], 0, "", "")

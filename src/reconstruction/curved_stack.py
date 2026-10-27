@@ -193,7 +193,7 @@ class CurvedStackResampler:
 
     @classmethod
     def _sampling_curve(cls, plan: Dict[str, Any]) -> np.ndarray:
-        """真实中心线保持不变；矢状 CPR 只展开固定 AP 平面上的冠状投影。"""
+        """保留真实中心线，仅展开垂直于计划横向轴的投影曲线。"""
 
         curve = cls._curve_points(plan)
         projection_axis = plan.get("curve_projection_axis")
@@ -215,7 +215,7 @@ class CurvedStackResampler:
         axis: np.ndarray,
         reference: np.ndarray,
     ) -> np.ndarray:
-        """将 AP 坐标固定于全组参考值，保留 LR/SI，避免逐行拉直生理曲度。"""
+        """将计划横向坐标固定于全组参考值，保留输出平面内的解剖曲度。"""
 
         axis = cls._normalize(np.asarray(axis, dtype=float))
         reference = np.asarray(reference, dtype=float)

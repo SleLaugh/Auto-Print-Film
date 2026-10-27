@@ -92,9 +92,9 @@ class SlicePlan:
     curve_points: List[Point3D] | None = None
     """CPR 真实三维中心曲线物理点；仅 curved_stack 使用。"""
     curve_spacing_mm: float | None = None
-    """CPR 沿采样曲线（矢状位为冠状投影）弧长方向的输出间距。"""
+    """CPR 沿投影采样曲线弧长方向的输出间距。"""
     curve_projection_axis: Point3D | None = None
-    """矢状位 CPR 的患者前后轴；采样前固定该坐标，仅展开左右侧弯。"""
+    """CPR 固定横向轴：冠状位为解剖 LR，矢状位为患者 AP，保留该向曲度。"""
     offset_axis: Point3D | None = None
     """CPR 首选堆叠方向：矢状位为左右轴，冠状位为前后轴。"""
     offsets_mm: List[float] | None = None

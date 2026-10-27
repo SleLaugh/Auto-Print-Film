@@ -165,13 +165,12 @@ def test_projection_axis_validation_rejects_invalid_vectors(axis):
 
 @pytest.mark.parametrize("slice_type,geometry,plane", (
     ("MPR", "plane_stack", "矢状位"),
-    ("CPR", "curved_stack", "冠状位"),
     ("CPR", "curved_stack", "横状位"),
 ))
-def test_projection_is_only_allowed_for_sagittal_cpr(slice_type, geometry, plane):
+def test_projection_is_only_allowed_for_sagittal_or_coronal_cpr(slice_type, geometry, plane):
     _, plan, _, _, _ = _case()
     plan.update(slice_type=slice_type, geometry_type=geometry, plane=plane)
-    with pytest.raises(ValueError, match="curve_projection_axis 仅支持矢状位 CPR"):
+    with pytest.raises(ValueError, match="curve_projection_axis 仅支持.*CPR"):
         ReconstructionStage._validate_plan(plan)
 
 

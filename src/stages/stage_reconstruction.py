@@ -1190,7 +1190,7 @@ class ReconstructionStage(BaseStage):
 
         if len(plan.get("curve_points") or []) < 2:
             return {}
-        # 正式矢状位 CPR 只展开冠状投影；定位线必须复用实际采样曲线，
+        # 冠状/矢状 CPR 各自只展开垂直于显示横向的投影；定位线复用实际采样曲线，
         # 原始三维中心线仍保留给随脊柱前后深度变化的定位图背景。
         curve = CurvedStackResampler._sampling_curve(plan)
         offsets = cls._curved_localizer_offsets(plan)
@@ -1765,10 +1765,10 @@ class ReconstructionStage(BaseStage):
             if (
                 geometry_type != "curved_stack"
                 or slice_type != "CPR"
-                or str(plan["plane"]) != "矢状位"
+                or str(plan["plane"]) not in {"冠状位", "矢状位"}
             ):
                 raise ValueError(
-                    f"plan_id={plan_id} curve_projection_axis 仅支持矢状位 CPR"
+                    f"plan_id={plan_id} curve_projection_axis 仅支持冠状位或矢状位 CPR"
                 )
             try:
                 projection_axis = ReconstructionStage._point_array(plan["curve_projection_axis"])

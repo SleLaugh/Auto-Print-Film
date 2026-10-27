@@ -10,7 +10,7 @@ from scipy.spatial import cKDTree
 
 from src.anatomy.orientation import patient_reference_axes
 from src.anatomy.spine_labels import resolve_spine_label_name
-from src.models import ExtentMM, PlannedSlice, Point3D, SlicePlan
+from src.models import AnatomicalGeometryResult, ExtentMM, PlannedSlice, Point3D, SlicePlan
 from src.models.enums import PlaneTypeEnum
 from src.planning.geometry import (
     image_axis_direction,
@@ -114,8 +114,11 @@ def build_spine_sagittal_cpr_plans(
         centroids_precorrected=True,
     )
     projection_axis = None
+    offset_axis = _offset_axis_for_plane(image_info, plane_config.plane)
     if plane_config.plane == PlaneTypeEnum.矢状位:
         projection_axis = Point3D(*patient_reference_axes(image_direction_matrix(image_info))[:, 1])
+    else:
+        projection_axis, offset_axis = _coronal_cpr_reference_axes(localization_result)
     curve_points = _extend_curve_endpoints_to_terminal_raw_labels(
         localization_result,
         source_labels,
@@ -124,7 +127,8 @@ def build_spine_sagittal_cpr_plans(
     )
     sampling_curve_points = curve_points
     if projection_axis is not None:
-        # 只展开冠状面的左右侧弯；前后生理曲度保留为成片中的横向位移。
+        # 固定显示横向坐标，只展开垂直于该横向的投影曲线。
+        # 冠状保留左右侧弯，矢状保留前后曲度，避免三维输运把画面横向扭转。
         sampling_curve = CurvedStackResampler._project_curve(
             np.asarray([[point.x, point.y, point.z] for point in curve_points]),
             np.asarray([projection_axis.x, projection_axis.y, projection_axis.z]),
@@ -135,7 +139,6 @@ def build_spine_sagittal_cpr_plans(
     if curve_length <= 0.0:
         return [], ["CPR 降级: 中心曲线长度无效"]
 
-    offset_axis = _offset_axis_for_plane(image_info, plane_config.plane)
     tangent_dir = normalize_vector(subtract_points(
         sampling_curve_points[-1], sampling_curve_points[0],
     ))
@@ -185,7 +188,7 @@ def build_spine_sagittal_cpr_plans(
             source_labels,
             row_dir,
         )
-        if plane_config.plane == PlaneTypeEnum.矢状位:
+        if projection_axis is not None:
             width = max(width, _resolve_centered_cpr_width_extent_mm(
                 localization_result,
                 source_labels,
@@ -1660,6 +1663,19 @@ def _resolve_ap_extent_mm(
     return max(float(extent), _minimum_image_spacing(localization_result["image"]))
 
 
+def _coronal_cpr_reference_axes(
+    localization_result: Dict[str, Any],
+) -> tuple[Point3D, Point3D]:
+    """成对使用同一正交坐标的 LR/AP，防止冠状曲面随偏移产生横向漂移。"""
+
+    geometry = localization_result.get("anatomical_geometry")
+    if geometry:
+        frame = AnatomicalGeometryResult.from_dict(geometry).global_frame
+        return frame.left_right_axis, frame.anterior_posterior_axis
+    axes = patient_reference_axes(image_direction_matrix(localization_result["image"]))
+    return Point3D(*axes[:, 0]), Point3D(*axes[:, 1])
+
+
 def _offset_axis_for_plane(
     image_info: Dict[str, Any],
     plane: PlaneTypeEnum,
@@ -1705,9 +1721,9 @@ def _resolve_centered_cpr_width_extent_mm(
     offsets_mm: List[float],
     slice_thickness: float,
 ) -> float:
-    """为矢状位曲面留足固定 AP 参考两侧的原始标签范围。
+    """为投影曲面留足固定横向参考两侧的原始标签范围。
 
-    输入为冠状投影采样曲线，固定 AP 参考不一定经过标签前后中点。
+    固定横向参考不一定经过标签在该方向上的范围中点。
     宽度必须按两侧最远边界确定，不能直接把 bbox 总跨度居中。
     复用重采样器的纯几何方法，
     在与每个椎体相交的逐行横断面中计算横向支撑，包含各层 offset 和体素

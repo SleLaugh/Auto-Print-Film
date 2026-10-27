@@ -3101,7 +3101,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.offset_axis.to_dict(), {"x": 0.0, "y": 1.0, "z": 0.0})
         self.assertIn(0.0, plan.offsets_mm)
         self.assertGreater(len(plan.offsets_mm), 1)
-        self.assertAlmostEqual(plan.extent_mm.width, 10.0)
+        # x=45..55 的标签需包含 44.5..55.5 的体素外缘。
+        self.assertAlmostEqual(plan.extent_mm.width, 11.0)
         self.assertAlmostEqual(plan.extent_mm.height, 85.0)
         self.assertAlmostEqual(plan.localizer_reference.x, 50.0)
         self.assertAlmostEqual(plan.localizer_reference.z, 48.333333333333336)
@@ -3610,7 +3611,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             )
 
     def test_spine_cpr_offsets_read_coronal_whole_range_extension(self):
-        """冠状位 CPR 应用整切冠状位扩展增加左右 offset 范围。"""
+        """冠状位 CPR 应用整切冠状位扩展增加前后 offset 范围。"""
 
         localization_result = self._spine_localization_result(
             ("L1", "L2", "L3"),
@@ -3638,7 +3639,8 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
         self.assertEqual(plan.geometry_type, "curved_stack")
         self.assertEqual(plan.offsets_mm, [-9.0, -4.0, 1.0, 6.0, 11.0])
-        self.assertAlmostEqual(plan.extent_mm.width, 10.0)
+        # 固定 LR 参考两侧均保留标签的半体素外缘。
+        self.assertAlmostEqual(plan.extent_mm.width, 11.0)
 
     def test_lumbar_coronal_cpr_uses_configured_whole_range_subset(self):
         """腰椎 CPR 应按配置范围取椎体，不应固定使用 L1 到 S1。"""

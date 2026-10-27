@@ -153,26 +153,30 @@ class SagittalCprCoverageTest(unittest.TestCase):
                             ).max() * output.GetSpacing()[0]
                             self.assertGreaterEqual(posterior_width, 13.0)
 
-    def test_new_width_calculation_is_confined_to_sagittal_cpr(self):
-        """冠状位 CPR 和矢状位 MPR 不应进入新增的曲面宽度计算。"""
+    def test_centered_curve_width_is_used_for_cpr_only(self):
+        """两个 CPR 状位都按固定横向参考保证覆盖；MPR 仍走平面取景。"""
 
         for slice_part, labels in self.CASES:
             with self.subTest(slice_part=slice_part.value):
                 localization, _, _ = self._asymmetric_spine(slice_part, labels)
+                from src.planning.spine_cpr import _resolve_centered_cpr_width_extent_mm
+
                 with patch(
                     "src.planning.spine_cpr._resolve_centered_cpr_width_extent_mm",
-                    side_effect=AssertionError("Only sagittal CPR needs centered coverage"),
-                ):
+                    wraps=_resolve_centered_cpr_width_extent_mm,
+                ) as centered_width:
                     coronal_cpr = self._plan(
                         slice_part, localization,
                         plane=PlaneTypeEnum.冠状位, slice_type=SliceType.CPR,
                     )
+                    self.assertEqual(centered_width.call_count, 1)
                     sagittal_mpr = self._plan(
                         slice_part, localization,
                         plane=PlaneTypeEnum.矢状位, slice_type=SliceType.MPR,
                     )
+                    self.assertEqual(centered_width.call_count, 1)
                 self.assertEqual(coronal_cpr["geometry_type"], "curved_stack")
-                self.assertEqual(coronal_cpr["extent_mm"]["width"], 10.0)
+                self.assertGreaterEqual(coronal_cpr["extent_mm"]["width"], 10.0)
                 self.assertEqual(sagittal_mpr["geometry_type"], "plane_stack")
 
 

@@ -19,7 +19,7 @@ from src.core.cache_workspace import cache_workspace, cleanup_cache_workspaces
 from src.core.context import ProcessingContext
 from src.core.errors import ExternalProcessError
 from src.core.inference_process import InferenceProcessAborted, run_inference_process
-from src.core.nnunet_command import nnunet_command_prefix
+from src.core.nnunet_command import EXPORT_THREADS_ENV, nnunet_inference_launch
 from src.config import (
     load_app_config,
     load_slice_part_config,
@@ -51,6 +51,7 @@ class SegmentationStage(BaseStage):
             "step_size": 0.5,  # 滑窗步长比例，范围为 (0, 1]
             "num_processes_preprocessing": 1,  # 限制预处理后台进程数
             "num_processes_segmentation_export": 1,  # 限制导出后台进程数
+            "export_resampling_threads": 1,  # 每个导出进程的通道并行数；1 使用原命令
             "inference_timeout_seconds": 1800.0,
             "inference_timeout_seconds_by_model": {},
             "inference_max_retries": 1,
@@ -93,6 +94,7 @@ class SegmentationStage(BaseStage):
         inference_keys = (
             "disable_tta", "step_size",
             "num_processes_preprocessing", "num_processes_segmentation_export",
+            "export_resampling_threads",
             "inference_timeout_seconds", "inference_timeout_seconds_by_model",
             "inference_max_retries",
         )
@@ -107,6 +109,7 @@ class SegmentationStage(BaseStage):
         self._step_size = inference_config.step_size
         self._num_processes_preprocessing = inference_config.num_processes_preprocessing
         self._num_processes_segmentation_export = inference_config.num_processes_segmentation_export
+        self._export_resampling_threads = inference_config.export_resampling_threads
         self._inference_timeout_seconds = inference_config.inference_timeout_seconds
         self._inference_timeout_seconds_by_model = (
             inference_config.inference_timeout_seconds_by_model
@@ -525,7 +528,15 @@ class SegmentationStage(BaseStage):
             attempt: 当前尝试序号
         """
         # 构建命令
-        cmd = nnunet_command_prefix(self._predict_command, self._predict_python) + [
+        prefix, export_adapter_enabled, export_adapter_reason = nnunet_inference_launch(
+            self._predict_command, self._predict_python, self._export_resampling_threads,
+        )
+        if self._export_resampling_threads > 1:
+            RunLog(
+                f"[nnUNet] 导出通道并行适配器已启用，线程数 {self._export_resampling_threads}"
+                if export_adapter_enabled else f"[nnUNet] 导出通道并行未启用：{export_adapter_reason}"
+            )
+        cmd = prefix + [
             "-i", str(input_dir),
             "-o", str(output_path.parent),  # 输出目录
             "-d", str(dataset_id),
@@ -547,6 +558,8 @@ class SegmentationStage(BaseStage):
         # 所有 spawn worker 都继承诊断开关；原生崩溃及时打印 Python 调用栈。
         env["PYTHONFAULTHANDLER"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
+        if export_adapter_enabled:
+            env[EXPORT_THREADS_ENV] = str(self._export_resampling_threads)
         for key, value in self._nnunet_env_vars.items():
             if value:  # 如果值不为空
                 env[key] = value

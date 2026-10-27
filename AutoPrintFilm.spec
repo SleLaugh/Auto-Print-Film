@@ -7,7 +7,7 @@ a = Analysis(
     [str(root / "scripts/frozen_entry.py")],
     pathex=[str(root)],
     binaries=[],
-    datas=[],
+    datas=[(str(root / "src/inference/nnunet_export.py"), "nnunet_adapter")],
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],

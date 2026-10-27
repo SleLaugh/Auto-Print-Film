@@ -34,6 +34,8 @@ class NnUNetConfig:
     """预处理进程数，对应 -npp；默认单进程以控制主机内存占用。"""
     num_processes_segmentation_export: int = 1
     """分割导出进程数，对应 -nps；默认单进程以控制主机内存占用。"""
+    export_resampling_threads: int = 1
+    """每个导出进程的通道重采样线程数（1～4）；1 保留官方原始调用。"""
     inference_timeout_seconds: float = 1800.0
     """每次外部推理允许的最长秒数；各模型可独立覆盖。"""
     inference_timeout_seconds_by_model: dict[str, float] = field(default_factory=dict)
@@ -55,10 +57,13 @@ class NnUNetConfig:
         for name in (
             "num_processes_preprocessing",
             "num_processes_segmentation_export",
+            "export_resampling_threads",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"nnunet.{name} 必须是正整数")
+        if self.export_resampling_threads > 4:
+            raise ValueError("nnunet.export_resampling_threads 必须为 1～4 的正整数")
         self._validate_timeout(self.inference_timeout_seconds, "inference_timeout_seconds")
         if not isinstance(self.inference_timeout_seconds_by_model, dict):
             raise ValueError("nnunet.inference_timeout_seconds_by_model 必须是模型 ID 到秒数的对象")
@@ -146,6 +151,7 @@ class AppConfig:
                 "num_processes_segmentation_export": (
                     self.nnunet.num_processes_segmentation_export
                 ),
+                "export_resampling_threads": self.nnunet.export_resampling_threads,
                 "inference_timeout_seconds": self.nnunet.inference_timeout_seconds,
                 "inference_timeout_seconds_by_model": dict(
                     self.nnunet.inference_timeout_seconds_by_model

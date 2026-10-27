@@ -6,6 +6,7 @@
     "step_size": 0.5,
     "num_processes_preprocessing": 1,
     "num_processes_segmentation_export": 1,
+    "export_resampling_threads": 4,
     "inference_timeout_seconds": 1800.0,
     "inference_timeout_seconds_by_model": {
         "315": 180.0

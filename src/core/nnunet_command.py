@@ -1,9 +1,12 @@
 """Resolve an external nnUNet process without importing its inference dependencies."""
 
+import ast
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
+import sys
 from typing import Callable, Optional
 
 from .errors import DependencyError
@@ -16,6 +19,134 @@ EXTERNAL_PREDICT_CODE = (
     "from nnunetv2.inference.predict_from_raw_data import predict_entry_point; "
     "sys.argv[0] = 'nnUNetv2_predict'; sys.exit(predict_entry_point())"
 )
+EXPORT_THREADS_ENV = "AUTOPRINTFILM_NNUNET_EXPORT_THREADS"
+
+
+def _adapter_path() -> Path:
+    """The external interpreter needs a real script, including frozen releases."""
+    if getattr(sys, "frozen", False):
+        bundle = Path(getattr(sys, "_MEIPASS", application_root() / "_internal"))
+        return bundle / "nnunet_adapter" / "nnunet_export.py"
+    return Path(__file__).resolve().parents[1] / "inference" / "nnunet_export.py"
+
+
+def _same_syntax(node: ast.AST, source: str) -> bool:
+    return ast.dump(node, include_attributes=False) == ast.dump(
+        ast.parse(source).body[0], include_attributes=False,
+    )
+
+
+def _official_launcher_source(location: str) -> Optional[str]:
+    """Recognize simple pip launchers without dropping custom wrapper behavior.
+
+    Replacing a script merely containing the official import could silently skip
+    its environment setup or other work. Accept only the standard import/main
+    boilerplate; anything else keeps the configured command unchanged.
+    """
+    try:
+        with Path(location).open("r", encoding="utf-8-sig") as stream:
+            source = stream.read(65537)
+        if len(source) > 65536:
+            return None
+        statements = ast.parse(source).body
+    except (OSError, UnicodeError, SyntaxError, ValueError):
+        return None
+    import_seen = False
+    main_seen = False
+    for node in statements:
+        if isinstance(node, ast.Import) and all(
+            alias.name in {"re", "sys"} and alias.asname is None for alias in node.names
+        ):
+            continue
+        if _same_syntax(node, "from nnunetv2.inference.predict_from_raw_data import predict_entry_point"):
+            import_seen = True
+            continue
+        if not isinstance(node, ast.If) or main_seen or node.orelse:
+            return None
+        if ast.dump(node.test) != ast.dump(ast.parse("__name__ == '__main__'", mode="eval").body):
+            return None
+        body = node.body
+        if not body or not _same_syntax(body[-1], "sys.exit(predict_entry_point())"):
+            return None
+        for statement in body[:-1]:
+            if not any(_same_syntax(statement, candidate) for candidate in (
+                "sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])",
+                "sys.argv[0] = sys.argv[0].removesuffix('.exe')",
+            )):
+                return None
+        main_seen = True
+    return source if import_seen and main_seen else None
+
+
+def _launcher_python(source: str) -> Optional[list[str]]:
+    """Resolve the Python selected by a verified launcher's shebang.
+
+    Keep venv symlinks and interpreter flags. Unknown env options/assignments or
+    non-Python launchers fall back instead of guessing the external environment.
+    """
+    first_line = source.splitlines()[0] if source else ""
+    if not first_line.startswith("#!"):
+        return None
+    try:
+        words = shlex.split(first_line[2:])
+    except ValueError:
+        return None
+    if not words:
+        return None
+    uses_env = Path(words[0]).name == "env"
+    if not Path(words[0]).is_absolute():
+        return None
+    if uses_env:
+        words = words[1:]
+        if words and words[0] == "-S":
+            words = words[1:]
+        elif len(words) != 1:
+            return None
+    if not words or not re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(words[0]).name):
+        return None
+    if not uses_env and not Path(words[0]).is_absolute():
+        return None
+    # Preserve recognized startup flags; -c/-m/-x and unknown options can change
+    # the script being executed or skip its first source line.
+    if any(flag not in {"-u", "-O", "-OO", "-B", "-E", "-I", "-s", "-S"} for flag in words[1:]):
+        return None
+    interpreter = shutil.which(words[0])
+    if interpreter is None:
+        return None
+    return [interpreter, *words[1:]]
+
+
+def nnunet_inference_launch(
+    predict_command: str = DEFAULT_PREDICT_COMMAND,
+    python_executable: str = "",
+    export_resampling_threads: int = 1,
+) -> tuple[list[str], bool, str]:
+    """Return a command prefix, adapter status and an observable fallback reason."""
+    original = nnunet_command_prefix(predict_command, python_executable)
+    if export_resampling_threads == 1:
+        return original, False, ""
+    interpreter = None
+    if predict_command == DEFAULT_PREDICT_COMMAND and python_executable:
+        # This existing configuration already selects the official entry point.
+        interpreter = [_location(python_executable)]
+    else:
+        command = _location(predict_command)
+        location = command if os.path.dirname(command) else shutil.which(command)
+        source = _official_launcher_source(location) if location else None
+        if source is not None:
+            interpreter = (
+                [_location(python_executable)] if python_executable else _launcher_python(source)
+            )
+    if interpreter is None:
+        return original, False, (
+            "无法确认官方 Python 入口或其推理解释器；保留原命令。"
+            "如需启用，请配置 nnUNet_python 并使用默认 nnUNetv2_predict，"
+            "或配置标准官方 Python launcher"
+        )
+    adapter = _adapter_path()
+    if not adapter.is_file():
+        return original, False, f"未找到导出适配脚本 {adapter}；请检查部署包"
+    return [*interpreter, str(adapter)], True, ""
 
 
 def _location(value: str) -> str:

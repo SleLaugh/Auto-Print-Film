@@ -248,6 +248,7 @@ class ConfigLoaderTest(unittest.TestCase):
         for name in (
             "num_processes_preprocessing",
             "num_processes_segmentation_export",
+            "export_resampling_threads",
         ):
             for value in (
                 True, False, 0, -1, 1.0, 1.5, float("nan"), float("inf"),
@@ -261,6 +262,35 @@ class ConfigLoaderTest(unittest.TestCase):
                 with self.subTest(name=name, typed_value=value):
                     with self.assertRaisesRegex(ValueError, name):
                         NnUNetConfig(**{name: value})
+
+    def test_export_threads_priorities_summary_and_limit(self):
+        sources = {
+            "explicit": {"nnunet": {"export_resampling_threads": 2}, "export_resampling_threads": 3},
+            "environ": {"export_resampling_threads": "4"},
+            "defaults": {"nnunet": {"export_resampling_threads": 2}, "export_resampling_threads": 3},
+        }
+        for index, expected in enumerate((2, 3, 4, 2, 3, 1)):
+            with self.subTest(priority=index):
+                config = load_app_config(**sources)
+                self.assertEqual(config.nnunet.export_resampling_threads, expected)
+                self.assertEqual(config.summary()["nnunet"]["export_resampling_threads"], expected)
+            if index == 0:
+                sources["explicit"].pop("nnunet")
+            elif index == 1:
+                sources["explicit"].pop("export_resampling_threads")
+            elif index == 2:
+                sources["environ"].clear()
+            elif index == 3:
+                sources["defaults"].pop("nnunet")
+            elif index == 4:
+                sources["defaults"].clear()
+        self.assertEqual(NnUNetConfig().export_resampling_threads, 1)
+        self.assertEqual(load_app_config(environ={}).nnunet.export_resampling_threads, 4)
+        for value in (5, 8, "5"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "export_resampling_threads"):
+                load_app_config(environ={"export_resampling_threads": value}, defaults={})
+        with self.assertRaisesRegex(ValueError, "export_resampling_threads"):
+            NnUNetConfig(export_resampling_threads=8)
 
     def test_inference_options_follow_configuration_precedence(self):
         config = load_app_config(
@@ -370,6 +400,7 @@ class ConfigLoaderTest(unittest.TestCase):
                 "step_size": 0.75,
                 "num_processes_preprocessing": 2,
                 "num_processes_segmentation_export": 4,
+                "export_resampling_threads": 3,
                 "inference_timeout_seconds": 600,
                 "inference_timeout_seconds_by_model": {"315": 90},
                 "inference_max_retries": 0,
@@ -390,6 +421,7 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(segmentation._step_size, 0.75)
         self.assertEqual(segmentation._num_processes_preprocessing, 2)
         self.assertEqual(segmentation._num_processes_segmentation_export, 4)
+        self.assertEqual(segmentation._export_resampling_threads, 3)
         self.assertEqual(segmentation.config["inference_timeout_seconds"], 600)
         self.assertEqual(segmentation.config["inference_timeout_seconds_by_model"], {"315": 90})
         self.assertEqual(segmentation.config["inference_max_retries"], 0)

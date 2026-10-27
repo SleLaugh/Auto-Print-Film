@@ -165,6 +165,9 @@ def load_app_config(
         num_processes_segmentation_export=_coerce_int(nn_value(
             "num_processes_segmentation_export", "num_processes_segmentation_export", fallback=1
         ), "nnunet.num_processes_segmentation_export"),
+        export_resampling_threads=_coerce_int(nn_value(
+            "export_resampling_threads", "export_resampling_threads", fallback=1
+        ), "nnunet.export_resampling_threads"),
         inference_timeout_seconds=_coerce_float(nn_value(
             "inference_timeout_seconds", "inference_timeout_seconds", fallback=1800.0
         ), "nnunet.inference_timeout_seconds"),

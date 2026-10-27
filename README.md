@@ -121,9 +121,28 @@ src/config/nnuNet_config.json
   "disable_tta": false,
   "step_size": 0.5,
   "num_processes_preprocessing": 1,
-  "num_processes_segmentation_export": 1
+  "num_processes_segmentation_export": 1,
+  "export_resampling_threads": 4
 }
 ```
+
+`export_resampling_threads` 控制单病例恢复原始分辨率时的通道并行，取值为 `1` 至 `4`。
+仓库配置为 `4`；旧配置未提供此字段时沿用 `1`，设为 `1` 可恢复原命令及原导出路径。
+它与 `-nps` 的导出进程数不同：一个病例的各类别通道在同一个导出进程内并行处理，
+不增加服务的任务并发数，也不改变模型、TTA、滑窗步长、插值阶数或标签判定规则。
+
+应用通过项目自带的外部推理入口运行优化，不修改已安装的 nnUNet。入口使用配置的
+外部 Python，或从已确认的官方 `nnUNetv2_predict` Python 启动脚本中读取解释器。
+自定义命令无法确认时保留原调用，RunLog 会说明优化未启用；此时不要把主应用的
+Python 或打包后的可执行程序当作推理解释器。
+并行仅用于官方默认重采样器的多通道、线性、原尺寸恢复路径，其他实现和无须重采样
+的情况继续使用原函数。单病例的大体积导出仍会使用较多内存；并行线程与其他在途
+任务共同占用 CPU 和内存，可按真实负载在 `2`、`4` 之间比较。
+
+启用项目入口后，`log/nnunet-*.stdout.log` 会追加带 `[AutoPrintFilm nnUNet]` 前缀的
+粗阶段耗时，用于区分恢复原尺寸、标签判定及文件写出，不需要开启全部 DebugLog。
+已有分割缓存仍直接复用；比较优化前后时使用新的测试缓存目录，勿删除生产在途缓存。
+旧发布包需要重新构建并更新完整应用目录，才能包含该入口和新增配置字段。
 
 Python 分割阶段会把每次推理的标准输出、标准错误实时保存到任务的
 `log/nnunet-*.stdout.log`、`log/nnunet-*.stderr.log`，不依赖 DebugLog 开关。
@@ -156,7 +175,8 @@ JSON 中 `disable_tta` 使用布尔值，默认 `false`，设为 `true` 会关�
 既支持这些顶层字段，也支持放在 `nnunet` 段中。
 单病例的预处理原本实际已限制为 1 个进程；本次默认主要将导出进程池从 3 减为 1，
 以减少主机内存和并发资源占用，不改变模型、TTA 或滑窗步长。
-提速时先试 `disable_tta=true`、保持 `step_size=0.5`，再按效果测试 `0.75`。
+需要进一步减少模型前向工作量时，可试 `disable_tta=true`、保持 `step_size=0.5`，
+再按效果测试 `0.75`。先依据阶段计时确认滑窗预测是否为主要耗时。
 这些调整可能影响分割及自动切割定位，应比较实际病例的耗时和切割结果。
 分割缓存仍按模型 ID 复用；测试参数变化时使用新的 `-c` 目录，或清理对应的
 `<cache>/<model_id>/segmentation/`，否则会跳过推理。

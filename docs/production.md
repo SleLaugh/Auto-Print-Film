@@ -218,7 +218,8 @@ S1 使用实际 `label_targets`，优先 `vertebrae_S1`、只提供 `sacrum` 时
   "disable_tta": false,
   "step_size": 0.5,
   "num_processes_preprocessing": 1,
-  "num_processes_segmentation_export": 1
+  "num_processes_segmentation_export": 1,
+  "export_resampling_threads": 4
 }
 ```
 
@@ -226,13 +227,29 @@ S1 使用实际 `label_targets`，优先 `vertebrae_S1`、只提供 `sacrum` 时
 - `step_size`：JSON 使用数值，范围为 `0 < step_size <= 1`，默认 `0.5`；增大后减少滑窗重叠。
 - `num_processes_preprocessing` / `num_processes_segmentation_export`：分别传为 `-npp` / `-nps`，
   默认均为 `1`；只接受正整数，布尔值、浮点数和带小数点的文本均不合法。
+- `export_resampling_threads`：单个导出进程内的类别通道并行数，接受整数 `1` 至 `4`。
+  仓库配置为 `4`，未提供字段的旧配置为 `1`；设为 `1` 恢复原命令和原导出路径。
+  不改变服务任务并发，也不改变模型、TTA、滑窗步长、原插值或标签判定规则。
 
 环境变量也可使用同名字段，分别接受 `true`/`false`、数值文本和整数文本，优先于 JSON。
 Python 显式配置支持顶层字段和 `nnunet` 嵌套段，优先于环境变量。
 单病例的预处理原本实际已限制为 1 个进程；本次默认主要将导出进程池从 3 减为 1，
 以减少主机内存和并发资源占用，不改变模型、TTA 或滑窗步长。
 
-提速时先测试 `disable_tta=true`、`step_size=0.5`，再按效果测试 `step_size=0.75`。
+新增通道并行由项目自带入口实现，使用现有外部 nnUNet/PyTorch 环境，不修改已安装包。
+只有能确认的官方预测入口才会切换：外部 Python 来自显式 `nnUNet_python`，或官方
+Python 启动脚本的 shebang。无法确认的自定义命令保持原调用，RunLog 会说明未启用。
+优化仅覆盖官方默认重采样器的多通道线性原尺寸恢复，其余路径保留原函数。
+每次推理的 `nnunet-*.stdout.log` 会保存 `[AutoPrintFilm nnUNet]` 粗阶段耗时，
+便于区分重采样、标签判定和写出。此配置不是增加 `-nps`；单病例的一个导出任务
+不会因为增大进程池而自动拆成多个通道任务。
+
+更新已有发布包时需重新构建完整目录，包含外部推理入口后再配置此字段。
+建议用独立缓存比较原路径 `1` 与并行 `2`、`4`：核对分割标签、NIfTI 几何及最终切片，
+同时记录时间、峰值内存和生产并发下的长尾。保留生产任务并发设置，不清理在途缓存。
+
+确认模型前向占比值得优化后，可测试 `disable_tta=true`、`step_size=0.5`，
+再按效果测试 `step_size=0.75`。
 这些设置可能影响分割及自动切割定位，需要比较实际病例的耗时和切割结果。
 分割缓存仍按模型 ID 复用，不区分这些参数；测试时使用新的 `-c` 目录，或清理对应的
 `<cache>/<model_id>/segmentation/`，否则会复用旧分割、跳过推理。

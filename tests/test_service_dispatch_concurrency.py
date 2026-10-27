@@ -50,12 +50,16 @@ def test_parallel_service_dispatch_obeys_output_and_global_limits(tmp_path):
     methods = "\n\n".join(
         _method(source, name)
         for name in (
+            "ProcessSingleStudy",
+            "StartUnprocessedTasks",
             "StartUnprocessedSeries",
             "UpdateSeriesRecordStatus",
             "IsProcessRunning",
             "TryGetRunningProcessStartTime",
             "GetSeriesCacheDirectory",
+            "HasReusableSeriesCache",
             "NormalizeOutputDirectory",
+            "IsOutputProcessRunning",
             "TrackRunningProcess",
             "RefreshRunningProcesses",
             "StartAutoPrintFilm",

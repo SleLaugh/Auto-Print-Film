@@ -59,7 +59,8 @@ namespace ElincloudAISliceServer.AISliceDicomService
 
         // PID保存实际启动时间：相同进程的多条记录只计一次，也能识别PID复用。
         private readonly Dictionary<int, DateTime> RunningProcesses = new Dictionary<int, DateTime>();
-        // 同序列不同部位可并行，但同一输出目录只能由现有任务持有；保留恢复时已重复的全部PID。
+        // 同序列首任务结束且已有正式缓存后，不同部位可并行；同一输出目录始终独占。
+        // 保留恢复时已重复的全部PID，避免漏计旧服务已经启动的进程。
         private readonly Dictionary<string, Dictionary<int, DateTime>> RunningOutputs =
             new Dictionary<string, Dictionary<int, DateTime>>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         private bool RunningProcessesRestored;
@@ -148,7 +149,8 @@ namespace ElincloudAISliceServer.AISliceDicomService
 
         /// <summary>
         /// 处理单个检查数据。
-        /// 按照“补齐缺失任务 -> 启动待处理任务 -> 监测任务完成情况”的顺序执行。
+        /// 按照“补齐缺失任务 -> 启动待处理任务 -> 监测任务完成情况”的顺序执行，
+        /// 本轮出现新的成功或失败终态时，再次派发以放行已有缓存的同序列剩余任务。
         /// 未切割和正在切割的检查都需要检查是否存在尚未创建任务的原始序列。
         /// </summary>
         /// <param name="examination">当前待处理的 RIS 检查。</param>
@@ -166,7 +168,15 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 // 第二步：启动已经创建、当前仍处于“未切割”状态的任务。
                 StartUnprocessedTasks(records, slicePlans, instance);
                 // 第三步：基于任务记录监测进程、处理报告并更新检查整体状态。
+                int completedCount = records.Count(record => record.SliceImageStatus == (int)SliceImageStatus.已切割
+                    || record.SliceImageStatus == (int)SliceImageStatus.切割失败);
                 MonitorTaskCompletion(examination, records, slicePlans, instance, originalStatus);
+                if (records.Count(record => record.SliceImageStatus == (int)SliceImageStatus.已切割
+                    || record.SliceImageStatus == (int)SliceImageStatus.切割失败) > completedCount)
+                {
+                    // 切割失败也可能已完成分割缓存，同轮重新派发，不再多等一个扫描周期。
+                    StartUnprocessedTasks(records, slicePlans, instance);
+                }
             }
             catch (Exception ex)
             {
@@ -392,7 +402,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
                     continue;
                 }
 
-                StartUnprocessedSeries(record, recordSlicePlans, maxConcurrentCount, instance);
+                StartUnprocessedSeries(record, recordSlicePlans, maxConcurrentCount, instance, records);
             }
         }
 
@@ -509,12 +519,13 @@ namespace ElincloudAISliceServer.AISliceDicomService
             }
         }
         /// <summary>
-        /// 启动处于“未切割”状态的序列记录
+        /// 启动处于“未切割”状态的序列记录；首任务结束且已有正式缓存后放行同序列并发。
         /// </summary>
         /// <param name="record">切割记录</param>
         /// <param name="maxConcurrentCount">允许同时运行的最大Python进程数量</param>
         /// <param name="instance">当前医院的数据库访问对象</param>
-        private void StartUnprocessedSeries(AIFilmSliceRecord record, List<SlicePlanConfigInfo> slicePlans, int maxConcurrentCount, SqlAccess instance)
+        /// <param name="seriesRecords">当前检查的全部任务，用于识别同序列已结束的任务</param>
+        private void StartUnprocessedSeries(AIFilmSliceRecord record, List<SlicePlanConfigInfo> slicePlans, int maxConcurrentCount, SqlAccess instance, IEnumerable<AIFilmSliceRecord>? seriesRecords = null)
         {
             if (!Directory.Exists(record.InputDir))
             {
@@ -528,15 +539,26 @@ namespace ElincloudAISliceServer.AISliceDicomService
             {
                 string cacheDir = GetSeriesCacheDirectory(record.OutputDir);
                 // 同序列任务继续复用同一缓存；先保存旧记录的缓存迁移，失败时不启动新进程。
-                // 数据库写入在调度锁外，之后由启动方法原子检查最终名额及输出目录占用。
+                // 数据库写入在调度锁外，之后由启动方法原子检查名额、输出目录及序列占用。
                 if (!string.Equals(record.CacheDir, cacheDir, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                 {
                     record.CacheDir = cacheDir;
                     instance.Update<AIFilmSliceRecord>(record, item => item.ID == record.ID, nameof(AIFilmSliceRecord.CacheDir));
                 }
 
-                using Process? process = StartAutoPrintFilm(maxConcurrentCount, record.InputDir, cacheDir, record.OutputDir, record.StudyTypeName, record.SlicePartName, record.ScanThickness, record.PlaneConfigJson, BuildWindowPresetJson(slicePlans));
-                // 全局名额已满或相同输出目录仍有任务运行时等待，继续扫描其他任务。
+                // 成片成功与缓存生成是两个条件：缺体素等后续失败仍可能留下可复用缓存。
+                // 先确认同序列有已结束任务，启动锁内再检查缓存；不根据错误消息判断。
+                StringComparison pathComparison = OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+                bool allowSeriesConcurrency = seriesRecords != null && seriesRecords.Any(completed =>
+                    (completed.SliceImageStatus == (int)SliceImageStatus.已切割
+                        || completed.SliceImageStatus == (int)SliceImageStatus.切割失败)
+                    && !string.IsNullOrWhiteSpace(completed.OutputDir)
+                    && string.Equals(GetSeriesCacheDirectory(completed.OutputDir), cacheDir, pathComparison)
+                    && !IsOutputProcessRunning(completed.OutputDir));
+
+                using Process? process = StartAutoPrintFilm(maxConcurrentCount, record.InputDir, cacheDir, record.OutputDir, record.StudyTypeName, record.SlicePartName, record.ScanThickness, record.PlaneConfigJson, BuildWindowPresetJson(slicePlans), allowSeriesConcurrency);
+                // 名额已满、输出目录被占用或同序列首任务仍在运行时保留待处理，继续扫描其他任务。
                 if (process == null)
                 {
                     return;
@@ -776,6 +798,53 @@ namespace ElincloudAISliceServer.AISliceDicomService
             return Path.Combine(seriesDirectory, "cache");
         }
 
+        /// <summary>
+        /// 判断序列是否已有正式发布的原始体数据和至少一个模型的分割缓存。
+        /// 不读取图像内容；沿用 Python 的文件与模型标记判定，忽略私有工作目录。
+        /// </summary>
+        private static bool HasReusableSeriesCache(string cacheDir)
+        {
+            try
+            {
+                if (!File.Exists(Path.Combine(cacheDir, "nifti", "raw_0000.nii.gz"))) return false;
+
+                foreach (string modelDir in Directory.EnumerateDirectories(cacheDir))
+                {
+                    string modelID = Path.GetFileName(modelDir);
+                    if (!int.TryParse(modelID, NumberStyles.None, CultureInfo.InvariantCulture, out int datasetID)
+                        || datasetID <= 0) continue;
+
+                    string segmentationDir = Path.Combine(modelDir, "segmentation");
+                    string segmentationPath = Path.Combine(segmentationDir, "seg.nii.gz");
+                    if (!File.Exists(segmentationPath)) continue;
+
+                    string markerPath = Path.Combine(segmentationDir, "model.json");
+                    // 兼容没有模型标记的历史缓存，正式分割文件是最终发布标志。
+                    if (!File.Exists(markerPath)) return File.Exists(segmentationPath);
+
+                    try
+                    {
+                        using System.Text.Json.JsonDocument marker = System.Text.Json.JsonDocument.Parse(File.ReadAllText(markerPath));
+                        if (marker.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object
+                            || !marker.RootElement.TryGetProperty("model_id", out System.Text.Json.JsonElement model)) continue;
+                        string? markedID = model.ValueKind == System.Text.Json.JsonValueKind.String ? model.GetString()
+                            : model.ValueKind == System.Text.Json.JsonValueKind.Number ? model.GetRawText() : null;
+                        if (string.Equals(markedID, modelID, StringComparison.Ordinal) && File.Exists(segmentationPath))
+                        {
+                            return true;
+                        }
+                    }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                    catch (System.Text.Json.JsonException) { }
+                }
+            }
+            // 暂时读不到缓存时继续保守派发，不将任务误记为切割失败。
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return false;
+        }
+
         private static string NormalizeOutputDirectory(string outputDir)
         {
             return Path.TrimEndingDirectorySeparator(Path.GetFullPath(outputDir));
@@ -859,17 +928,18 @@ namespace ElincloudAISliceServer.AISliceDicomService
         }
 
         /// <summary>
-        /// 原子检查全局名额及输出目录占用、启动并登记真实PID，不等待进程结束。
-        /// 同序列不同输出目录可并行；共享缓存的写入由 Python 缓存锁保护。
+        /// 原子检查全局名额、输出目录及同序列占用，启动并登记真实PID，不等待进程结束。
+        /// 同序列已有结束任务且正式缓存已生成后，不同输出目录可按全局上限并行。
         /// </summary>
-        /// <returns>启动成功后的进程；并发名额已满或同一输出目录被占用时返回null。</returns>
-        private Process? StartAutoPrintFilm(int maxConcurrentCount, string inputDir, string cacheDir, string outDir, string studyType, string slicePart, double scanThickness, string planeConfigJson, string windowPresetJson)
+        /// <returns>启动成功后的进程；名额、输出目录或同序列首任务限制不允许启动时返回null。</returns>
+        private Process? StartAutoPrintFilm(int maxConcurrentCount, string inputDir, string cacheDir, string outDir, string studyType, string slicePart, double scanThickness, string planeConfigJson, string windowPresetJson, bool allowSeriesConcurrency = false)
         {
             // 首次恢复涉及数据库读取；业务循环在并发派发前已完成恢复。
             RestoreRunningProcesses();
             string executablePath = Path.GetFullPath(
                 AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.ExecutablePath);
             string outputKey = NormalizeOutputDirectory(outDir);
+            string cacheKey = NormalizeOutputDirectory(cacheDir);
 
             ProcessStartInfo startInfo = new ProcessStartInfo
             {
@@ -899,9 +969,17 @@ namespace ElincloudAISliceServer.AISliceDicomService
             lock (ProcessNumLock)
             {
                 RefreshRunningProcesses();
-                // 检查、启动和登记必须持同一把锁，避免多个派发线程同时占用最后一个名额。
-                // 只互斥规范化后的同一输出目录，不按共享序列缓存互斥。
+                // 检查、启动和登记必须持同一把锁，避免并发派发抢占同一名额或首任务资格。
                 if (RunningProcesses.Count >= maxConcurrentCount || RunningOutputs.ContainsKey(outputKey))
+                {
+                    return null;
+                }
+                // 等待任务留在服务端队列，不启动 Python 占用进程和全局并发名额。
+                // 首任务成功或失败都可放行，但必须已有正式缓存；缺失缓存时仅允许单个接替。
+                StringComparison pathComparison = OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+                if ((!allowSeriesConcurrency || !HasReusableSeriesCache(cacheKey)) && RunningOutputs.Keys.Any(runningOutput =>
+                    string.Equals(GetSeriesCacheDirectory(runningOutput), cacheKey, pathComparison)))
                 {
                     return null;
                 }

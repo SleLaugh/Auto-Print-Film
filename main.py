@@ -11,6 +11,7 @@ import argparse
 import faulthandler
 import json
 import os
+import time
 from pathlib import Path
 
 # ===== 添加项目根目录到Python路径（必须在import之前）=====
@@ -195,15 +196,26 @@ def parse_window_presets_argument(value):
 def main(*, startup_error=None):
     """Execute a request and report errors, including pre-import bootstrap failures."""
 
-    # SimpleITK/GDCM 等原生扩展触发 SIGABRT 时，至少保留 Python 调用栈。
-    faulthandler.enable(all_threads=True)
+    started_at = time.monotonic()
     output_dir = _cli_value(sys.argv[1:], "-o", "--output")
     slice_part = _cli_value(sys.argv[1:], "--slice_part") or "腰椎"
     study_type = _cli_value(sys.argv[1:], "--study_type") or StudyTypeEnum.CT.value
     scan_thickness = _cli_value(sys.argv[1:], "--scan_thickness")
     request = None
     task_diagnostics = None
+    logging_configured = False
+    outcome = "❌ 处理失败"
     try:
+        if output_dir:
+            # 参数解析和完整配置加载也可能失败，先隔离本次任务的日志目录。
+            try:
+                configure_logging(output_dir=output_dir)
+                logging_configured = True
+            except Exception:
+                # 正式配置仍可再次尝试；日志初始化不能覆盖原有参数/配置错误。
+                pass
+        # SimpleITK/GDCM 等原生扩展触发 SIGABRT 时，至少保留 Python 调用栈。
+        faulthandler.enable(all_threads=True)
         args = parse_arguments()
         output_dir = args.output
         slice_part = args.slice_part
@@ -212,6 +224,7 @@ def main(*, startup_error=None):
 
         app_config = load_app_config()
         configure_logging(app_config.logging, output_dir=args.output)
+        logging_configured = True
         RunLog("SpineMPRProcessor v1.0.0 启动")
         if app_config.logging.stack_dump_interval_seconds > 0:
             task_diagnostics = start_task_diagnostics(
@@ -268,11 +281,10 @@ def main(*, startup_error=None):
         response = pipeline.run(request)
         
         if response.success:
-            RunLog(f"✅ 成功，总耗时: {response.total_time:.2f}s")
             DebugLog(f"输出目录: {response.output_dir}")
+            outcome = "✅ 成功"
             return 0
         else:
-            RunLog("❌ 处理失败")
             for error in response.errors:
                 DebugLog(f"  错误: [{error['stage']}] {error['message']}")
             return 1
@@ -300,6 +312,8 @@ def main(*, startup_error=None):
         ErrorLog("程序执行被中断", e)
         return 130
     except SystemExit as e:
+        if not e.code:
+            outcome = "✅ 程序结束"
         if e.code and output_dir:
             _try_write_failure_report(
                 output_dir,
@@ -323,8 +337,21 @@ def main(*, startup_error=None):
         ErrorLog("程序执行异常", e)
         return 1
     finally:
-        if task_diagnostics is not None:
-            task_diagnostics.close()
+        try:
+            if task_diagnostics is not None:
+                task_diagnostics.close()
+        except BaseException:
+            outcome = "❌ 处理失败"
+            raise
+        finally:
+            if logging_configured:
+                try:
+                    # 统一在错误详情及清理之后收尾，计入入口到退出前的完整耗时。
+                    elapsed = time.monotonic() - started_at
+                    RunLog(f"{outcome}，总耗时: {elapsed:.2f}s")
+                except Exception:
+                    # 日志不可写时保留原有退出码和异常，不能让收尾掩盖处理结果。
+                    pass
 
 
 def _cli_value(arguments, *names):

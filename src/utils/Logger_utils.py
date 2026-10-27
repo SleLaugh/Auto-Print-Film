@@ -320,18 +320,19 @@ def is_debug_file_enabled() -> bool:
     return bool(_logger_manager.debug_file_enabled)
 
 
-def configure_logging(config, output_dir: Path | str | None = None) -> None:
-    """应用日志配置，并把文件日志绑定到本次任务的 ``output/log``。"""
+def configure_logging(config=None, output_dir: Path | str | None = None) -> None:
+    """应用配置并绑定任务日志目录；省略配置时保留现有开关，供早期异常收尾。"""
 
-    _logger_manager.debug_file_enabled = bool(config.debug_file_enabled)
-    _logger_manager.console_enabled = bool(config.console_enabled)
-    _logger_manager.run_log_file_enabled = bool(config.run_log_file_enabled)
-    _logger_manager.debug_log_file_enabled = bool(config.debug_log_file_enabled)
-    _logger_manager.error_log_file_enabled = bool(config.error_log_file_enabled)
+    if config is not None:
+        _logger_manager.debug_file_enabled = bool(config.debug_file_enabled)
+        _logger_manager.console_enabled = bool(config.console_enabled)
+        _logger_manager.run_log_file_enabled = bool(config.run_log_file_enabled)
+        _logger_manager.debug_log_file_enabled = bool(config.debug_log_file_enabled)
+        _logger_manager.error_log_file_enabled = bool(config.error_log_file_enabled)
     target_base = (
         Path(output_dir) / "log"
         if output_dir is not None
-        else Path(config.base_dir)
+        else Path(config.base_dir) if config is not None else _logger_manager.base_dir
     )
     _logger_manager.set_base_dir(target_base)
 

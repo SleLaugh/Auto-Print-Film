@@ -846,6 +846,9 @@ fail-fast 被跳过的后续阶段。默认主链中的
 `anatomical_analysis`、`planning`、`reconstruction`、`reporting`。
 只要 `run_log_file_enabled=true`，`ErrorLog` 也会同步写入 `RunLog`，即使 DebugLog 和
 独立 ErrorLog 文件均关闭，运行日志仍会保留失败原因。
+命令行任务在可写日志时统一以最终状态和总耗时收尾，成功、失败及可捕获中断均覆盖；
+总耗时从入口开始计到错误记录及诊断清理结束，使用单调时钟，不受系统时间调整影响。
+已能从参数取得输出目录时，会先绑定本次 `log/`，使参数或配置错误也能写入当前任务日志。
 
 ## 配置优先级
 

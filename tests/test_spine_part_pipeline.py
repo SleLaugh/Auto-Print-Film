@@ -1,4 +1,4 @@
-"""C7–S1 整段脊柱复用既有定位、解剖、MPR / CPR 和 DICOM 链路。"""
+"""胸腰椎 C7–S1 与全脊柱 C1–S1 贯通定位、解剖、MPR / CPR 和 DICOM 链路。"""
 
 import json
 from pathlib import Path
@@ -23,22 +23,26 @@ from src.stages.stage_spatial_correction import SpatialCorrectionStage
 
 @pytest.mark.parametrize("sacral_label", ("vertebrae_S1", "sacrum"))
 @pytest.mark.parametrize("fill_percent", (0.0, 80.0, 100.0))
-def test_c7_s1_spine_reaches_all_five_series_with_real_sacral_label(
-    tmp_path, monkeypatch, sacral_label, fill_percent,
+@pytest.mark.parametrize("part,cervical_start", (
+    (SlicePartEnum.胸腰椎, 7), (SlicePartEnum.全脊柱, 1),
+))
+def test_whole_spine_reaches_all_five_series_with_real_sacral_label(
+    tmp_path, monkeypatch, sacral_label, fill_percent, part, cervical_start,
 ):
-    """同次请求完整定位 19 标签，兼容 S1 别名并实际写出五套切片。"""
+    """同次请求完整定位 19 / 25 标签，兼容 S1 别名并实际写出五套切片。"""
 
     label_names = (
-        ["vertebrae_C7"]
+        [f"vertebrae_C{index}" for index in range(cervical_start, 8)]
         + [f"vertebrae_T{index}" for index in range(1, 13)]
         + [f"vertebrae_L{index}" for index in range(1, 6)]
         + [sacral_label]
     )
-    segmentation = np.zeros((240, 40, 40), dtype=np.uint8)
+    segmentation = np.zeros((12 * (len(label_names) + 1), 40, 40), dtype=np.uint8)
     source = np.full(segmentation.shape, -1000.0, dtype=np.float32)
-    labels = {"background": 0, "vertebrae_C6": 99}
+    excluded_label = "vertebrae_C6" if part is SlicePartEnum.胸腰椎 else "vertebrae_S2"
+    labels = {"background": 0, excluded_label: 99}
     for index, name in enumerate(label_names):
-        label_id, center_z = index + 1, 228 - index * 12
+        label_id, center_z = index + 1, segmentation.shape[0] - 12 - index * 12
         labels[name] = label_id
         # 前部椎体与后部棘突具有不同灰度，防止取景仅靠标签数量蒙混过关。
         body = np.s_[center_z - 3:center_z + 4, 12:20, 10:27]
@@ -47,8 +51,8 @@ def test_c7_s1_spine_reaches_all_five_series_with_real_sacral_label(
         segmentation[posterior] = label_id
         source[body] = 100.0
         source[posterior] = 900.0
-    # 同一模型可见的 C6 不属于本次 C7–S1 范围。
-    segmentation[234:239, 12:20, 10:27] = 99
+    # 同一模型可见的范围外标注不应进入本次定位或切割。
+    segmentation[-6:-1, 12:20, 10:27] = 99
     image = sitk.GetImageFromArray(segmentation)
     image.SetSpacing((0.8, 0.8, 1.2))
     raw = sitk.GetImageFromArray(source)
@@ -69,7 +73,7 @@ def test_c7_s1_spine_reaches_all_five_series_with_real_sacral_label(
     request = Request(
         dicom_dir=str(tmp_path / "unused_dicom"),
         output_dir=str(tmp_path / "output"),
-        slice_part=SlicePartEnum.脊柱,
+        slice_part=part,
         plane_configs=[
             PlaneConfig(
                 plane=plane, slice_type=slice_type,
@@ -101,10 +105,11 @@ def test_c7_s1_spine_reaches_all_five_series_with_real_sacral_label(
 
     localization = context.get_result("localization")
     anatomy = context.get_result("anatomical_analysis")
+    assert len(label_names) == (19 if part is SlicePartEnum.胸腰椎 else 25)
     assert list(localization["label_targets"]) == label_names
-    assert "vertebrae_C6" not in localization["coords"]
+    assert excluded_label not in localization["coords"]
     diagnostic = anatomy["anatomical_geometry_diagnostics"]
-    assert diagnostic["start_label"] == "vertebrae_C7"
+    assert diagnostic["start_label"] == label_names[0]
     assert diagnostic["end_label"] == sacral_label
     assert diagnostic["used_labels"] == label_names
     annotations = anatomy["spine_geometry"]["filtered_annotation_centroids"]
@@ -120,12 +125,13 @@ def test_c7_s1_spine_reaches_all_five_series_with_real_sacral_label(
     assert len({plan["plan_id"] for plan in plans}) == 5
     assert len({plan["output_plane"] for plan in plans}) == 5
     for plan in plans:
-        assert plan["slice_part"] == "脊柱"
+        assert plan["slice_part"] == part.value
         assert len(plan["slices"]) == 3
         if plan["slice_type"] == "CPR":
             assert plan["geometry_type"] == "curved_stack"
+            # 全脊柱保留 C1，不能沿用颈椎 CPR 的环椎排除规则。
             assert plan["source_labels"] == label_names
-            assert len(plan["curve_points"]) >= 19
+            assert len(plan["curve_points"]) >= len(label_names)
         else:
             assert plan["geometry_type"] == "plane_stack"
             if plan["plane"] == "冠状位":
@@ -145,19 +151,20 @@ def test_c7_s1_spine_reaches_all_five_series_with_real_sacral_label(
         dataset = pydicom.dcmread(output_dir / "2.dcm")
         assert dataset.pixel_array.size > 0
         if plan["plane"] == "冠状位" and plan["slice_type"] == "MPR":
-            # 实际成片必须覆盖末端椎体，不能只生成了五套文件便判定范围完整。
-            bbox = localization["coords"][sacral_label]["bbox"]
+            # 实际成片必须覆盖首末椎体，不能只检查计划中的标签。
             origin = np.asarray(dataset.ImagePositionPatient, dtype=float)
             right, down = np.asarray(dataset.ImageOrientationPatient, dtype=float).reshape(2, 3)
-            for z in (bbox["z_min"], bbox["z_max"]):
-                for x in (bbox["x_min"], bbox["x_max"]):
-                    physical = np.asarray(image.TransformContinuousIndexToPhysicalPoint((
-                        float(x), float(bbox["y_min"]), float(z),
-                    )))
-                    column_index = np.dot(physical - origin, right) / float(dataset.PixelSpacing[1])
-                    row_index = np.dot(physical - origin, down) / float(dataset.PixelSpacing[0])
-                    assert -0.5 - 1e-6 <= column_index <= dataset.Columns - 0.5 + 1e-6
-                    assert -0.5 - 1e-6 <= row_index <= dataset.Rows - 0.5 + 1e-6
+            for endpoint in (label_names[0], sacral_label):
+                bbox = localization["coords"][endpoint]["bbox"]
+                for z in (bbox["z_min"], bbox["z_max"]):
+                    for x in (bbox["x_min"], bbox["x_max"]):
+                        physical = np.asarray(image.TransformContinuousIndexToPhysicalPoint((
+                            float(x), float(bbox["y_min"]), float(z),
+                        )))
+                        column_index = np.dot(physical - origin, right) / float(dataset.PixelSpacing[1])
+                        row_index = np.dot(physical - origin, down) / float(dataset.PixelSpacing[0])
+                        assert -0.5 - 1e-6 <= column_index <= dataset.Columns - 0.5 + 1e-6
+                        assert -0.5 - 1e-6 <= row_index <= dataset.Rows - 0.5 + 1e-6
         if plan["plane"] == "矢状位":
             # LPS: 屏幕向右为后方，屏幕向下为足侧，与原片一致。
             row, column = np.asarray(dataset.ImageOrientationPatient).reshape(2, 3)

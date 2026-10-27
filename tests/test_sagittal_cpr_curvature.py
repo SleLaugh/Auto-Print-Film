@@ -19,7 +19,8 @@ _PART_LABELS = {
     SlicePartEnum.颈椎: ("C2", "C3", "C4", "C5", "C6"),
     SlicePartEnum.胸椎: ("T2", "T4", "T6", "T8", "T10"),
     SlicePartEnum.腰椎: ("L1", "L2", "L3", "L4", "L5"),
-    SlicePartEnum.脊柱: ("C7", "T5", "T12", "L3", "S1"),
+    SlicePartEnum.胸腰椎: ("C7", "T5", "T12", "L3", "S1"),
+    SlicePartEnum.全脊柱: ("C1", "C7", "T6", "L3", "S1"),
 }
 _BODY_HU = (200.0, 500.0, 800.0, 1100.0, 1400.0)
 _POSTERIOR_HU = 2500.0
@@ -28,7 +29,8 @@ _AP_CURVATURE_SIGN = {
     SlicePartEnum.颈椎: -1,
     SlicePartEnum.胸椎: 1,
     SlicePartEnum.腰椎: -1,
-    SlicePartEnum.脊柱: 1,
+    SlicePartEnum.胸腰椎: 1,
+    SlicePartEnum.全脊柱: 1,
 }
 _SI_CENTERS = (100, 82, 64, 46, 28)
 

@@ -119,7 +119,7 @@ def _cpr_plan(image, axes, *, spine):
     offsets = (-6.0, 0.0, 6.0)
     plan = {
         "plan_id": "thick_spine_cpr" if spine else "thick_ordinary_cpr",
-        "slice_part": "脊柱" if spine else "肺部", "slice_type": "CPR",
+        "slice_part": "胸腰椎" if spine else "肺部", "slice_type": "CPR",
         "plane": "矢状位" if spine else "冠状位", "geometry_type": "curved_stack",
         "localizer_plane": "冠状位" if spine else "矢状位",
         "localizer_reference": _xyz(reference), "curve_points": [_xyz(point) for point in curve],
@@ -159,9 +159,11 @@ def test_thick_ordinary_cpr_refines_reference_grid_before_drawing_physical_paths
 
 @pytest.mark.parametrize("thickness", (10.0, 20.0))
 @pytest.mark.parametrize("reversed_z", (False, True))
-def test_thick_spine_cpr_preserves_following_background_and_actual_offset_paths(thickness, reversed_z):
+@pytest.mark.parametrize("part", ("胸腰椎", "全脊柱"))
+def test_thick_spine_cpr_preserves_following_background_and_actual_offset_paths(thickness, reversed_z, part):
     image, axes = _image(thickness, reversed_z)
     plan = _cpr_plan(image, axes, spine=True)
+    plan["slice_part"] = part
     original = deepcopy(plan)
     render = ReconstructionStage._build_plan_localizer_render(image, plan)
 
@@ -178,19 +180,21 @@ def test_thick_spine_cpr_preserves_following_background_and_actual_offset_paths(
 
 @pytest.mark.parametrize("thickness", (10.0, 20.0))
 @pytest.mark.parametrize("reversed_z", (False, True))
-def test_thick_spine_mpr_scales_true_surface_intersection_into_fine_reference_grid(thickness, reversed_z):
+@pytest.mark.parametrize("part", ("胸腰椎", "全脊柱"))
+def test_thick_spine_mpr_scales_true_surface_intersection_into_fine_reference_grid(thickness, reversed_z, part):
     image, axes = _image(thickness, reversed_z)
     reference = _physical(image, (24.0, 24.0, 6.0))
     normal = axes @ np.asarray((1.0, 0.5, 0.0)) / np.sqrt(1.25)
     row_direction = axes @ np.asarray((-0.5, 1.0, 0.0)) / np.sqrt(1.25)
-    labels = ("vertebrae_T1", "vertebrae_T6", "vertebrae_T12")
+    labels = ("vertebrae_C1" if part == "全脊柱" else "vertebrae_C7",
+              "vertebrae_T6", "vertebrae_S1")
     anatomy = {"spine_geometry": {"filtered_annotation_centroids": {
         label: {"found": True, "prism_found": True,
                 "prism_centroid_physical": _xyz(_physical(image, index))}
         for label, index in zip(labels, ((24.0, 9.0, 2.0), (24.0, 32.0, 6.0), (24.0, 14.0, 10.0)))
     }}}
     plan = {
-        "plan_id": "thick_spine_mpr", "slice_part": "脊柱", "slice_type": "MPR",
+        "plan_id": "thick_spine_mpr", "slice_part": part, "slice_type": "MPR",
         "plane": "矢状位", "geometry_type": "plane_stack", "localizer_plane": "冠状位",
         "localizer_reference": _xyz(reference), "source_labels": list(labels),
         "slices": [{"index": 1, "center": _xyz(reference), "normal": _xyz(normal),

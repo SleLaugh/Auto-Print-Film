@@ -88,7 +88,7 @@ def test_legacy_pca_aggregation_cannot_reverse_when_the_long_axis_switches():
 
 
 @pytest.mark.parametrize("part", (SlicePartEnum.颅脑, SlicePartEnum.肺部, SlicePartEnum.颈椎,
-                                  SlicePartEnum.胸椎, SlicePartEnum.腰椎, SlicePartEnum.脊柱,
+                                  SlicePartEnum.胸椎, SlicePartEnum.腰椎, SlicePartEnum.胸腰椎, SlicePartEnum.全脊柱,
                                   SlicePartEnum.髋骨))
 def test_every_part_preserves_all_three_anatomical_plane_axes(part):
     axes = _rotation()

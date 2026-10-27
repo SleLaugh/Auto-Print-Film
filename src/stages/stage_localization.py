@@ -184,7 +184,7 @@ class LocalizationOperations(
         if slice_part == "颅脑":
             # 方向和切片三轴范围只使用脑区，骨性取景支持不进入几何估计。
             return estimate_brain_frame_with_diagnostics(target_mask, image)
-        if slice_part in {"颈椎", "胸椎", "腰椎", "脊柱"}:
+        if slice_part in {"颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱"}:
             if not (label_masks or label_indices_zyx) or not start_label or not end_label:
                 raise ValueError(f"{slice_part} 解剖坐标缺少首尾椎体标签信息")
             return estimate_spine_frame_with_diagnostics(
@@ -2288,7 +2288,7 @@ class LocalizationOperations(
         保证与第四阶段定位空间一致。
         """
 
-        if slice_part not in {"颈椎", "胸椎", "腰椎", "脊柱"}:
+        if slice_part not in {"颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱"}:
             return None
 
         excluded_label_set = set(excluded_labels)

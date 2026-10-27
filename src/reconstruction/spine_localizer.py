@@ -333,7 +333,7 @@ def build_spine_localizer_surface(
     """
 
     if (
-        plan.get("slice_part") not in {"颈椎", "胸椎", "腰椎", "脊柱"}
+        plan.get("slice_part") not in {"颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱"}
         or plan.get("plane") != "矢状位"
         or plan.get("localizer_plane") != "冠状位"
         or plan.get("slice_type") not in {"MPR", "CPR"}

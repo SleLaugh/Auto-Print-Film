@@ -13,14 +13,27 @@ from src.models.enums import PlaneTypeEnum
 class MainPlaneConfigsTest(unittest.TestCase):
     """汇总 `MainPlaneConfigsTest` 相关测试场景。"""
 
-    def test_parse_arguments_accepts_whole_spine(self):
-        """新增脊柱部位可通过正式命令行入口传入。"""
+    def test_parse_arguments_accepts_thoracolumbar_and_whole_spine(self):
+        """胸腰椎和全脊柱可通过正式命令行入口传入。"""
+
+        for slice_part in ("胸腰椎", "全脊柱"):
+            with self.subTest(slice_part=slice_part), patch.object(sys, "argv", [
+                "main.py", "-i", "/tmp/dicom", "-o", "/tmp/output",
+                "--slice_part", slice_part, "--scan_thickness", "1.0",
+            ]):
+                self.assertEqual(main.parse_arguments().slice_part, slice_part)
+
+    def test_parse_arguments_rejects_removed_spine_name(self):
+        """正式部位名称改为胸腰椎后，不保留旧脊柱别名。"""
 
         with patch.object(sys, "argv", [
-            "main.py", "-i", "/tmp/dicom", "-o", "/tmp/output", "--slice_part", "脊柱",
-            "--scan_thickness", "1.0",
-        ]):
-            self.assertEqual(main.parse_arguments().slice_part, "脊柱")
+            "main.py", "-i", "/tmp/dicom", "-o", "/tmp/output",
+            "--slice_part", "脊柱", "--scan_thickness", "1.0",
+        ]), patch.object(sys, "stderr"):
+            with self.assertRaises(SystemExit) as error:
+                main.parse_arguments()
+
+        self.assertEqual(error.exception.code, 2)
 
     def test_parse_arguments_no_longer_accepts_cut_mode(self):
         """验证 `test_parse_arguments_no_longer_accepts_cut_mode` 场景符合预期。"""

@@ -348,7 +348,7 @@ class SpineLocalizerTest(unittest.TestCase):
         self.assertIsNotNone(surface)
         self.assertAlmostEqual(float(surface.depth_indices[6]), 9.0)
 
-    def test_mpr_renderer_uses_spine_background_for_all_three_parts(self):
+    def test_mpr_renderer_uses_spine_background_for_all_spine_parts(self):
         """真实整切来源标识经过 renderer 后仍能显示不同深度的各椎体。"""
 
         array = np.zeros((13, 33, 31), dtype=np.float32)
@@ -357,7 +357,9 @@ class SpineLocalizerTest(unittest.TestCase):
         image = self._image(array)
         for part, labels in (("颈椎", ["vertebrae_C2", "vertebrae_C3", "vertebrae_C4"]),
                              ("胸椎", ["vertebrae_T1", "vertebrae_T6", "vertebrae_T12"]),
-                             ("腰椎", ["vertebrae_T12", "vertebrae_L3", "vertebrae_S1"])):
+                             ("腰椎", ["vertebrae_T12", "vertebrae_L3", "vertebrae_S1"]),
+                             ("胸腰椎", ["vertebrae_C7", "vertebrae_T6", "vertebrae_S1"]),
+                             ("全脊柱", ["vertebrae_C1", "vertebrae_T6", "vertebrae_S1"])):
             with self.subTest(part=part):
                 plan = self._plan(image, part=part, slice_type="MPR")
                 plan["source_labels"] = ["anatomical_geometry.global_frame"]

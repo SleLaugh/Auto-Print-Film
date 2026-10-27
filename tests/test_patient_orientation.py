@@ -22,7 +22,7 @@ from src.reconstruction.plane_stack import PlaneStackResampler
 
 
 PARTS = (SlicePartEnum.颅脑, SlicePartEnum.髋骨, SlicePartEnum.肺部,
-         SlicePartEnum.颈椎, SlicePartEnum.胸椎, SlicePartEnum.腰椎, SlicePartEnum.脊柱)
+         SlicePartEnum.颈椎, SlicePartEnum.胸椎, SlicePartEnum.腰椎, SlicePartEnum.胸腰椎, SlicePartEnum.全脊柱)
 FLIPS = tuple(product((False, True), repeat=3))
 
 

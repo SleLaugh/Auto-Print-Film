@@ -11,14 +11,14 @@ from src.reconstruction.spine_localizer import build_spine_localizer_surface
 from src.stages.stage_reconstruction import ReconstructionStage
 
 
-_SPINE_PARTS = ("颈椎", "胸椎", "腰椎", "脊柱")
+_SPINE_PARTS = ("颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱")
 
 
 def _xyz(vector):
     return dict(zip("xyz", map(float, vector)))
 
 
-def _case(part="脊柱", *, oblique=False, thickness=0.1):
+def _case(part="胸腰椎", *, oblique=False, thickness=0.1):
     """同时包含左右侧弯和前后弯曲，避免平直中心线掩盖几何不一致。"""
 
     z, y, x = np.indices((64, 64, 64), dtype=float)

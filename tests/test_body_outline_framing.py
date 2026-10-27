@@ -231,7 +231,7 @@ def test_partial_body_recognition_cannot_crop_a_previously_visible_outer_shell(p
 
 @pytest.mark.parametrize("part,fill_percent", (
     ("肺部", 0), ("肺部", None), ("髋骨", 0), ("髋骨", None),
-    ("颅脑", 80), ("颈椎", 80), ("胸椎", 80), ("腰椎", 80), ("脊柱", 80),
+    ("颅脑", 80), ("颈椎", 80), ("胸椎", 80), ("腰椎", 80), ("胸腰椎", 80), ("全脊柱", 80),
 ))
 def test_body_support_does_not_change_existing_non_body_framing_contract(part, fill_percent):
     raw, seg, plan, coords, _, _, _ = _fixture(part, fill_percent, oblique=True, flipped=True)

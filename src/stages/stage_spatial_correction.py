@@ -31,7 +31,7 @@ class SpatialCorrectionStage(LocalizationOperations):
     ):
         """仅在 CT 和主体序列共同支持时修正前方椎体的语义编号。"""
 
-        if slice_part not in {"颈椎", "腰椎", "脊柱"}:
+        if slice_part not in {"颈椎", "腰椎", "胸腰椎", "全脊柱"}:
             return image, seg_array, str(seg_path), None
         if slice_part == "颈椎" and not any(
             name.startswith("vertebrae_C") for name in label_targets
@@ -70,7 +70,7 @@ class SpatialCorrectionStage(LocalizationOperations):
                 )
 
         repaired, diagnostic = None, None
-        if slice_part in {"腰椎", "脊柱"}:
+        if slice_part in {"腰椎", "胸腰椎", "全脊柱"}:
             repaired, diagnostic = repair_lumbar_body_sequence(
                 seg_array, load_aligned_raw, image, label_map,
                 label_targets=label_targets, body_extractor=extract_body,

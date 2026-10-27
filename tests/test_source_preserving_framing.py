@@ -237,7 +237,7 @@ def test_final_dicom_preserves_body_anatomy_touching_original_source_edges(tmp_p
     assert plan == original
 
 
-@pytest.mark.parametrize("part,percent", [(part, 80) for part in ("颅脑", "颈椎", "胸椎", "腰椎", "脊柱")])
+@pytest.mark.parametrize("part,percent", [(part, 80) for part in ("颅脑", "颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱")])
 def test_source_preservation_isolated_from_other_parts(part, percent):
     raw, seg, plan, coords, _ = _fixture(part, "横状位", percent, True)
     baseline = TargetFramer(seg, coords, plan)

@@ -50,7 +50,7 @@ class PreflightTest(unittest.TestCase):
         """所有已支持部位都应对外声明三个基础 MPR 状位。"""
 
         combinations = set(CapabilityRegistry.current().combinations())
-        for slice_part in ("颈椎", "胸椎", "腰椎", "脊柱", "肺部", "颅脑", "髋骨"):
+        for slice_part in ("颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱", "肺部", "颅脑", "髋骨"):
             for plane in ("横状位", "矢状位", "冠状位"):
                 with self.subTest(slice_part=slice_part, plane=plane):
                     self.assertIn(
@@ -101,9 +101,33 @@ class PreflightTest(unittest.TestCase):
         """各脊柱部位均注册矢状位 CPR 能力。"""
 
         registry = CapabilityRegistry.current()
-        for slice_part in ("颈椎", "胸椎", "腰椎", "脊柱"):
+        for slice_part in ("颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱"):
             with self.subTest(slice_part=slice_part):
                 registry.validate(make_request(slice_part, "CPR", "矢状位"))
+
+    def test_registry_accepts_coronal_cpr_for_extended_spine_parts(self):
+        """胸腰椎和全脊柱均允许冠状位 CPR。"""
+
+        registry = CapabilityRegistry.current()
+        for slice_part in ("胸腰椎", "全脊柱"):
+            with self.subTest(slice_part=slice_part):
+                registry.validate(make_request(slice_part, "CPR", "冠状位"))
+
+    def test_registry_rejects_unsupported_cuts_for_extended_spine_parts(self):
+        """胸腰椎和全脊柱的横状位仅支持 MPR，并且不提供椎间隙切法。"""
+
+        registry = CapabilityRegistry.current()
+        unsupported = (
+            ("CPR", "横状位"),
+            ("椎间隙", "横状位"),
+            ("椎间隙", "矢状位"),
+            ("椎间隙", "冠状位"),
+        )
+        for slice_part in ("胸腰椎", "全脊柱"):
+            for slice_type, plane in unsupported:
+                with self.subTest(slice_part=slice_part, slice_type=slice_type, plane=plane):
+                    with self.assertRaises(CapabilityError):
+                        registry.validate(make_request(slice_part, slice_type, plane))
 
     def test_preflight_failure_does_not_create_output_directory(self):
         """验证 `test_preflight_failure_does_not_create_output_directory` 场景符合预期。"""

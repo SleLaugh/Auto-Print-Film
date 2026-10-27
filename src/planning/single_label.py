@@ -64,7 +64,7 @@ class SingleLabelWholeRangePlanner:
                 continue
             if (
                 spine_labels
-                and request.slice_part.value in {"胸椎", "脊柱"}
+                and request.slice_part.value in {"胸椎", "胸腰椎", "全脊柱"}
                 and plane_config.plane == PlaneTypeEnum.冠状位
             ):
                 # 普通 MPR 覆盖整体范围，不应用 CPR 专用的椎体排除项。

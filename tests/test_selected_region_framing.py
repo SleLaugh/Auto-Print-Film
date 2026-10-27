@@ -186,7 +186,7 @@ def test_zero_or_null_ignores_policy_and_preserves_exact_geometry_and_window_pix
             )
 
 
-@pytest.mark.parametrize("part", ("肺部", "颅脑", "颈椎", "胸椎", "腰椎", "骶骨"))
+@pytest.mark.parametrize("part", ("肺部", "颅脑", "颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱", "骶骨"))
 def test_explicit_region_policy_is_generic_and_opt_in(part):
     raw, seg, configured, coords, _, axes = _region_fixture(part)
     expected_center, expected_size, _, _ = _expected_region(seg, axes)

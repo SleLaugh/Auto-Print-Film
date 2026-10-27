@@ -216,7 +216,8 @@ def test_non_lumbar_scope_never_calls_sequence_repair(monkeypatch, tmp_path, par
     assert not (tmp_path / "output").exists()
 
 
-def test_unchanged_helper_does_not_read_ct_or_write_working_seg(monkeypatch, tmp_path):
+@pytest.mark.parametrize("part", ("腰椎", "胸腰椎", "全脊柱"))
+def test_unchanged_helper_does_not_read_ct_or_write_working_seg(monkeypatch, tmp_path, part):
     image, array = _small_image()
 
     def unchanged(seg, lazy_raw, *args, **kwargs):
@@ -224,7 +225,9 @@ def test_unchanged_helper_does_not_read_ct_or_write_working_seg(monkeypatch, tmp
         return None, {"status": "unchanged", "reason": "complete_sequence"}
 
     monkeypatch.setattr(spatial_module, "repair_lumbar_body_sequence", unchanged)
-    _, result, path, diagnostic = _helper(SpatialCorrectionStage(), image, array, tmp_path)
+    _, result, path, diagnostic = _helper(
+        SpatialCorrectionStage(), image, array, tmp_path, slice_part=part,
+    )
 
     assert result is array
     assert path == str(tmp_path / "original-seg.nii.gz")
@@ -232,7 +235,8 @@ def test_unchanged_helper_does_not_read_ct_or_write_working_seg(monkeypatch, tmp
     assert not (tmp_path / "output").exists()
 
 
-def test_helper_preserves_geometry_and_original_cache(monkeypatch, tmp_path):
+@pytest.mark.parametrize("part", ("腰椎", "胸腰椎", "全脊柱"))
+def test_helper_preserves_geometry_and_original_cache(monkeypatch, tmp_path, part):
     image, array = _small_image()
     source = tmp_path / "original-seg.nii.gz"
     sitk.WriteImage(image, str(source))
@@ -245,7 +249,7 @@ def test_helper_preserves_geometry_and_original_cache(monkeypatch, tmp_path):
         lambda *args, **kwargs: (repaired, {"status": "repaired", "changed_voxels": 1}),
     )
     result_image, result, path, diagnostic = _helper(
-        SpatialCorrectionStage(), image, array, tmp_path,
+        SpatialCorrectionStage(), image, array, tmp_path, slice_part=part,
     )
 
     assert path == str(tmp_path / "output/nifti/seg_spine_sequence_corrected.nii.gz")
@@ -261,7 +265,8 @@ def test_helper_preserves_geometry_and_original_cache(monkeypatch, tmp_path):
     assert diagnostic["working_seg_path"] == path
 
 
-def test_helper_rejects_repair_that_changes_foreground(monkeypatch, tmp_path):
+@pytest.mark.parametrize("part", ("腰椎", "胸腰椎", "全脊柱"))
+def test_helper_rejects_repair_that_changes_foreground(monkeypatch, tmp_path, part):
     image, array = _small_image()
     malformed = array.copy()
     malformed[0, 0, 0] = 7
@@ -271,12 +276,13 @@ def test_helper_rejects_repair_that_changes_foreground(monkeypatch, tmp_path):
     )
 
     with pytest.raises(ValueError, match="前景"):
-        _helper(SpatialCorrectionStage(), image, array, tmp_path)
+        _helper(SpatialCorrectionStage(), image, array, tmp_path, slice_part=part)
 
     assert not (tmp_path / "output").exists()
 
 
-def test_ct_loader_checks_alignment_only_when_requested(monkeypatch, tmp_path):
+@pytest.mark.parametrize("part", ("腰椎", "胸腰椎", "全脊柱"))
+def test_ct_loader_checks_alignment_only_when_requested(monkeypatch, tmp_path, part):
     image, array = _small_image()
     raw_image = sitk.GetImageFromArray(array.astype(np.float32))
     raw_image.CopyInformation(image)
@@ -290,7 +296,7 @@ def test_ct_loader_checks_alignment_only_when_requested(monkeypatch, tmp_path):
 
     monkeypatch.setattr(spatial_module, "repair_lumbar_body_sequence", request_ct)
     with pytest.raises(ValueError, match="空间不一致"):
-        _helper(SpatialCorrectionStage(), image, array, tmp_path, raw_path=raw_path)
+        _helper(SpatialCorrectionStage(), image, array, tmp_path, raw_path=raw_path, slice_part=part)
 
 
 @pytest.mark.parametrize("xy_applied", (False, True))

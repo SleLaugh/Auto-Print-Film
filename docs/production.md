@@ -293,7 +293,7 @@ RunLog。原始进度不再同步转发到控制台或 DebugLog，监测循环�
 排障时同时收集本次尝试对应的两份原始推理日志，完整早期异常可能不在 ErrorLog 的末尾摘要中。该提示本身
 不能证明主机内存不足，后台进程也可能因 Python 异常退出；没有具体异常时再结合系统的
 内存终止记录排查。两个进程数设为 1 只能减少并发资源占用，不能保证解决所有失败。
-仓库默认 `logger_config.json` 开启 `error_log_file_enabled` 和 `run_log_file_enabled`；
+仓库默认 `logger_config.json` 开启 `error_log_file_enabled` 和 `run_log_file_enabled`，关闭 `debug_log_file_enabled`；
 升级时保留的旧配置或显式配置仍优先，若旧配置关闭错误日志，须设为 `true` 后重跑以收集详情。
 
 多个 Worker 任务同时运行时，应用默认限制每次 ITK 滤镜运算线程数为
@@ -307,13 +307,31 @@ OMP/BLAS/NumExpr 默认各为 1，窗位线程池默认上限为 2；已有原�
 原生库也可能有辅助线程。环境变量会传给子进程，未命中缓存时外部 nnUNet 的
 OMP/BLAS 等线程默认值也会继承，除非其启动器自行覆盖；`-npp`、`-nps` 配置保持独立。
 非法应用线程配置仍会在指定的输出目录下尽力生成失败 `report.json`。
-阶段资源快照写入 `RunLog` 的 `[资源]` 行；需要外置 `logger_config.json` 中的
-`run_log_file_enabled=true` 才保存到文件，仓库配置已开启此项。Linux 下记录 RSS、进程累计峰值 RSS、
-线程数、系统可用内存和 swap，内存单位 MiB。除阶段边界外，第三阶段记录带 `step=` 的
+阶段资源快照写入 `DebugLog` 的 `[资源]` 行；需要外置 `logger_config.json` 中的
+`debug_log_file_enabled=true` 才启用，仓库默认关闭此项。Linux 下记录 RSS、进程累计峰值 RSS、
+线程数、系统可用内存和 swap，内存单位 MiB。Linux 可读取 `/proc/thread-self/stat` 时，
+`native_tid` 标识调用线程、`cpu` 是它最近运行的 CPU；线程可在步骤内部迁移，
+这些字段不能当成 CPU 亲和性限制或故障核心的直接证明。
+除阶段边界外，第三阶段记录带 `step=` 的
 子步骤：读取分割、椎体序列核实及逐标签主体提取、标签索引、目标 bbox、镜像候选估计、
-原图/分割旋转与写盘。每步记录开始、完成或失败及耗时；读图后记录尺寸、像素类型和
-实际 ITK 线程数。普通 RunLog 即可保留这些诊断，不需要开启 DebugLog 或调试影像。
+原图/分割旋转与写盘。第五阶段细分逐椎体主体、四棱柱、姿态与端面分析；
+第七阶段细分计划及切片采样、CPR 掩膜、取景、定位图与窗位输出，包含计划、切片或窗位标识。
+每步记录开始、完成或失败及耗时；读图后记录尺寸、像素类型和
+实际 ITK 线程数。这些诊断统一保存在 DebugLog，不需要开启调试影像。
 这部分涉及应用代码，已有程序须重新构建并更新完整应用包后生效。
+
+关闭 DebugLog 明细时，新增步骤日志跳过资源采样和计时。低频栈采样使用独立开关，
+在外置 `logger_config.json` 设置 `stack_dump_interval_seconds=60` 即每分钟采集一次；
+默认 `0` 关闭，非零值须为至少 10 秒的有限数值，不必开启所有 DebugLog 明细。
+CLI 为每次运行追加唯一运行标识、PID、boot ID、UTC/monotonic 时间和环境，
+随后记录各 Python 线程的文件、函数和调用行，原生段错误/abort 也尽力记录。
+这些记录统一追加到 `log/DebugLog.txt`，可能与普通日志交错。正常退出取消定时记录并
+恢复标准错误处理；诊断不可用不会阻止任务。不因采集超时终止业务，也不强制同步磁盘。
+生产常态资源监测可使用[独立主机采集器](host-diagnostics.md)，不要求开启应用 DebugLog。
+普通文件日志逐条 flush，文件在应用内部重试时追加且保留；flush 仍不保证
+内核崩溃或掉电时所有末尾数据都已写入磁盘。堆栈文件不能替代完整内核转储。
+下次异常重启后，先复制相应病例的整个 `log/` 目录及 pstore 原始文件，再继续重试；
+外部清理程序仍可能删除日志，应用内的保留规则不能约束服务端清理。
 
 在 Linux 下，外部推理子进程会恢复 PyInstaller 启动前的动态库搜索路径；父进程仍使用自己的打包库。[PyInstaller 外部程序调用说明](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#launching-external-programs-from-the-frozen-application)
 

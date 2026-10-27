@@ -10,12 +10,14 @@ import math
 import re
 import shlex
 import shutil
+import time
 from tempfile import NamedTemporaryFile
 from uuid import uuid4
 
 from src.core.base_stage import BaseStage
 from src.core.cache_lock import cache_lock
 from src.core.cache_workspace import cache_workspace, cleanup_cache_workspaces
+from src.capacity import capacity_enabled, capacity_inference, record_capacity_details
 from src.core.context import ProcessingContext
 from src.core.errors import ExternalProcessError
 from src.core.inference_process import InferenceProcessAborted, run_inference_process
@@ -179,21 +181,30 @@ class SegmentationStage(BaseStage):
             # 未传 -c 时保留原有行为，分割结果写入 -o/segmentation。
             output_dir = Path(request.output_dir) / "segmentation"
         output_path = output_dir / "seg.nii.gz"
+        record_capacity_details(model_id=str(dataset_id), segmentation_mode="unknown")
 
         cleanup_cache_workspaces(output_dir.parent, ".segmentation-")
         if self._can_reuse_segmentation(output_dir, output_path, dataset_id):
+            record_capacity_details(segmentation_mode="cache_hit", cache_wait_seconds=0.0)
             # 已发布的缓存保持只读，多个切割部位可以同时复用。
             DebugLog(f"    已找到现成分割结果，跳过推理: {output_path}")
         else:
             lock_root = Path(request.cache_dir or request.output_dir) / ".locks"
+            wait_started = time.monotonic() if capacity_enabled() else None
             with cache_lock(lock_root / f"segmentation-{dataset_id}.lock"):
+                if wait_started is not None:
+                    record_capacity_details(
+                        cache_wait_seconds=round(time.monotonic() - wait_started, 6),
+                    )
                 # 等待锁的任务可能已生成缓存，必须复查，避免重复推理。
                 if not self._can_reuse_segmentation(output_dir, output_path, dataset_id):
+                    record_capacity_details(segmentation_mode="direct_inference")
                     self._generate_segmentation(
                         output_dir, input_path, dataset_id, configuration, fold,
                         inference_log_dir=Path(request.output_dir) / "log",
                     )
                 else:
+                    record_capacity_details(segmentation_mode="wait_reuse")
                     DebugLog(f"    复用其他任务已完成的分割结果: {output_path}")
 
         result = {
@@ -582,14 +593,16 @@ class SegmentationStage(BaseStage):
         
         try:
             # 执行命令
-            result = run_inference_process(
-                cmd,
-                env=env,
-                timeout_seconds=timeout_seconds,
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
-                pass_fds=cache_pass_fds,
-            )
+            with capacity_inference(model_id=dataset_id, attempt=attempt) as capacity_result:
+                result = run_inference_process(
+                    cmd,
+                    env=env,
+                    timeout_seconds=timeout_seconds,
+                    stdout_path=stdout_path,
+                    stderr_path=stderr_path,
+                    pass_fds=cache_pass_fds,
+                )
+                capacity_result["outcome"] = "succeeded" if result.returncode == 0 else "failed"
             
             # 检查执行结果
             if result.returncode != 0:

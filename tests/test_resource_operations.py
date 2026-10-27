@@ -1,3 +1,6 @@
+from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -6,9 +9,14 @@ from src.core.resources import resource_operation
 from src.utils.Logger_utils import LoggerManager
 
 
+@pytest.fixture(autouse=True)
+def enable_diagnostic_scopes(monkeypatch):
+    monkeypatch.setattr(LoggerManager(), "debug_log_file_enabled", True)
+
+
 def test_operation_logs_resource_boundaries_and_discovered_image_details():
     messages = []
-    with patch("src.utils.RunLog", side_effect=messages.append), patch(
+    with patch("src.utils.DebugLog", side_effect=messages.append), patch(
         "src.core.resources.resource_usage_summary", return_value="pid=123 rss_mib=32.0"
     ), patch("src.core.resources.time.monotonic", side_effect=[10.0, 11.25]):
         with resource_operation(
@@ -30,7 +38,7 @@ def test_operation_logs_resource_boundaries_and_discovered_image_details():
 @pytest.mark.parametrize("error", [RuntimeError("sample failed"), KeyboardInterrupt()])
 def test_operation_logs_failure_and_reraises_the_same_exception(error):
     messages = []
-    with patch("src.utils.RunLog", side_effect=messages.append), patch(
+    with patch("src.utils.DebugLog", side_effect=messages.append), patch(
         "src.core.resources.resource_usage_summary", return_value="pid=123"
     ), patch("src.core.resources.time.monotonic", side_effect=[20.0, 22.5]):
         with pytest.raises(type(error)) as caught:
@@ -45,10 +53,10 @@ def test_operation_logs_failure_and_reraises_the_same_exception(error):
     assert not any("phase=complete" in message for message in messages)
 
 
-def test_disabled_run_logging_does_not_skip_processing_or_create_files(tmp_path, monkeypatch):
+def test_disabled_debug_logging_does_not_skip_processing_or_create_files(tmp_path, monkeypatch):
     manager = LoggerManager()
     monkeypatch.setattr(manager, "console_enabled", False)
-    monkeypatch.setattr(manager, "run_log_file_enabled", False)
+    monkeypatch.setattr(manager, "debug_log_file_enabled", False)
     monkeypatch.setattr(manager, "base_dir", tmp_path / "logs")
     processed = []
 
@@ -63,9 +71,44 @@ def test_disabled_run_logging_does_not_skip_processing_or_create_files(tmp_path,
 
 def test_logger_failure_cannot_mask_the_processing_exception():
     error = ValueError("original processing failure")
-    with patch("src.utils.RunLog", side_effect=OSError("log directory unavailable")):
+    with patch("src.utils.DebugLog", side_effect=OSError("log directory unavailable")):
         with pytest.raises(ValueError) as caught:
             with resource_operation("spatial_correction", "read_segmentation"):
                 raise error
 
     assert caught.value is error
+
+
+def test_resource_diagnostics_write_debug_file_without_polluting_run_file(tmp_path):
+    script = """
+import sys
+from src.config import LoggingConfig
+from src.utils import configure_logging
+from src.core.resources import resource_operation
+configure_logging(LoggingConfig(console_enabled=False, run_log_file_enabled=True,
+                                debug_log_file_enabled=True), output_dir=sys.argv[1])
+with resource_operation('anatomical_analysis', 'extract_vertebral_body', label='L1'):
+    pass
+"""
+    result = subprocess.run(
+        [sys.executable, "-X", "utf8", "-c", script, str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[1], capture_output=True,
+        text=True, encoding="utf-8", timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    content = (tmp_path / "log/DebugLog.txt").read_text(encoding="utf-8")
+    assert "step=extract_vertebral_body phase=start" in content
+    assert "step=extract_vertebral_body phase=complete" in content
+    assert not (tmp_path / "log/RunLog.txt").exists()
+
+
+def test_disabled_diagnostics_skip_clock_and_resource_sampling(monkeypatch):
+    monkeypatch.setattr(LoggerManager(), "debug_log_file_enabled", False)
+    with patch("src.core.resources.time.monotonic") as clock, patch(
+        "src.core.resources.resource_usage_summary",
+    ) as sample:
+        with resource_operation("reconstruction", "sample_hu_slice") as details:
+            details["completed"] = True
+    assert details["completed"]
+    clock.assert_not_called()
+    sample.assert_not_called()

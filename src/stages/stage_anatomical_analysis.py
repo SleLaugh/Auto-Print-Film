@@ -8,6 +8,7 @@ import numpy as np
 import SimpleITK as sitk
 
 from src.core.context import ProcessingContext
+from src.core.resources import resource_operation
 from src.models import (
     AnatomicalAnalysisStageResult,
     LabelTarget,
@@ -130,19 +131,24 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 )
                 for name, value in localization_result["label_targets"].items()
             }
-            image = sitk.ReadImage(str(working_seg_path))
-            seg_array = sitk.GetArrayFromImage(image)
-            label_regions = self._build_label_voxel_regions(
-                seg_array,
-                label_targets,
-            )
-            label_coordinates = self._extract_label_coordinates(
-                seg_array,
-                label_targets,
-                label_regions=label_regions,
-            )
-            self._validate_found_labels(label_coordinates)
-            target_mask = self._build_target_mask(seg_array, label_targets)
+            with resource_operation("anatomical_analysis", "read_working_segmentation") as details:
+                image = sitk.ReadImage(str(working_seg_path))
+                details.update(size_xyz=image.GetSize(), pixel_type=image.GetPixelIDTypeAsString())
+                seg_array = sitk.GetArrayFromImage(image)
+            with resource_operation(
+                "anatomical_analysis", "rebuild_label_snapshot", label_count=len(label_targets),
+            ):
+                label_regions = self._build_label_voxel_regions(
+                    seg_array,
+                    label_targets,
+                )
+                label_coordinates = self._extract_label_coordinates(
+                    seg_array,
+                    label_targets,
+                    label_regions=label_regions,
+                )
+                self._validate_found_labels(label_coordinates)
+                target_mask = self._build_target_mask(seg_array, label_targets)
             workspace = {
                 "seg_path": working_seg_path,
                 "image": image,
@@ -191,11 +197,15 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         label_masks: Dict[str, np.ndarray] = {}
         # 脊柱直接复用已有索引，避免每个椎体额外常驻一份整卷 bool mask。
         if slice_part == "髋骨":
-            for label_name, region in label_regions.items():
-                label_mask = np.zeros(seg_array.shape, dtype=bool)
-                if region.indices_zyx.size:
-                    label_mask[tuple(region.indices_zyx.T)] = True
-                label_masks[label_name] = label_mask
+            with resource_operation(
+                "anatomical_analysis", "build_hip_label_masks",
+                label_count=len(label_regions), shape_zyx=seg_array.shape,
+            ):
+                for label_name, region in label_regions.items():
+                    label_mask = np.zeros(seg_array.shape, dtype=bool)
+                    if region.indices_zyx.size:
+                        label_mask[tuple(region.indices_zyx.T)] = True
+                    label_masks[label_name] = label_mask
 
         resolved_cut_config = localization_result["resolved_cut_config"]
         anatomical_cut_config = localization_result[
@@ -211,57 +221,69 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             start_label = self._resolve_spine_endpoint_label(start_label, label_targets)
             end_label = self._resolve_spine_endpoint_label(end_label, label_targets)
         def load_spine_raw_array():
-            raw_image = sitk.ReadImage(localization_result["raw_for_reconstruction_path"])
-            if raw_image.GetSize() != image.GetSize() or any(
-                not np.allclose(actual, expected, rtol=0.0, atol=1e-5)
-                for actual, expected in (
-                    (raw_image.GetSpacing(), image.GetSpacing()),
-                    (raw_image.GetOrigin(), image.GetOrigin()),
-                    (raw_image.GetDirection(), image.GetDirection()),
-                )
-            ):
-                raise ValueError("端面密度验证的原图与工作分割空间不一致")
-            return sitk.GetArrayFromImage(raw_image)
+            with resource_operation("anatomical_analysis", "read_spine_raw") as details:
+                raw_image = sitk.ReadImage(localization_result["raw_for_reconstruction_path"])
+                details.update(size_xyz=raw_image.GetSize(), pixel_type=raw_image.GetPixelIDTypeAsString())
+                if raw_image.GetSize() != image.GetSize() or any(
+                    not np.allclose(actual, expected, rtol=0.0, atol=1e-5)
+                    for actual, expected in (
+                        (raw_image.GetSpacing(), image.GetSpacing()),
+                        (raw_image.GetOrigin(), image.GetOrigin()),
+                        (raw_image.GetDirection(), image.GetDirection()),
+                    )
+                ):
+                    raise ValueError("端面密度验证的原图与工作分割空间不一致")
+                return sitk.GetArrayFromImage(raw_image)
 
-        spine_geometry = self._build_spine_body_geometry(
-            slice_part=slice_part,
-            image=image,
-            seg_array=seg_array,
-            label_targets=label_targets,
-            label_regions=label_regions,
-            excluded_labels=excluded_spine_labels,
-            interspace_regions=interspace_regions,
-            raw_array_loader=load_spine_raw_array,
-        )
+        with resource_operation(
+            "anatomical_analysis", "build_spine_body_geometry",
+            slice_part=slice_part, size_xyz=image.GetSize(), label_count=len(label_targets),
+        ):
+            spine_geometry = self._build_spine_body_geometry(
+                slice_part=slice_part,
+                image=image,
+                seg_array=seg_array,
+                label_targets=label_targets,
+                label_regions=label_regions,
+                excluded_labels=excluded_spine_labels,
+                interspace_regions=interspace_regions,
+                raw_array_loader=load_spine_raw_array,
+            )
         if spine_geometry is not None and localization_result.get("spine_label_sequence") is not None:
             spine_geometry["label_sequence"] = localization_result["spine_label_sequence"]
         lung_pose_support_mask, lung_pose_support_labels = (None, ())
         if slice_part == "肺部":
-            lung_pose_support_mask, lung_pose_support_labels = self._lung_pose_support(
-                target_mask, seg_array, localization_result.get("dataset_json_path"),
-            )
+            with resource_operation("anatomical_analysis", "build_lung_pose_support"):
+                lung_pose_support_mask, lung_pose_support_labels = self._lung_pose_support(
+                    target_mask, seg_array, localization_result.get("dataset_json_path"),
+                )
         framing_label_ids, framing_source_labels = (), ()
         coverage_diagnostic = None
         if slice_part == "颅脑":
-            framing_label_ids, framing_source_labels, coverage_diagnostic = self._brain_framing_support(
-                seg_array, localization_result.get("dataset_json_path"),
-            )
+            with resource_operation("anatomical_analysis", "build_brain_framing_support"):
+                framing_label_ids, framing_source_labels, coverage_diagnostic = self._brain_framing_support(
+                    seg_array, localization_result.get("dataset_json_path"),
+                )
         # 脑区独占姿态与三轴基础范围；规划另加配置余量，骨只作独立取景支持。
-        anatomical_geometry, anatomical_diagnostics = self._build_anatomical_geometry(
-            slice_part=slice_part,
-            target_mask=target_mask,
-            image=image,
-            label_masks=label_masks,
-            start_label=start_label,
-            end_label=end_label,
-            label_pose_annotations=(spine_geometry or {}).get("filtered_annotation_centroids"),
-            label_indices_zyx=(
-                {name: region.indices_zyx for name, region in label_regions.items()}
-                if slice_part in {"颈椎", "胸椎", "腰椎", "脊柱"} else None
-            ),
-            lung_pose_support_mask=lung_pose_support_mask,
-            lung_pose_support_labels=lung_pose_support_labels,
-        )
+        with resource_operation(
+            "anatomical_analysis", "build_anatomical_frame",
+            slice_part=slice_part, size_xyz=image.GetSize(), label_count=len(label_targets),
+        ):
+            anatomical_geometry, anatomical_diagnostics = self._build_anatomical_geometry(
+                slice_part=slice_part,
+                target_mask=target_mask,
+                image=image,
+                label_masks=label_masks,
+                start_label=start_label,
+                end_label=end_label,
+                label_pose_annotations=(spine_geometry or {}).get("filtered_annotation_centroids"),
+                label_indices_zyx=(
+                    {name: region.indices_zyx for name, region in label_regions.items()}
+                    if slice_part in {"颈椎", "胸椎", "腰椎", "脊柱"} else None
+                ),
+                lung_pose_support_mask=lung_pose_support_mask,
+                lung_pose_support_labels=lung_pose_support_labels,
+            )
         del lung_pose_support_mask
         if coverage_diagnostic is not None:
             anatomical_diagnostics["bone_coverage"] = coverage_diagnostic

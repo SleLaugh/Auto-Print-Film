@@ -23,6 +23,7 @@ import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
+from src.core.resources import resource_operation
 from src.models import ReconstructionStageResult, WindowPreset
 from src.reconstruction import CurvedStackResampler, PlaneStackResampler
 from src.reconstruction.dicom import (
@@ -140,7 +141,8 @@ class ReconstructionStage(BaseStage):
             DebugLog("  没有可执行的切片计划")
             return context
 
-        image = sitk.ReadImage(str(image_path))
+        with resource_operation("reconstruction", "read_source_image", path=str(image_path)):
+            image = sitk.ReadImage(str(image_path))
         segmentation_path = (
             loc_result.get("seg_for_reconstruction_path")
             or loc_result.get("corrected_seg_path")
@@ -148,7 +150,10 @@ class ReconstructionStage(BaseStage):
         )
         if not segmentation_path:
             raise ValueError("整组居中需要 seg_for_reconstruction_path")
-        segmentation = sitk.ReadImage(str(segmentation_path))
+        with resource_operation(
+            "reconstruction", "read_segmentation", path=str(segmentation_path),
+        ):
+            segmentation = sitk.ReadImage(str(segmentation_path))
         anatomical_analysis = context.get_result("anatomical_analysis") or {}
         # 与第六阶段消费相同的展平结果。脑区仍是独立切割目标，骨性支持
         # 只能在最终脑 SI 范围及计划允许的颅顶余量内取景，不通过坐标表扩展层组。
@@ -195,11 +200,15 @@ class ReconstructionStage(BaseStage):
                     interspace_groups.setdefault(key, []).append(plan)
             shared_geometries = {}
             for key, group in interspace_groups.items():
-                geometry = prepare_interspace_framing(
-                    segmentation, loc_result.get("coords", {}), group,
-                    context=framing_context,
-                    symmetry_planes=symmetry_planes,
-                )
+                with resource_operation(
+                    "reconstruction", "prepare_interspace_framing",
+                    plan_ids=[plan["plan_id"] for plan in group],
+                ):
+                    geometry = prepare_interspace_framing(
+                        segmentation, loc_result.get("coords", {}), group,
+                        context=framing_context,
+                        symmetry_planes=symmetry_planes,
+                    )
                 shared_geometries[key] = geometry
                 DebugLog(
                     f"  [椎间隙共同取景] 配置={key}, 间隙数={len(group)}, "
@@ -208,15 +217,14 @@ class ReconstructionStage(BaseStage):
                 )
             for plan in plane_plans:
                 DebugLog(f"  执行 plan: {plan['plan_id']}")
-                plan_results.append(
-                    self._execute_plan(
-                        image=image,
-                        plan=plan,
-                        output_root=output_root,
-                        study_uid=study_uid,
-                        source_metadata=source_metadata,
-                        custom_window_presets=getattr(request, "window_presets", None),
-                        target_framer=TargetFramer(
+                with resource_operation(
+                    "reconstruction", "execute_plan", plan_id=plan["plan_id"],
+                    geometry_type=plan.get("geometry_type"), slice_count=len(plan["slices"]),
+                ):
+                    with resource_operation(
+                        "reconstruction", "prepare_target_framing", plan_id=plan["plan_id"],
+                    ):
+                        target_framer = TargetFramer(
                             segmentation,
                             loc_result.get("coords", {}),
                             plan,
@@ -236,11 +244,24 @@ class ReconstructionStage(BaseStage):
                             shared_geometry=shared_geometries.get(
                                 self._interspace_framing_key(plan),
                             ),
-                        ),
-                        localization_result=loc_result,
-                        anatomical_analysis=anatomical_analysis,
-                    )
-                )
+                        )
+                    try:
+                        plan_results.append(
+                            self._execute_plan(
+                                image=image,
+                                plan=plan,
+                                output_root=output_root,
+                                study_uid=study_uid,
+                                source_metadata=source_metadata,
+                                custom_window_presets=getattr(request, "window_presets", None),
+                                target_framer=target_framer,
+                                localization_result=loc_result,
+                                anatomical_analysis=anatomical_analysis,
+                            )
+                        )
+                    finally:
+                        # Keep the previous per-call lifetime of the full target point cloud/mask.
+                        del target_framer
             DebugLog(f"  状位处理完成: {plane}")
 
         result = self._build_plan_summary(plan_results, output_root)
@@ -324,12 +345,32 @@ class ReconstructionStage(BaseStage):
             sampling_plan = plan
             if target_framer is not None:
                 if plan.get("geometry_type") == "curved_stack":
-                    curved_masks.append(resampler.sample_slice(
-                        target_framer.mask, plan, planned_slice, is_mask=True,
-                    ))
+                    with resource_operation(
+                        "reconstruction", "sample_cpr_mask", plan_id=plan["plan_id"],
+                        slice_index=planned_slice.get("index"),
+                    ):
+                        curved_masks.append(resampler.sample_slice(
+                            target_framer.mask, plan, planned_slice, is_mask=True,
+                        ))
                 else:
-                    sampling_plan, planned_slice = target_framer.plane_geometry(plan, planned_slice)
-            sampled_image = resampler.sample_slice(image, sampling_plan, planned_slice)
+                    with resource_operation(
+                        "reconstruction", "frame_plane_slice", plan_id=plan["plan_id"],
+                        slice_index=planned_slice.get("index"),
+                    ):
+                        sampling_plan, planned_slice = target_framer.plane_geometry(
+                            plan, planned_slice,
+                        )
+            with resource_operation(
+                "reconstruction", "sample_hu_slice", plan_id=plan["plan_id"],
+                slice_index=planned_slice.get("index"),
+                geometry_type=plan.get("geometry_type"),
+                slice_thickness=plan.get("slice_thickness"),
+                extent_mm=sampling_plan.get("extent_mm"),
+                output_spacing_mm=sampling_plan.get("output_spacing_mm"),
+            ) as details:
+                sampled_image = resampler.sample_slice(image, sampling_plan, planned_slice)
+                if isinstance(sampled_image, sitk.Image):
+                    details["size_xyz"] = sampled_image.GetSize()
             if (
                 plan.get("geometry_type") != "curved_stack"
                 and not uses_target_centered_canvas(plan)
@@ -337,21 +378,33 @@ class ReconstructionStage(BaseStage):
                 and isinstance(image, sitk.Image)
                 and isinstance(sampled_image, sitk.Image)
             ):
-                sampled_image, planned_slice = crop_vertical_padding(
-                    image, sampling_plan, planned_slice, sampled_image,
-                )
+                with resource_operation(
+                    "reconstruction", "crop_vertical_padding", plan_id=plan["plan_id"],
+                    slice_index=planned_slice.get("index"),
+                ):
+                    sampled_image, planned_slice = crop_vertical_padding(
+                        image, sampling_plan, planned_slice, sampled_image,
+                    )
             single_elapsed = time.perf_counter() - single_start
             if single_elapsed > slowest_slice_elapsed:
                 slowest_slice_elapsed = single_elapsed
                 slowest_slice_index = planned_slice.get("index")
             sampled_slices.append((planned_slice, sampled_image))
         if curved_masks:
-            group_bounds = curved_group_bounds(curved_masks)
+            with resource_operation(
+                "reconstruction", "cpr_group_bounds", plan_id=plan["plan_id"],
+                slice_count=len(curved_masks),
+            ):
+                group_bounds = curved_group_bounds(curved_masks)
             framed_slices = []
             for (planned_slice, sampled_image), mask in zip(sampled_slices, curved_masks):
-                sampled_image, framing = frame_curved_slice(
-                    sampled_image, mask, plan.get("fill_percent"), group_bounds,
-                )
+                with resource_operation(
+                    "reconstruction", "frame_cpr_slice", plan_id=plan["plan_id"],
+                    slice_index=planned_slice.get("index"),
+                ):
+                    sampled_image, framing = frame_curved_slice(
+                        sampled_image, mask, plan.get("fill_percent"), group_bounds,
+                    )
                 framing["context_label_ids"] = list(target_framer.context_label_ids)
                 framed_slices.append(({**planned_slice, "framing": framing}, sampled_image))
             sampled_slices = framed_slices
@@ -388,11 +441,15 @@ class ReconstructionStage(BaseStage):
 
         if localizer_image is None and isinstance(image, sitk.Image):
             localizer_start = time.perf_counter()
-            localizer_render = self._build_plan_localizer_render(
-                image, plan,
-                localization_result=localization_result,
-                anatomical_analysis=anatomical_analysis,
-            )
+            with resource_operation(
+                "reconstruction", "build_localizer", plan_id=plan["plan_id"],
+            ) as details:
+                localizer_render = self._build_plan_localizer_render(
+                    image, plan,
+                    localization_result=localization_result,
+                    anatomical_analysis=anatomical_analysis,
+                )
+                details["has_localizer"] = localizer_render is not None
             DebugLog(
                 "    [重建性能] Localizer生成完成: "
                 f"plan={plan.get('plan_id', '')}, "
@@ -400,17 +457,22 @@ class ReconstructionStage(BaseStage):
                 f"耗时={time.perf_counter() - localizer_start:.3f}s"
             )
 
-        self._write_plan_windows(
-            sampled_slices=sampled_slices,
-            windows=windows,
-            output_dirs=output_dirs,
-            plan=plan,
-            series_uids=series_uids,
-            study_uid=study_uid,
-            source_metadata=source_metadata,
-            localizer_render=localizer_render,
-            localizer_series_uids=localizer_series_uids,
-        )
+        with resource_operation(
+            "reconstruction", "write_plan_windows", plan_id=plan["plan_id"],
+            window_count=len(windows), slice_count=len(sampled_slices),
+            parallel=self.parallel, max_window_workers=self.max_window_workers,
+        ):
+            self._write_plan_windows(
+                sampled_slices=sampled_slices,
+                windows=windows,
+                output_dirs=output_dirs,
+                plan=plan,
+                series_uids=series_uids,
+                study_uid=study_uid,
+                source_metadata=source_metadata,
+                localizer_render=localizer_render,
+                localizer_series_uids=localizer_series_uids,
+            )
 
         return {
             "plan_id": plan["plan_id"],
@@ -465,9 +527,12 @@ class ReconstructionStage(BaseStage):
 
         localizer_geometry_metadata: dict[str, str] | None = None
         if localizer_render is not None:
-            localizer_geometry_metadata = self._localizer_geometry_metadata(
-                localizer_render.background_image,
-            )
+            with resource_operation(
+                "reconstruction", "freeze_localizer_geometry", plan_id=plan["plan_id"],
+            ):
+                localizer_geometry_metadata = self._localizer_geometry_metadata(
+                    localizer_render.background_image,
+                )
 
         if self.parallel and len(windows) > 1:
             worker_count = min(len(windows), self.max_window_workers)
@@ -519,16 +584,20 @@ class ReconstructionStage(BaseStage):
             f"orientation={localizer_geometry_metadata['0020|0037']}"
         )
         for window in windows:
-            self._write_window_localizer(
-                localizer_render=localizer_render,
-                geometry_metadata=localizer_geometry_metadata,
-                window=window,
-                output_dir=output_dirs[window.name],
-                series_uid=localizer_series_uids[window.name],
-                study_uid=study_uid,
-                source_metadata=source_metadata,
-                plan=plan,
-            )
+            with resource_operation(
+                "reconstruction", "write_window_localizer", plan_id=plan["plan_id"],
+                window=window.name,
+            ):
+                self._write_window_localizer(
+                    localizer_render=localizer_render,
+                    geometry_metadata=localizer_geometry_metadata,
+                    window=window,
+                    output_dir=output_dirs[window.name],
+                    series_uid=localizer_series_uids[window.name],
+                    study_uid=study_uid,
+                    source_metadata=source_metadata,
+                    plan=plan,
+                )
 
     @classmethod
     def _build_plan_localizer(
@@ -1347,21 +1416,29 @@ class ReconstructionStage(BaseStage):
         """
         total_slices = len(sampled_slices)
         write_start = time.perf_counter()
-        for planned_slice, sampled_image in sampled_slices:
-            output_path = output_dir / (
-                f"{int(planned_slice['index'])}.dcm"
-            )
-            write_ct_dicom(
-                image=sampled_image,
-                output_path=output_path,
-                plan=plan,
-                planned_slice=planned_slice,
-                window=window,
-                series_uid=series_uid,
-                study_uid=study_uid,
-                total_slices=total_slices,
-                source_metadata=source_metadata,
-            )
+        with resource_operation(
+            "reconstruction", "write_window_series", plan_id=plan["plan_id"],
+            window=getattr(window, "name", window), slice_count=total_slices,
+        ):
+            for planned_slice, sampled_image in sampled_slices:
+                output_path = output_dir / (
+                    f"{int(planned_slice['index'])}.dcm"
+                )
+                with resource_operation(
+                    "reconstruction", "write_window_slice", plan_id=plan["plan_id"],
+                    slice_index=planned_slice.get("index"), window=getattr(window, "name", window),
+                ):
+                    write_ct_dicom(
+                        image=sampled_image,
+                        output_path=output_path,
+                        plan=plan,
+                        planned_slice=planned_slice,
+                        window=window,
+                        series_uid=series_uid,
+                        study_uid=study_uid,
+                        total_slices=total_slices,
+                        source_metadata=source_metadata,
+                    )
         DebugLog(
             "    [重建性能] 窗位切片写出完成: "
             f"plan={plan.get('plan_id', '')}, "

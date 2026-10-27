@@ -1594,18 +1594,28 @@ class LocalizationOperations(
             # S1 的骶骨方向和腰椎不同，不能套用“前方稳定行 + 中央 x 行”
             # 的普通腰椎启发式；改用专用左右支撑筛选和局部上缘补回。
             extraction_diagnostic = {}
-            if vertebra_key == "S1":
-                body_mask = cls._s1_body_candidate_mask(
-                    local_seg_array,
-                    target,
+            with resource_operation(
+                "anatomical_analysis", "extract_vertebral_body",
+                label=label_name, local_shape_zyx=local_seg_array.shape,
+            ) as details:
+                if vertebra_key == "S1":
+                    body_mask = cls._s1_body_candidate_mask(
+                        local_seg_array,
+                        target,
+                    )
+                else:
+                    body_mask = cls._vertebral_body_candidate_mask(
+                        local_seg_array,
+                        target,
+                        spacing_zyx=tuple(reversed(image.GetSpacing())),
+                        diagnostics=extraction_diagnostic,
+                    )
+                indices = (
+                    np.argwhere(body_mask) + region_minimum
+                    if body_mask is not None
+                    else np.empty((0, 3), dtype=int)
                 )
-            else:
-                body_mask = cls._vertebral_body_candidate_mask(
-                    local_seg_array,
-                    target,
-                    spacing_zyx=tuple(reversed(image.GetSpacing())),
-                    diagnostics=extraction_diagnostic,
-                )
+                details["body_voxel_count"] = len(indices)
             if body_diagnostics is not None and extraction_diagnostic:
                 core_bbox = extraction_diagnostic.get("core_bbox_zyx")
                 if core_bbox is not None:
@@ -1614,49 +1624,55 @@ class LocalizationOperations(
                         for side in ("min", "max")
                     }
                 body_diagnostics[label_name] = extraction_diagnostic
-            indices = (
-                np.argwhere(body_mask) + region_minimum
-                if body_mask is not None
-                else np.empty((0, 3), dtype=int)
-            )
             body_indices[label_name] = indices
-            sagittal_geometry = (
-                cls._sagittal_body_quadrilateral(
-                    indices,
-                    image,
-                    retain_all_projection=(vertebra_key == "S1"),
+            with resource_operation(
+                "anatomical_analysis", "build_sagittal_quadrilateral",
+                label=label_name, body_voxel_count=len(indices),
+            ):
+                sagittal_geometry = (
+                    cls._sagittal_body_quadrilateral(
+                        indices,
+                        image,
+                        retain_all_projection=(vertebra_key == "S1"),
+                    )
+                    if indices.size
+                    else None
                 )
-                if indices.size
-                else None
-            )
             if sagittal_geometries is not None:
                 sagittal_geometries[label_name] = sagittal_geometry
-            prism_region = (
-                cls._vertebral_body_prism_region(
-                    indices,
-                    image,
-                    retain_all_projection=(vertebra_key == "S1"),
-                    sagittal_geometry=sagittal_geometry,
+            with resource_operation(
+                "anatomical_analysis", "rasterize_vertebral_prism",
+                label=label_name, body_voxel_count=len(indices),
+            ) as details:
+                prism_region = (
+                    cls._vertebral_body_prism_region(
+                        indices,
+                        image,
+                        retain_all_projection=(vertebra_key == "S1"),
+                        sagittal_geometry=sagittal_geometry,
+                    )
+                    if indices.size
+                    else None
                 )
-                if indices.size
-                else None
-            )
-            if vertebra_key == "S1" and body_mask is not None:
-                prism_region = cls._clip_prism_region_to_mask(
-                    prism_region,
-                    body_mask,
-                    mask_minimum_zyx=region_minimum,
-                )
+                if vertebra_key == "S1" and body_mask is not None:
+                    prism_region = cls._clip_prism_region_to_mask(
+                        prism_region,
+                        body_mask,
+                        mask_minimum_zyx=region_minimum,
+                    )
+                if prism_region is not None:
+                    details["prism_shape_zyx"] = prism_region[1].shape
             prism_regions[label_name] = prism_region
 
-        return (
-            body_indices,
-            cls._resolve_non_overlapping_prism_regions(
+        with resource_operation(
+            "anatomical_analysis", "resolve_prism_overlaps", label_count=len(prism_regions),
+        ):
+            resolved_regions = cls._resolve_non_overlapping_prism_regions(
                 prism_regions,
                 protected_indices=body_indices,
                 voxel_spacing_zyx=np.asarray(image.GetSpacing())[::-1],
-            ),
-        )
+            )
+        return body_indices, resolved_regions
 
     @staticmethod
     def _clip_prism_region_to_mask(
@@ -2281,23 +2297,32 @@ class LocalizationOperations(
             tuple[np.ndarray, np.ndarray, np.ndarray] | None,
         ] = {}
         body_diagnostics: dict[str, dict] = {}
-        body_indices, prism_regions = cls._build_spine_body_prism_regions(
-            seg_array,
-            label_targets,
-            image,
-            sagittal_geometries=sagittal_geometries,
-            label_regions=label_regions,
-            excluded_labels=excluded_label_set,
-            body_diagnostics=body_diagnostics,
-        )
+        with resource_operation(
+            "anatomical_analysis", "extract_spine_bodies_and_prisms",
+            label_count=len(label_targets),
+        ):
+            body_indices, prism_regions = cls._build_spine_body_prism_regions(
+                seg_array,
+                label_targets,
+                image,
+                sagittal_geometries=sagittal_geometries,
+                label_regions=label_regions,
+                excluded_labels=excluded_label_set,
+                body_diagnostics=body_diagnostics,
+            )
 
         raw_array = None
         if raw_array_loader is not None and body_diagnostics:
             try:
-                loaded = raw_array_loader()
-                if loaded.shape != seg_array.shape:
-                    raise ValueError("端面密度验证的原图与分割形状不一致")
-                raw_array = loaded
+                with resource_operation(
+                    "anatomical_analysis", "load_spine_raw_for_endplates",
+                    label_count=len(body_diagnostics),
+                ) as details:
+                    loaded = raw_array_loader()
+                    details.update(shape_zyx=loaded.shape, dtype=str(loaded.dtype))
+                    if loaded.shape != seg_array.shape:
+                        raise ValueError("端面密度验证的原图与分割形状不一致")
+                    raw_array = loaded
             except (RuntimeError, OSError, ValueError) as error:
                 DebugLog(f"  原图端面密度验证不可用，保留几何回退: {error}")
 
@@ -2336,21 +2361,25 @@ class LocalizationOperations(
             physical_x, physical_y, physical_z = image.TransformContinuousIndexToPhysicalPoint(
                 (float(centroid_x), float(centroid_y), float(centroid_z))
             )
-            (
-                local_axis,
-                local_axis_extent,
-                local_face_centroids,
-                local_face_candidates,
-            ) = cls._estimate_local_superior_inferior_geometry(
-                indices,
-                image,
-            )
-            sagittal_body_faces = cls._estimate_sagittal_body_faces(
-                indices,
-                image,
-                retain_all_projection=(vertebra_key == "S1"),
-                sagittal_geometry=sagittal_geometries.get(label_name),
-            )
+            with resource_operation(
+                "anatomical_analysis", "estimate_vertebral_faces",
+                label=label_name, body_voxel_count=len(indices),
+            ):
+                (
+                    local_axis,
+                    local_axis_extent,
+                    local_face_centroids,
+                    local_face_candidates,
+                ) = cls._estimate_local_superior_inferior_geometry(
+                    indices,
+                    image,
+                )
+                sagittal_body_faces = cls._estimate_sagittal_body_faces(
+                    indices,
+                    image,
+                    retain_all_projection=(vertebra_key == "S1"),
+                    sagittal_geometry=sagittal_geometries.get(label_name),
+                )
             sagittal_geometry = sagittal_geometries.get(label_name)
             sagittal_body_quadrilateral = None
             if sagittal_geometry is not None:
@@ -2495,18 +2524,25 @@ class LocalizationOperations(
             extraction_diagnostic = body_diagnostics.get(label_name)
             if extraction_diagnostic:
                 filtered_annotation_centroids[label_name]["body_extraction"] = extraction_diagnostic
-                endplates = cls._estimate_supported_body_endplates(
-                    indices, image, extraction_diagnostic,
-                    source_indices_zyx=full_indices,
-                    raw_array=raw_array,
-                )
+                with resource_operation(
+                    "anatomical_analysis", "estimate_supported_endplates", label=label_name,
+                ):
+                    endplates = cls._estimate_supported_body_endplates(
+                        indices, image, extraction_diagnostic,
+                        source_indices_zyx=full_indices,
+                        raw_array=raw_array,
+                    )
                 if endplates is not None:
                     filtered_annotation_centroids[label_name]["sagittal_body_endplates"] = endplates
             # 完整椎体的左右对称面与过滤主体端面职责不同，不能用主体
             # 截面最长轴代替左右方向。将可靠姿态传给整切和椎间斜切规划。
-            filtered_annotation_centroids[label_name].update(
-                estimate_spine_label_symmetry(full_indices, image)
-            )
+            with resource_operation(
+                "anatomical_analysis", "estimate_vertebral_symmetry",
+                label=label_name, source_voxel_count=len(full_indices),
+            ):
+                filtered_annotation_centroids[label_name].update(
+                    estimate_spine_label_symmetry(full_indices, image)
+                )
 
         interspace_body_pairs: Dict[str, Dict[str, Any]] = {}
         pair_definitions = []
@@ -2578,10 +2614,14 @@ class LocalizationOperations(
                     if label_regions is not None and label_name in label_regions
                     else np.argwhere(np.isin(seg_array, label_targets[label_name].label_ids))
                 )
-                endplates = cls._estimate_supported_body_endplates(
-                    indices, image, support, source_indices_zyx=source_indices,
-                    raw_array=raw_array,
-                )
+                with resource_operation(
+                    "anatomical_analysis", "estimate_supported_endplates",
+                    label=label_name, source="adjacent_recovered_body",
+                ):
+                    endplates = cls._estimate_supported_body_endplates(
+                        indices, image, support, source_indices_zyx=source_indices,
+                        raw_array=raw_array,
+                    )
                 if endplates is not None:
                     annotation["sagittal_body_endplates"] = endplates
                     annotation["sagittal_endplate_support"] = support
@@ -2596,11 +2636,15 @@ class LocalizationOperations(
                 or lower_indices.size == 0
             ):
                 continue
-            geometry = cls._nearest_body_interspace_geometry(
-                image,
-                upper_indices,
-                lower_indices,
-            )
+            with resource_operation(
+                "anatomical_analysis", "measure_body_interspace",
+                region=group_name, upper_label=upper_label, lower_label=lower_label,
+            ):
+                geometry = cls._nearest_body_interspace_geometry(
+                    image,
+                    upper_indices,
+                    lower_indices,
+                )
             if geometry is None:
                 continue
             interspace_body_pairs[group_name] = {
@@ -3283,13 +3327,17 @@ class LocalizationOperations(
         minimum = minimum_xyz[::-1]
         maximum = maximum_xyz[::-1]
 
-        grids = np.meshgrid(
-            np.arange(minimum[0], maximum[0] + 1),
-            np.arange(minimum[1], maximum[1] + 1),
-            np.arange(minimum[2], maximum[2] + 1),
-            indexing="ij",
-        )
-        candidates_zyx = np.stack(grids, axis=-1).reshape(-1, 3)
+        with resource_operation(
+            "anatomical_analysis", "allocate_prism_grid",
+            shape_zyx=tuple(int(value) for value in maximum - minimum + 1),
+        ):
+            grids = np.meshgrid(
+                np.arange(minimum[0], maximum[0] + 1),
+                np.arange(minimum[1], maximum[1] + 1),
+                np.arange(minimum[2], maximum[2] + 1),
+                indexing="ij",
+            )
+            candidates_zyx = np.stack(grids, axis=-1).reshape(-1, 3)
         candidates_xyz = candidates_zyx[:, [2, 1, 0]].astype(float)
         candidate_points = origin + (candidates_xyz * spacing) @ direction.T
 

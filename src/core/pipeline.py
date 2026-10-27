@@ -12,7 +12,8 @@ import time
 from typing import Any, Callable, List, Optional
 
 from src.config import AppConfig, load_app_config
-from src.utils import ErrorLog, RunLog
+from src.capacity import capacity_enabled, capacity_session, record_capacity_details
+from src.utils import DebugLog, ErrorLog, RunLog
 
 from .artifacts import ArtifactManager, MANIFEST_SCHEMA
 from .base_stage import BaseStage
@@ -130,11 +131,17 @@ class Pipeline:
     def run(self, request: Any) -> Response:
         """执行任务，并确保任一可捕获异常都有失败报告。"""
 
-        try:
-            return self._run(request)
-        except BaseException as error:
-            self._try_write_failure_report(request, error)
-            raise
+        with capacity_session(
+            request, enabled=self.config.logging.debug_log_file_enabled,
+        ) as diagnostics:
+            try:
+                response = self._run(request)
+                if diagnostics is not None:
+                    diagnostics.status = "succeeded" if response.success else "failed"
+                return response
+            except BaseException as error:
+                self._try_write_failure_report(request, error)
+                raise
 
     def _run(self, request: Any) -> Response:
         """
@@ -181,7 +188,8 @@ class Pipeline:
                     f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 开始: "
                     f"{stage.name}（{stage_label}）"
                 )
-                RunLog(f"[资源] stage={stage.name} phase=start {resource_usage_summary()}")
+                if self.config.logging.debug_log_file_enabled:
+                    DebugLog(f"[资源] stage={stage.name} phase=start {resource_usage_summary()}")
                 context.set_current_stage(stage.name)
                 self._write_manifest(context, artifacts)
                 context = stage.execute(context)
@@ -192,10 +200,12 @@ class Pipeline:
                     f"{stage.name}（{stage_label}），"
                     f"耗时 {record.duration_seconds or 0.0:.3f}s"
                 )
-                RunLog(f"[资源] stage={stage.name} phase=complete {resource_usage_summary()}")
+                if self.config.logging.debug_log_file_enabled:
+                    DebugLog(f"[资源] stage={stage.name} phase=complete {resource_usage_summary()}")
                 self._write_manifest(context, artifacts)
             except Exception as error:
-                RunLog(f"[资源] stage={stage.name} phase=failed {resource_usage_summary()}")
+                if self.config.logging.debug_log_file_enabled:
+                    DebugLog(f"[资源] stage={stage.name} phase=failed {resource_usage_summary()}")
                 ErrorLog(
                     f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 执行失败\n"
                     f"阶段标识: {stage.name}\n"
@@ -220,6 +230,12 @@ class Pipeline:
                 self._write_manifest(context, artifacts)
                 break
 
+        if capacity_enabled():
+            record_capacity_details(stage_seconds={
+                name: record.duration_seconds
+                for name, record in context.stage_records.items()
+                if record.duration_seconds is not None
+            })
         self._register_legacy_intermediate_artifacts(request, artifacts)
         success = not context.has_errors()
         context.warnings.extend(

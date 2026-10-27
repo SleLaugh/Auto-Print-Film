@@ -1,0 +1,30 @@
+[Unit]
+Description=AutoPrintFilm external host diagnostics
+After=local-fs.target systemd-journald.service
+
+[Service]
+Type=simple
+User=root
+Group=adm
+WorkingDirectory=/opt/autoprintfilm-diagnostics
+UMask=0027
+LogsDirectory=autoprintfilm-host
+LogsDirectoryMode=0750
+# Replace this logger-config placeholder with the actual production external file.
+# A missing/invalid/disabled config keeps sampling and metric output disabled.
+ExecStart=/usr/bin/python3 /opt/autoprintfilm-diagnostics/collect_host_diagnostics.py --output /var/log/autoprintfilm-host/DebugCapacity --interval 5 --gpu --gpu-interval 5 --logger-config /REPLACE_WITH_PRODUCTION_PATH/logger_config.json
+Nice=10
+CPUWeight=10
+IOWeight=10
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/log/autoprintfilm-host
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

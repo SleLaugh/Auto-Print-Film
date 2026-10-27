@@ -27,6 +27,26 @@ def _read_proc_fields(path: Path, keys: set[str]) -> dict[str, int]:
     return fields
 
 
+def _thread_cpu_fields(proc_root: Path) -> dict[str, int]:
+    """Read the calling thread's last CPU, not just the process leader's CPU."""
+
+    try:
+        # comm may contain spaces and parentheses. Fields after its final ')'
+        # begin at field 3; Linux's processor field is field 39.
+        prefix, separator, suffix = (proc_root / "thread-self/stat").read_text(
+            encoding="ascii",
+        ).rpartition(")")
+        if not separator:
+            return {}
+        native_tid = int(prefix.split("(", 1)[0].strip())
+        cpu = int(suffix.split()[36])
+        if native_tid <= 0 or cpu < 0:
+            return {}
+        return {"native_tid": native_tid, "cpu": cpu}
+    except (OSError, UnicodeError, ValueError, IndexError):
+        return {}
+
+
 def resource_usage_summary(proc_root: Path = Path("/proc")) -> str:
     """Report RSS, process-lifetime peak RSS, native threads and host memory.
 
@@ -51,6 +71,7 @@ def resource_usage_summary(proc_root: Path = Path("/proc")) -> str:
             pass
     if "Threads" in status:
         values.append(f"threads={status['Threads']}")
+    values.extend(f"{key}={value}" for key, value in _thread_cpu_fields(proc_root).items())
     memory = _read_proc_fields(
         proc_root / "meminfo", {"MemAvailable", "SwapTotal", "SwapFree"},
     )
@@ -67,13 +88,13 @@ def _log_operation(stage: str, step: str, phase: str, details: dict[str, Any]) -
 
     try:
         # Import lazily: resources is also imported while the pipeline is loading.
-        from src.utils import RunLog
+        from src.utils import DebugLog
 
         fields = " ".join(
             f"{key}={json.dumps(value, ensure_ascii=False, default=str, separators=(',', ':'))}"
             for key, value in details.items()
         )
-        RunLog(
+        DebugLog(
             f"[资源] stage={stage} step={step} phase={phase} "
             f"{fields} {resource_usage_summary()}".strip()
         )
@@ -90,7 +111,12 @@ def resource_operation(stage: str, step: str, **details: Any) -> Iterator[dict[s
     discovered by the operation. These additions appear in its completion log.
     """
 
+    from src.utils import is_debug_log_file_enabled
+
     operation_details = dict(details)
+    if not is_debug_log_file_enabled():
+        yield operation_details
+        return
     started = time.monotonic()
     _log_operation(stage, step, "start", operation_details)
     try:

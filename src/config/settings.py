@@ -103,11 +103,24 @@ class LoggingConfig:
     run_log_file_enabled: bool = False
     """是否写入普通运行日志文件。"""
     debug_log_file_enabled: bool = False
-    """是否写入 DebugLog.txt；不控制任何调试影像或元数据。"""
+    """是否写入普通 DebugLog 明细；不控制调试影像或独立低频栈采样。"""
     error_log_file_enabled: bool = True
     """是否把错误信息写入独立错误日志。"""
     base_dir: str = "Log"
     """未绑定任务输出目录时使用的日志兜底路径。"""
+    stack_dump_interval_seconds: float = 0.0
+    """低频 Python 栈写入 DebugLog.txt 的间隔；0 关闭，启用时至少 10 秒。"""
+
+    def __post_init__(self) -> None:
+        interval = self.stack_dump_interval_seconds
+        valid = False
+        if not isinstance(interval, bool) and isinstance(interval, (int, float)):
+            try:
+                valid = math.isfinite(interval) and (interval == 0 or interval >= 10)
+            except OverflowError:
+                pass
+        if not valid:
+            raise ValueError("logging.stack_dump_interval_seconds 必须为 0（关闭）或至少 10 秒的有限数值")
 
 
 @dataclass(frozen=True)

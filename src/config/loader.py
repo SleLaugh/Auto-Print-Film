@@ -185,6 +185,7 @@ def load_app_config(
             "console_enabled": True,
             "run_log_file_enabled": False,
             "debug_log_file_enabled": False,
+            "stack_dump_interval_seconds": 0.0,
             "error_log_file_enabled": True,
             "base_dir": "Log",
         }.items()
@@ -197,6 +198,9 @@ def load_app_config(
         "error_log_file_enabled",
     ):
         logging_values[key] = _coerce_bool(logging_values[key], f"logging.{key}")
+    logging_values["stack_dump_interval_seconds"] = _coerce_float(
+        logging_values["stack_dump_interval_seconds"], "logging.stack_dump_interval_seconds",
+    )
     logging = LoggingConfig(**logging_values)
     pipeline_values = {
         key: explicit_pipeline.get(key, default_pipeline.get(key, default))

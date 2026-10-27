@@ -38,6 +38,7 @@ if __name__ == "__main__":
 from src.core import Pipeline
 from src.core.delivery_report import write_failure_report
 from src.config import load_app_config
+from src.diagnostics import start_task_diagnostics
 from src.models import (
     Request,
     SlicePartEnum,
@@ -201,6 +202,7 @@ def main(*, startup_error=None):
     study_type = _cli_value(sys.argv[1:], "--study_type") or StudyTypeEnum.CT.value
     scan_thickness = _cli_value(sys.argv[1:], "--scan_thickness")
     request = None
+    task_diagnostics = None
     try:
         args = parse_arguments()
         output_dir = args.output
@@ -211,6 +213,12 @@ def main(*, startup_error=None):
         app_config = load_app_config()
         configure_logging(app_config.logging, output_dir=args.output)
         RunLog("SpineMPRProcessor v1.0.0 启动")
+        if app_config.logging.stack_dump_interval_seconds > 0:
+            task_diagnostics = start_task_diagnostics(
+                args.output, interval_seconds=app_config.logging.stack_dump_interval_seconds,
+            )
+            if task_diagnostics is None:
+                DebugLog("[诊断] 堆栈文件不可用，原生故障仍输出到标准错误")
         if startup_error is not None:
             raise startup_error
         thread_limits = ", ".join(
@@ -255,6 +263,8 @@ def main(*, startup_error=None):
         DebugLog(f"三平面参数: {request.to_dict()['plane_configs']}")
         
         pipeline = Pipeline(config=app_config)
+        if task_diagnostics is not None:
+            task_diagnostics.record_native_versions()
         response = pipeline.run(request)
         
         if response.success:
@@ -312,6 +322,9 @@ def main(*, startup_error=None):
             )
         ErrorLog("程序执行异常", e)
         return 1
+    finally:
+        if task_diagnostics is not None:
+            task_diagnostics.close()
 
 
 def _cli_value(arguments, *names):

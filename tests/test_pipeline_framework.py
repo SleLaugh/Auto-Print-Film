@@ -78,12 +78,15 @@ def make_request(output_dir):
     )
 
 
-def make_pipeline(stages):
+def make_pipeline(stages, *, debug=False):
     """为测试准备 `make_pipeline` 所需的数据或记录行为。"""
 
     return Pipeline(
         stages=stages,
-        config=AppConfig(pipeline=PipelineConfig(run_preflight=False)),
+        config=AppConfig(
+            logging=LoggingConfig(debug_log_file_enabled=debug),
+            pipeline=PipelineConfig(run_preflight=False),
+        ),
     )
 
 
@@ -94,6 +97,7 @@ class PipelineFrameworkTest(unittest.TestCase):
         """隔离框架日志，测试中的 `one/boom` 不得写入真实日志目录。"""
 
         self.run_log = self.enterContext(patch("src.core.pipeline.RunLog"))
+        self.debug_log = self.enterContext(patch("src.core.pipeline.DebugLog"))
         self.error_log = self.enterContext(patch("src.core.pipeline.ErrorLog"))
 
     def test_default_pipeline_uses_eight_responsibility_stages(self):
@@ -189,17 +193,19 @@ class PipelineFrameworkTest(unittest.TestCase):
             response = make_pipeline([
                 SuccessfulStage("one"),
                 SuccessfulStage("two"),
-            ]).run(make_request(temp_dir))
+            ], debug=True).run(make_request(temp_dir))
 
         self.assertTrue(response.success)
         messages = [call.args[0] for call in self.run_log.call_args_list]
+        resources = [call.args[0] for call in self.debug_log.call_args_list]
+        self.assertFalse(any(message.startswith("[资源]") for message in messages))
         self.assertTrue(any(
             message.startswith("[资源] stage=one phase=start pid=")
-            for message in messages
+            for message in resources
         ))
         self.assertTrue(any(
             message.startswith("[资源] stage=two phase=complete pid=")
-            for message in messages
+            for message in resources
         ))
         self.assertIn("Pipeline 开始执行，共 2 个阶段", messages)
         self.assertIn(

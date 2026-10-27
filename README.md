@@ -441,15 +441,29 @@ AUTOPRINTFILM_NATIVE_THREADS=4 AUTOPRINTFILM_WINDOW_WORKERS=1 \
 普通 `import main` 不修改调用方的线程环境；嵌入式调用应在加载 NumPy/SimpleITK 前
 显式调用 `src.runtime.bootstrap_native_threads()`，或由宿主设置原生线程变量。
 
-仓库日志配置已开启 `run_log_file_enabled`，将诊断信息保存到每个任务的
-`log/RunLog.txt`；发布环境保留的日志开关仍以外置配置为准。
-`RunLog` 的 `[资源]` 行记录每个阶段开始、完成或失败时的进程资源快照。Linux 下包含
+仓库日志配置默认开启 `run_log_file_enabled`，关闭 `debug_log_file_enabled`：普通运行状态
+保存到 `log/RunLog.txt`，按需开启排障明细后写入 `log/DebugLog.txt`；发布环境仍以外置开关为准。
+`DebugLog` 的 `[资源]` 行记录每个阶段开始、完成或失败时的进程资源快照。Linux 下包含
 PID、当前 RSS、进程整个运行期间的峰值 RSS、线程数、系统可用内存和已用 swap，
-内存单位为 MiB。第三阶段另外记录带 `step=` 的读取分割、椎体序列核实、逐标签主体提取、
+内存单位为 MiB。Linux 可读 `/proc/thread-self/stat` 时，还记录调用线程的
+`native_tid` 和最近运行的 `cpu`；这是采样点信息，不表示整个步骤固定在该 CPU 执行。
+第三阶段另外记录带 `step=` 的读取分割、椎体序列核实、逐标签主体提取、
 标签索引、目标 bbox、镜像候选估计，以及原图/分割旋转与写盘的开始、完成或失败。
+第五阶段记录逐椎体主体、四棱柱、姿态及端面分析；第七阶段记录计划及切片采样、
+CPR 掩膜、取景、定位图与窗位写出，并附计划、切片或窗位标识。
 完成行包含耗时；读取分割后记录图像尺寸、像素类型和实际 ITK 线程数。这些信息通过
-RunLog 保存，不需要开启调试影像或 DebugLog。快照不是阶段内部的持续采样，不能仅凭
+DebugLog 保存，需开启 `debug_log_file_enabled`，不需要开启调试影像。快照不是阶段内部的持续采样，不能仅凭
 缺少 OOM 日志或一次低内存读数排除系统问题。已有发布包需重新构建后才包含这些改动。
+关闭 DebugLog 明细时，新增步骤日志跳过资源采样和计时。需要具体 Python 调用行时，
+可独立设置 `logger_config.json` 的 `stack_dump_interval_seconds=60`，每分钟把本进程
+各 Python 线程的栈追加到 `log/DebugLog.txt`；默认 `0` 关闭，非零时至少 10 秒。
+无需同时开启全部 DebugLog 明细。该功能只打印、不终止任务，正常退出会取消定时记录；
+原生段错误/abort 也尽力写入同一文件。启动标记含运行标识、PID、boot ID、时间和环境，
+便于同目录重试及外部采样对齐；定时栈可能与普通日志交错。
+应用不因这些诊断日志强制同步磁盘。需要常态观察主机时，可运行[独立采集器](docs/host-diagnostics.md)，
+将 CPU、内存、进程和显卡采样放在业务进程外。
+日志写出不等于故障瞬间已持久化到磁盘，内核 panic 或掉电仍可能丢失末尾内容；
+Python 调用栈也不能显示原生库内部完整栈或替代内核转储。
 桌面和服务一起卡住时，还应保留系统 journal 与 `/var/lib/systemd/pstore/` 中的内核转储，
 详见[系统卡死排查](docs/production.md#系统卡死时保留内核证据)。
 
@@ -804,8 +818,9 @@ DICOM 的 `SliceThickness` 和 `SpacingBetweenSlices`，确保查看器读取到
 `report.json`、`manifest.json`（调试模式）、调试 NIfTI、调试元数据、`Localizer.png`、
 测试文件和 `log/` 均继续写入 `-o/`。
 只有 `debug_file_enabled=true` 时才生成并保留 `manifest.json`、调试 NIfTI、调试元数据、
-`Localizer.png` 以及成功任务的中间现场。`debug_log_file_enabled` 只控制
-`log/DebugLog.txt`，不再影响任何调试文件。`-c` 下的第一、二阶段缓存不会因输出清理删除。
+`Localizer.png` 以及成功任务的中间现场。`debug_log_file_enabled` 控制
+普通 `log/DebugLog.txt` 明细，不影响调试影像。低频调用栈由独立的
+`stack_dump_interval_seconds` 控制，也写入同一文件。`-c` 下的第一、二阶段缓存不会因输出清理删除。
 metadata 中的调试 NIfTI 只保留第五阶段
 生成的标签、椎体主体和椎体四棱柱三张掩膜，写出时会在 DebugLog 中逐文件记录完整
 路径和生成耗时；第六阶段只写 `slice_plans.json`，不再生成规划 NIfTI。

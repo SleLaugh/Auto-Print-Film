@@ -33,6 +33,11 @@ from src.reconstruction.dicom import (
     write_localizer_dicom,
 )
 from src.reconstruction.windowing import apply_window_to_image, unique_window_presets
+from src.reconstruction.hu_cache import (
+    capture_plan,
+    initialize_hu_cache,
+    iter_cached_plans,
+)
 from src.reconstruction.vertical_support import crop_vertical_padding
 from src.reconstruction.framing_context import FramingContext, load_framing_context
 from src.reconstruction.symmetry_framing import resolve_symmetry_framing_plane
@@ -102,6 +107,10 @@ class ReconstructionStage(BaseStage):
         """
 
         request = context.request
+        reuse_session = context.metadata.get("series_reuse_session")
+        if (reuse_session is not None and reuse_session.hit
+                and not getattr(reuse_session, "disabled", False)):
+            return self._render_cached_hu(context, reuse_session.cache_dir / "hu")
         
         loc_result = context.get_result('localization')
         plan_result = context.get_result('planning')
@@ -126,6 +135,19 @@ class ReconstructionStage(BaseStage):
             raise ValueError("第六阶段输出 plans 必须是列表")
         for plan in plans:
             self._validate_plan(plan)
+
+        hu_cache_dir = None
+        if reuse_session is not None and not getattr(reuse_session, "disabled", False):
+            try:
+                hu_cache_dir = reuse_session.cache_dir / "hu"
+                ordered_plans = [
+                    plan for group in self._group_plans_by_plane(plans).values()
+                    for plan in group
+                ]
+                initialize_hu_cache(hu_cache_dir, ordered_plans)
+            except Exception as error:
+                reuse_session.disable(f"HU cache initialization failed: {error}")
+                hu_cache_dir = None
         
         DebugLog("=" * 60)
         DebugLog("【第七阶段】重建与输出 - MPR重建与DICOM生成")
@@ -257,6 +279,11 @@ class ReconstructionStage(BaseStage):
                                 target_framer=target_framer,
                                 localization_result=loc_result,
                                 anatomical_analysis=anatomical_analysis,
+                                hu_cache_dir=(
+                                    hu_cache_dir
+                                    if not getattr(reuse_session, "disabled", False) else None
+                                ),
+                                hu_cache_session=reuse_session,
                             )
                         )
                     finally:
@@ -286,6 +313,8 @@ class ReconstructionStage(BaseStage):
         target_framer: TargetFramer | None = None,
         localization_result: Dict[str, Any] | None = None,
         anatomical_analysis: Dict[str, Any] | None = None,
+        hu_cache_dir: Path | None = None,
+        hu_cache_session: Any = None,
     ) -> Dict[str, Any]:
         """
         执行一个切片计划。
@@ -457,6 +486,22 @@ class ReconstructionStage(BaseStage):
                 f"耗时={time.perf_counter() - localizer_start:.3f}s"
             )
 
+        if hu_cache_dir is not None:
+            try:
+                capture_plan(
+                    hu_cache_dir, plan, sampled_slices,
+                    {
+                        "background_image": localizer_render.background_image,
+                        "line_alpha": localizer_render.line_alpha,
+                        "legacy_line_value": localizer_render.legacy_line_value,
+                        "background_kind": localizer_render.background_kind,
+                    } if localizer_render is not None else None,
+                )
+            except Exception as error:
+                if hu_cache_session is not None:
+                    hu_cache_session.disable(f"HU cache capture failed: {error}")
+                DebugLog(f"    HU缓存捕获失败，继续正常输出: {error}")
+
         with resource_operation(
             "reconstruction", "write_plan_windows", plan_id=plan["plan_id"],
             window_count=len(windows), slice_count=len(sampled_slices),
@@ -474,6 +519,15 @@ class ReconstructionStage(BaseStage):
                 localizer_series_uids=localizer_series_uids,
             )
 
+        return self._sampled_plan_result(
+            plan, sampled_slices, windows, output_dirs, localizer_render,
+        )
+
+    @staticmethod
+    def _sampled_plan_result(
+        plan, sampled_slices, windows, output_dirs, localizer_render,
+    ) -> Dict[str, Any]:
+        output_plane = str(plan.get("output_plane") or plan["plane"])
         return {
             "plan_id": plan["plan_id"],
             "config_id": plan.get("config_id", ""),
@@ -501,6 +555,71 @@ class ReconstructionStage(BaseStage):
                 localizer_render.background_kind if localizer_render is not None else None
             ),
         }
+
+    def _render_cached_hu(
+        self, context: ProcessingContext, hu_cache_dir: Path,
+    ) -> ProcessingContext:
+        """Apply this request's windows and identity to cached final HU images."""
+        request = context.request
+        preprocessing = context.get_result("preprocessing") or {}
+        source_metadata = dict(preprocessing.get("source_dicom_metadata") or {})
+        if not source_metadata:
+            source_metadata = read_source_dicom_metadata(request.dicom_dir)
+        study_uid = source_metadata.get("0020|000d") or new_uid()
+        output_root = Path(request.output_dir)
+        plan_results = []
+        for cached in iter_cached_plans(hu_cache_dir):
+            plan = dict(cached["plan"])
+            config_id = str(plan.get("config_id") or "")
+            configs = [
+                (ordinal, config)
+                for ordinal, config in enumerate(request.plane_configs, start=1)
+                if (config_id and config_id == (config.config_id or f"配置{ordinal:02d}"))
+                or (not config_id and config.plane.value == plan["plane"]
+                    and config.slice_type.value == plan["slice_type"])
+            ]
+            if len(configs) != 1:
+                raise ValueError(f"HU缓存计划无法匹配本次状位配置: {plan['plan_id']}")
+            ordinal, config = configs[0]
+            plan["window_presets"] = list(config.window_presets)
+            plan["config_id"] = config.config_id or f"配置{ordinal:02d}"
+            if config.output_plane:
+                plan["output_plane"] = config.output_plane
+            self._validate_plan(plan)
+            sampled_slices = cached["sampled_slices"]
+            localizer = cached["localizer"]
+            localizer_render = _LocalizerRender(**localizer) if localizer is not None else None
+            windows = unique_window_presets(
+                plan["window_presets"], custom_presets=request.window_presets,
+            )
+            region_name = self._plan_region_name(plan)
+            output_plane = str(plan.get("output_plane") or plan["plane"])
+            output_dirs = {
+                window.name: output_root / output_plane / window.name / region_name
+                if region_name else output_root / output_plane / window.name
+                for window in windows
+            }
+            for output_dir in output_dirs.values():
+                output_dir.mkdir(parents=True, exist_ok=True)
+            self._write_plan_windows(
+                sampled_slices=sampled_slices,
+                windows=windows,
+                output_dirs=output_dirs,
+                plan=plan,
+                series_uids={window.name: new_uid() for window in windows},
+                study_uid=study_uid,
+                source_metadata=source_metadata,
+                localizer_render=localizer_render,
+                localizer_series_uids={window.name: new_uid() for window in windows},
+            )
+            plan_results.append(self._sampled_plan_result(
+                plan, sampled_slices, windows, output_dirs, localizer_render,
+            ))
+        result = self._build_plan_summary(plan_results, output_root)
+        result["outputs"] = plan_results
+        context.set_stage_result(ReconstructionStageResult(payload=result))
+        DebugLog("  已复用跨序列HU缓存，按本次窗位完成DICOM输出")
+        return context
 
     def _write_plan_windows(
         self,

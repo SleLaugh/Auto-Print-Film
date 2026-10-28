@@ -7,6 +7,7 @@ DICOM → NIfTI 转换（单序列处理）
 """
 
 import warnings
+import hashlib
 import json
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -26,6 +27,52 @@ from src.utils import DebugLog, ErrorLog, is_debug_file_enabled
 # 忽略警告信息（DICOM读取时可能产生大量无关警告）
 warnings.simplefilter("ignore")
 warnings.filterwarnings("ignore")
+
+
+_SOURCE_PROVENANCE_SCHEMA = "autoprintfilm-dicom-source-provenance-v1"
+
+
+class SourceChangedError(RuntimeError):
+    """The DICOM source changed while an opted-in conversion was running."""
+
+
+def _file_generation(path: Path) -> Dict[str, int]:
+    source_stat = path.stat()
+    return {
+        "size": source_stat.st_size,
+        "mtime_ns": source_stat.st_mtime_ns,
+        "ctime_ns": source_stat.st_ctime_ns,
+        "device": source_stat.st_dev,
+        "inode": source_stat.st_ino,
+    }
+
+
+def _source_signature(input_path: Path) -> Dict[str, Any]:
+    """Conservatively include every source file without decoding DICOM pixels."""
+    root = input_path.resolve(strict=True)
+    if root.is_file():
+        sources = [(root.name, root)]
+    elif root.is_dir():
+        sources = sorted(
+            (path.relative_to(root).as_posix(), path)
+            for path in root.rglob("*") if path.is_file()
+        )
+    else:
+        raise ValueError("DICOM source must be a file or directory")
+    if not sources:
+        raise ValueError("DICOM source contains no files")
+    entries = [{"path": relative, **_file_generation(path)} for relative, path in sources]
+    encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {"root": str(root), "file_count": len(entries), "digest": hashlib.sha256(encoded).hexdigest()}
+
+
+def _require_source_unchanged(input_path: Path, expected: Dict[str, Any]) -> None:
+    try:
+        unchanged = _source_signature(input_path) == expected
+    except (OSError, ValueError) as exc:
+        raise SourceChangedError("DICOM source changed during conversion") from exc
+    if not unchanged:
+        raise SourceChangedError("DICOM source changed during conversion")
 
 
 class PreprocessingStage(BaseStage):
@@ -100,10 +147,14 @@ class PreprocessingStage(BaseStage):
         
         
         try:
+            verify_source = bool(context.metadata.get("series_reuse_requested", False))
+            cache_options = {"verify_source": True} if verify_source else {}
             result = self._get_or_create_cache(
-                input_dir, output_root, output_file, metadata_file
+                input_dir, output_root, output_file, metadata_file, **cache_options
             )
             context.set_stage_result(result)
+            if verify_source:
+                context.metadata["series_reuse_source_validated"] = True
             DebugLog("  第一阶段完成")
             DebugLog("=" * 60)
         except Exception as e:
@@ -113,25 +164,50 @@ class PreprocessingStage(BaseStage):
         return context
 
     def _get_or_create_cache(
-        self, input_dir: Path, output_root: Path, output_file: Path, metadata_file: Path
+        self, input_dir: Path, output_root: Path, output_file: Path, metadata_file: Path,
+        *, verify_source: bool = False,
     ) -> PreprocessingResult:
         """缓存只读复用；缺失时跨进程单写，最后原子发布完整的 NIfTI。"""
 
         cleanup_cache_workspaces(output_root / ".work", "preprocessing-")
-        if output_file.is_file():
+        if output_file.is_file() and (
+            not verify_source or self._source_provenance_matches(input_dir, output_file, metadata_file)
+        ):
             return self._reuse_cache(input_dir, output_file, metadata_file)
 
         with cache_lock(output_root / ".locks" / "preprocessing.lock"):
             # 其他进程可能已经在等待期间完成了转换。
-            if output_file.is_file():
+            if output_file.is_file() and (
+                not verify_source or self._source_provenance_matches(input_dir, output_file, metadata_file)
+            ):
                 return self._reuse_cache(input_dir, output_file, metadata_file)
 
             output_file.parent.mkdir(parents=True, exist_ok=True)
             work_root = output_root / ".work"
             with cache_workspace(work_root, "preprocessing-") as work:
+                cache_options = {"verify_source": True} if verify_source else {}
                 return self._create_cache(
-                    input_dir, output_file, metadata_file, work.path
+                    input_dir, output_file, metadata_file, work.path, **cache_options
                 )
+
+    @staticmethod
+    def _source_provenance_matches(
+        input_dir: Path, output_file: Path, metadata_file: Path,
+    ) -> bool:
+        """Old caches remain usable only on the legacy, disabled code path."""
+        try:
+            raw_generation = _file_generation(output_file)
+            with metadata_file.with_name("source_provenance.json").open(encoding="utf-8") as stream:
+                provenance = json.load(stream)
+            return (
+                isinstance(provenance, dict)
+                and provenance.get("schema") == _SOURCE_PROVENANCE_SCHEMA
+                and provenance.get("raw_generation") == raw_generation
+                and provenance.get("source") == _source_signature(input_dir)
+                and _file_generation(output_file) == raw_generation
+            )
+        except (OSError, ValueError, TypeError):
+            return False
 
     @staticmethod
     def _reuse_cache(
@@ -147,10 +223,12 @@ class PreprocessingStage(BaseStage):
         )
 
     def _create_cache(
-        self, input_dir: Path, output_file: Path, metadata_file: Path, work_dir: Path
+        self, input_dir: Path, output_file: Path, metadata_file: Path, work_dir: Path,
+        *, verify_source: bool = False,
     ) -> PreprocessingResult:
         """所有生成步骤成功后才使最终 NIfTI 对其他任务可见。"""
 
+        source_signature = _source_signature(input_dir) if verify_source else None
         read_result = self._read_dicom_series(str(input_dir)) # 读取dicom序列
         image = read_result['image'] if read_result else None
         if image is None:
@@ -173,7 +251,32 @@ class PreprocessingStage(BaseStage):
             metadata_path = str(metadata_file)
 
         # raw 沿用旧缓存兼容规则作为完成标记，在图像和元数据完成后发布。
+        if verify_source:
+            _require_source_unchanged(input_dir, source_signature)
         temporary_nifti.replace(output_file)
+        if verify_source:
+            raw_generation = _file_generation(output_file)
+            provenance = {
+                "schema": _SOURCE_PROVENANCE_SCHEMA,
+                "source": source_signature,
+                "raw_generation": raw_generation,
+            }
+            temporary_provenance = work_dir / "source_provenance.json"
+            with temporary_provenance.open("w", encoding="utf-8") as stream:
+                json.dump(provenance, stream, sort_keys=True, separators=(",", ":"))
+            metadata_file.parent.mkdir(parents=True, exist_ok=True)
+            _require_source_unchanged(input_dir, source_signature)
+            if _file_generation(output_file) != raw_generation:
+                raise SourceChangedError("NIfTI cache changed during source provenance publication")
+            provenance_file = metadata_file.with_name("source_provenance.json")
+            temporary_provenance.replace(provenance_file)
+            try:
+                _require_source_unchanged(input_dir, source_signature)
+                if _file_generation(output_file) != raw_generation:
+                    raise SourceChangedError("NIfTI cache changed during source provenance publication")
+            except Exception:
+                provenance_file.unlink(missing_ok=True)
+                raise
         return PreprocessingResult(
             nifti_path=str(output_file),
             metadata_path=metadata_path,

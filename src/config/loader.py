@@ -209,13 +209,21 @@ def load_app_config(
             "keep_intermediate_on_success": False,
             "keep_intermediate_on_failure": True,
             "run_preflight": True,
+            "series_reuse_enabled": False,
         }.items()
     }
+    pipeline_values["series_reuse_enabled"] = _first_nonempty(
+        explicit_pipeline.get("series_reuse_enabled"),
+        environment.get("AUTOPRINTFILM_SERIES_REUSE_ENABLED"),
+        default_pipeline.get("series_reuse_enabled"),
+        fallback=False,
+    )
     for key in (
         "fail_fast",
         "keep_intermediate_on_success",
         "keep_intermediate_on_failure",
         "run_preflight",
+        "series_reuse_enabled",
     ):
         pipeline_values[key] = _coerce_bool(pipeline_values[key], f"pipeline.{key}")
     pipeline = PipelineConfig(**pipeline_values)

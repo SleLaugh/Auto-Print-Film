@@ -105,3 +105,4 @@ def test_parallel_service_dispatch_obeys_output_and_global_limits(tmp_path):
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert "All 7 dispatch scenarios passed" in run.stdout
+    assert "Series reuse invocation arguments passed" in run.stdout

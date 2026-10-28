@@ -5,6 +5,7 @@ Pipeline 只负责框架职责：预检、阶段顺序、状态转换、错误�
 更新。具体医学处理仍由各 Stage 实现，避免编排器逐渐变成业务代码集合。
 """
 
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 import shutil
@@ -176,66 +177,90 @@ class Pipeline:
         context.effective_config_summary = self.config.summary()
         context.job_status = JobStatus.RUNNING
         context.started_at = self._now()
+        from .series_reuse import series_reuse_requested
+        context.metadata["series_reuse_requested"] = series_reuse_requested(request, self.config)
         pipeline_start = time.monotonic()
         self._write_manifest(context, artifacts)
 
-        for index, stage in enumerate(self.stages):
-            record = context.stage_records[stage.name]
-            stage_label = _STAGE_LOG_LABELS.get(stage.name, "自定义阶段")
-            try:
-                record.start()
-                RunLog(
-                    f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 开始: "
-                    f"{stage.name}（{stage_label}）"
-                )
-                if self.config.logging.debug_log_file_enabled:
-                    DebugLog(f"[资源] stage={stage.name} phase=start {resource_usage_summary()}")
-                context.set_current_stage(stage.name)
-                self._write_manifest(context, artifacts)
-                context = stage.execute(context)
-                typed_result = context.stage_results.get(stage.name)
-                record.succeed(getattr(typed_result, "schema_version", None))
-                RunLog(
-                    f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 完成: "
-                    f"{stage.name}（{stage_label}），"
-                    f"耗时 {record.duration_seconds or 0.0:.3f}s"
-                )
-                if self.config.logging.debug_log_file_enabled:
-                    DebugLog(f"[资源] stage={stage.name} phase=complete {resource_usage_summary()}")
-                self._write_manifest(context, artifacts)
-            except Exception as error:
-                if self.config.logging.debug_log_file_enabled:
-                    DebugLog(f"[资源] stage={stage.name} phase=failed {resource_usage_summary()}")
-                ErrorLog(
-                    f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 执行失败\n"
-                    f"阶段标识: {stage.name}\n"
-                    f"阶段职责: {stage_label}\n"
-                    f"错误原因: {error or type(error).__name__}",
-                    error,
-                )
-                context.add_error(stage.name, error)
-                record.fail(self._serialize_error(error, stage.name))
-                for remaining in self.stages[index + 1:]:
-                    pending = context.stage_records[remaining.name]
-                    if pending.status is StageStatus.PENDING:
-                        pending.skip()
-                        remaining_label = _STAGE_LOG_LABELS.get(
-                            remaining.name,
-                            "自定义阶段",
-                        )
-                        RunLog(
-                            "[Pipeline] 跳过后续阶段: "
-                            f"{remaining.name}（{remaining_label}）"
-                        )
-                self._write_manifest(context, artifacts)
-                break
+        with ExitStack() as reuse_cleanup:
+            for index, stage in enumerate(self.stages):
+                record = context.stage_records[stage.name]
+                stage_label = _STAGE_LOG_LABELS.get(stage.name, "自定义阶段")
+                try:
+                    record.start()
+                    RunLog(
+                        f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 开始: "
+                        f"{stage.name}（{stage_label}）"
+                    )
+                    if self.config.logging.debug_log_file_enabled:
+                        DebugLog(f"[资源] stage={stage.name} phase=start {resource_usage_summary()}")
+                    context.set_current_stage(stage.name)
+                    self._write_manifest(context, artifacts)
+                    reuse = context.metadata.get("series_reuse_session")
+                    if reuse is not None and reuse.can_restore(stage.name):
+                        context = reuse.restore_stage(context, stage.name)
+                    else:
+                        context = stage.execute(context)
+                    if stage.name == "preprocessing":
+                        from .series_reuse import start_series_reuse
+                        reuse = start_series_reuse(context, self.config, self.stages)
+                        if reuse is not None:
+                            context.metadata["series_reuse_session"] = reuse
+                            reuse_cleanup.callback(reuse.close)
+                    typed_result = context.stage_results.get(stage.name)
+                    record.succeed(getattr(typed_result, "schema_version", None))
+                    RunLog(
+                        f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 完成: "
+                        f"{stage.name}（{stage_label}），"
+                        f"耗时 {record.duration_seconds or 0.0:.3f}s"
+                    )
+                    if self.config.logging.debug_log_file_enabled:
+                        DebugLog(f"[资源] stage={stage.name} phase=complete {resource_usage_summary()}")
+                    self._write_manifest(context, artifacts)
+                except Exception as error:
+                    if self.config.logging.debug_log_file_enabled:
+                        DebugLog(f"[资源] stage={stage.name} phase=failed {resource_usage_summary()}")
+                    ErrorLog(
+                        f"[Pipeline] 阶段 {index + 1}/{len(self.stages)} 执行失败\n"
+                        f"阶段标识: {stage.name}\n"
+                        f"阶段职责: {stage_label}\n"
+                        f"错误原因: {error or type(error).__name__}",
+                        error,
+                    )
+                    context.add_error(stage.name, error)
+                    record.fail(self._serialize_error(error, stage.name))
+                    for remaining in self.stages[index + 1:]:
+                        pending = context.stage_records[remaining.name]
+                        if pending.status is StageStatus.PENDING:
+                            pending.skip()
+                            remaining_label = _STAGE_LOG_LABELS.get(
+                                remaining.name,
+                                "自定义阶段",
+                            )
+                            RunLog(
+                                "[Pipeline] 跳过后续阶段: "
+                                f"{remaining.name}（{remaining_label}）"
+                            )
+                    self._write_manifest(context, artifacts)
+                    break
 
-        if capacity_enabled():
-            record_capacity_details(stage_seconds={
-                name: record.duration_seconds
-                for name, record in context.stage_records.items()
-                if record.duration_seconds is not None
-            })
+            if capacity_enabled():
+                record_capacity_details(stage_seconds={
+                    name: record.duration_seconds
+                    for name, record in context.stage_records.items()
+                    if record.duration_seconds is not None
+                })
+
+            reuse = context.metadata.get("series_reuse_session")
+            if reuse is not None:
+                try:
+                    if not context.has_errors():
+                        reuse.publish(context)
+                except Exception as error:
+                    reuse.disable(f"缓存保存失败: {error}")
+                finally:
+                    reuse.close()
+
         self._register_legacy_intermediate_artifacts(request, artifacts)
         success = not context.has_errors()
         context.warnings.extend(

@@ -228,12 +228,16 @@ class Request:
     window_presets: List[WindowPreset] = field(default_factory=list)
     # 持久化缓存根目录；第一阶段放在 nifti/，第二阶段按模型 ID 分目录。
     cache_dir: str = ""
+    # 同一检查下各序列的母目录；只有启用跨序列复用时才扫描其缓存。
+    series_cache_parent: str = ""
 
     def __post_init__(self) -> None:
         # 兼容代码内直接传入字典的调用方，同时确保后续阶段拿到统一实体。
         self.window_presets = parse_window_presets(self.window_presets)
         if self.cache_dir is None:
             self.cache_dir = ""
+        if self.series_cache_parent is None:
+            self.series_cache_parent = ""
 
     # ===== 后续扩展字段（取消注释即可使用）=====
     # patient_name: str = ""
@@ -264,6 +268,8 @@ class Request:
             ]
         if self.cache_dir:
             data['cache_dir'] = str(self.cache_dir)
+        if self.series_cache_parent:
+            data['series_cache_parent'] = str(self.series_cache_parent)
         return data
     
     @classmethod
@@ -319,6 +325,10 @@ class Request:
                 'cache_dir',
                 data.get('CacheDir', ''),
             ),
+            series_cache_parent=data.get(
+                'series_cache_parent',
+                data.get('SeriesCacheParent', ''),
+            ),
         )
 
     def validate(self) -> tuple[bool, Optional[str]]:
@@ -334,6 +344,8 @@ class Request:
             return False, "output_dir 不能为空"
         if not isinstance(self.cache_dir, (str, Path)):
             return False, "cache_dir 必须是路径字符串"
+        if not isinstance(self.series_cache_parent, (str, Path)):
+            return False, "series_cache_parent 必须是路径字符串"
         if isinstance(self.scan_thickness, bool):
             return False, "ScanThickness 必须是非负有限数值"
         try:

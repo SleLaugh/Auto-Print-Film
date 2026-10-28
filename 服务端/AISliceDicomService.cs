@@ -953,6 +953,13 @@ namespace ElincloudAISliceServer.AISliceDicomService
             startInfo.ArgumentList.Add(inputDir);
             startInfo.ArgumentList.Add("--cache_dir");
             startInfo.ArgumentList.Add(cacheDir);
+            // 缓存为“检查/序列/cache”；仅传检查目录，匹配与复用由 Python 可选配置控制。
+            string? seriesCacheParent = Directory.GetParent(cacheKey)?.Parent?.FullName;
+            if (!string.IsNullOrWhiteSpace(seriesCacheParent) && Directory.Exists(seriesCacheParent))
+            {
+                startInfo.ArgumentList.Add("--series-cache-parent");
+                startInfo.ArgumentList.Add(seriesCacheParent);
+            }
             startInfo.ArgumentList.Add("--output");
             startInfo.ArgumentList.Add(outDir);
             startInfo.ArgumentList.Add("--slice_part");

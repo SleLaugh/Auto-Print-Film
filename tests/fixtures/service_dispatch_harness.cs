@@ -70,6 +70,10 @@ class Worker : IDisposable
     public void Dispatch(AIFilmSliceRecord record, int maximum, SqlAccess database,
         IEnumerable<AIFilmSliceRecord>? seriesRecords = null)
         => StartUnprocessedSeries(record, new() { new() }, maximum, database, seriesRecords);
+    public Process LaunchForArguments(string cacheDir, string outputDir)
+        => StartAutoPrintFilm(8, Environment.CurrentDirectory, cacheDir, outputDir,
+            "CT", "肺部", 1.5, "[]", "[]")
+            ?? throw new Exception("Argument regression child was not admitted");
     public void RestoreTrackedProcess(int processID, DateTime startTime, string outputDir)
         => TrackRunningProcess(processID, startTime, outputDir);
     public void RunStudy(List<AIFilmSliceRecord> records, SqlAccess database,
@@ -163,6 +167,33 @@ static class Program
     {
         Config config = AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo;
         config.ExecutablePath = args[0];
+
+        // Exercise the actual service launcher and inspect its process arguments,
+        // including a study path that must remain a single argument despite spaces.
+        string studyParent = Path.Combine(Environment.CurrentDirectory, "check with spaces");
+        Directory.CreateDirectory(studyParent);
+        using (Worker worker = new())
+        using (Process process = worker.LaunchForArguments(
+            Path.Combine(studyParent, "series-A", "cache"),
+            Path.Combine(studyParent, "series-A", "肺部")))
+        {
+            string[] arguments = process.StartInfo.ArgumentList.ToArray();
+            int parentIndex = Array.IndexOf(arguments, "--series-cache-parent");
+            Check(parentIndex >= 0 && arguments[parentIndex + 1] == studyParent,
+                "Launcher did not pass the check parent as one argument");
+            int cacheIndex = Array.IndexOf(arguments, "--cache_dir");
+            Check(arguments[cacheIndex + 1] == Path.Combine(studyParent, "series-A", "cache"),
+                "Parent propagation changed the per-series cache argument");
+        }
+        using (Worker worker = new())
+        using (Process process = worker.LaunchForArguments(
+            Path.Combine(Environment.CurrentDirectory, "missing-check", "series-A", "cache"),
+            Path.Combine(Environment.CurrentDirectory, "missing-check", "series-A", "肺部")))
+        {
+            Check(!process.StartInfo.ArgumentList.Contains("--series-cache-parent"),
+                "Launcher passed a nonexistent check parent instead of keeping the old invocation");
+        }
+        Console.WriteLine("Series reuse invocation arguments passed");
 
         // Eight simultaneous dispatch threads must not exceed real-process capacity.
         for (int round = 0; round < 4; round++)

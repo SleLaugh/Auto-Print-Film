@@ -183,8 +183,17 @@ class SegmentationStage(BaseStage):
         output_path = output_dir / "seg.nii.gz"
         record_capacity_details(model_id=str(dataset_id), segmentation_mode="unknown")
 
+        reuse_session = context.metadata.get("series_reuse_session")
+
+        def reusable():
+            return self._can_reuse_segmentation(output_dir, output_path, dataset_id) and (
+                (reuse_session is None and not context.metadata.get("series_reuse_requested"))
+                or (reuse_session is not None
+                    and reuse_session.local_segmentation_valid(output_dir))
+            )
+
         cleanup_cache_workspaces(output_dir.parent, ".segmentation-")
-        if self._can_reuse_segmentation(output_dir, output_path, dataset_id):
+        if reusable():
             record_capacity_details(segmentation_mode="cache_hit", cache_wait_seconds=0.0)
             # 已发布的缓存保持只读，多个切割部位可以同时复用。
             DebugLog(f"    已找到现成分割结果，跳过推理: {output_path}")
@@ -197,12 +206,17 @@ class SegmentationStage(BaseStage):
                         cache_wait_seconds=round(time.monotonic() - wait_started, 6),
                     )
                 # 等待锁的任务可能已生成缓存，必须复查，避免重复推理。
-                if not self._can_reuse_segmentation(output_dir, output_path, dataset_id):
+                if not reusable():
                     record_capacity_details(segmentation_mode="direct_inference")
                     self._generate_segmentation(
                         output_dir, input_path, dataset_id, configuration, fold,
                         inference_log_dir=Path(request.output_dir) / "log",
                     )
+                    if reuse_session is not None and not reuse_session.disabled:
+                        try:
+                            reuse_session.record_local_segmentation(output_dir)
+                        except Exception as error:
+                            reuse_session.disable(f"分割缓存凭据保存失败: {error}")
                 else:
                     record_capacity_details(segmentation_mode="wait_reuse")
                     DebugLog(f"    复用其他任务已完成的分割结果: {output_path}")

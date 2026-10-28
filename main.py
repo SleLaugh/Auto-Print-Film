@@ -134,6 +134,14 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        '--series-cache-parent', '--series_cache_parent',
+        dest='series_cache_parent',
+        type=str,
+        default=None,
+        help='同一检查下各序列的母目录；需启用 pipeline.series_reuse_enabled 才复用缓存',
+    )
+
+    parser.add_argument(
         '--plane_configs',
         dest='plane_configs',
         type=str,
@@ -260,6 +268,8 @@ def main(*, startup_error=None):
             request_kwargs['window_presets'] = window_presets
         if args.cache_dir is not None:
             request_kwargs['cache_dir'] = args.cache_dir
+        if getattr(args, 'series_cache_parent', None) is not None:
+            request_kwargs['series_cache_parent'] = args.series_cache_parent
         request = Request(**request_kwargs)
 
         is_valid, error_message = request.validate()
@@ -273,6 +283,8 @@ def main(*, startup_error=None):
         DebugLog(f"扫描厚度: {request.scan_thickness}mm")
         if request.cache_dir:
             DebugLog(f"缓存根目录: {request.cache_dir}")
+        if request.series_cache_parent:
+            DebugLog(f"跨序列缓存母目录: {request.series_cache_parent}")
         DebugLog(f"三平面参数: {request.to_dict()['plane_configs']}")
         
         pipeline = Pipeline(config=app_config)

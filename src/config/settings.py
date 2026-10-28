@@ -135,6 +135,12 @@ class PipelineConfig:
     """任务失败后是否保留中间现场用于诊断。"""
     run_preflight: bool = True
     """是否执行真实依赖预检；仅假 Stage 单元测试允许关闭。"""
+    series_reuse_enabled: bool = False
+    """是否在请求指定的母目录内复用相同序列的完整缓存；默认关闭。"""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.series_reuse_enabled, bool):
+            raise ValueError("pipeline.series_reuse_enabled 必须是布尔值 true/false")
 
 
 @dataclass(frozen=True)
@@ -182,6 +188,7 @@ class AppConfig:
                 "keep_intermediate_on_failure": (
                     self.pipeline.keep_intermediate_on_failure
                 ),
+                "series_reuse_enabled": self.pipeline.series_reuse_enabled,
             },
             "logging": {
                 # manifest 只记录开关，不记录日志绝对路径。

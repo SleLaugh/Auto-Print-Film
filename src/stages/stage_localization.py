@@ -55,6 +55,8 @@ _TERMINAL_EXTENSION_MINIMUM_SI_SPAN = 2
 _BODY_REMNANT_MAX_LABEL_VOLUME_FRACTION = 0.10
 _BODY_REMNANT_MAX_LABEL_SI_SPAN_FRACTION = 0.5
 _PRISM_SEPARATOR_MAXIMUM_PROJECTION_INTRUSION_FRACTION = 0.05
+_PRISM_SEPARATOR_MINIMUM_COMMON_LR_FRACTION = 0.5
+_PRISM_SEPARATOR_MAXIMUM_INTRUSION_VOXEL_WIDTHS = 2.0
 _LOCALIZATION_WORKSPACE_KEY = "localization_workspace_v1"
 
 
@@ -2105,7 +2107,7 @@ class LocalizationOperations(
         right_indices: np.ndarray,
         voxel_spacing_zyx: np.ndarray | None = None,
     ) -> tuple[np.ndarray, float] | None:
-        """求严格分隔直线；仅对不超过 5% 的投影侵入启用稳健回退。"""
+        """先按唯一矢状投影分隔，失败时验证真实 LR 支撑的浅边缘交叉。"""
 
         left = np.asarray(left_indices, dtype=float)
         right = np.asarray(right_indices, dtype=float)
@@ -2264,9 +2266,115 @@ class LocalizationOperations(
             if robust_best is None or score < robust_best[0]:
                 robust_best = (score, normal, threshold)
 
-        if robust_best is None:
+        if robust_best is not None:
+            return robust_best[1], robust_best[2]
+        return cls._lr_supported_body_separating_plane(
+            left, right, spacing, candidate_normals, center_direction,
+        )
+
+    @classmethod
+    def _lr_supported_body_separating_plane(
+        cls,
+        left: np.ndarray,
+        right: np.ndarray,
+        spacing: np.ndarray,
+        candidate_normals: list[np.ndarray],
+        center_direction: np.ndarray,
+    ) -> tuple[np.ndarray, float] | None:
+        """只恢复压平 LR 后的浅投影交叉，不接受逐 LR 也交织的主体。
+
+        输入是主体的独立三维体素索引。每侧至少一半 LR 层共同覆盖，且
+        所有共同层沿同一矢状法向严格有序，才能以实际体素支撑计数；
+        越线比例仍不超过 5%，深度不得超过两个投影体素宽度。
+        """
+
+        if any(
+            points.shape[1] != 3 or not np.all(np.isfinite(points))
+            or not np.allclose(points, np.rint(points), rtol=0.0, atol=1e-8)
+            for points in (left, right)
+        ):
             return None
-        return robust_best[1], robust_best[2]
+        left_lr, left_inverse = np.unique(left[:, 2], return_inverse=True)
+        right_lr, right_inverse = np.unique(right[:, 2], return_inverse=True)
+        common_lr, left_common, right_common = np.intersect1d(
+            left_lr, right_lr, assume_unique=True, return_indices=True,
+        )
+        if len(common_lr) < 2 or any(
+            len(common_lr) / len(layers) < _PRISM_SEPARATOR_MINIMUM_COMMON_LR_FRACTION
+            for layers in (left_lr, right_lr)
+        ):
+            return None
+        left_unique, _, left_counts = cls._unique_packed_integer_rows_2d(
+            np.rint(left[:, :2]).astype(np.int64), return_counts=True,
+        )
+        right_unique, _, right_counts = cls._unique_packed_integer_rows_2d(
+            np.rint(right[:, :2]).astype(np.int64), return_counts=True,
+        )
+        left_points = left_unique * spacing[:2]
+        right_points = right_unique * spacing[:2]
+        left_voxels = left[:, :2] * spacing[:2]
+        right_voxels = right[:, :2] * spacing[:2]
+        best = None
+        for candidate in candidate_normals:
+            normal = candidate if float(candidate @ center_direction) >= 0.0 else -candidate
+            left_maxima = np.full(len(left_lr), -np.inf)
+            right_minima = np.full(len(right_lr), np.inf)
+            np.maximum.at(left_maxima, left_inverse, left_voxels @ normal)
+            np.minimum.at(right_minima, right_inverse, right_voxels @ normal)
+            if np.any(left_maxima[left_common] >= right_minima[right_common] - 1e-6):
+                continue
+            left_projection = left_points @ normal
+            right_projection = right_points @ normal
+            left_order = np.argsort(left_projection)
+            right_order = np.argsort(right_projection)
+            left_sorted = left_projection[left_order]
+            right_sorted = right_projection[right_order]
+            center_threshold = (
+                float(np.median(left_sorted)) + float(np.median(right_sorted))
+            ) / 2.0
+            thresholds = np.unique(np.concatenate((
+                left_sorted, right_sorted, [center_threshold],
+            )))
+            left_cumulative = np.concatenate(([0], np.cumsum(left_counts[left_order])))
+            right_cumulative = np.concatenate(([0], np.cumsum(right_counts[right_order])))
+            left_wrong = (len(left) - left_cumulative[
+                np.searchsorted(left_sorted, thresholds, side="right")
+            ]) / len(left)
+            right_wrong = right_cumulative[
+                np.searchsorted(right_sorted, thresholds, side="left")
+            ] / len(right)
+            maximum_wrong = np.maximum(left_wrong, right_wrong)
+            maximum_depth = _PRISM_SEPARATOR_MAXIMUM_INTRUSION_VOXEL_WIDTHS * float(
+                np.abs(normal) @ spacing[:2]
+            )
+            valid = (
+                (maximum_wrong <= (
+                    _PRISM_SEPARATOR_MAXIMUM_PROJECTION_INTRUSION_FRACTION + 1e-12
+                ))
+                & (left_sorted[-1] - thresholds <= maximum_depth + 1e-6)
+                & (thresholds - right_sorted[0] <= maximum_depth + 1e-6)
+            )
+            first_nonzero = next(value for value in normal if abs(value) > 1e-12)
+            canonical_sign = 1.0 if first_nonzero > 0.0 else -1.0
+            for index in np.flatnonzero(valid):
+                threshold = float(thresholds[index])
+                score = (
+                    float(maximum_wrong[index]),
+                    float(left_wrong[index] + right_wrong[index]),
+                    abs(float(left_wrong[index] - right_wrong[index])),
+                    abs(threshold - center_threshold),
+                    *map(float, normal * canonical_sign),
+                    threshold * canonical_sign,
+                )
+                if best is None or score < best[0]:
+                    best = (score, normal, threshold)
+        if best is None:
+            return None
+        DebugLog(
+            "  相邻主体分隔使用 LR 支撑回退：共同 LR 层 "
+            f"{len(common_lr)}，最大越线体素比例 {best[0][0]:.3%}"
+        )
+        return best[1], best[2]
 
     @classmethod
     def _build_spine_body_geometry(

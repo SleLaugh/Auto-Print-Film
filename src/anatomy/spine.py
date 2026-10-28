@@ -1,7 +1,7 @@
 #!/src/anatomy/spine.py
 # -*- coding: utf-8 -*-
 
-"""由可靠椎体左右对称面构造保留输入前后倾角的整体三维坐标系。"""
+"""构造脊柱整体坐标及垂直颈椎长轴的横状位 MPR 坐标。"""
 
 import math
 from typing import Any
@@ -83,6 +83,53 @@ def _dicom_axes(image: sitk.Image) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return tuple(axes[:, index] for index in range(3))
 
 
+def _axial_endpoint_frame(
+    raw_spine_axis: np.ndarray,
+    reference_lr: np.ndarray,
+    reference_axes: np.ndarray,
+    all_points: np.ndarray,
+    missing_labels: list[str],
+    has_reliable_lr: bool,
+) -> AnatomicalFrame:
+    """恢复首尾长轴法向，完整目标重新投影到这组平行斜切坐标。"""
+
+    dicom_lr, dicom_ap, dicom_si = reference_axes.T
+    si = raw_spine_axis.copy()
+    if si[2] < 0.0 or (abs(float(si[2])) < 1e-8 and float(np.dot(si, dicom_si)) < 0.0):
+        si = -si
+    lr_projection = reference_lr - float(np.dot(reference_lr, si)) * si
+    if np.linalg.norm(lr_projection) < 1e-6:
+        raise ValueError("左右对称方向与颈椎长轴近似平行，无法构造横状位坐标")
+    lr = _normalize(lr_projection, "颈椎横状位左右方向无效")
+    if float(np.dot(lr, dicom_lr)) < 0.0:
+        lr = -lr
+    ap = _normalize(np.cross(si, lr), "无法由颈椎长轴和左右轴构造前后方向")
+    if float(np.dot(ap, dicom_ap)) <= 1e-6:
+        raise ValueError("颈椎横状位坐标与DICOM患者方向不一致")
+    warnings = []
+    if missing_labels:
+        warnings.append("部分中间椎体缺失: " + ", ".join(missing_labels))
+    if not has_reliable_lr:
+        warnings.append("椎体左右对称证据不足，颈椎横状位左右轴使用患者参考方向投影")
+    return AnatomicalFrame(
+        origin=_point(np.mean(all_points, axis=0)),
+        left_right_axis=_point(lr),
+        anterior_posterior_axis=_point(ap),
+        superior_inferior_axis=_point(si),
+        bounds=AnatomicalBounds(
+            left_right=_axis_bounds(all_points, lr),
+            anterior_posterior=_axis_bounds(all_points, ap),
+            superior_inferior=_axis_bounds(all_points, si),
+        ),
+        method="spine_endpoint_centroids",
+        confidence=1.0 if not missing_labels else 0.8,
+        applied=not bool(np.allclose(
+            np.column_stack((lr, ap, si)), reference_axes, rtol=0.0, atol=1e-8,
+        )),
+        warnings=warnings,
+    )
+
+
 def estimate_spine_frame_with_diagnostics(
     label_masks: dict[str, np.ndarray] | None,
     start_label: str,
@@ -91,15 +138,18 @@ def estimate_spine_frame_with_diagnostics(
     label_pose_annotations: dict[str, Any] | None = None,
     *,
     label_indices_zyx: dict[str, np.ndarray] | None = None,
+    include_axial_frame: bool = False,
 ) -> tuple[AnatomicalGeometryResult, dict[str, Any]]:
     """用可靠左右对称方向回正，并用全部有效椎体确定中心和范围。
 
     左右法向采用可靠逐椎体估计的中位方向；将输入 AP 投影到该法向的
-    正交平面，保留原始前后倾角。首尾质心仅用于范围有效性和诊断，不能
-    将其连线强制摆竖直；证据不足时保持患者参考三轴并明确警告。
+    正交平面，保留整体坐标的原始前后倾角。首尾质心默认用于范围有效性
+    和诊断；证据不足时整体坐标保持患者参考三轴并明确警告。
     提供 ``label_indices_zyx`` 时以其为唯一标签来源，
     直接复用已有稀疏坐标；``label_masks`` 可传 None，不读取或重建 Mask。
     中心、首尾质心及范围始终使用全部体素，不以姿态拟合的抽样代替。
+    颈椎另以 ``include_axial_frame`` 生成 ``axial_mpr`` 局部坐标：其法向
+    沿配置首尾长轴，专用于横状位 MPR，覆盖仍包含 C1 及全部配置标签。
     """
 
     if not start_label or not end_label:
@@ -207,4 +257,20 @@ def estimate_spine_frame_with_diagnostics(
         "left_right_source": "vertebral_reflection_symmetry" if reliable_lr_axes else "dicom_reference",
         "reliable_symmetry_label_count": len(reliable_lr_axes),
     }
-    return AnatomicalGeometryResult(global_frame=frame, local_frames={}), diagnostics
+    local_frames = {}
+    if include_axial_frame:
+        axial_frame = _axial_endpoint_frame(
+            raw_spine_axis, reference_lr, reference_axes, all_points,
+            missing_labels, bool(reliable_lr_axes),
+        )
+        local_frames["axial_mpr"] = axial_frame
+        diagnostics["axial_mpr"] = {
+            "method": axial_frame.method,
+            "start_label": start_label,
+            "end_label": end_label,
+            "endpoint_axis_role": "axial_mpr_normal",
+            "spine_axis": list(axial_frame.superior_inferior_axis.to_dict().values()),
+            "applied": axial_frame.applied,
+            "warnings": list(axial_frame.warnings),
+        }
+    return AnatomicalGeometryResult(global_frame=frame, local_frames=local_frames), diagnostics

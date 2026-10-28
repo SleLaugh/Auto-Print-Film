@@ -194,6 +194,7 @@ class LocalizationOperations(
                 image=image,
                 label_pose_annotations=label_pose_annotations,
                 label_indices_zyx=label_indices_zyx,
+                include_axial_frame=slice_part == "颈椎",
             )
         if slice_part == "髋骨":
             if not label_masks or not start_label or not end_label:

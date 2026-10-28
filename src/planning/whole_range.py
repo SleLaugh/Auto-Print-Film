@@ -15,7 +15,7 @@ from src.models import (
     Point3D,
     SlicePlan,
 )
-from src.models.enums import PlaneTypeEnum
+from src.models.enums import PlaneTypeEnum, SliceType
 from src.planning.geometry import (
     build_plane_stack_slices,
     voxel_index_to_physical,
@@ -211,8 +211,8 @@ def build_whole_range_plan_from_bbox(
     """
     根据整体 bbox 构建指定状位的默认直线整切计划。
 
-    所有已生成解剖坐标的部位，三状位共同使用该物理坐标；不能只把横位
-    摆正而让冠位/矢位重新回到歪斜的输入轴。旧结果缺少解剖坐标时才回退。
+    默认使用整体解剖坐标；颈椎横状位 MPR 使用垂直颈椎长轴的专用
+    局部坐标及完整目标投影。旧结果缺少局部坐标时沿用已有整体坐标。
     """
 
     anatomical_frame_parts = {
@@ -228,11 +228,18 @@ def build_whole_range_plan_from_bbox(
         uses_anatomical_frame
         and localization_result.get("anatomical_geometry")
     ):
+        anatomical_frame = geometry.global_frame
+        if (
+            request.slice_part.value == "颈椎"
+            and plane_config.plane == PlaneTypeEnum.横状位
+            and plane_config.slice_type is SliceType.MPR
+        ):
+            anatomical_frame = geometry.local_frames.get("axial_mpr", anatomical_frame)
         plan = _build_whole_range_plan_from_anatomical_frame(
             request=request,
             plane_config=plane_config,
             localization_result=localization_result,
-            anatomical_frame=geometry.global_frame,
+            anatomical_frame=anatomical_frame,
             source_labels=source_labels,
             target_region_bbox=target_region_bbox,
         )

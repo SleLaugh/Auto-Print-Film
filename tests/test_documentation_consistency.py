@@ -119,6 +119,8 @@ class DocumentationConsistencyTests(unittest.TestCase):
             "使用配置开始、结束椎体的全量物理质心建立整体脊柱轴",
             "颈胸腰结合首尾轴",
             "整体坐标结合配置首尾椎体轴",
+            "三个普通整切状位都保留输入前后倾角",
+            "这些脊柱部位的普通整切 MPR 均保留",
         )
         current_documents = [
             PROJECT_ROOT / "README.md", PROJECT_ROOT / "src/config/README.md",
@@ -161,7 +163,7 @@ class DocumentationConsistencyTests(unittest.TestCase):
         self.assertIn("scipy", text)
 
     def test_current_spine_mpr_docs_preserve_input_pitch_and_endpoint_scope(self):
-        """普通整切保留俯仰，首尾仅验证范围，不替代局部椎间隙或 CPR 几何。"""
+        """全局坐标保留俯仰；颈椎横状位单独垂直长轴，不替代椎间隙或 CPR。"""
 
         current_documents = (
             PROJECT_ROOT / "README.md",
@@ -178,8 +180,10 @@ class DocumentationConsistencyTests(unittest.TestCase):
                 text = re.sub(r"\s+", "", path.read_text(encoding="utf-8"))
                 for statement in (
                     "普通整切MPR",
+                    "除颈椎横状位外",
                     "保留输入前后倾角",
                     "输入AP",
+                    "`global_frame`",
                     "首尾质心仅用于范围有效性检查和诊断",
                     "不再决定全局SI",
                     "患者参考三轴",
@@ -187,6 +191,23 @@ class DocumentationConsistencyTests(unittest.TestCase):
                     "局部椎间隙",
                     "CPR",
                     "抬头、低头",
+                ):
+                    self.assertIn(statement, text)
+                for statement in (
+                    "颈椎横状位MPR是例外",
+                    '`local_frames["axial_mpr"]`',
+                    "配置首尾全量标签质心连线",
+                    "SI法向",
+                    "LR正交投影",
+                    "SI×LR构造AP",
+                    "完整配置标签重新投影bounds",
+                    "第六阶段仅颈椎横状位MPR",
+                    "垂直整体颈椎长轴",
+                    "整组平行",
+                    "不逐椎体改变角度",
+                    "C1–T1（包含C1–C7）",
+                    "终点侧`5mm`余量不变",
+                    "其余状位、部位",
                 ):
                     self.assertIn(statement, text)
 

@@ -15,7 +15,7 @@
 | GDCM、SimpleITK、DICOM 写盘并发安全 | `architecture/README.md` + `modules/dicom/README.md` | 写盘锁属于跨模块约束 |
 | DICOM 文件名、定位图、InstanceNumber | `modules/dicom/README.md` | 不涉及 MPR 几何时不读 reconstruction |
 | 第三至五阶段校正、label/bbox、解剖几何 | `modules/localization/README.md` | 只处理目标范围或四棱柱时从这里开始 |
-| 第六/七阶段切片规划、MPR 和 CPR 重建 | `modules/reconstruction/README.md` | 规划、重采样或部位专属 MPR 优先读这里 |
+| 第六/七阶段切片规划、MPR 和 CPR 重建 | `modules/reconstruction/README.md` | 含颈椎横状位 MPR 垂直整体长轴的专属坐标与完整覆盖规则 |
 | 切片中心覆盖、层间距、首尾扩展 | `modules/slicing/README.md` | 当前规则以后 2026-07-20 覆盖设计为准 |
 | MPR、椎间隙、直线切割流程、SliceType 能力 | `modules/cutting/README.md` | 只改区间生成或切法选择时读这里 |
 | 窗宽窗位、DICOM 定位图、CT 背景展示 | `modules/viewer/README.md` | 展示和定位图需求从这里开始 |

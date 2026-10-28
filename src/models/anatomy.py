@@ -173,7 +173,7 @@ class AnatomicalFrame:
 
 @dataclass(frozen=True)
 class AnatomicalGeometryResult:
-    """第五阶段统一解剖几何输出；整切使用全局坐标，区间切使用局部坐标。"""
+    """第五阶段解剖几何；局部坐标可描述区间或专用状位的整切方向。"""
 
     global_frame: AnatomicalFrame
     local_frames: dict[str, AnatomicalFrame] = field(default_factory=dict)

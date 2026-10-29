@@ -6,6 +6,8 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from src.models import (
     AnatomicalBounds,
     AnatomicalFrame,
@@ -16,8 +18,10 @@ from src.models import (
     SlicePlan,
 )
 from src.models.enums import PlaneTypeEnum, SliceType
+from src.anatomy.orientation import patient_reference_axes
 from src.planning.geometry import (
     build_plane_stack_slices,
+    image_direction_matrix,
     voxel_index_to_physical,
 )
 from src.planning.straight import (
@@ -34,6 +38,7 @@ from src.planning.straight import (
     resolve_range_extension,
     resolve_projected_extent,
 )
+from src.planning.spine_common import resolve_spine_height_extension
 
 
 @dataclass(frozen=True)
@@ -257,6 +262,21 @@ def build_whole_range_plan_from_bbox(
         localization_result,
         plane_config.plane,
     )
+    superior_extension_mm, inferior_extension_mm = (
+        resolve_spine_height_extension(localization_result)
+    )
+    if plane_config.plane == PlaneTypeEnum.横状位 and (
+        superior_extension_mm or inferior_extension_mm
+    ):
+        si = patient_reference_axes(image_direction_matrix(
+            localization_result["image"],
+        ))[:, 2]
+        start = np.asarray([target_start.x, target_start.y, target_start.z])
+        end = np.asarray([target_end.x, target_end.y, target_end.z])
+        start += si * superior_extension_mm
+        end -= si * inferior_extension_mm
+        target_start = Point3D(*map(float, start))
+        target_end = Point3D(*map(float, end))
     segment = CutSegment(
         group_name="whole_range",
         target_start=target_start,
@@ -276,6 +296,13 @@ def build_whole_range_plan_from_bbox(
         segment=segment,
         frame=frame,
     )
+    if plane_config.plane in {PlaneTypeEnum.矢状位, PlaneTypeEnum.冠状位}:
+        extra_height = superior_extension_mm + inferior_extension_mm
+        if extra_height:
+            plan.extent_mm = ExtentMM(
+                width=plan.extent_mm.width,
+                height=plan.extent_mm.height + extra_height,
+            )
     return _apply_localizer_preferences(
         plan,
         request.slice_part.value,
@@ -343,6 +370,18 @@ def _build_whole_range_plan_from_anatomical_frame(
         if target_region_bbox is not None
         else anatomical_frame.bounds
     )
+    superior_extension_mm, inferior_extension_mm = (
+        resolve_spine_height_extension(localization_result)
+    )
+    if superior_extension_mm or inferior_extension_mm:
+        bounds = AnatomicalBounds(
+            left_right=bounds.left_right,
+            anterior_posterior=bounds.anterior_posterior,
+            superior_inferior=AxisBounds(
+                bounds.superior_inferior.minimum - inferior_extension_mm,
+                bounds.superior_inferior.maximum + superior_extension_mm,
+            ),
+        )
     lr_center = _axis_midpoint(bounds.left_right)
     ap_center = _axis_midpoint(bounds.anterior_posterior)
     si_center = _axis_midpoint(bounds.superior_inferior)
@@ -424,6 +463,17 @@ def _build_whole_range_plan_from_anatomical_frame(
             straight_frame,
         )
         extent = projected_extent.extent_mm
+
+    if target_region_bbox is None and plane in {
+        PlaneTypeEnum.矢状位,
+        PlaneTypeEnum.冠状位,
+    }:
+        extra_height = superior_extension_mm + inferior_extension_mm
+        if extra_height:
+            extent = ExtentMM(
+                width=extent.width,
+                height=extent.height + extra_height,
+            )
 
     # 显式配置的首尾扩展先加入有效范围，再统一计算层厚、层间距和数量，
     # 让首末厚层外缘完整覆盖肺尖、肺底等解剖边界。

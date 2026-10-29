@@ -180,10 +180,17 @@ class LocalizationContractMixin:
         excluded_labels = []
         for label_name in config.get("excluded_labels", []):
             excluded_labels.extend(self._label_alias(label_name))
-        return {
+        result = {
             "full_label": config["full_label"],
             "excluded_labels": excluded_labels,
         }
+        extension = config.get("height_extension_mm")
+        if isinstance(extension, dict):
+            result["height_extension_mm"] = {
+                "top_mm": float(extension.get("top_mm", 0.0)),
+                "bottom_mm": float(extension.get("bottom_mm", 0.0)),
+            }
+        return result
 
     def _resolve_cut_configs(self, request) -> Dict[str, CutConfig]:
         """返回当前部位的全部定位范围配置。"""

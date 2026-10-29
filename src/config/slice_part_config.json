@@ -300,7 +300,8 @@
             },
             "localization": {
                 "spine_cpr": {
-                    "full_label": true
+                    "full_label": true,
+                    "height_extension_mm": {"top_mm": 50.0, "bottom_mm": 50.0}
                 },
                 "regions": {
                     "default": { "type": "whole_range", "start_label": "C7", "end_label": "S1" }
@@ -360,7 +361,8 @@
             },
             "localization": {
                 "spine_cpr": {
-                    "full_label": true
+                    "full_label": true,
+                    "height_extension_mm": {"top_mm": 50.0, "bottom_mm": 50.0}
                 },
                 "regions": {
                     "default": { "type": "whole_range", "start_label": "C1", "end_label": "S1" }

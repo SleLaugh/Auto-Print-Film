@@ -253,7 +253,11 @@ def _validate_spine_cpr_config(
         return
     if not isinstance(config, Mapping):
         raise ValueError(f"{slice_part}.localization.spine_cpr 必须是对象")
-    unknown_fields = set(config) - {"full_label", "excluded_labels"}
+    unknown_fields = set(config) - {
+        "full_label",
+        "excluded_labels",
+        "height_extension_mm",
+    }
     if unknown_fields:
         raise ValueError(
             f"{slice_part}.localization.spine_cpr 包含未知字段: "
@@ -280,6 +284,21 @@ def _validate_spine_cpr_config(
         raise ValueError(
             f"{slice_part}.localization.spine_cpr.excluded_labels 包含未知标签: "
             f"{sorted(unknown_labels)}"
+        )
+    extension = config.get("height_extension_mm", {})
+    if not isinstance(extension, Mapping):
+        raise ValueError(
+            f"{slice_part}.localization.spine_cpr.height_extension_mm 必须是对象"
+        )
+    _reject_unknown_fields(
+        extension,
+        {"top_mm", "bottom_mm"},
+        f"{slice_part}.localization.spine_cpr.height_extension_mm",
+    )
+    for endpoint in ("top_mm", "bottom_mm"):
+        _non_negative_finite_number(
+            extension.get(endpoint, 0.0),
+            f"{slice_part}.localization.spine_cpr.height_extension_mm.{endpoint}",
         )
 
 

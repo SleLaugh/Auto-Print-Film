@@ -209,6 +209,12 @@ CPR 的 `range_extension` 沿当前输出状位的切片偏移轴扩展，分别
 覆盖范围；冠状位和矢状位读取各自的 CPR 规则，不改变中心曲线的首尾椎体。
 首尾椎体范围通过 `localization.regions` 调整。
 
+胸腰椎和全脊柱另有 `localization.spine_cpr.height_extension_mm`，默认
+`{"top_mm": 50.0, "bottom_mm": 50.0}`。它表示高度方向上下各增加 50mm：
+横状位 MPR 扩展头脚层范围，冠状位/矢状位 MPR 扩展平面内上下高度，冠状位/矢状位
+CPR 只沿首末脊柱段的延长方向补足范围。该字段不改变 CPR 的前后/左右 offset，
+也不改变 `localization.regions` 的椎体端点；其他部位保持原配置。
+
 颈椎、胸椎、腰椎、胸腰椎、全脊柱均可在任务的 `plane_configs` 中显式选择矢状位 CPR，例如：
 
 ```json

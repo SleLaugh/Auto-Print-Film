@@ -22,6 +22,7 @@ from src.planning.geometry import (
 )
 from src.planning.sampling import ResolvedSampling, resolve_sampling
 from src.planning.spine_common import get_label_center, union_bboxes
+from src.planning.spine_common import resolve_spine_height_extension
 from src.planning.straight import (
     SliceRangeExtension,
     resolve_localizer_plane,
@@ -122,6 +123,11 @@ def build_spine_sagittal_cpr_plans(
     curve_points = _extend_curve_endpoints_to_terminal_raw_labels(
         localization_result,
         source_labels,
+        curve_points,
+        projection_axis=projection_axis,
+    )
+    curve_points = _extend_curve_endpoints_for_superior_inferior_margin(
+        localization_result,
         curve_points,
         projection_axis=projection_axis,
     )
@@ -1384,6 +1390,71 @@ def _extend_curve_endpoints_to_terminal_raw_labels(
         f"end_endpoint_index={end_endpoint_index}, "
         f"耗时={time.perf_counter() - perf_start:.3f}s"
     )
+    return extended
+
+
+def _extend_curve_endpoints_for_superior_inferior_margin(
+    localization_result: Dict[str, Any],
+    curve_points: List[Point3D],
+    *,
+    projection_axis: Point3D | None = None,
+) -> List[Point3D]:
+    """沿首末脊柱段切线把 CPR 上下两端各延长配置的覆盖距离。"""
+
+    top_mm, bottom_mm = resolve_spine_height_extension(
+        localization_result,
+    )
+    if len(curve_points) < 2 or (top_mm <= 0.0 and bottom_mm <= 0.0):
+        return list(curve_points)
+    start_direction = np.asarray([
+        curve_points[0].x - curve_points[1].x,
+        curve_points[0].y - curve_points[1].y,
+        curve_points[0].z - curve_points[1].z,
+    ], dtype=float)
+    end_direction = np.asarray([
+        curve_points[-1].x - curve_points[-2].x,
+        curve_points[-1].y - curve_points[-2].y,
+        curve_points[-1].z - curve_points[-2].z,
+    ], dtype=float)
+    start_length = float(np.linalg.norm(start_direction))
+    end_length = float(np.linalg.norm(end_direction))
+    if (
+        not math.isfinite(start_length)
+        or not math.isfinite(end_length)
+        or start_length <= 1e-8
+        or end_length <= 1e-8
+    ):
+        return list(curve_points)
+    start_direction /= start_length
+    end_direction /= end_length
+    start_extension = top_mm
+    end_extension = bottom_mm
+    if projection_axis is not None:
+        axis = np.asarray([
+            projection_axis.x,
+            projection_axis.y,
+            projection_axis.z,
+        ], dtype=float)
+        axis_length = float(np.linalg.norm(axis))
+        if math.isfinite(axis_length) and axis_length > 1e-8:
+            axis /= axis_length
+            start_projected_length = float(
+                np.linalg.norm(start_direction - np.dot(start_direction, axis) * axis)
+            )
+            end_projected_length = float(
+                np.linalg.norm(end_direction - np.dot(end_direction, axis) * axis)
+            )
+            if start_projected_length > 1e-8:
+                start_extension = top_mm / start_projected_length
+            if end_projected_length > 1e-8:
+                end_extension = bottom_mm / end_projected_length
+    extended = list(curve_points)
+    start = np.asarray([extended[0].x, extended[0].y, extended[0].z], dtype=float)
+    end = np.asarray([extended[-1].x, extended[-1].y, extended[-1].z], dtype=float)
+    start += start_direction * start_extension
+    end += end_direction * end_extension
+    extended[0] = Point3D(*map(float, start))
+    extended[-1] = Point3D(*map(float, end))
     return extended
 
 

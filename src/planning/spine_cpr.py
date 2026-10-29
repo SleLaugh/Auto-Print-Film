@@ -21,13 +21,9 @@ from src.planning.geometry import (
     voxel_index_to_physical,
 )
 from src.planning.sampling import ResolvedSampling, resolve_sampling
+from src.planning.face_extension import resolve_face_extension
 from src.planning.spine_common import get_label_center, union_bboxes
-from src.planning.spine_common import resolve_spine_height_extension
-from src.planning.straight import (
-    SliceRangeExtension,
-    resolve_localizer_plane,
-    resolve_range_extension,
-)
+from src.planning.straight import resolve_localizer_plane
 from src.planning.spine_cpr_math import add as _add
 from src.planning.spine_cpr_math import cross as _cross
 from src.planning.spine_cpr_math import dot as _dot
@@ -130,6 +126,7 @@ def build_spine_sagittal_cpr_plans(
         localization_result,
         curve_points,
         projection_axis=projection_axis,
+        plane=plane_config.plane,
     )
     sampling_curve_points = curve_points
     if projection_axis is not None:
@@ -156,6 +153,11 @@ def build_spine_sagittal_cpr_plans(
         if _dot(row_dir, projection_axis) < 0.0:
             row_dir = _scale(row_dir, -1.0)
         normal = normalize_vector(_cross(row_dir, tangent_dir))
+    lateral_center_shift = _resolve_cpr_lateral_face_center_shift(
+        localization_result,
+        plane_config.plane,
+        row_dir,
+    )
 
     range_modes = _configured_cpr_range_modes(localization_result)
     include_range_suffix = range_modes != ["full_label"]
@@ -175,7 +177,10 @@ def build_spine_sagittal_cpr_plans(
         slices = [
             PlannedSlice(
                 index=index + 1,
-                center=_add(center, _scale(offset_axis, offset_mm)),
+                center=_add(
+                    _add(center, _scale(offset_axis, offset_mm)),
+                    _scale(row_dir, lateral_center_shift),
+                ),
                 normal=normal,
                 row_dir=row_dir,
                 col_dir=tangent_dir,
@@ -203,6 +208,10 @@ def build_spine_sagittal_cpr_plans(
                 offsets,
                 sampling.slice_thickness,
             ))
+        width += _resolve_cpr_lateral_face_extension(
+            localization_result,
+            plane_config.plane,
+        )
         plans.append(SlicePlan(
             plan_id=plan_id,
             slice_part=request.slice_part.value,
@@ -1084,6 +1093,7 @@ def _resolve_offset_interval_mm(
                 localization_result,
                 filtered_interval,
                 plane=plane,
+                offset_axis=offset_axis,
             )
 
     raw_interval = _raw_label_offset_interval_mm(
@@ -1097,6 +1107,7 @@ def _resolve_offset_interval_mm(
             localization_result,
             raw_interval,
             plane=plane,
+            offset_axis=offset_axis,
         )
     return _bbox_offset_interval_mm(
         localization_result,
@@ -1238,30 +1249,35 @@ def _extend_cpr_offset_interval(
     interval: Tuple[float, float],
     *,
     plane: PlaneTypeEnum = PlaneTypeEnum.冠状位,
+    offset_axis: Point3D,
 ) -> Tuple[float, float]:
-    """按输出状位配置扩展 CPR offset 覆盖范围。"""
+    """按患者前后/左右六面配置扩展 CPR offset 覆盖范围。"""
 
-    extension = _resolve_cpr_offset_range_extension(
-        localization_result,
-        plane=plane,
-    )
+    face_extension = resolve_face_extension(localization_result, "CPR", plane)
+    if face_extension is None:
+        return float(interval[0]), float(interval[1])
+    else:
+        reference_axes = patient_reference_axes(
+            image_direction_matrix(localization_result["image"]),
+        )
+        semantic_axis = reference_axes[:, 1 if plane == PlaneTypeEnum.冠状位 else 0]
+        offset = np.asarray([offset_axis.x, offset_axis.y, offset_axis.z], dtype=float)
+        sign = float(np.dot(offset, semantic_axis))
+        if plane == PlaneTypeEnum.冠状位:
+            low_mm, high_mm = (
+                (face_extension.front_mm, face_extension.back_mm)
+                if sign >= 0.0
+                else (face_extension.back_mm, face_extension.front_mm)
+            )
+        else:
+            low_mm, high_mm = (
+                (face_extension.right_mm, face_extension.left_mm)
+                if sign >= 0.0
+                else (face_extension.left_mm, face_extension.right_mm)
+            )
     return (
-        float(interval[0]) - extension.start_mm,
-        float(interval[1]) + extension.end_mm,
-    )
-
-
-def _resolve_cpr_offset_range_extension(
-    localization_result: Dict[str, Any],
-    *,
-    plane: PlaneTypeEnum = PlaneTypeEnum.冠状位,
-) -> SliceRangeExtension:
-    """读取当前 CPR 输出状位沿 offset 轴的范围扩展。"""
-
-    return resolve_range_extension(
-        localization_result,
-        "CPR",
-        plane,
+        float(interval[0]) - low_mm,
+        float(interval[1]) + high_mm,
     )
 
 
@@ -1398,12 +1414,14 @@ def _extend_curve_endpoints_for_superior_inferior_margin(
     curve_points: List[Point3D],
     *,
     projection_axis: Point3D | None = None,
+    plane: PlaneTypeEnum,
 ) -> List[Point3D]:
     """沿首末脊柱段切线把 CPR 上下两端各延长配置的覆盖距离。"""
 
-    top_mm, bottom_mm = resolve_spine_height_extension(
-        localization_result,
-    )
+    face_extension = resolve_face_extension(localization_result, "CPR", plane)
+    if face_extension is None:
+        return list(curve_points)
+    top_mm, bottom_mm = face_extension.top_mm, face_extension.bottom_mm
     if len(curve_points) < 2 or (top_mm <= 0.0 and bottom_mm <= 0.0):
         return list(curve_points)
     start_direction = np.asarray([
@@ -1701,6 +1719,7 @@ def _bbox_offset_interval_mm(
         localization_result,
         (min(projections), max(projections)),
         plane=plane,
+        offset_axis=offset_axis,
     )
     return float(interval[0]), float(interval[1])
 
@@ -1782,6 +1801,47 @@ def _resolve_cpr_width_extent_mm(
     projections = [_dot(point, row_dir) for point in corners]
     extent = max(projections) - min(projections)
     return max(float(extent), _minimum_image_spacing(localization_result["image"]))
+
+
+def _resolve_cpr_lateral_face_extension(
+    localization_result: Dict[str, Any],
+    plane: PlaneTypeEnum,
+) -> float:
+    """返回 CPR 横向画面对应的两面扩展总量。"""
+
+    extension = resolve_face_extension(localization_result, "CPR", plane)
+    if extension is None:
+        return 0.0
+    if plane == PlaneTypeEnum.冠状位:
+        return extension.left_mm + extension.right_mm
+    if plane == PlaneTypeEnum.矢状位:
+        return extension.front_mm + extension.back_mm
+    return 0.0
+
+
+def _resolve_cpr_lateral_face_center_shift(
+    localization_result: Dict[str, Any],
+    plane: PlaneTypeEnum,
+    row_dir: Point3D,
+) -> float:
+    """返回不对称横向六面扩展对应的 CPR 画面中心位移。"""
+
+    extension = resolve_face_extension(localization_result, "CPR", plane)
+    if extension is None:
+        return 0.0
+    reference_axes = patient_reference_axes(
+        image_direction_matrix(localization_result["image"]),
+    )
+    semantic_axis = reference_axes[:, 0 if plane == PlaneTypeEnum.冠状位 else 1]
+    row = np.asarray([row_dir.x, row_dir.y, row_dir.z], dtype=float)
+    axis_alignment = float(np.dot(row, semantic_axis))
+    if plane == PlaneTypeEnum.冠状位:
+        semantic_shift = (extension.left_mm - extension.right_mm) / 2.0
+    elif plane == PlaneTypeEnum.矢状位:
+        semantic_shift = (extension.back_mm - extension.front_mm) / 2.0
+    else:
+        return 0.0
+    return semantic_shift * axis_alignment
 
 
 def _resolve_centered_cpr_width_extent_mm(

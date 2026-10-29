@@ -156,7 +156,12 @@ def test_axial_stack_is_parallel_and_covers_all_vertebrae_and_terminal_slabs(
     _, _, points, _, geometry, _, localization = _case("oblique", end_label)
     start_extension, end_extension = extension_pair
     localization["slice_rules"] = {"横状位": {"MPR": {
-        "range_extension": {"start_mm": start_extension, "end_mm": end_extension},
+        "face_extension_mm": {
+            "top_mm": start_extension,
+            "bottom_mm": end_extension,
+            "front_mm": 0.0, "back_mm": 0.0,
+            "left_mm": 0.0, "right_mm": 0.0,
+        },
     }}}
     request = Request("/tmp/dicom", "/tmp/output", slice_part=SlicePartEnum.颈椎)
     plan = build_whole_range_plan_from_bbox(
@@ -172,7 +177,9 @@ def test_axial_stack_is_parallel_and_covers_all_vertebrae_and_terminal_slabs(
                                np.tile(-5.0 * normal, (len(centers) - 1, 1)), atol=1e-12)
     projected = np.concatenate(list(points.values())) @ normal
     assert _vector(plan.target_start) @ normal == pytest.approx(projected.max())
-    assert _vector(plan.target_end) @ normal == pytest.approx(projected.min())
+    assert _vector(plan.target_end) @ normal == pytest.approx(
+        projected.min() - end_extension,
+    )
     assert centers[0] @ normal + 2.5 >= projected.max() + start_extension - 1e-9
     assert centers[-1] @ normal - 2.5 <= projected.min() - end_extension + 1e-9
     # 首末余量只来自按整层数取整；不能多漏/多加一层。

@@ -12,6 +12,14 @@ from src.runtime import config_path
 _PLANES = {"横状位", "冠状位", "矢状位"}
 _SLICE_TYPES = {"MPR", "CPR", "椎间隙"}
 _REGION_TYPES = {"whole_range", "interspace"}
+_FACE_EXTENSION_FIELDS = (
+    "top_mm",
+    "bottom_mm",
+    "front_mm",
+    "back_mm",
+    "left_mm",
+    "right_mm",
+)
 
 
 def default_slice_part_config_path() -> Path:
@@ -256,7 +264,6 @@ def _validate_spine_cpr_config(
     unknown_fields = set(config) - {
         "full_label",
         "excluded_labels",
-        "height_extension_mm",
     }
     if unknown_fields:
         raise ValueError(
@@ -285,23 +292,6 @@ def _validate_spine_cpr_config(
             f"{slice_part}.localization.spine_cpr.excluded_labels 包含未知标签: "
             f"{sorted(unknown_labels)}"
         )
-    extension = config.get("height_extension_mm", {})
-    if not isinstance(extension, Mapping):
-        raise ValueError(
-            f"{slice_part}.localization.spine_cpr.height_extension_mm 必须是对象"
-        )
-    _reject_unknown_fields(
-        extension,
-        {"top_mm", "bottom_mm"},
-        f"{slice_part}.localization.spine_cpr.height_extension_mm",
-    )
-    for endpoint in ("top_mm", "bottom_mm"):
-        _non_negative_finite_number(
-            extension.get(endpoint, 0.0),
-            f"{slice_part}.localization.spine_cpr.height_extension_mm.{endpoint}",
-        )
-
-
 def _validate_slice_rule(
     slice_part: str,
     plane: str,
@@ -318,7 +308,12 @@ def _validate_slice_rule(
         raise ValueError(f"{prefix} 切法规则必须是对象")
     _reject_unknown_fields(
         rule,
-        {"regions", "range_extension", "localizer_plane", "framing_policy"},
+        {
+            "regions",
+            "face_extension_mm",
+            "localizer_plane",
+            "framing_policy",
+        },
         prefix,
     )
     if "framing_policy" in rule:
@@ -370,14 +365,33 @@ def _validate_slice_rule(
     if expected_region_type == "whole_range" and len(region_names) != 1:
         raise ValueError(f"{prefix} 当前只支持一个整体区域")
 
-    extension = rule.get("range_extension")
+    face_extension = rule.get("face_extension_mm")
+    if face_extension is None:
+        raise ValueError(f"{prefix} 必须配置 face_extension_mm")
+    _validate_face_extension(prefix, face_extension)
+
+
+def _validate_face_extension(prefix: str, extension: Any) -> None:
+    """校验统一解剖坐标六面扩展。"""
+
     if not isinstance(extension, Mapping):
-        raise ValueError(f"{prefix}.range_extension 必须是对象")
-    unknown_fields = set(extension) - {"start_mm", "end_mm"}
+        raise ValueError(f"{prefix}.face_extension_mm 必须是对象")
+    unknown_fields = set(extension) - set(_FACE_EXTENSION_FIELDS)
     if unknown_fields:
-        raise ValueError(f"{prefix}.range_extension 仅支持 start_mm/end_mm")
-    for endpoint in ("start_mm", "end_mm"):
-        _non_negative_finite_number(extension.get(endpoint), f"{prefix}.{endpoint}")
+        raise ValueError(
+            f"{prefix}.face_extension_mm 仅支持 "
+            f"{','.join(_FACE_EXTENSION_FIELDS)}"
+        )
+    missing_fields = [field for field in _FACE_EXTENSION_FIELDS if field not in extension]
+    if missing_fields:
+        raise ValueError(
+            f"{prefix}.face_extension_mm 缺少字段: {missing_fields}"
+        )
+    for field in _FACE_EXTENSION_FIELDS:
+        _non_negative_finite_number(
+            extension[field],
+            f"{prefix}.face_extension_mm.{field}",
+        )
 
 
 def _non_negative_finite_number(value: Any, field_name: str) -> float:
@@ -451,6 +465,25 @@ def slice_rules_for(
 
     part_config = get_slice_part(config, slice_part)
     return deepcopy(dict(part_config["slice_rules"]))
+
+
+def resolve_face_extension(rule: Mapping[str, Any]) -> Dict[str, float] | None:
+    """读取并标准化一条规则的六面扩展，未配置时返回 ``None``。
+
+    配置加载时已经通过 :func:`validate_slice_part_config` 校验；该函数仍保留
+    完整字段和数值校验，便于阶段结果从 JSON 恢复时避免静默接受损坏配置。
+    """
+
+    if not isinstance(rule, Mapping):
+        raise ValueError("切法规则必须是对象")
+    extension = rule.get("face_extension_mm")
+    if extension is None:
+        return None
+    _validate_face_extension("slice_rule", extension)
+    return {
+        field: float(extension[field])
+        for field in _FACE_EXTENSION_FIELDS
+    }
 
 
 def localization_for(

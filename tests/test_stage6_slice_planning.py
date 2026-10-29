@@ -2263,16 +2263,20 @@ class Stage6SlicePlanningTest(unittest.TestCase):
 
                 self.assertEqual(plan.source_labels, [f"vertebrae_{label}" for label in labels])
 
-    def test_spine_sagittal_cpr_reads_sagittal_range_extension(self):
-        """矢状位 CPR 的 offset 范围应读取矢状位自身的扩展配置。"""
+    def test_spine_sagittal_cpr_reads_sagittal_face_extension(self):
+        """矢状位 CPR 的 offset 范围应读取左右六面扩展。"""
 
         localization_result = self._spine_localization_result(
             ("L1", "L2", "L3"),
             "腰椎",
         )
         localization_result["slice_rules"]["矢状位"]["CPR"][
-            "range_extension"
-        ] = {"start_mm": 4.0, "end_mm": 6.0}
+            "face_extension_mm"
+        ] = {
+            "top_mm": 0.0, "bottom_mm": 0.0,
+            "front_mm": 0.0, "back_mm": 0.0,
+            "left_mm": 6.0, "right_mm": 4.0,
+        }
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
@@ -2338,13 +2342,19 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     ).plans[0]
 
                     self.assertEqual(plan.source_labels, expected)
+                    endpoint_extension = 50.0 if part in {
+                        SlicePartEnum.胸腰椎,
+                        SlicePartEnum.全脊柱,
+                    } else 0.0
                     self.assertAlmostEqual(
                         plan.range_start.z,
-                        localization["coords"][expected[0]]["centroid"]["z"],
+                        localization["coords"][expected[0]]["centroid"]["z"]
+                        + endpoint_extension,
                     )
                     self.assertAlmostEqual(
                         plan.range_end.z,
-                        localization["coords"][expected[-1]]["centroid"]["z"],
+                        localization["coords"][expected[-1]]["centroid"]["z"]
+                        - endpoint_extension,
                     )
 
     def test_cervical_interspace_starts_at_c2_c3_and_keeps_five_gaps(self):
@@ -2430,7 +2440,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 else:
                     self.assertIsInstance(planner, SingleLabelWholeRangePlanner)
 
-    def test_checked_in_range_extension_keeps_configured_defaults(self):
+    def test_checked_in_face_extension_keeps_configured_defaults(self):
         """验证当前默认值，不限制后续按需增加其他部位或状位。"""
 
         config_path = Path("src/config/slice_part_config.json")
@@ -2441,8 +2451,15 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     "横状位"
                 ]["MPR"]
                 self.assertEqual(
-                    rule["range_extension"],
-                    {"start_mm": 3.0, "end_mm": 3.0},
+                    rule["face_extension_mm"],
+                    {
+                        "top_mm": 3.0,
+                        "bottom_mm": 3.0,
+                        "front_mm": 0.0,
+                        "back_mm": 0.0,
+                        "left_mm": 0.0,
+                        "right_mm": 0.0,
+                    },
                 )
 
     def test_checked_in_localizer_planes_cover_every_slice_rule(self):
@@ -2531,8 +2548,15 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             self._configured_localization_contract("肺部")
         )
         localization_result["slice_rules"]["横状位"]["MPR"][
-            "range_extension"
-        ] = {"start_mm": 0.0, "end_mm": 0.0}
+            "face_extension_mm"
+        ] = {
+            "top_mm": 0.0,
+            "bottom_mm": 0.0,
+            "front_mm": 0.0,
+            "back_mm": 0.0,
+            "left_mm": 0.0,
+            "right_mm": 0.0,
+        }
 
         result = SingleLabelWholeRangePlanner().build_plans(
             request,
@@ -3610,16 +3634,20 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 localization_result,
             )
 
-    def test_spine_cpr_offsets_read_coronal_whole_range_extension(self):
-        """冠状位 CPR 应用整切冠状位扩展增加前后 offset 范围。"""
+    def test_spine_cpr_offsets_read_coronal_face_extension(self):
+        """冠状位 CPR 应用前后六面扩展增加 offset 范围。"""
 
         localization_result = self._spine_localization_result(
             ("L1", "L2", "L3"),
             "腰椎",
         )
         localization_result["slice_rules"]["冠状位"]["CPR"][
-            "range_extension"
-        ] = {"start_mm": 4.0, "end_mm": 6.0}
+            "face_extension_mm"
+        ] = {
+            "top_mm": 0.0, "bottom_mm": 0.0,
+            "front_mm": 4.0, "back_mm": 6.0,
+            "left_mm": 0.0, "right_mm": 0.0,
+        }
         request = Request(
             dicom_dir="/tmp/dicom",
             output_dir="/tmp/output",
@@ -5069,12 +5097,9 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 slice_spacing=2.0,
                 window_presets=["骨窗"],
                 fill_percent=100,
-            )],
+        )],
         )
         localization_result = self._lumbar_localization_result()
-        localization_result["slice_rules"]["横状位"]["MPR"][
-            "range_extension"
-        ] = {"start_mm": 1.0, "end_mm": 3.0}
         inverse_sqrt_two = 2 ** -0.5
         frame = StraightPlaneFrame(
             row_dir=Point3D(1.0, 0.0, 0.0),
@@ -5105,12 +5130,12 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             + (plan.range_start.z - plan.range_end.z) * frame.normal.z
         )
         planned_projection_length = center_projection_length + plan.slice_thickness
-        self.assertAlmostEqual(planned_projection_length, 12.0)
+        self.assertAlmostEqual(planned_projection_length, 8.0)
         self.assertGreaterEqual(
             planned_projection_length,
             target_projection_length,
         )
-        self.assertEqual(len(plan.slices), 6)
+        self.assertEqual(len(plan.slices), 4)
         start_extra = (
             (plan.range_start.x - plan.target_start.x) ** 2
             + (plan.range_start.y - plan.target_start.y) ** 2
@@ -5121,7 +5146,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             + (plan.range_end.y - plan.target_end.y) ** 2
             + (plan.range_end.z - plan.target_end.z) ** 2
         ) ** 0.5
-        self.assertAlmostEqual(end_extra - start_extra, 2.0, places=6)
+        self.assertAlmostEqual(end_extra - start_extra, 0.0, places=6)
         for previous, current in zip(plan.slices, plan.slices[1:]):
             distance = ((current.center.x - previous.center.x) ** 2
                         + (current.center.y - previous.center.y) ** 2

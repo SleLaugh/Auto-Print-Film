@@ -85,8 +85,8 @@ class SpinePartConfigTest(unittest.TestCase):
                 "ScanThickness": 1.0,
             })
 
-    def test_cervical_default_stops_at_t1_with_axial_mpr_end_extension(self):
-        """默认整段为 C1–T1，横状位 MPR 仅在末端增加 5 mm。"""
+    def test_cervical_default_stops_at_t1_with_axial_mpr_bottom_extension(self):
+        """默认整段为 C1–T1，横状位 MPR 仅在底侧增加 5 mm。"""
 
         self.assertEqual(
             localization_profiles_for(self.config, "颈椎")["whole_range"],
@@ -94,14 +94,28 @@ class SpinePartConfigTest(unittest.TestCase):
         )
         rules = slice_rules_for(self.config, "颈椎")
         self.assertEqual(
-            rules["横状位"]["MPR"]["range_extension"],
-            {"start_mm": 0.0, "end_mm": 5.0},
+            rules["横状位"]["MPR"]["face_extension_mm"],
+            {
+                "top_mm": 0.0,
+                "bottom_mm": 5.0,
+                "front_mm": 0.0,
+                "back_mm": 0.0,
+                "left_mm": 0.0,
+                "right_mm": 0.0,
+            },
         )
         for plane in ("冠状位", "矢状位"):
             for rule in rules[plane].values():
                 self.assertEqual(
-                    rule.get("range_extension", {}),
-                    {"start_mm": 0.0, "end_mm": 0.0},
+                    rule.get("face_extension_mm", {}),
+                    {
+                        "top_mm": 0.0,
+                        "bottom_mm": 0.0,
+                        "front_mm": 0.0,
+                        "back_mm": 0.0,
+                        "left_mm": 0.0,
+                        "right_mm": 0.0,
+                    },
                 )
 
     def test_spine_capabilities_include_exactly_the_requested_five_combinations(self):

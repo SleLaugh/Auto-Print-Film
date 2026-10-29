@@ -157,7 +157,12 @@ def test_default_rebuild_publishes_all_current_source_json_in_directory_and_arch
             updated[0]["window_center"] = 45
         write_json(path, updated)
     write_json(source / "src/config/slice_part_config.json", {
-        "部位": "颅脑", "标签": "brain", "start_mm": 10,
+        "部位": "颅脑", "标签": "brain",
+        "face_extension_mm": {
+            "top_mm": 10, "bottom_mm": 0,
+            "front_mm": 0, "back_mm": 0,
+            "left_mm": 0, "right_mm": 0,
+        },
     })
     # Future source configurations must also be published without a fixed list.
     write_json(source / "src/config/new-setting.json", {"enabled": True})

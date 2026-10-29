@@ -468,7 +468,7 @@ class ConfigLoaderTest(unittest.TestCase):
 
         unknown_field = deepcopy(base_config)
         unknown_field["slice_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"][
-            "slice_range_extension"
+            "old_slice_range"
         ] = {}
         cases.append((unknown_field, "未知字段"))
 
@@ -608,7 +608,7 @@ class ConfigLoaderTest(unittest.TestCase):
         cervical = config["slice_parts"]["颈椎"]
         self.assertEqual(cervical["localization"]["regions"]["default"]["end_label"], "T1")
         self.assertEqual(
-            cervical["slice_rules"]["横状位"]["MPR"]["range_extension"]["end_mm"],
+            cervical["slice_rules"]["横状位"]["MPR"]["face_extension_mm"]["bottom_mm"],
             5.0,
         )
 

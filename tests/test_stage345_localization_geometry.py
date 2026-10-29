@@ -60,38 +60,42 @@ class LocalizationGeometryTest(unittest.TestCase):
                 },
             },
         }
-        zero_extension = {"start_mm": 0.0, "end_mm": 0.0}
+        zero_extension = {
+            "top_mm": 0.0, "bottom_mm": 0.0,
+            "front_mm": 0.0, "back_mm": 0.0,
+            "left_mm": 0.0, "right_mm": 0.0,
+        }
         lumbar["slice_rules"] = {
             "横状位": {
                 "MPR": {
                     "regions": ["default"],
-                    "range_extension": deepcopy(zero_extension),
+                    "face_extension_mm": deepcopy(zero_extension),
                     "localizer_plane": "矢状位",
                 },
                 "椎间隙": {
                     "regions": ["L1_S1"],
-                    "range_extension": deepcopy(zero_extension),
+                    "face_extension_mm": deepcopy(zero_extension),
                     "localizer_plane": "矢状位",
                 },
             },
             "冠状位": {
                 "MPR": {
                     "regions": ["default"],
-                    "range_extension": deepcopy(zero_extension),
+                    "face_extension_mm": deepcopy(zero_extension),
                     "localizer_plane": "矢状位",
                 },
                 "CPR": {
                     "regions": ["default"],
-                    "range_extension": deepcopy(zero_extension),
+                    "face_extension_mm": deepcopy(zero_extension),
                     "localizer_plane": "矢状位",
                 },
             },
             "矢状位": {
                 "MPR": {
                     "regions": ["default"],
-                    "range_extension": {
-                        "start_mm": sagittal_start_mm,
-                        "end_mm": 0.0,
+                    "face_extension_mm": {
+                        **zero_extension,
+                        "left_mm": sagittal_start_mm,
                     },
                     "localizer_plane": "冠状位",
                 }
@@ -100,29 +104,35 @@ class LocalizationGeometryTest(unittest.TestCase):
         validate_slice_part_config(config)
         return config
 
-    def test_range_extension_config_accepts_non_negative_endpoints(self):
-        """统一配置接受切法规则下完整的非负毫米扩展。"""
+    def test_face_extension_config_accepts_non_negative_faces(self):
+        """统一配置接受切法规则下完整的六面非负毫米扩展。"""
 
         config = load_slice_part_config()
-        extension = config["slice_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"]["range_extension"]
-        extension.update({"start_mm": 3.0, "end_mm": 2.0})
+        extension = config["slice_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"]["face_extension_mm"]
+        extension.update({"top_mm": 3.0, "bottom_mm": 2.0})
 
         validate_slice_part_config(config)
 
-    def test_range_extension_config_rejects_invalid_values(self):
-        """范围扩展仅接受 start_mm/end_mm 和非负有限毫米数。"""
+    def test_face_extension_config_rejects_invalid_values(self):
+        """六面扩展仅接受完整的非负有限毫米数。"""
 
         invalid_extensions = (
             ([], "必须是对象"),
-            ({"before": 1.0, "start_mm": 0.0, "end_mm": 0.0}, "仅支持"),
-            ({"start_mm": -1.0, "end_mm": 0.0}, "必须是非负有限数字"),
-            ({"start_mm": True, "end_mm": 0.0}, "必须是非负有限数字"),
-            ({"start_mm": 0.0, "end_mm": math.inf}, "必须是非负有限数字"),
+            ({"inside_mm": 1.0}, "仅支持"),
+            ({field: (-1.0 if field == "left_mm" else 0.0) for field in (
+                "top_mm", "bottom_mm", "front_mm", "back_mm", "left_mm", "right_mm",
+            )}, "必须是非负有限数字"),
+            ({field: (True if field == "front_mm" else 0.0) for field in (
+                "top_mm", "bottom_mm", "front_mm", "back_mm", "left_mm", "right_mm",
+            )}, "必须是非负有限数字"),
+            ({field: (math.inf if field == "bottom_mm" else 0.0) for field in (
+                "top_mm", "bottom_mm", "front_mm", "back_mm", "left_mm", "right_mm",
+            )}, "必须是非负有限数字"),
         )
         for extension, message in invalid_extensions:
             with self.subTest(extension=extension):
                 config = load_slice_part_config()
-                config["slice_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"]["range_extension"] = extension
+                config["slice_parts"]["肺部"]["slice_rules"]["横状位"]["MPR"]["face_extension_mm"] = extension
                 with self.assertRaisesRegex(ValueError, message):
                     validate_slice_part_config(config)
 
@@ -3140,7 +3150,7 @@ class LocalizationGeometryTest(unittest.TestCase):
             self.assertIn("cut_configs", result)
             self.assertEqual(
                 result["slice_rules"]["矢状位"]["MPR"]
-                ["range_extension"]["start_mm"],
+                ["face_extension_mm"]["left_mm"],
                 2.0,
             )
             self.assertEqual(

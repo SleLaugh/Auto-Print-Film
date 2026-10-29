@@ -9,6 +9,7 @@ from .slice_parts import (
     localization_for,
     localization_profiles_for,
     model_mappings_for,
+    resolve_face_extension,
     slice_rules_for,
     validate_slice_part_config,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "localization_for",
     "localization_profiles_for",
     "model_mappings_for",
+    "resolve_face_extension",
     "slice_rules_for",
     "validate_slice_part_config",
 ]

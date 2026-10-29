@@ -184,12 +184,6 @@ class LocalizationContractMixin:
             "full_label": config["full_label"],
             "excluded_labels": excluded_labels,
         }
-        extension = config.get("height_extension_mm")
-        if isinstance(extension, dict):
-            result["height_extension_mm"] = {
-                "top_mm": float(extension.get("top_mm", 0.0)),
-                "bottom_mm": float(extension.get("bottom_mm", 0.0)),
-            }
         return result
 
     def _resolve_cut_configs(self, request) -> Dict[str, CutConfig]:

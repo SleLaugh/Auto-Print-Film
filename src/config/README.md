@@ -57,7 +57,7 @@ JSON 后下一次任务启动即可生效，无需重新打包。
 若当前模型 `dataset.json` 明确提供 `skull` 且分割中存在相应体素，运行时沿脑区最终
 头脚轴的物理范围筛选骨体素，仅用于第七阶段取景、居中和防裁边，不要求新增 `skull`
 别名或修改模型规则。方向和三状位基础范围只用 `brain`，切片层组再应用现有范围扩展。
-当前仅横状位 MPR 默认 `start_mm=10.0`、`end_mm=0.0`，向头侧补 `10 mm`、下侧不补；
+当前仅横状位 MPR 默认 `top_mm=10.0`、`bottom_mm=0.0`，向头侧补 `10 mm`、下侧不补；
 同一计划的骨取景上界同步增加该余量，下界仍为脑区，远处面部、下颌骨不延长层组。
 缺骨仅用脑区取景并告警；脑区接边报告截断风险，配置余量不补出扫描外组织。
 这属于形态估计，不保证与听眦线或 AC-PC 线平行，详见
@@ -89,7 +89,11 @@ JSON 后下一次任务启动即可生效，无需重新打包。
     "横状位": {
       "MPR": {
         "regions": ["default"],
-        "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
+        "face_extension_mm": {
+          "top_mm": 0.0, "bottom_mm": 0.0,
+          "front_mm": 0.0, "back_mm": 0.0,
+          "left_mm": 0.0, "right_mm": 0.0
+        },
         "localizer_plane": "矢状位"
       }
     }
@@ -192,8 +196,9 @@ JSON 后下一次任务启动即可生效，无需重新打包。
 | 字段 | 说明 |
 | --- | --- |
 | `regions` | 要使用的区域名称数组，必须引用当前部位 `localization.regions` 中已定义的区域。 |
-| `range_extension.start_mm` | 从定位起点向外扩展的距离，单位 mm。 |
-| `range_extension.end_mm` | 从定位终点向外扩展的距离，单位 mm。 |
+| `face_extension_mm.top_mm` / `bottom_mm` | 沿患者头脚方向从当前区域上、下边界向外扩展的距离，单位 mm。 |
+| `face_extension_mm.front_mm` / `back_mm` | 沿患者前后方向从当前区域前、后边界向外扩展的距离，单位 mm。 |
+| `face_extension_mm.left_mm` / `right_mm` | 沿患者左右方向从当前区域左、右边界向外扩展的距离，单位 mm。 |
 | `localizer_plane` | 定位图的参考显示状位，只能是三种状位之一，且不能与当前重建状位相同。 |
 | `framing_policy` | 可选，仅普通 MPR 可配置；在正数 `FillPercent` 下按指定依据取景，详见下节。 |
 
@@ -205,15 +210,13 @@ JSON 后下一次任务启动即可生效，无需重新打包。
 MPR 直接按第六阶段真实平面求交，交线仅裁到底图边界或曲面显示网格，长度不随
 正式成片取景变化。定位线不表示正式切片的有限视野，CPR 保持真实计划曲线路径。
 
-CPR 的 `range_extension` 沿当前输出状位的切片偏移轴扩展，分别增加负向和正向的
-覆盖范围；冠状位和矢状位读取各自的 CPR 规则，不改变中心曲线的首尾椎体。
-首尾椎体范围通过 `localization.regions` 调整。
+`face_extension_mm` 是所有部位通用的六面扩展。它始终基于当前 `regions` 选中的区域，
+按患者固定的上、下、前、后、左、右方向扩展；换成其他状位时方向含义不变。MPR 按六面
+扩展三维区域后再投影到当前平面，CPR 将前后/左右分别作用到对应 offset 和横向视野，
+上下作用到纵向范围。六个值为 `0.0` 表示该方向不扩展。
 
-胸腰椎和全脊柱另有 `localization.spine_cpr.height_extension_mm`，默认
-`{"top_mm": 50.0, "bottom_mm": 50.0}`。它表示高度方向上下各增加 50mm：
-横状位 MPR 扩展头脚层范围，冠状位/矢状位 MPR 扩展平面内上下高度，冠状位/矢状位
-CPR 只沿首末脊柱段的延长方向补足范围。该字段不改变 CPR 的前后/左右 offset，
-也不改变 `localization.regions` 的椎体端点；其他部位保持原配置。
+胸腰椎和全脊柱的五条整体规则默认上下各增加 `50 mm`，前后和左右暂为 `0 mm`；
+需要冠状位左右增加范围时，直接修改对应冠状位规则的 `left_mm`、`right_mm`。
 
 颈椎、胸椎、腰椎、胸腰椎、全脊柱均可在任务的 `plane_configs` 中显式选择矢状位 CPR，例如：
 
@@ -249,7 +252,11 @@ CPR 只沿首末脊柱段的延长方向补足范围。该字段不改变 CPR �
 ```json
 {
   "regions": ["default"],
-  "range_extension": { "start_mm": 0.0, "end_mm": 0.0 },
+  "face_extension_mm": {
+    "top_mm": 0.0, "bottom_mm": 0.0,
+    "front_mm": 0.0, "back_mm": 0.0,
+    "left_mm": 0.0, "right_mm": 0.0
+  },
   "localizer_plane": "矢状位",
   "framing_policy": { "basis": "selected_region", "margin_mm": 5.0, "canvas": "original" }
 }
@@ -342,12 +349,12 @@ CPR 使用完整标签范围，不排除椎体。扫描和分割结果需要覆�
 腰椎仍为 `L1_L2` 至 `L5_S1` 五组，不生成 `C7_T1` 或 `T12_L1`。当前没有 `S2` 标签，
 腰椎终点仍为 `S1`；实际模型只提供 `sacrum` 时沿用运行时标签回退。
 
-肺部和髋骨的横状位规则当前均设置 `start_mm=3.0`、`end_mm=3.0`；两者的横状位
-定位图均使用冠状位。颅脑横状位 MPR 为 `start_mm=10.0`、`end_mm=0.0`，仅补头侧；
-颈椎横状位 MPR 为 `start_mm=0.0`、`end_mm=5.0`，在 C1–T1 目标范围的终点侧外扩
+肺部和髋骨的横状位规则当前均设置 `top_mm=3.0`、`bottom_mm=3.0`；两者的横状位
+定位图均使用冠状位。颅脑横状位 MPR 为 `top_mm=10.0`、`bottom_mm=0.0`，仅补头侧；
+颈椎横状位 MPR 为 `top_mm=0.0`、`bottom_mm=5.0`，在 C1–T1 目标范围的底侧外扩
 `5 mm`，不要求新增 T2 标签。颈椎冠、矢状位 MPR 以及颅脑冠、矢状位和其他当前规则的
-范围扩展为 `0.0 mm`。这项固定余量不补全源扫描外内容。定位图状位按 JSON 中的
-`localizer_plane` 读取。颅脑头侧余量沿用既有字段，不新增 JSON 配置项。
+六面范围扩展为 `0.0 mm`。这项固定余量不补全源扫描外内容。定位图状位按 JSON 中的
+`localizer_plane` 读取。
 
 `10 mm` 是当前默认工程余量，不保证所有病例颅顶完整，也不能恢复源扫描缺失部分。
 范围校对应看首末切片厚层的外缘，Localizer 定位线表示中心面，第一条线不是覆盖起点。

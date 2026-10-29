@@ -4,9 +4,8 @@
 """整切 planner 的公共方法。"""
 
 from dataclasses import dataclass
+from itertools import product
 from typing import Any, Dict, List, Optional
-
-import numpy as np
 
 from src.models import (
     AnatomicalBounds,
@@ -27,6 +26,7 @@ from src.planning.geometry import (
 from src.planning.straight import (
     anatomical_straight_frame,
     bbox_physical_corners,
+    image_physical_corners,
     project_region_extent,
     CutSegment,
     build_straight_slice_plan,
@@ -35,10 +35,12 @@ from src.planning.straight import (
     recenter_point_in_plane,
     resolve_localizer_plane,
     resolve_segment_sampling,
-    resolve_range_extension,
     resolve_projected_extent,
 )
-from src.planning.spine_common import resolve_spine_height_extension
+from src.planning.face_extension import (
+    expand_anatomical_bounds,
+    resolve_face_extension,
+)
 
 
 @dataclass(frozen=True)
@@ -258,25 +260,33 @@ def build_whole_range_plan_from_bbox(
     if not bbox:
         raise ValueError("定位结果缺少 correction_scope_bbox")
 
+    face_extension = resolve_face_extension(
+        localization_result,
+        plane_config.slice_type.value,
+        plane_config.plane,
+    )
+    if face_extension is not None:
+        fallback_frame = _fallback_anatomical_frame_from_bbox(
+            bbox,
+            localization_result["image"],
+        )
+        return _apply_localizer_preferences(
+            _build_whole_range_plan_from_anatomical_frame(
+                request=request,
+                plane_config=plane_config,
+                localization_result=localization_result,
+                anatomical_frame=fallback_frame,
+                source_labels=source_labels,
+                target_region_bbox=target_region_bbox,
+            ),
+            request.slice_part.value,
+            None,
+        )
+
     target_start, target_end = bbox_target_points(
         localization_result,
         plane_config.plane,
     )
-    superior_extension_mm, inferior_extension_mm = (
-        resolve_spine_height_extension(localization_result)
-    )
-    if plane_config.plane == PlaneTypeEnum.横状位 and (
-        superior_extension_mm or inferior_extension_mm
-    ):
-        si = patient_reference_axes(image_direction_matrix(
-            localization_result["image"],
-        ))[:, 2]
-        start = np.asarray([target_start.x, target_start.y, target_start.z])
-        end = np.asarray([target_end.x, target_end.y, target_end.z])
-        start += si * superior_extension_mm
-        end -= si * inferior_extension_mm
-        target_start = Point3D(*map(float, start))
-        target_end = Point3D(*map(float, end))
     segment = CutSegment(
         group_name="whole_range",
         target_start=target_start,
@@ -296,13 +306,6 @@ def build_whole_range_plan_from_bbox(
         segment=segment,
         frame=frame,
     )
-    if plane_config.plane in {PlaneTypeEnum.矢状位, PlaneTypeEnum.冠状位}:
-        extra_height = superior_extension_mm + inferior_extension_mm
-        if extra_height:
-            plan.extent_mm = ExtentMM(
-                width=plan.extent_mm.width,
-                height=plan.extent_mm.height + extra_height,
-            )
     return _apply_localizer_preferences(
         plan,
         request.slice_part.value,
@@ -370,18 +373,13 @@ def _build_whole_range_plan_from_anatomical_frame(
         if target_region_bbox is not None
         else anatomical_frame.bounds
     )
-    superior_extension_mm, inferior_extension_mm = (
-        resolve_spine_height_extension(localization_result)
+    face_extension = resolve_face_extension(
+        localization_result,
+        plane_config.slice_type.value,
+        plane_config.plane,
     )
-    if superior_extension_mm or inferior_extension_mm:
-        bounds = AnatomicalBounds(
-            left_right=bounds.left_right,
-            anterior_posterior=bounds.anterior_posterior,
-            superior_inferior=AxisBounds(
-                bounds.superior_inferior.minimum - inferior_extension_mm,
-                bounds.superior_inferior.maximum + superior_extension_mm,
-            ),
-        )
+    if face_extension is not None:
+        bounds = expand_anatomical_bounds(bounds, face_extension)
     lr_center = _axis_midpoint(bounds.left_right)
     ap_center = _axis_midpoint(bounds.anterior_posterior)
     si_center = _axis_midpoint(bounds.superior_inferior)
@@ -446,10 +444,21 @@ def _build_whole_range_plan_from_anatomical_frame(
         target_bbox = localization_result.get("correction_scope_bbox")
         if not target_bbox:
             raise ValueError("定位结果缺少 correction_scope_bbox")
-        projected_extent = resolve_projected_extent(
-            localization_result,
-            target_bbox,
-            straight_frame,
+        projected_extent = (
+            project_region_extent(
+                (
+                    image_physical_corners(localization_result["image"])
+                    if localization_result["image"].get("size_xyz")
+                    else []
+                ) + _anatomical_bounds_physical_corners(anatomical_frame, bounds),
+                straight_frame,
+            )
+            if face_extension is not None
+            else resolve_projected_extent(
+                localization_result,
+                target_bbox,
+                straight_frame,
+            )
         )
         # 只沿切片平面移动画面中心，不改变目标起止点所在的实际切片层面。
         centered_target_start = recenter_point_in_plane(
@@ -464,32 +473,13 @@ def _build_whole_range_plan_from_anatomical_frame(
         )
         extent = projected_extent.extent_mm
 
-    if target_region_bbox is None and plane in {
-        PlaneTypeEnum.矢状位,
-        PlaneTypeEnum.冠状位,
-    }:
-        extra_height = superior_extension_mm + inferior_extension_mm
-        if extra_height:
-            extent = ExtentMM(
-                width=extent.width,
-                height=extent.height + extra_height,
-            )
-
-    # 显式配置的首尾扩展先加入有效范围，再统一计算层厚、层间距和数量，
-    # 让首末厚层外缘完整覆盖肺尖、肺底等解剖边界。
-    range_extension = resolve_range_extension(
-        localization_result,
-        plane_config.slice_type.value,
-        plane,
-    )
+    # 六面扩展已经并入 bounds；采样范围直接覆盖扩展后的首末边界。
     range_start, range_end, sampling = resolve_segment_sampling(
         centered_target_start,
         centered_target_end,
         plane_config.slice_thickness,
         plane_config.slice_spacing,
         slice_image_count=plane_config.slice_image_count,
-        start_extension_mm=range_extension.start_mm,
-        end_extension_mm=range_extension.end_mm,
     )
     path_points = [range_start, range_end]
     slices = build_plane_stack_slices(
@@ -559,6 +549,73 @@ def _anatomical_bounds_from_bbox(
         left_right=bounds_for_axis(anatomical_frame.left_right_axis),
         anterior_posterior=bounds_for_axis(anatomical_frame.anterior_posterior_axis),
         superior_inferior=bounds_for_axis(anatomical_frame.superior_inferior_axis),
+    )
+
+
+def _anatomical_bounds_physical_corners(
+    anatomical_frame: AnatomicalFrame,
+    bounds: AnatomicalBounds,
+) -> list[Point3D]:
+    """把解剖三轴范围还原为可投影的八个物理角点。"""
+
+    return [
+        _physical_point_from_projections(anatomical_frame, lr, ap, si)
+        for lr, ap, si in product(
+            (bounds.left_right.minimum, bounds.left_right.maximum),
+            (bounds.anterior_posterior.minimum, bounds.anterior_posterior.maximum),
+            (bounds.superior_inferior.minimum, bounds.superior_inferior.maximum),
+        )
+    ]
+
+
+def _fallback_anatomical_frame_from_bbox(
+    bbox: Dict[str, float],
+    image_info: Dict[str, Any],
+) -> AnatomicalFrame:
+    """在缺少第五阶段结果时，用患者参考轴从 bbox 构造兼容范围框。"""
+
+    axes = patient_reference_axes(image_direction_matrix(image_info))
+    left_right_axis = Point3D(*map(float, axes[:, 0]))
+    anterior_posterior_axis = Point3D(*map(float, axes[:, 1]))
+    superior_inferior_axis = Point3D(*map(float, axes[:, 2]))
+    corners = bbox_physical_corners(bbox, image_info)
+
+    def axis_bounds(axis: Point3D) -> AxisBounds:
+        values = [
+            point.x * axis.x + point.y * axis.y + point.z * axis.z
+            for point in corners
+        ]
+        return AxisBounds(min(values), max(values))
+
+    bounds = AnatomicalBounds(
+        left_right=axis_bounds(left_right_axis),
+        anterior_posterior=axis_bounds(anterior_posterior_axis),
+        superior_inferior=axis_bounds(superior_inferior_axis),
+    )
+    origin = _physical_point_from_projections(
+        AnatomicalFrame(
+            origin=Point3D(0.0, 0.0, 0.0),
+            left_right_axis=left_right_axis,
+            anterior_posterior_axis=anterior_posterior_axis,
+            superior_inferior_axis=superior_inferior_axis,
+            bounds=bounds,
+            method="fallback",
+            confidence=0.0,
+            applied=False,
+        ),
+        _axis_midpoint(bounds.left_right),
+        _axis_midpoint(bounds.anterior_posterior),
+        _axis_midpoint(bounds.superior_inferior),
+    )
+    return AnatomicalFrame(
+        origin=origin,
+        left_right_axis=left_right_axis,
+        anterior_posterior_axis=anterior_posterior_axis,
+        superior_inferior_axis=superior_inferior_axis,
+        bounds=bounds,
+        method="fallback",
+        confidence=0.0,
+        applied=False,
     )
 
 

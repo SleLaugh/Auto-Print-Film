@@ -80,6 +80,11 @@ def _curved_spine(part, orientation, *, lateral_bend=True):
     localization = planning_fixtures.Stage6SlicePlanningTest._spine_localization_result(
         labels, part.value,
     )
+    # 本文件验证曲率采样；六面高度扩展在专门的范围测试中覆盖。
+    localization["slice_rules"]["矢状位"]["CPR"]["face_extension_mm"].update({
+        "top_mm": 0.0,
+        "bottom_mm": 0.0,
+    })
     hu = np.full((128, 112, 112), -1024.0, dtype=np.float32)
     target = np.zeros_like(hu, dtype=np.uint8)
     for label, value, x, y, z in zip(

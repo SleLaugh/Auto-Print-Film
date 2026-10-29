@@ -63,7 +63,7 @@
 - 颅脑默认以完整脑区在 AP/SI 平面内的形态主轴估计俯仰，只绕 LR 更新三状位共享坐标；
   质量不足时保留原 AP 投影并记录 `anatomical_geometry_diagnostics.pitch`。方向来自 `brain`，
   三状位基础范围和 `source_labels` 同样只用 `brain`。颅脑横状位 MPR 当前通过
-  `range_extension` 默认头侧补 `10 mm`、下侧 `0 mm`，冠、矢状位不加这项余量；
+  `face_extension_mm` 默认头侧补 `10 mm`、下侧 `0 mm`，冠、矢状位不加这项余量；
   第六阶段以 `framing_superior_extension_mm` 快照传递头侧余量，第七阶段筛选同次明确
   `skull` 时仅同步增加最终 SI 上界，下界仍为脑区，辅助取景、居中和防裁边；所有 FillPercent
   均使用此有界取景目标，骨不能延长层组到面部、下颌。缺骨仅用脑区取景并警告，
@@ -101,7 +101,7 @@
 - 矢状位 CPR 仍以患者 AP 为 `curve_projection_axis`，只展开 LR–SI 冠状投影，
   保留 AP–SI 前后生理曲度。两状位纵向使用各自投影弧长，横向固定为投影轴，
   厚层方向不含该轴分量；不承诺原图 SI 毫米位置完全不变。
-- 胸腰椎和全脊柱的 `height_extension_mm` 默认在高度方向上下各增加 50mm；
+- 胸腰椎和全脊柱的 `face_extension_mm` 默认在高度方向上下各增加 50mm；
   MPR 扩展上下覆盖，CPR 只沿首末脊柱段的直线方向延长，不把该余量当作 offset 扩展。
 - `curve_points` 始终保存真实三维解剖路径。两状位 CPR 的 offset 覆盖、横向宽度、
   采样和定位线共用投影几何；冠状定位背景仍读取真实路径的前后深度。旧计划缺少

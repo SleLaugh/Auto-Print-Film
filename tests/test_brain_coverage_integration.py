@@ -153,7 +153,7 @@ def _run_to_planning(directory, monkeypatch, *, mode="available", fill_percent=0
     config = {"correction_requested": False}
     if superior_extension is not None:
         parts = load_slice_part_config()
-        parts["slice_parts"]["颅脑"]["slice_rules"]["横状位"]["MPR"]["range_extension"]["start_mm"] = superior_extension
+        parts["slice_parts"]["颅脑"]["slice_rules"]["横状位"]["MPR"]["face_extension_mm"]["top_mm"] = superior_extension
         config["slice_part_config"] = parts
     SpatialCorrectionStage(config).execute(context)
     LocalizationStage(config).execute(context)
@@ -256,7 +256,7 @@ def test_superior_framing_margin_serializes_the_configured_axial_snapshot_only(
     if expected_extension is None:
         expected_extension = load_slice_part_config()["slice_parts"]["颅脑"][
             "slice_rules"
-        ]["横状位"]["MPR"]["range_extension"]["start_mm"]
+        ]["横状位"]["MPR"]["face_extension_mm"]["top_mm"]
     for plan in plans:
         if plan["plane"] == "横状位":
             assert plan["framing_superior_extension_mm"] == expected_extension
@@ -280,12 +280,14 @@ def test_configured_superior_margin_covers_cranial_cap_without_changing_brain_or
     reference = {p["plane"]: p for p in baseline.get_result("planning")["plans"]}
     for plan in extended.get_result("planning")["plans"]:
         before = reference[plan["plane"]]
-        assert plan["target_start"] == before["target_start"]
-        assert plan["target_end"] == before["target_end"]
         if plan["plane"] != "横状位":
+            assert plan["target_start"] == before["target_start"]
+            assert plan["target_end"] == before["target_end"]
             assert plan["slices"] == before["slices"]
             assert plan.get("framing_superior_extension_mm", 0.) == 0.
             continue
+        assert plan["target_start"] != before["target_start"]
+        assert plan["target_end"] == before["target_end"]
         assert plan["framing_superior_extension_mm"] == 15.
         normal = np.array([plan["slices"][0]["normal"][a] for a in "xyz"])
         half_voxel = np.abs(np.asarray(image.GetSpacing()) * normal).sum() / 2

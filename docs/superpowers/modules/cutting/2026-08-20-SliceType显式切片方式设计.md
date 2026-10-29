@@ -35,7 +35,7 @@
   `C2_C3` 至 `C6_C7`，不生成 `C1_C2`。
 - CPR 使用脊柱中心曲线生成 `curved_stack`。冠状位沿前后方向偏移，默认使用矢状位
   定位图；矢状位沿左右方向偏移，默认使用冠状位定位图。两者读取各自状位的
-  `range_extension`。有效质心不足或曲线无效时明确失败，
+  `face_extension_mm`。有效质心不足或曲线无效时明确失败，
   不能把显式 CPR 请求静默降级成 MPR。
 
 定位阶段可以把 MPR/CPR 映射到 `whole_range`、把椎间隙映射到 `interspace`；

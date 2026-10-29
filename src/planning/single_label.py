@@ -15,7 +15,7 @@ from src.planning.spine_cpr import (
 )
 from src.planning.base import PlanningResult
 from src.planning.whole_range import build_whole_range_plan_from_bbox
-from src.planning.straight import resolve_range_extension
+from src.planning.face_extension import resolve_face_extension
 
 
 class SingleLabelWholeRangePlanner:
@@ -94,11 +94,18 @@ class SingleLabelWholeRangePlanner:
                 and plane_config.plane == PlaneTypeEnum.横状位
                 and plane_config.slice_type is SliceType.MPR
             ):
-                # 横状位从上向下输出，start_mm 是颅顶余量。将本计划实际
+                # 横状位从上向下输出，top_mm 是颅顶余量。将本计划实际
                 # 使用的配置快照交给取景阶段，避免新增顶部切片仍只按脑区取景。
-                plan.framing_superior_extension_mm = resolve_range_extension(
-                    localization_result, plane_config.slice_type.value, plane_config.plane,
-                ).start_mm
+                face_extension = resolve_face_extension(
+                    localization_result,
+                    plane_config.slice_type.value,
+                    plane_config.plane,
+                )
+                plan.framing_superior_extension_mm = (
+                    face_extension.top_mm
+                    if face_extension is not None
+                    else 0.0
+                )
             plans.append(plan)
 
         return PlanningResult(

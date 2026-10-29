@@ -10,7 +10,6 @@ from src.planning.spine_cpr import SPINE_CONFIG_LABEL_ORDER
 
 def _contract(part: str, superior=50.0, inferior=50.0, *, with_anatomy=False):
     cfg = load_slice_part_config()
-    part_cfg = cfg["slice_parts"][part]
     profile = localization_profiles_for(cfg, part)["whole_range"]
     aliases = cfg["label_aliases"]
 
@@ -44,19 +43,23 @@ def _contract(part: str, superior=50.0, inferior=50.0, *, with_anatomy=False):
             "region": profile["region"],
         },
     }
-    cpr = part_cfg["localization"]["spine_cpr"]
+    slice_rules = slice_rules_for(cfg, part)
+    for plane_rules in slice_rules.values():
+        for rule in plane_rules.values():
+            if "face_extension_mm" in rule:
+                rule["face_extension_mm"] = {
+                    **rule["face_extension_mm"],
+                    "top_mm": superior,
+                    "bottom_mm": inferior,
+                }
     result = {
         "slice_part": part,
         "localization_profile": "whole_range",
         "resolved_cut_configs": resolved,
-        "slice_rules": slice_rules_for(cfg, part),
+        "slice_rules": slice_rules,
         "spine_cpr_config": {
-            "full_label": cpr.get("full_label", True),
-            "excluded_labels": cpr.get("excluded_labels", []),
-            "height_extension_mm": {
-                "top_mm": superior,
-                "bottom_mm": inferior,
-            },
+            "full_label": True,
+            "excluded_labels": [],
         },
         # Deliberately omit size_xyz to exercise bbox fallback used by legacy/low-detail caches.
         "image": {
@@ -105,8 +108,24 @@ def _plan(part, plane, slice_type, *, superior=50.0, inferior=50.0, with_anatomy
 def test_config_declares_50mm_superior_inferior_extension_for_both_spine_parts():
     cfg = load_slice_part_config()
     for part in ("胸腰椎", "全脊柱"):
-        extension = cfg["slice_parts"][part]["localization"]["spine_cpr"]["height_extension_mm"]
-        assert extension == {"top_mm": 50.0, "bottom_mm": 50.0}
+        for plane, slice_type in (
+            ("横状位", "MPR"),
+            ("冠状位", "MPR"),
+            ("冠状位", "CPR"),
+            ("矢状位", "MPR"),
+            ("矢状位", "CPR"),
+        ):
+            extension = cfg["slice_parts"][part]["slice_rules"][plane][slice_type][
+                "face_extension_mm"
+            ]
+            assert extension == {
+                "top_mm": 50.0,
+                "bottom_mm": 50.0,
+                "front_mm": 0.0,
+                "back_mm": 0.0,
+                "left_mm": 0.0,
+                "right_mm": 0.0,
+            }
 
 
 def test_fallback_mpr_extends_si_coverage_in_all_three_planes_for_both_parts():

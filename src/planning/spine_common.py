@@ -28,27 +28,6 @@ _INTERSPACE_SIDEWALL_MAX_BODY_VOLUME_RATIO = 0.25
 _INTERSPACE_SIDEWALL_MAX_SI_ALIGNMENT = 0.5
 
 
-def resolve_spine_height_extension(
-    localization_result: Dict[str, Any],
-) -> tuple[float, float]:
-    """读取脊柱部位配置的高度额外覆盖，返回上端、下端毫米数。"""
-
-    config = localization_result.get("spine_cpr_config") or {}
-    extension = config.get("height_extension_mm")
-    if not isinstance(extension, dict):
-        return 0.0, 0.0
-    values = []
-    for name in ("top_mm", "bottom_mm"):
-        try:
-            value = float(extension.get(name, 0.0))
-        except (TypeError, ValueError, OverflowError):
-            return 0.0, 0.0
-        if not math.isfinite(value) or value < 0.0:
-            return 0.0, 0.0
-        values.append(value)
-    return values[0], values[1]
-
-
 def voxel_centroid_to_physical(
     centroid: Dict[str, float],
     image_info: Dict[str, Any],

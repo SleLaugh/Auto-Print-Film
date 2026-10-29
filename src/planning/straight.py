@@ -12,6 +12,7 @@ from src.anatomy.orientation import patient_reference_axes
 from src.models import AnatomicalFrame, ExtentMM, Point3D, SlicePlan
 from src.models.enums import PlaneTypeEnum
 from src.planning.sampling import ResolvedSampling, resolve_sampling
+from src.planning.face_extension import expand_physical_points, resolve_face_extension
 from src.planning.geometry import (
     build_plane_stack_slices,
     image_axis_direction,
@@ -83,53 +84,6 @@ class CutSegment:
     """是否把目标点搬到所选范围的平面中心；椎间最近点必须保留原位置。"""
 
 
-@dataclass(frozen=True)
-class SliceRangeExtension:
-    """一个切片计划在原始目标首尾之外额外覆盖的毫米距离。"""
-
-    start_mm: float = 0.0
-    """从原始 target_start 沿切片序列反方向向外扩展的距离。"""
-
-    end_mm: float = 0.0
-    """从原始 target_end 沿切片序列正方向向外扩展的距离。"""
-
-
-def resolve_range_extension(
-    localization_result: Dict[str, Any],
-    slice_type: str,
-    plane: PlaneTypeEnum,
-) -> SliceRangeExtension:
-    """按当前状位和 SliceType 读取统一格式的范围扩展。
-
-    MPR、CPR 和椎间隙都从 slice_rules 读取相同结构。椎间隙规则中的距离
-    会在每个 Region 生成计划时分别应用，不再隐式固定为 0mm。
-    """
-
-    slice_rules = localization_result.get("slice_rules")
-    if not isinstance(slice_rules, dict):
-        return SliceRangeExtension()
-    plane_rules = slice_rules.get(plane.value)
-    if not isinstance(plane_rules, dict):
-        return SliceRangeExtension()
-    slice_type_value = str(getattr(slice_type, "value", slice_type))
-    rule = plane_rules.get(slice_type_value)
-    if not isinstance(rule, dict):
-        return SliceRangeExtension()
-    endpoint_config = rule.get("range_extension")
-    if not isinstance(endpoint_config, dict):
-        return SliceRangeExtension()
-
-    start_mm = _non_negative_extension_value(
-        endpoint_config.get("start_mm", 0.0),
-        endpoint="start",
-    )
-    end_mm = _non_negative_extension_value(
-        endpoint_config.get("end_mm", 0.0),
-        endpoint="end",
-    )
-    return SliceRangeExtension(start_mm=start_mm, end_mm=end_mm)
-
-
 def resolve_localizer_plane(
     localization_result: Dict[str, Any],
     slice_type: str,
@@ -164,18 +118,18 @@ def resolve_localizer_plane(
     return localizer_plane
 
 
-def _non_negative_extension_value(value: Any, endpoint: str) -> float:
-    """把单端扩展值规范成非负有限浮点毫米数。"""
+def _non_negative_sampling_extension(value: Any, endpoint: str) -> float:
+    """校验内部采样接口的首末额外覆盖距离。"""
 
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
         or not math.isfinite(float(value))
     ):
-        raise ValueError(f"切片范围 {endpoint} 扩展必须是有限数字")
+        raise ValueError(f"采样范围 {endpoint} 扩展必须是有限数字")
     value_mm = float(value)
     if value_mm < 0:
-        raise ValueError(f"切片范围 {endpoint} 扩展不能小于 0")
+        raise ValueError(f"采样范围 {endpoint} 扩展不能小于 0")
     return value_mm
 
 
@@ -221,6 +175,16 @@ def _scale_direction(direction: Point3D, sign: float) -> Point3D:
         direction.x * sign,
         direction.y * sign,
         direction.z * sign,
+    )
+
+
+def _add_direction(point: Point3D, direction: Point3D, distance: float) -> Point3D:
+    """沿单位方向移动一个物理点。"""
+
+    return Point3D(
+        point.x + direction.x * distance,
+        point.y + direction.y * distance,
+        point.z + direction.z * distance,
     )
 
 
@@ -425,11 +389,11 @@ def resolve_segment_sampling(
 ) -> tuple[Point3D, Point3D, ResolvedSampling]:
     """结合直线目标和既有首尾扩展计算实际参数及切片中心范围。"""
 
-    start_extension_mm = _non_negative_extension_value(
+    start_extension_mm = _non_negative_sampling_extension(
         start_extension_mm,
         endpoint="start",
     )
-    end_extension_mm = _non_negative_extension_value(
+    end_extension_mm = _non_negative_sampling_extension(
         end_extension_mm,
         endpoint="end",
     )
@@ -534,29 +498,68 @@ def build_straight_slice_plan(
 ) -> SlicePlan:
     """把待切区间、直线方向和图像范围组装成第七阶段可执行计划。"""
 
-    projected_extent = resolve_projected_extent(
+    face_extension = resolve_face_extension(
         localization_result,
-        segment.target_region_bbox,
-        frame,
+        slice_type,
+        plane_config.plane,
     )
+    expanded_target_start = segment.target_start
+    expanded_target_end = segment.target_end
+    if face_extension is None:
+        projected_extent = resolve_projected_extent(
+            localization_result,
+            segment.target_region_bbox,
+            frame,
+        )
+    else:
+        target_points = expand_physical_points(
+            bbox_physical_corners(
+                segment.target_region_bbox,
+                localization_result["image"],
+            ),
+            localization_result["image"],
+            face_extension,
+        )
+        extent_points = list(target_points)
+        if localization_result["image"].get("size_xyz"):
+            extent_points = image_physical_corners(localization_result["image"]) + extent_points
+        projected_extent = project_region_extent(extent_points, frame)
+        minimum_normal = min(_dot(point, frame.normal) for point in target_points)
+        maximum_normal = max(_dot(point, frame.normal) for point in target_points)
+        start_projection = _dot(segment.target_start, frame.normal)
+        end_projection = _dot(segment.target_end, frame.normal)
+        if end_projection >= start_projection:
+            start_target_projection, end_target_projection = minimum_normal, maximum_normal
+        else:
+            start_target_projection, end_target_projection = maximum_normal, minimum_normal
+        expanded_target_start = _add_direction(
+            segment.target_start,
+            frame.normal,
+            start_target_projection - start_projection,
+        )
+        expanded_target_end = _add_direction(
+            segment.target_end,
+            frame.normal,
+            end_target_projection - end_projection,
+        )
     if segment.recenter_target_in_plane:
         centered_target_start = recenter_point_in_plane(
-            segment.target_start,
+            expanded_target_start,
             projected_extent,
             frame,
         )
         centered_target_end = recenter_point_in_plane(
-            segment.target_end,
+            expanded_target_end,
             projected_extent,
             frame,
         )
     else:
-        centered_target_start = segment.target_start
-        centered_target_end = segment.target_end
+        centered_target_start = expanded_target_start
+        centered_target_end = expanded_target_end
         target_anchor = Point3D(
-            (segment.target_start.x + segment.target_end.x) / 2.0,
-            (segment.target_start.y + segment.target_end.y) / 2.0,
-            (segment.target_start.z + segment.target_end.z) / 2.0,
+            (expanded_target_start.x + expanded_target_end.x) / 2.0,
+            (expanded_target_start.y + expanded_target_end.y) / 2.0,
+            (expanded_target_start.z + expanded_target_end.z) / 2.0,
         )
         # 最近点决定真实椎间位置，不能移到整幅图像中心。输出平面会以该
         # 位置为中心，因此同步对称扩展宽高，确保原选定范围仍完整覆盖。
@@ -565,11 +568,6 @@ def build_straight_slice_plan(
             target_anchor,
             frame,
         )
-    range_extension = resolve_range_extension(
-        localization_result,
-        slice_type,
-        plane_config.plane,
-    )
     # 重定位后的端点或已共用平面坐标的四棱柱最近点对，都沿二者形成的
     # 最终法向计算有效范围。这样带角度切片也能保持固定层间距，并让
     # 首末厚层外缘覆盖目标边界。
@@ -579,8 +577,6 @@ def build_straight_slice_plan(
         plane_config.slice_thickness,
         plane_config.slice_spacing,
         slice_image_count=plane_config.slice_image_count,
-        start_extension_mm=range_extension.start_mm,
-        end_extension_mm=range_extension.end_mm,
     )
     path_points = [centered_range_start, centered_range_end]
     slices = build_plane_stack_slices(

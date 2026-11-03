@@ -206,6 +206,77 @@ def test_interspace_config_preserves_physical_scale_across_all_gaps_and_windows(
         assert all(region["ActualSliceImageCount"] == 2 for region in window["RegionList"])
 
 
+@pytest.mark.parametrize("fill_percent", [0, 80, 100])
+def test_in_plane_extension_keeps_dicom_scale_pixels_and_localizer(tmp_path, fill_percent):
+    context, _ = _make_context(tmp_path, SlicePartEnum.腰椎, fill_percent)
+    stage = ReconstructionStage({"parallel": False})
+    stage.execute(context)
+    original_outputs = context.get_result("reconstruction")["outputs"]
+    originals = {}
+    localizers = {}
+    for output in original_outputs:
+        for window, directory in output["window_outputs"].items():
+            key = (output["plan_id"], window)
+            originals[key] = [
+                pydicom.dcmread(Path(directory) / f"{index}.dcm") for index in (1, 2)
+            ]
+            localizers[key] = pydicom.dcmread(Path(directory) / "Localizer.dcm")
+    plans = context.get_result("planning")["plans"]
+    for plan in plans:
+        plan["framing_in_plane_extension_mm"] = {
+            "row_min": 8.3, "row_max": 5.5, "col_min": 3.4, "col_max": 6.6,
+        }
+    original_plans = copy.deepcopy(plans)
+    context.request.output_dir = str(tmp_path / "expanded")
+    stage.execute(context)
+    assert context.get_result("planning")["plans"] == original_plans
+    for output, original_output in zip(
+        context.get_result("reconstruction")["outputs"], original_outputs,
+    ):
+        assert output["slice_count"] == original_output["slice_count"]
+        for window, directory in output["window_outputs"].items():
+            key = (output["plan_id"], window)
+            localizer = pydicom.dcmread(Path(directory) / "Localizer.dcm")
+            np.testing.assert_array_equal(localizer.pixel_array, localizers[key].pixel_array)
+            for tag in ("ImagePositionPatient", "ImageOrientationPatient", "PixelSpacing"):
+                assert getattr(localizer, tag) == getattr(localizers[key], tag)
+            for index, before in enumerate(originals[key]):
+                after = pydicom.dcmread(Path(directory) / f"{index + 1}.dcm")
+                framing = output["framing"][index]
+                extension = framing["in_plane_extension"]
+                lower = np.array(extension["lower_pixels"])
+                upper = np.array(extension["upper_pixels"])
+                # 斜切新增的前后边缘可能越出源 CT；只允许裁去新增的无源行。
+                support = framing.get("vertical_source_support", {})
+                crop_top = support.get("crop_top_rows", 0)
+                crop_bottom = support.get("crop_bottom_rows", 0)
+                assert 0 <= crop_top <= lower[1]
+                assert 0 <= crop_bottom <= upper[1]
+                lower[1] -= crop_top
+                upper[1] -= crop_bottom
+                assert after.Columns == before.Columns + lower[0] + upper[0]
+                assert after.Rows == before.Rows + lower[1] + upper[1]
+                for tag in (
+                    "PixelSpacing", "ImageOrientationPatient", "SliceThickness",
+                    "SpacingBetweenSlices",
+                ):
+                    assert getattr(after, tag) == getattr(before, tag)
+                assert framing["scale"] == original_output["framing"][index]["scale"]
+                np.testing.assert_array_equal(
+                    after.pixel_array[
+                        lower[1]:lower[1] + before.Rows,
+                        lower[0]:lower[0] + before.Columns,
+                    ], before.pixel_array,
+                )
+                axes = np.asarray(before.ImageOrientationPatient, dtype=float).reshape(2, 3).T
+                spacing = np.asarray(before.PixelSpacing, dtype=float)[::-1]
+                np.testing.assert_allclose(
+                    after.ImagePositionPatient,
+                    np.asarray(before.ImagePositionPatient) - axes @ (lower * spacing),
+                    atol=1e-5,
+                )
+
+
 def test_same_plane_configs_keep_independent_geometry_and_optional_fill_percent(tmp_path):
     context, _ = _make_context(tmp_path, SlicePartEnum.腰椎, None)
     first_plans = context.get_result("planning")["plans"]

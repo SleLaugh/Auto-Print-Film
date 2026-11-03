@@ -10,9 +10,9 @@ from typing import Any, Dict, Iterable, List
 
 from src.anatomy.orientation import patient_reference_axes
 from src.models import AnatomicalFrame, ExtentMM, Point3D, SlicePlan
-from src.models.enums import PlaneTypeEnum
+from src.models.enums import PlaneTypeEnum, SliceType
 from src.planning.sampling import ResolvedSampling, resolve_sampling
-from src.planning.face_extension import expand_physical_points, resolve_face_extension
+from src.planning.face_extension import FaceExtension, expand_physical_points, resolve_face_extension
 from src.planning.geometry import (
     build_plane_stack_slices,
     image_axis_direction,
@@ -503,6 +503,34 @@ def build_straight_slice_plan(
         slice_type,
         plane_config.plane,
     )
+    in_plane_extension = None
+    if slice_type == SliceType.椎间隙.value and face_extension is not None:
+        # 前后左右仅扩大成片视野。若将其连同 bbox 投影到法向，会把原本
+        # 很薄的椎间层组扩到相邻椎体；后续 FillPercent 还会重新缩放掉余量。
+        display_extension = FaceExtension(
+            front_mm=face_extension.front_mm,
+            back_mm=face_extension.back_mm,
+            left_mm=face_extension.left_mm,
+            right_mm=face_extension.right_mm,
+        )
+        if not display_extension.is_zero:
+            offsets = expand_physical_points(
+                [Point3D(0.0, 0.0, 0.0)], localization_result["image"], display_extension,
+            )
+            row_offsets = [_dot(point, frame.row_dir) for point in offsets]
+            col_offsets = [_dot(point, frame.col_dir) for point in offsets]
+            in_plane_extension = {
+                "row_min": max(0.0, -min(row_offsets)),
+                "row_max": max(0.0, max(row_offsets)),
+                "col_min": max(0.0, -min(col_offsets)),
+                "col_max": max(0.0, max(col_offsets)),
+            }
+        face_extension = FaceExtension(
+            top_mm=face_extension.top_mm,
+            bottom_mm=face_extension.bottom_mm,
+        )
+        if face_extension.is_zero:
+            face_extension = None
     expanded_target_start = segment.target_start
     expanded_target_end = segment.target_end
     if face_extension is None:
@@ -614,6 +642,7 @@ def build_straight_slice_plan(
         window_presets=list(plane_config.window_presets),
         source_labels=list(segment.source_labels),
         fill_percent=plane_config.fill_percent,
+        framing_in_plane_extension_mm=in_plane_extension,
         target_start=centered_target_start,
         target_end=centered_target_end,
         localizer_plane=resolve_localizer_plane(

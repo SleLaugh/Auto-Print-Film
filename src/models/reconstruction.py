@@ -121,6 +121,8 @@ class SlicePlan:
     """普通 MPR 正数 FillPercent 使用的取景快照；selected_region按整组原标签包络。"""
     framing_superior_extension_mm: float | None = None
     """颅脑横状位获准的颅顶取景余量；同步范围扩展，不包含下端或取整余量。"""
+    framing_in_plane_extension_mm: Dict[str, float] | None = None
+    """椎间隙前后左右扩展的面内投影；row/col_min/max 均为向外余量，不延长层组。"""
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化第七阶段可直接执行的一组完整切片计划。"""
@@ -151,6 +153,8 @@ class SlicePlan:
             data["framing_policy"] = deepcopy(self.framing_policy)
         if self.framing_superior_extension_mm is not None:
             data["framing_superior_extension_mm"] = self.framing_superior_extension_mm
+        if self.framing_in_plane_extension_mm is not None:
+            data["framing_in_plane_extension_mm"] = dict(self.framing_in_plane_extension_mm)
         if self.target_start is not None:
             data["target_start"] = self.target_start.to_dict()
         if self.target_end is not None:

@@ -22,6 +22,8 @@ class InterspaceFramingGeometry:
     target_size_mm: tuple[float, float]
     plan_ids: tuple[str, ...]
     reference_plan_ids: tuple[str, ...] = ()
+    extension_lower_pixels: tuple[int, int] = (0, 0)
+    extension_upper_pixels: tuple[int, int] = (0, 0)
 
 
 class TargetFramer:
@@ -646,6 +648,17 @@ class TargetFramer:
             size = np.asarray(self.shared_geometry.size_xy)
             new_spacing = np.asarray(self.shared_geometry.spacing_xy)
             scale = self.shared_geometry.scale
+        if self.shared_geometry is None:
+            extension_lower, extension_upper = _in_plane_extension_pixels(plan, new_spacing)
+            size = size + extension_lower + extension_upper
+        else:
+            extension_lower = np.asarray(self.shared_geometry.extension_lower_pixels)
+            extension_upper = np.asarray(self.shared_geometry.extension_upper_pixels)
+        # 在共同倍率确定后扩画布，避免余量被 FillPercent 再次缩放。
+        # 中心按整数像素余量平移，使原图完整嵌在新画布中，采样相位不变。
+        new_center = new_center + axes[:, :2] @ (
+            (extension_upper - extension_lower) * new_spacing / 2
+        )
         framed_plan = dict(plan)
         framed_plan["extent_mm"] = dict(zip(("width", "height"), (size - 1) * new_spacing))
         framed_plan["output_spacing_mm"] = {"x": float(new_spacing[0]), "y": float(new_spacing[1]), "z": 0.0}
@@ -682,6 +695,14 @@ class TargetFramer:
                 "shared_plan_ids": list(self.shared_geometry.plan_ids),
                 "canvas_reference_plan_ids": list(self.shared_geometry.reference_plan_ids),
             })
+        if np.any(extension_lower) or np.any(extension_upper):
+            framed_slice["framing"]["in_plane_extension"] = {
+                "requested_mm": dict(plan.get("framing_in_plane_extension_mm") or {}),
+                "lower_pixels": list(map(int, extension_lower)),
+                "upper_pixels": list(map(int, extension_upper)),
+                "lower_mm": list(map(float, extension_lower * new_spacing)),
+                "upper_mm": list(map(float, extension_upper * new_spacing)),
+            }
         if symmetry_details is not None:
             framed_slice["framing"]["symmetry_centering"] = symmetry_details
         if self._body_points is not None:
@@ -809,6 +830,32 @@ def _plane_matrix(plan: dict) -> tuple[np.ndarray, np.ndarray]:
     return size, spacing
 
 
+def _in_plane_extension_pixels(plan: dict, spacing: np.ndarray) -> np.ndarray:
+    """把椎间隙面内余量向外取整到当前采样格，按负侧、正侧排列。"""
+
+    extension = plan.get("framing_in_plane_extension_mm")
+    if (extension is None or plan.get("slice_type") != "椎间隙"
+            or plan.get("geometry_type") != "plane_stack"):
+        return np.zeros((2, 2), dtype=int)
+    fields = ("row_min", "col_min", "row_max", "col_max")
+    if (not isinstance(extension, dict) or set(extension) != set(fields)
+            or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                   for value in extension.values())):
+        raise ValueError("framing_in_plane_extension_mm 必须指定四个非负有限面内余量")
+    try:
+        margins = np.array([extension[field] for field in fields], dtype=float).reshape(2, 2)
+    except OverflowError as error:
+        raise ValueError("framing_in_plane_extension_mm 必须为非负有限数字") from error
+    if not np.all(np.isfinite(margins)) or np.any(margins < 0):
+        raise ValueError("framing_in_plane_extension_mm 必须为非负有限数字")
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        pixels = margins / spacing
+    if not np.all(np.isfinite(pixels)) or np.any(pixels >= np.iinfo(np.intp).max // 4):
+        raise ValueError("椎间隙面内扩展超出可表示范围，请减小配置余量")
+    tolerance = np.maximum(1e-9, np.abs(pixels) * np.finfo(float).eps * 32)
+    return np.maximum(0, np.ceil(pixels - tolerance)).astype(int)
+
+
 def prepare_interspace_framing(
     segmentation: sitk.Image,
     coords: dict,
@@ -859,6 +906,12 @@ def prepare_interspace_framing(
     new_spacing, scale = fitted_spacing(
         shared_size, reference_spacing, target_size, reference_percent,
     )
+    # 所有间隙的四向投影余量都参与共同画布；仍用未扩展的矩阵计算倍率。
+    extension_pixels = np.max([
+        _in_plane_extension_pixels(plan, new_spacing) for plan in plans
+    ], axis=0)
+    extension_lower, extension_upper = extension_pixels
+    shared_size = shared_size + extension_lower + extension_upper
     return InterspaceFramingGeometry(
         size_xy=tuple(map(int, shared_size)),
         spacing_xy=tuple(map(float, new_spacing)),
@@ -866,6 +919,8 @@ def prepare_interspace_framing(
         target_size_mm=tuple(map(float, target_size)),
         plan_ids=tuple(plan_ids),
         reference_plan_ids=tuple(str(plan.get("plan_id", "")) for plan in reference_plans),
+        extension_lower_pixels=tuple(map(int, extension_lower)),
+        extension_upper_pixels=tuple(map(int, extension_upper)),
     )
 
 

@@ -120,7 +120,7 @@
                     },
                     "椎间隙": {
                         "regions": ["C2_C3", "C3_C4", "C4_C5", "C5_C6", "C6_C7"],
-                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
+                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 20.0, "right_mm": 20.0},
                         "localizer_plane": "矢状位"
                     }
                 },
@@ -250,7 +250,7 @@
                     },
                     "椎间隙": {
                         "regions": ["L1_L2", "L2_L3", "L3_L4", "L4_L5", "L5_S1"],
-                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
+                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 20.0, "right_mm": 20.0},
                         "localizer_plane": "矢状位"
                     }
                 },

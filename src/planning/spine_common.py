@@ -139,6 +139,76 @@ def _filtered_spine_annotations(localization_result: Dict[str, Any]) -> Dict[str
     return annotations
 
 
+def _has_ct_supported_c2_endplate(annotation: Any) -> bool:
+    """恢复间隙须有原标签和 CT 同时验证的单个相向端面。"""
+
+    if not isinstance(annotation, dict):
+        return False
+    support = annotation.get("sagittal_endplate_support")
+    faces = annotation.get("sagittal_body_endplates")
+    return (
+        isinstance(support, dict) and support.get("method") == "c2_interspace_endplates"
+        and support.get("required_endplate_side") in {"min", "max"}
+        and isinstance(faces, list) and len(faces) == 1 and isinstance(faces[0], dict)
+        and faces[0].get("source") == "original_label"
+        and faces[0].get("ct_validation") == "density_drop"
+    )
+
+
+def _interspace_annotation_view(
+    localization_result: Dict[str, Any],
+    label_names: Sequence[str],
+) -> Dict[str, Any]:
+    """仅让当前椎间使用恢复的 C2，保持全局姿态和其它区间的旧输入。"""
+
+    geometry = localization_result.get("spine_geometry")
+    if not isinstance(geometry, dict):
+        return localization_result
+    recovered = geometry.get("interspace_recovered_annotations")
+    if not isinstance(recovered, dict):
+        return localization_result
+    annotations = _filtered_spine_annotations(localization_result)
+    replacements = {}
+    for label_name in label_names:
+        previous = annotations.get(label_name)
+        candidate = recovered.get(label_name)
+        if (
+            isinstance(previous, dict) and previous.get("found") is False
+            and isinstance(candidate, dict) and candidate.get("found") is True
+            and isinstance(candidate.get("body_extraction"), dict)
+            and candidate["body_extraction"].get("method") == "c2_inferior_body_recovery"
+            and _has_ct_supported_c2_endplate(candidate)
+        ):
+            partners = candidate.get("interspace_partner_annotations")
+            if isinstance(partners, dict) and any(
+                name != label_name and _has_ct_supported_c2_endplate(partners.get(name))
+                for name in label_names
+            ):
+                replacements[label_name] = candidate
+    if not replacements:
+        return localization_result
+    for candidate in list(replacements.values()):
+        partners = candidate.get("interspace_partner_annotations")
+        if not isinstance(partners, dict):
+            continue
+        for label_name in label_names:
+            previous = annotations.get(label_name)
+            partner = partners.get(label_name)
+            if (
+                isinstance(previous, dict) and previous.get("found") is True
+                and isinstance(partner, dict) and partner.get("found") is True
+                and _has_ct_supported_c2_endplate(partner)
+            ):
+                replacements.setdefault(label_name, partner)
+    return {
+        **localization_result,
+        "spine_geometry": {
+            **geometry,
+            "filtered_annotation_centroids": {**annotations, **replacements},
+        },
+    }
+
+
 def _parse_voxel_bbox(value: Any) -> Optional[Dict[str, float]]:
     """解析一个有限且非反向的 x/y/z 体素包围盒。"""
 
@@ -866,9 +936,11 @@ def regularize_cervical_interspace_segments(
             corrected_segments.append(segment)
             continue
 
+        segment_result = _interspace_annotation_view(localization_result, segment.source_labels)
+        endpoint_annotations = _filtered_spine_annotations(segment_result)
         endpoint_volumes = []
         for label_name in segment.source_labels:
-            annotation = annotations.get(label_name)
+            annotation = endpoint_annotations.get(label_name)
             try:
                 voxel_count = int(
                     annotation.get("voxel_count", 0)
@@ -887,11 +959,11 @@ def regularize_cervical_interspace_segments(
             continue
 
         upper_center = _body_centroid_physical(
-            localization_result,
+            segment_result,
             segment.source_labels[0],
         )
         lower_center = _body_centroid_physical(
-            localization_result,
+            segment_result,
             segment.source_labels[1],
         )
         if upper_center is None or lower_center is None:
@@ -1190,7 +1262,13 @@ def _supported_sagittal_endplate_edge(
     """读取主体恢复后独立拟合的端面，覆盖包络仍由四棱柱负责。"""
 
     faces = annotation.get("sagittal_body_endplates")
-    if not isinstance(faces, list) or len(faces) != 2:
+    support = annotation.get("sagittal_endplate_support")
+    single_facing_endplate = (
+        isinstance(support, dict)
+        and support.get("method") == "c2_interspace_endplates"
+        and support.get("required_endplate_side") in {"min", "max"}
+    )
+    if not isinstance(faces, list) or len(faces) != (1 if single_facing_endplate else 2):
         return None
     toward_length = math.hypot(*toward)
     if toward_length <= 1e-8:
@@ -1265,7 +1343,9 @@ def _resolve_interspace_prism_geometry(
     toward_lower = (lower_center[0] - upper_center[0], lower_center[1] - upper_center[1])
     recovered_pair = any(
         isinstance(annotation.get("body_extraction"), dict)
-        and annotation["body_extraction"].get("method") == "density_core_recovery"
+        and annotation["body_extraction"].get("method") in {
+            "density_core_recovery", "c2_inferior_body_recovery",
+        }
         for annotation in (upper_annotation, lower_annotation)
     )
     upper_boundary = _supported_sagittal_endplate_edge(
@@ -1610,8 +1690,12 @@ def resolve_spine_interspace_segments(
     warnings: List[str] = []
     image_info = localization_result["image"]
     fallback_bbox = localization_result.get("correction_scope_bbox")
+    source_result = localization_result
 
     for group_name, upper_label, lower_label in intervals:
+        localization_result = _interspace_annotation_view(
+            source_result, (upper_label, lower_label),
+        )
         upper_center = get_label_center(localization_result, upper_label)
         lower_center = get_label_center(localization_result, lower_label)
         if upper_center is None or lower_center is None:

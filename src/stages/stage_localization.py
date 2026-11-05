@@ -1573,6 +1573,7 @@ class LocalizationOperations(
             str,
             tuple[np.ndarray, np.ndarray] | None,
         ] = {}
+        recovered_labels: set[str] = set()
         excluded_label_set = set(excluded_labels)
         for label_name, target in label_targets.items():
             vertebra_key = cls._vertebra_key(label_name)
@@ -1619,6 +1620,8 @@ class LocalizationOperations(
                     else np.empty((0, 3), dtype=int)
                 )
                 details["body_voxel_count"] = len(indices)
+            if extraction_diagnostic.get("method") == "c2_inferior_body_recovery":
+                recovered_labels.add(label_name)
             if body_diagnostics is not None and extraction_diagnostic:
                 core_bbox = extraction_diagnostic.get("core_bbox_zyx")
                 if core_bbox is not None:
@@ -1671,10 +1674,29 @@ class LocalizationOperations(
             "anatomical_analysis", "resolve_prism_overlaps", label_count=len(prism_regions),
         ):
             resolved_regions = cls._resolve_non_overlapping_prism_regions(
-                prism_regions,
+                {name: None if name in recovered_labels else region
+                 for name, region in prism_regions.items()},
                 protected_indices=body_indices,
                 voxel_spacing_zyx=np.asarray(image.GetSpacing())[::-1],
             )
+            if recovered_labels:
+                candidates = cls._resolve_non_overlapping_prism_regions(
+                    prism_regions,
+                    protected_indices=body_indices,
+                    voxel_spacing_zyx=np.asarray(image.GetSpacing())[::-1],
+                )
+                # 恢复的包络可以自行裁边；若需要改动既有椎体包络才能
+                # 容纳它，则放弃新增间隙，保留旧包络和全部既有计划。
+                def unchanged(first, second):
+                    if first is None or second is None:
+                        return first is None and second is None
+                    return (np.array_equal(first[0], second[0])
+                            and np.array_equal(first[1], second[1]))
+
+                if all(unchanged(region, candidates.get(name))
+                       for name, region in resolved_regions.items() if name not in recovered_labels):
+                    for name in recovered_labels:
+                        resolved_regions[name] = candidates.get(name)
         return body_indices, resolved_regions
 
     @staticmethod
@@ -2436,6 +2458,25 @@ class LocalizationOperations(
                 DebugLog(f"  原图端面密度验证不可用，保留几何回退: {error}")
 
         filtered_annotation_centroids: Dict[str, Dict[str, Any]] = {}
+        interspace_recovered_annotations: Dict[str, Dict[str, Any]] = {}
+        empty_annotation = {
+            "found": False,
+            "voxel_count": 0,
+            "body_bbox": None,
+            "centroid_voxel": None,
+            "centroid_physical": None,
+            "local_superior_inferior_axis": None,
+            "local_superior_inferior_extent_mm": None,
+            "local_superior_inferior_face_centroids": None,
+            "local_superior_inferior_face_candidates": None,
+            "sagittal_body_faces": None,
+            "sagittal_body_quadrilateral": None,
+            "prism_found": False,
+            "prism_voxel_count": 0,
+            "prism_bbox": None,
+            "prism_centroid_voxel": None,
+            "prism_centroid_physical": None,
+        }
         for label_name, target in label_targets.items():
             vertebra_key = cls._vertebra_key(label_name)
             if vertebra_key is None or label_name in excluded_label_set:
@@ -2446,24 +2487,7 @@ class LocalizationOperations(
                 np.empty((0, 3), dtype=int),
             )
             if indices.size == 0:
-                filtered_annotation_centroids[label_name] = {
-                    "found": False,
-                    "voxel_count": 0,
-                    "body_bbox": None,
-                    "centroid_voxel": None,
-                    "centroid_physical": None,
-                    "local_superior_inferior_axis": None,
-                    "local_superior_inferior_extent_mm": None,
-                    "local_superior_inferior_face_centroids": None,
-                    "local_superior_inferior_face_candidates": None,
-                    "sagittal_body_faces": None,
-                    "sagittal_body_quadrilateral": None,
-                    "prism_found": False,
-                    "prism_voxel_count": 0,
-                    "prism_bbox": None,
-                    "prism_centroid_voxel": None,
-                    "prism_centroid_physical": None,
-                }
+                filtered_annotation_centroids[label_name] = dict(empty_annotation)
                 continue
 
             centroid_z, centroid_y, centroid_x = indices.mean(axis=0)
@@ -2652,6 +2676,67 @@ class LocalizationOperations(
                 filtered_annotation_centroids[label_name].update(
                     estimate_spine_label_symmetry(full_indices, image)
                 )
+            if extraction_diagnostic and extraction_diagnostic.get("method") == (
+                "c2_inferior_body_recovery"
+            ):
+                # 新端面只供缺失椎间隙使用；旧流程没有这个主体，不能让它
+                # 参与整体对称轴、其它间隙体量统计或既有定位图选层。
+                interspace_recovered_annotations[label_name] = (
+                    filtered_annotation_centroids[label_name]
+                )
+                filtered_annotation_centroids[label_name] = dict(empty_annotation)
+
+        # 新增 C2 间隙的相向端面必须来自原标签和 CT，不能继承普通
+        # 主体裁剪留下的人工水平边。C3 的补充证据只附属于恢复 C2，
+        # 不回写全局标注，避免影响已有 C3_C4 等计划。
+        for c2_name, c2_annotation in interspace_recovered_annotations.items():
+            c3_name = next((name for name in filtered_annotation_centroids
+                            if cls._vertebra_key(name) == "C3"), None)
+            c3_annotation = filtered_annotation_centroids.get(c3_name)
+            if (raw_array is None or not isinstance(c3_annotation, dict)
+                    or not c2_annotation.get("prism_found")
+                    or not c3_annotation.get("prism_found")):
+                continue
+            c2_indices = body_indices[c2_name]
+            c3_indices = body_indices[c3_name]
+            c2_is_higher_index = float(np.median(c2_indices[:, 0])) > float(
+                np.median(c3_indices[:, 0])
+            )
+            fitted = {}
+            for name, side in ((c2_name, "min" if c2_is_higher_index else "max"),
+                               (c3_name, "max" if c2_is_higher_index else "min")):
+                indices = body_indices[name]
+                minimum, maximum = np.quantile(indices, (0.15, 0.85), axis=0)
+                support = {
+                    "method": "c2_interspace_endplates",
+                    "required_endplate_side": side,
+                    "core_bbox_zyx": {
+                        "min": np.ceil(minimum).astype(int).tolist(),
+                        "max": np.floor(maximum).astype(int).tolist(),
+                    },
+                }
+                source_indices = (
+                    label_regions[name].indices_zyx
+                    if label_regions is not None and name in label_regions
+                    else np.argwhere(np.isin(seg_array, label_targets[name].label_ids))
+                )
+                endplates = cls._estimate_supported_body_endplates(
+                    indices, image, support, source_indices_zyx=source_indices,
+                    raw_array=raw_array,
+                )
+                if endplates is None:
+                    break
+                fitted[name] = (endplates, support)
+            if len(fitted) != 2:
+                continue
+            c2_annotation["sagittal_body_endplates"], c2_annotation["sagittal_endplate_support"] = (
+                fitted[c2_name]
+            )
+            c3_partner = dict(c3_annotation)
+            c3_partner["sagittal_body_endplates"], c3_partner["sagittal_endplate_support"] = (
+                fitted[c3_name]
+            )
+            c2_annotation["interspace_partner_annotations"] = {c3_name: c3_partner}
 
         interspace_body_pairs: Dict[str, Dict[str, Any]] = {}
         pair_definitions = []
@@ -2762,7 +2847,7 @@ class LocalizationOperations(
                 **geometry,
             }
 
-        return {
+        result = {
             "filtered_annotation": {
                 "method": "vertebral_body_candidate_v3",
                 "source": "full_nnunet_label",
@@ -2775,6 +2860,9 @@ class LocalizationOperations(
             "full_label_geometry": "coords",
             "full_label_bbox": "coords.*.bbox",
         }
+        if interspace_recovered_annotations:
+            result["interspace_recovered_annotations"] = interspace_recovered_annotations
+        return result
 
     @staticmethod
     def _nearest_body_interspace_geometry(
@@ -3237,7 +3325,7 @@ class LocalizationOperations(
         """把密实核心支撑的真实上下边界转换到当前工作物理空间。"""
 
         if extraction_diagnostic.get("method") not in {
-            "density_core_recovery", "adjacent_recovered_body",
+            "density_core_recovery", "adjacent_recovered_body", "c2_interspace_endplates",
         }:
             return None
         if raw_array is None:
@@ -3250,6 +3338,9 @@ class LocalizationOperations(
             extraction_diagnostic.get("core_bbox_zyx", {}),
             source_indices_zyx=source_indices_zyx,
             raw_array=raw_array,
+            required_sides=(extraction_diagnostic.get("required_endplate_side"),)
+            if extraction_diagnostic.get("method") == "c2_interspace_endplates"
+            else ("min", "max"),
         )
         if faces is None:
             return None
@@ -3548,6 +3639,9 @@ class LocalizationOperations(
             candidates, center_x=center_x,
             spacing_zyx=spacing_zyx,
             label_voxel_count=label_voxel_count, label_si_span=label_si_span,
+            reject_posterior_sheets=(
+                LocalizationStage._vertebra_key(target.label_name) != "C2"
+            ),
         )
 
         if not np.any(body_mask):
@@ -3583,7 +3677,118 @@ class LocalizationOperations(
             # 同时丢失绝大部分体量和头脚支撑时，只剩短残块；不能把它
             # 当作完整主体生成端面。完整的小主体不按原始最大块比例淘汰。
             body_mask[:] = False
+        if not np.any(body_mask) and LocalizationStage._vertebra_key(target.label_name) == "C2":
+            recovered = LocalizationStage._recover_c2_inferior_body(
+                mask, spacing_zyx=spacing_zyx, diagnostics=diagnostics,
+            )
+            if recovered is not None:
+                body_mask = recovered
         return body_mask
+
+    @staticmethod
+    def _recover_c2_inferior_body(
+        mask: np.ndarray,
+        *,
+        spacing_zyx: tuple[float, float, float] | None = None,
+        diagnostics: dict | None = None,
+    ) -> np.ndarray | None:
+        """仅为旧筛选已失败的 C2，核实宽基底和上方细长齿突。
+
+        普通椎体的跨层支撑会偏向 C2 的齿突，关节翼又可能把基底拆成
+        多个候选。改从中央 LR 连续支撑确定前方带；只有下方存在三维
+        密实基底、上方另有明显窄尾时才恢复。恢复止于宽基底的半峰宽
+        上界，既不沿完整标签长入齿突，也不穿过椎管进入后方附件。
+        """
+
+        from scipy import ndimage
+
+        spacing = LocalizationStage._normalized_voxel_spacing_zyx(spacing_zyx)
+        indices = np.argwhere(mask)
+        if len(indices) < 8:
+            return None
+        center_x = float(np.median(indices[:, 2]))
+        front = np.zeros_like(mask, dtype=bool)
+        minimum_width_mm = max(3.0, 2.0 * float(spacing[2]))
+        minimum_depth_mm = max(3.0, 2.0 * float(spacing[1]))
+        for z_index in np.unique(indices[:, 0]):
+            plane = mask[int(z_index)]
+            runs = {
+                int(y): LocalizationStage._central_x_run(plane[int(y)], center_x)
+                for y in np.flatnonzero(plane.any(axis=1))
+            }
+            supported_y = np.asarray([
+                y for y, run in runs.items()
+                if len(run) * spacing[2] >= minimum_width_mm
+                and run[0] <= center_x <= run[-1]
+            ], dtype=int)
+            if not len(supported_y):
+                continue
+            bands = np.split(supported_y, np.flatnonzero(np.diff(supported_y) > 1) + 1)
+            bands = [band for band in bands if len(band) * spacing[1] >= minimum_depth_mm]
+            if not bands:
+                continue
+            for y in bands[0]:
+                front[int(z_index), int(y), runs[int(y)]] = True
+
+        areas = front.sum(axis=(1, 2))
+        occupied = np.flatnonzero(areas)
+        if len(occupied) < 8:
+            return None
+        # 最大内接球必须落在下方基底；孤立薄片或只有细齿突不能据此恢复。
+        distance = ndimage.distance_transform_edt(np.pad(front, 1), sampling=spacing)[1:-1, 1:-1, 1:-1]
+        seed = np.unravel_index(int(np.argmax(distance)), distance.shape)
+        radius_mm = float(distance[seed])
+        if radius_mm < max(2.0, 2.0 * float(np.max(spacing))):
+            return None
+        # 齿突须与该基底连续；高位孤片和中间空白不能拼成一条窄尾。
+        components, _ = ndimage.label(front, structure=np.ones((3, 3, 3), dtype=bool))
+        front &= components == components[seed]
+        areas = front.sum(axis=(1, 2))
+        occupied = np.flatnonzero(areas)
+        label_span = int(occupied[-1] - occupied[0] + 1)
+        # NIfTI 的 z 索引可沿头侧或脚侧增长。只在局部把宽基底放到
+        # 索引较低的一端核实形态，输出随后映回原数组，不改工作空间。
+        reverse_si = seed[0] > (occupied[0] + occupied[-1]) / 2.0
+        if reverse_si:
+            front = front[::-1]
+            areas = areas[::-1]
+            occupied = np.flatnonzero(areas)
+            seed = (front.shape[0] - 1 - seed[0], seed[1], seed[2])
+        broad_levels = np.flatnonzero(areas >= float(areas.max()) * 0.5)
+        groups = np.split(broad_levels, np.flatnonzero(np.diff(broad_levels) > 1) + 1)
+        broad = next((group for group in groups if seed[0] in group), None)
+        if broad is None or len(broad) * spacing[0] < max(4.0, radius_mm * 2.0):
+            return None
+        superior = int(broad[-1])
+        tail = areas[superior + 1:int(occupied[-1]) + 1]
+        if (
+            len(tail) * spacing[0] < max(4.0, radius_mm)
+            or float(np.median(tail)) > float(areas.max()) * 0.35
+        ):
+            return None
+
+        recovered = front.copy()
+        recovered[superior + 1:] = False
+        recovered = LocalizationStage._retain_main_3d_component_with_terminal_extensions(recovered)
+        recovered = LocalizationStage._trim_thin_terminal_si_slices(recovered)
+        recovered = LocalizationStage._trim_lr_edge_columns_by_si_height(recovered)
+        recovered = LocalizationStage._trim_thin_terminal_si_slices(recovered)
+        recovered = LocalizationStage._trim_transverse_edges_by_density(recovered)
+        recovered_indices = np.argwhere(recovered)
+        if (
+            not recovered[seed]
+            or len(recovered_indices) < len(indices) * _BODY_REMNANT_MAX_LABEL_VOLUME_FRACTION
+            or np.ptp(recovered_indices[:, 0]) + 1 < label_span * 0.4
+        ):
+            return None
+        if diagnostics is not None:
+            diagnostics.update(
+                method="c2_inferior_body_recovery",
+                inferior_core_radius_mm=radius_mm,
+                superior_body_limit_voxel=(front.shape[0] - 1 - superior if reverse_si else superior),
+                superior_tail_area_fraction=float(np.median(tail)) / float(areas.max()),
+            )
+        return recovered[::-1].copy() if reverse_si else recovered
 
     @staticmethod
     def _vertebral_body_support_candidates(
@@ -3740,6 +3945,7 @@ class LocalizationOperations(
         spacing_zyx: tuple[float, float, float] | None = None,
         label_voxel_count: int | None = None,
         label_si_span: int | None = None,
+        reject_posterior_sheets: bool = True,
     ) -> np.ndarray:
         """比较跨 SI 支撑与主体形态，避免把第一段小突起当作主体。"""
 
@@ -3791,19 +3997,37 @@ class LocalizationOperations(
             if abs(record["lr_center"] - center_x) <= record["lr_width"] * 0.75
         ]
         aligned = central or records
-        # 末端安全检查会丢弃的短小后方残块，不能先靠紧凑形状淘汰前体。
-        # 复用原标签的体量/跨度判据，避免按大附件的体量误删可用小主体。
+        # 短小后方残块不能先靠 AP/LR 紧凑形状淘汰跨层稳定的前体。
+        # 后桥很宽时体量可能超过原标签的残块阈值，还须核对物理 SI
+        # 支撑：SI 不足两个横向尺寸的一半，仍是薄桥而非三维主体。
+        # 前体自身也须有三维 AP 支撑，避免薄前片否决完整短后体。
+        # C2 的齿突形态继续走原筛选和专用恢复，不能套用此附加规则。
         dominant = max(aligned, key=lambda record: record["volume"])
+        dominant_has_ap_support = dominant["ap_depth"] * spacing[1] >= min(
+            dominant["si_support"] * spacing[0],
+            dominant["lr_width"] * spacing[2],
+        ) * 0.35
         compact = [
             record for record in aligned
             if record["ap_depth"] * ap_lr_spacing_ratio >= record["lr_width"] * 0.35
             and not (
                 record["anterior"] > dominant["anterior"]
                 and record["si_support"] < dominant["si_support"] * 0.5
-                and record["volume"]
-                < label_voxel_count * _BODY_REMNANT_MAX_LABEL_VOLUME_FRACTION
-                and record["maximum"][0] - record["minimum"][0] + 1
-                < label_si_span * _BODY_REMNANT_MAX_LABEL_SI_SPAN_FRACTION
+                and (
+                    (
+                        record["volume"]
+                        < label_voxel_count * _BODY_REMNANT_MAX_LABEL_VOLUME_FRACTION
+                        and record["maximum"][0] - record["minimum"][0] + 1
+                        < label_si_span * _BODY_REMNANT_MAX_LABEL_SI_SPAN_FRACTION
+                    )
+                    or (
+                        reject_posterior_sheets and dominant_has_ap_support
+                        and record["si_support"] * spacing[0] * 2.0 < min(
+                            record["ap_depth"] * spacing[1],
+                            record["lr_width"] * spacing[2],
+                        )
+                    )
+                )
             )
         ]
         supported = compact or aligned

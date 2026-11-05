@@ -126,6 +126,7 @@ def _consistent_boundary_profiles(
     minimum: np.ndarray,
     maximum: np.ndarray,
     raw_array: np.ndarray | None = None,
+    required_sides: tuple[str, ...] = ("min", "max"),
 ) -> dict[str, tuple[np.ndarray, dict]] | None:
     """分别拟合 LR 切面的自然边界，再取稳定切面群的中位边界。"""
     from scipy.stats import theilslopes
@@ -154,6 +155,8 @@ def _consistent_boundary_profiles(
             continue
         profile = {"x": float(x), "values": values}
         for column, side in ((1, "min"), (2, "max")):
+            if side not in required_sides:
+                continue
             y_mm = values[:, 0] * spacing[1]
             z_mm = values[:, column] * spacing[0]
             slope, intercept, _, _ = theilslopes(z_mm, y_mm)
@@ -179,6 +182,8 @@ def _consistent_boundary_profiles(
         return None
     results = {}
     for column, side in ((1, "min"), (2, "max")):
+        if side not in required_sides:
+            continue
         reliable = [profile for profile in profiles if side in profile]
         if len(reliable) < 3:
             return None
@@ -286,6 +291,7 @@ def fit_body_endplates_from_core(
     *,
     source_indices_zyx: np.ndarray | None = None,
     raw_array: np.ndarray | None = None,
+    required_sides: tuple[str, ...] = ("min", "max"),
 ) -> list[dict] | None:
     """仅在密实核心的 AP 支撑内拟合上下边界，不把覆盖包络侧壁当端板。
 
@@ -297,6 +303,8 @@ def fit_body_endplates_from_core(
     indices = np.asarray(body_indices_zyx)
     spacing = np.asarray(spacing_zyx, dtype=float)
     if indices.ndim != 2 or indices.shape[1] != 3 or len(indices) < 8:
+        return None
+    if not required_sides or any(side not in {"min", "max"} for side in required_sides):
         return None
     try:
         minimum = np.asarray(core_bbox_zyx["min"], dtype=float)
@@ -315,6 +323,7 @@ def fit_body_endplates_from_core(
     if source_indices_zyx is not None:
         profile_values = _consistent_boundary_profiles(
             source, indices, spacing, minimum, maximum, raw_array=raw_array,
+            required_sides=required_sides,
         )
         if profile_values is None:
             return None
@@ -353,6 +362,8 @@ def fit_body_endplates_from_core(
     result = []
     for column, sign in ((1, -1), (2, 1)):
         side = "min" if sign < 0 else "max"
+        if side not in required_sides:
+            continue
         fit_values = values[:, (0, column)] if profile_values is None else profile_values[side][0]
         fit_y_physical = fit_values[:, 0] * spacing[1]
         z_physical = fit_values[:, 1] * spacing[0]
@@ -375,7 +386,9 @@ def fit_body_endplates_from_core(
             "source": "original_label" if source_indices_zyx is not None else "body_mask",
             **({} if profile_values is None else profile_values[side][1]),
         })
-    if any(result[1]["endpoints_zyx"][i][0] - result[0]["endpoints_zyx"][i][0] < 1.0
-           for i in (0, 1)):
+    if len(result) == 2 and any(
+        result[1]["endpoints_zyx"][i][0] - result[0]["endpoints_zyx"][i][0] < 1.0
+        for i in (0, 1)
+    ):
         return None
     return result

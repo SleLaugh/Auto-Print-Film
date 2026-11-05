@@ -84,6 +84,81 @@ class VertebralBodySupportCredibilityTest(unittest.TestCase):
                 np.testing.assert_array_equal(selected, expected)
                 np.testing.assert_array_equal(candidates, original)
 
+    def test_large_short_posterior_bridge_cannot_disqualify_stable_wide_body(self):
+        # C7 can have a wide, shallow anterior body, while a four-layer rear
+        # bridge passes the AP/LR compactness rule and exceeds the old 10%
+        # remnant threshold. Repeat each axis independently to preserve the
+        # physical evidence under anisotropic sampling.
+        for factors in ((1, 1, 1), (2, 1, 1), (1, 2, 1), (1, 1, 2)):
+            with self.subTest(factors=factors):
+                expected = np.zeros((40, 200, 130), dtype=bool)
+                expected[8:25, 10:28, 30:100] = True
+                candidates = expected.copy()
+                candidates[26:30, 50:184, 49:80] = True
+                for axis, factor in enumerate(factors):
+                    candidates = np.repeat(candidates, factor, axis=axis)
+                    expected = np.repeat(expected, factor, axis=axis)
+                original = candidates.copy()
+                spacing = tuple(value / factor for value, factor in zip(
+                    (1.0, 0.349609375, 0.349609375), factors,
+                ))
+
+                selected = LocalizationStage._select_vertebral_body_support(
+                    candidates, center_x=65.0 * factors[2],
+                    spacing_zyx=spacing,
+                    label_voxel_count=100000 * int(np.prod(factors)),
+                    label_si_span=31 * factors[0],
+                )
+
+                np.testing.assert_array_equal(selected, expected)
+                np.testing.assert_array_equal(candidates, original)
+
+    def test_fewer_layers_alone_do_not_disqualify_physical_posterior_body(self):
+        candidates = np.zeros((40, 200, 130), dtype=bool)
+        candidates[8:25, 10:28, 30:100] = True
+        candidates[26:30, 50:184, 49:80] = True
+        expected = np.zeros_like(candidates)
+        expected[26:30, 50:184, 49:80] = True
+        # The same four-layer component has 12 mm of SI support here. It is
+        # not a thin bridge, so the pre-existing compact-body choice stands.
+        selected = LocalizationStage._select_vertebral_body_support(
+            candidates, center_x=65.0,
+            spacing_zyx=(3.0, 0.349609375, 0.349609375),
+            label_voxel_count=100000, label_si_span=31,
+        )
+
+        np.testing.assert_array_equal(selected, expected)
+
+    def test_candidate_mask_keeps_wide_body_before_large_short_bridge(self):
+        array = np.zeros((40, 200, 130), dtype=np.uint8)
+        array[8:25, 10:28, 30:100] = 5
+        array[26:30, 50:184, 49:80] = 5
+        expected = np.zeros_like(array, dtype=bool)
+        expected[8:25, 10:28, 30:100] = True
+        original = array.copy()
+
+        body = LocalizationStage._vertebral_body_candidate_mask(
+            array, LabelTarget("vertebrae_C7", [5]),
+            spacing_zyx=(1.0, 0.349609375, 0.349609375),
+        )
+
+        np.testing.assert_array_equal(body, expected)
+        np.testing.assert_array_equal(array, original)
+
+    def test_c2_keeps_existing_selection_before_its_specialized_recovery(self):
+        array = np.zeros((40, 200, 130), dtype=np.uint8)
+        array[8:25, 10:28, 30:100] = 5
+        array[26:30, 50:184, 49:80] = 5
+        expected = np.zeros_like(array, dtype=bool)
+        expected[26:30, 50:184, 49:80] = True
+
+        body = LocalizationStage._vertebral_body_candidate_mask(
+            array, LabelTarget("vertebrae_C2", [5]),
+            spacing_zyx=(1.0, 0.349609375, 0.349609375),
+        )
+
+        np.testing.assert_array_equal(body, expected)
+
     def test_stable_small_anterior_body_survives_larger_posterior_support(self):
         array = np.zeros((36, 70, 70), dtype=np.uint8)
         body_region = (slice(8, 24), slice(10, 25), slice(24, 44))
@@ -155,14 +230,15 @@ class VertebralBodySupportCredibilityTest(unittest.TestCase):
                 np.testing.assert_array_equal(array, original)
 
     def test_large_thin_anterior_sheet_does_not_disqualify_complete_body(self):
-        for spacing in self._SPACINGS:
-            with self.subTest(spacing=spacing):
+        for spacing, body_height in ((None, 16), ((1.0, 0.392578125, 0.392578125), 16),
+                                     ((1.0, 1.0, 1.0), 6)):
+            with self.subTest(spacing=spacing, body_height=body_height):
                 array = np.zeros((50, 90, 100), dtype=np.uint8)
                 array[2:42, 5:13, 20:80] = 5
-                array[16:32, 25:40, 35:65] = 5
+                array[16:16 + body_height, 25:40, 35:65] = 5
                 original = array.copy()
                 expected = np.zeros_like(array, dtype=bool)
-                expected[16:32, 25:40, 35:65] = True
+                expected[16:16 + body_height, 25:40, 35:65] = True
 
                 body = LocalizationStage._vertebral_body_candidate_mask(
                     array, LabelTarget("vertebrae_C5", [5]), spacing_zyx=spacing,

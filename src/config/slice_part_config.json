@@ -363,7 +363,7 @@
                     "full_label": true
                 },
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "C1", "end_label": "S1" }
+                    "default": { "type": "whole_range", "start_label": "C2", "end_label": "S1" }
                 }
             },
             "slice_rules": {

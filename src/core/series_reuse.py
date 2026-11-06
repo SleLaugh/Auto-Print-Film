@@ -85,7 +85,8 @@ def _model_identity(config, model):
     datasets = list(root.glob(f"Dataset{int(model['model_id']):03d}_*"))
     if len(datasets) != 1:
         raise ValueError("无法唯一确定 nnUNet 数据集")
-    folder = datasets[0] / f"nnUNetTrainer__nnUNetPlans__{model['configuration']}"
+    plans = model.get("plans", "nnUNetPlans")
+    folder = datasets[0] / f"nnUNetTrainer__{plans}__{model['configuration']}"
     selected = [folder / "dataset.json", folder / "plans.json",
                 folder / f"fold_{model['fold']}" / "checkpoint_final.pth"]
     for path in selected:
@@ -169,7 +170,10 @@ class SeriesReuseSession:
             "schema": SCHEMA, "code": self._code, "nnunet": options,
             "weights": self._weights,
             "engine": self._engine,
-            "model": {key: model[key] for key in ("model_id", "configuration", "fold")},
+            "model": {
+                **{key: model[key] for key in ("model_id", "configuration", "fold")},
+                "plans": model.get("plans", "nnUNetPlans"),
+            },
         })
         planes = []
         for plane in request.plane_configs:

@@ -237,7 +237,7 @@ class LocalizationOperations(
         if dataset_id is None:
             raise ValueError("分割结果缺少 model_id/dataset_id，无法查找 dataset.json")
 
-        dataset_prefix = f"Dataset{int(dataset_id):03d}"
+        dataset_prefix = f"Dataset{int(dataset_id):03d}_"
         roots = [
             self._nnunet_paths.get('nnUNet_results', ''),
             self._nnunet_paths.get('nnUNet_preprocessed', ''),

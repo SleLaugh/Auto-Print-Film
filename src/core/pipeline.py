@@ -100,6 +100,7 @@ class Pipeline:
         nnunet_config = {
             "_configuration": config.nnunet.configuration,
             "_fold": config.nnunet.fold,
+            "_plans": config.nnunet.plans,
             "_continue": config.nnunet.continue_mode,
             "disable_tta": config.nnunet.disable_tta,
             "step_size": config.nnunet.step_size,

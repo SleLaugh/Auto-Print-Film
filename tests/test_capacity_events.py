@@ -12,14 +12,14 @@ from src.config import AppConfig, LoggingConfig, PipelineConfig
 from src.core.base_stage import BaseStage
 from src.core.context import ProcessingContext
 from src.core.pipeline import Pipeline
-from src.models import Request
+from src.models import Request, SlicePartEnum
 from src.stages.stage_segmentation import SegmentationStage
 
 
 def request_for(root):
     return Request(
         dicom_dir=str(root / "private-input"), output_dir=str(root / "output"),
-        cache_dir=str(root / "private-cache"), scan_thickness=1,
+        cache_dir=str(root / "private-cache"), slice_part=SlicePartEnum.颈椎, scan_thickness=1,
     )
 
 
@@ -128,7 +128,12 @@ def test_segmentation_summary_distinguishes_cache_wait_from_real_inference(tmp_p
 @pytest.mark.parametrize("returncode", [0, 1])
 def test_inference_events_surround_only_subprocess_execution(tmp_path, returncode):
     request = request_for(tmp_path)
-    stage = SegmentationStage({"export_resampling_threads": 1})
+    stage = SegmentationStage({
+        "export_resampling_threads": 1,
+        **{key: str(tmp_path / key) for key in (
+            "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
+        )},
+    })
     def run(command, **kwargs):
         assert records(request)[-1]["event"] == "inference_start"
         return subprocess.CompletedProcess(command, returncode, "", "expected test failure")

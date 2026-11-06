@@ -62,6 +62,7 @@ class ConfigLoaderTest(unittest.TestCase):
             defaults={
                 "_configuration": "3d_lowres",
                 "_fold": "2",
+                "_plans": "nnUNetPlans_Custom",
                 "_continue": False,
                 "nnUNet_raw": "/models/raw",
             },
@@ -69,6 +70,7 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertEqual(config.nnunet.configuration, "3d_lowres")
         self.assertEqual(config.nnunet.fold, "2")
+        self.assertEqual(config.nnunet.plans, "nnUNetPlans_Custom")
         self.assertFalse(config.nnunet.continue_mode)
         self.assertEqual(config.nnunet.raw, "/models/raw")
 
@@ -370,6 +372,7 @@ class ConfigLoaderTest(unittest.TestCase):
         stage_config = {
             "_configuration": "3d_lowres",
             "_fold": "3",
+            "_plans": "nnUNetPlans_Custom",
             "_continue": False,
             "nnUNet_raw": "/central/raw",
             "nnUNet_preprocessed": "/central/preprocessed",
@@ -381,6 +384,7 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertEqual(segmentation._configuration, "3d_lowres")
         self.assertEqual(segmentation._fold, "3")
+        self.assertEqual(segmentation._plans, "nnUNetPlans_Custom")
         self.assertFalse(segmentation._continue)
         self.assertEqual(
             segmentation._nnunet_env_vars["nnUNet_results"],

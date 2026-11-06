@@ -16,7 +16,7 @@ _PART_LABELS = {
     SlicePartEnum.胸椎: ("T1", "T2", "T3"),
     SlicePartEnum.腰椎: ("L1", "L2", "L3"),
     SlicePartEnum.胸腰椎: ("C7", "T6", "S1"),
-    SlicePartEnum.全脊柱: ("C1", "T6", "S1"),
+    SlicePartEnum.全脊柱: ("C2", "T6", "S1"),
 }
 _SUPERIOR_HU = 900.0
 _INFERIOR_HU = 1500.0

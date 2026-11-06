@@ -16,8 +16,14 @@ from src.core.context import ProcessingContext
 from src.core.errors import ExternalProcessError
 from src.core.inference_process import InferenceProcessAborted
 from src.core.pipeline import Pipeline
-from src.models import Request
+from src.models import Request, SlicePartEnum
 from src.stages.stage_segmentation import SegmentationStage
+
+
+@pytest.fixture(autouse=True)
+def isolate_model_directories(tmp_path, monkeypatch):
+    for key in ("nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results"):
+        monkeypatch.setenv(key, str(tmp_path / key))
 
 
 def _context(root):
@@ -26,7 +32,7 @@ def _context(root):
     source.touch()
     request = Request(
         dicom_dir=str(root / "dicom"), output_dir=str(root / "output"),
-        cache_dir=str(root / "cache"), scan_thickness=1.0,
+        cache_dir=str(root / "cache"), slice_part=SlicePartEnum.颈椎, scan_thickness=1.0,
     )
     context = ProcessingContext(request)
     context.set_result("preprocessing", {"nifti_path": str(source)})
@@ -147,7 +153,10 @@ def test_exhausted_timeout_is_written_to_failure_report(tmp_path):
         stages=[Preprocessing("preprocessing"), SegmentationStage({"inference_max_retries": 1})],
         config=AppConfig(pipeline=PipelineConfig(run_preflight=False)),
     )
-    request = Request("/tmp/fake-dicom", str(tmp_path / "output"), scan_thickness=1)
+    request = Request(
+        "/tmp/fake-dicom", str(tmp_path / "output"),
+        slice_part=SlicePartEnum.颈椎, scan_thickness=1,
+    )
     with patch("src.stages.stage_segmentation.run_inference_process", side_effect=_aborted()) as run:
         response = pipeline.run(request)
     assert run.call_count == 2

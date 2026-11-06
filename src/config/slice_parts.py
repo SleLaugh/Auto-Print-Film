@@ -184,7 +184,7 @@ def _validate_model_mappings(
             raise ValueError(f"{slice_part}.{study_type} 的模型规则项必须是对象")
         _reject_unknown_fields(
             mapping,
-            {"scan_thickness_range_mm", "model_id", "configuration", "fold"},
+            {"scan_thickness_range_mm", "model_id", "configuration", "fold", "plans"},
             f"{slice_part}.{study_type}.model_rules",
         )
         thickness_range = mapping.get("scan_thickness_range_mm")
@@ -210,6 +210,12 @@ def _validate_model_mappings(
         model_id = mapping.get("model_id")
         if isinstance(model_id, bool) or not isinstance(model_id, int) or model_id <= 0:
             raise ValueError(f"{slice_part}.{study_type}.model_id 必须是正整数")
+        if "plans" in mapping:
+            plans = mapping["plans"]
+            if (not isinstance(plans, str) or not plans.strip() or plans != plans.strip()
+                    or any(value in plans for value in ("/", "\\", "\x00", "__"))
+                    or plans in {".", ".."}):
+                raise ValueError(f"{slice_part}.{study_type}.plans 必须是有效的训练计划名称")
         parsed_ranges.append((minimum, maximum))
 
     for index, current in enumerate(parsed_ranges):

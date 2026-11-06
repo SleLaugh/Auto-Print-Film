@@ -65,6 +65,23 @@ def test_model_identity_selects_current_configuration_fold_and_final_checkpoint(
     assert series_reuse._model_identity(config, other_fold) != actual
 
 
+def test_model_identity_uses_custom_plans_and_fold_all(model_case):
+    root, _folder, config, _model = model_case
+    custom = root / "Dataset29222_ctver/nnUNetTrainer__nnUNetPlans_Lowres3mm__3d_lowres"
+    (custom / "fold_all").mkdir(parents=True)
+    (custom / "dataset.json").write_text('{}')
+    (custom / "plans.json").write_text('{"plans_name":"nnUNetPlans_Lowres3mm"}')
+    (custom / "fold_all/checkpoint_final.pth").write_bytes(b"lowres-model")
+    model = {"model_id": 29222, "configuration": "3d_lowres", "fold": "all",
+             "plans": "nnUNetPlans_Lowres3mm"}
+    assert set(series_reuse._model_identity(config, model)) == {
+        str((custom / name).resolve())
+        for name in ("dataset.json", "plans.json", "fold_all/checkpoint_final.pth")
+    }
+    with pytest.raises(ValueError, match="来源文件缺失"):
+        series_reuse._model_identity(config, {**model, "plans": "nnUNetPlans"})
+
+
 @pytest.mark.parametrize("name", ["dataset.json", "plans.json", "fold_0/checkpoint_final.pth"])
 def test_selected_model_generation_or_label_plan_content_changes_identity(model_case, name):
     _root, folder, config, model = model_case

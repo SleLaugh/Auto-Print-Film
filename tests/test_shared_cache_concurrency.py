@@ -19,7 +19,7 @@ import pytest
 
 from src.core.context import ProcessingContext
 from src.core.cache_workspace import cleanup_cache_workspaces
-from src.models import Request
+from src.models import Request, SlicePartEnum
 from src.stages import stage_segmentation as segmentation_module
 from src.stages.stage_segmentation import SegmentationStage
 
@@ -96,6 +96,7 @@ def _segmentation_worker(root, model_id, events, start_barrier=None, post_barrie
             dicom_dir=str(root / "unused-dicom"),
             output_dir=str(root / f"output-{os.getpid()}"),
             cache_dir=str(root / "cache"),
+            slice_part=SlicePartEnum.颈椎,
             scan_thickness=1.0,
         )
         context = ProcessingContext(request)
@@ -303,11 +304,15 @@ def _external_prediction_worker(root):
     stage = SegmentationStage({
         "nnUNet_predict_command": str(root / "fake_predict.py"),
         "nnUNet_python": sys.executable,
+        **{key: str(root / key) for key in (
+            "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
+        )},
     })
     request = Request(
         dicom_dir=str(root / "unused-dicom"),
         output_dir=str(root / "output"),
         cache_dir=str(root / "cache"),
+        slice_part=SlicePartEnum.颈椎,
         scan_thickness=1.0,
     )
     context = ProcessingContext(request)
@@ -451,6 +456,7 @@ def test_failed_publication_of_replacement_cache_is_not_reused_and_can_retry(tmp
             dicom_dir=str(tmp_path / "unused-dicom"),
             output_dir=str(tmp_path / "independent-output"),
             cache_dir=str(tmp_path / "cache"),
+            slice_part=SlicePartEnum.颈椎,
             scan_thickness=1.0,
         )
         result = ProcessingContext(request)

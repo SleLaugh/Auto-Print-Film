@@ -189,6 +189,8 @@ LR 斜切，CPR 曲线规则不变。回正只改变采样方向，不强制镜�
 第六阶段仅颈椎横状位 MPR 使用它，切面垂直整体颈椎长轴，整组平行，不逐椎体改变角度。
 颈椎整体范围仍为 C1–T1（包含 C1–C7），终点侧 `5 mm` 余量不变；胸腰椎与全脊柱在三种 MPR
 和两种 CPR 中均按配置把上下高度各延长 `50 mm`，CPR 只沿脊柱首尾直线延伸，不改变横向偏移；其余状位、部位按原规则。
+当前胸腰椎范围为 C7–S1（19 个椎体），全脊柱范围为 C2–S1（C2–C7、T1–T12、
+L1–L5、S1，共 24 个椎体）；三状位 MPR 与两状位 CPR 共用各自的整体范围。
 存储轴反向由 `patient_reference_axes` 统一按患者语义取符号，SI 朝 LPS `+Z`，
 整切冠状、矢状成片头侧向上；不改变原始物理坐标换算或已有斜扫描角度。
 头脚符号校准本身不改变俯仰，颅脑形态俯仰由第五阶段另行估计。
@@ -223,6 +225,35 @@ S1 使用实际 `label_targets`，优先 `vertebrae_S1`、只提供 `sacrum` 时
 ```
 
 此时由该外部 Python 调用 nnUNet 入口，其 nnUNet/PyTorch 安装和版本保持原样。两个字段均未配置时沿用原来的 PATH 命令调用。`nnUNet_python` 必须指向外部 Python，不能指向本包的 `AutoPrintFilm` 可执行程序。
+
+`nnuNet_config.json` 提供全局模型默认值：
+
+```json
+{
+  "_configuration": "3d_fullres",
+  "_fold": "0",
+  "_plans": "nnUNetPlans"
+}
+```
+
+`slice_part_config.json` 中命中的 `model_rules` 按字段覆盖这些默认值：
+`configuration` 覆盖 `_configuration`，`fold` 覆盖 `_fold`，`plans` 覆盖 `_plans`。
+省略某个字段就继承对应默认值；只填写 `model_id` 和层厚区间时，三个字段全部继承。
+自定义字段须与该模型的训练结果一致；`fold: "all"` 需要实际存在
+`fold_all/checkpoint_final.pth`，不表示自动合并所有数字 fold。
+部署新模型时将完整训练结果放到以下位置：
+
+```text
+nnUNet_results/<数据集名称>/nnUNetTrainer__<plans>__<configuration>/
+  dataset.json
+  plans.json
+  fold_<fold>/checkpoint_final.pth
+```
+
+`plans` 选择训练计划名称并传为 `-p`，须与训练结果目录匹配。应用按 `Dataset<ID>_`
+精确匹配数据集并传完整名称，避免不同长度编号的前缀冲突。
+旧发布包需更新包含上述配置支持的程序，随后修改外置 JSON 即可在下次任务生效。
+配置示例与字段优先级见 [切割部位配置](../src/config/README.md#model_rules)。
 
 `nnuNet_config.json` 还支持以下顶层推理速度及后台进程参数。将字段合并到原 JSON，保留其他字段：
 

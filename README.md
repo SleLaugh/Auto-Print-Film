@@ -236,22 +236,68 @@ Windows 示例：
 }
 ```
 
-切割部位相关配置统一维护在 `src/config/slice_part_config.json`。同一切割部位可以在
-`slice_parts.<切割部位>.model_rules.<检查类型>` 中按原始扫描层厚配置不同模型。每项
-使用包含边界的毫米区间：
+`nnuNet_config.json` 提供全局推理默认值：
 
 ```json
 {
-  "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
-  "model_id": 292
+  "_configuration": "3d_fullres",
+  "_fold": "0",
+  "_plans": "nnUNetPlans"
 }
 ```
+
+切割部位相关配置统一维护在 `src/config/slice_part_config.json`。同一切割部位可以在
+`slice_parts.<切割部位>.model_rules.<检查类型>` 中按原始扫描层厚选择模型，并按字段
+覆盖全局默认值。下面是自定义模型规则示例，模型 ID 和训练计划名称需按实际部署填写：
+
+```json
+{
+  "model_rules": {
+    "CT": [
+      {
+        "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
+        "model_id": 123,
+        "configuration": "3d_lowres",
+        "fold": "all",
+        "plans": "nnUNetPlans_Custom"
+      },
+      {
+        "scan_thickness_range_mm": { "min": 1.6, "max": 4.5 },
+        "model_id": 297
+      },
+      {
+        "scan_thickness_range_mm": { "min": 4.6, "max": 6.0 },
+        "model_id": 298
+      }
+    ]
+  }
+}
+```
+
+| 模型规则字段 | 省略时继承的全局字段 | nnUNet 参数 |
+| --- | --- | --- |
+| `configuration` | `_configuration` | `-c` |
+| `fold` | `_fold` | `-f` |
+| `plans` | `_plans` | `-p` |
+
+三个字段独立覆盖：示例模型 `123` 使用自己的 `3d_lowres / all / nnUNetPlans_Custom`，
+`297`、`298` 使用全局默认；若只填写 `configuration`，`fold` 和 `plans` 仍继承默认。
+全局也未填写时，内建默认分别为 `3d_fullres`、`0`、`nnUNetPlans`。
+`plans` 是训练计划名称，方案内容保存在模型目录的 `plans.json`；`fold=all` 加载
+单独训练的 `fold_all/checkpoint_final.pth`，不表示自动合并所有数字 fold。
+模型训练结果应放在 `nnUNet_results/<数据集名称>/` 下的
+`nnUNetTrainer__<plans>__<configuration>/`，包含 `dataset.json`、`plans.json`
+和对应权重。应用按 `Dataset<ID>_` 匹配编号，向 nnUNet 传完整名称，避免不同长度编号
+的数字前缀冲突。完整字段说明见 [切割部位配置](src/config/README.md#model_rules)。
+旧发布包需重新构建并更新程序后才支持全局 `_plans` 和模型规则的 `plans`；升级后修改
+外置 JSON 在下次任务启动时生效。
 
 该文件同时管理切割部位是否启用、模型规则、定位区域、允许的状位与切法、范围扩展以及
 定位图状位；
 新增或调整切割部位时不再同步修改其他配置文件。`nnuNet_config.json` 只保存推理参数
 和 nnUNet 路径。当前已启用的脊柱、颅脑和髋骨按 `0-1.5mm`、`1.6-4.5mm`、`4.6-6mm`
-分别选择原薄层、3mm、6mm 模型。肺部目前只有 `0-1.5mm` 的模型。外部厚度未命中
+分别选择对应的薄层、3mm、6mm 模型；脊柱薄层默认使用 `292`。
+肺部目前只有 `0-1.5mm` 的模型。外部厚度未命中
 任何区间或同时命中重叠区间时，分割阶段会明确失败，不会自动选择临近模型。
 
 统一切割部位配置在应用启动时严格校验。未知字段、重叠模型区间、未在 `label_aliases`
@@ -578,7 +624,7 @@ GDCM写盘后设置 `RescaleSlope=窗宽/65535`、`RescaleIntercept=窗位-窗�
 
 原独立切割部位 `脊柱` 更名为 `胸腰椎`：`SlicePart=胸腰椎` 使用 `C7`–`S1`
 整体范围，包含 C7、T1–T12、L1–L5、S1，共 19 个椎体。新增 `SlicePart=全脊柱`
-使用 `C1`–`S1` 整体范围，包含 C1–C7、T1–T12、L1–L5、S1，共 25 个椎体。
+使用 `C2`–`S1` 整体范围，包含 C2–C7、T1–T12、L1–L5、S1，共 24 个椎体。
 两者使用相同模型、切割步骤和重建算法，均支持三状位 MPR 与冠状位、矢状位 CPR，
 不配置椎间隙；MPR 和 CPR 共用各自的整体范围，CPR 不排除椎体。
 调用方应使用新的部位名称；颈椎、胸椎和腰椎各自的配置范围保持不变。
@@ -738,7 +784,7 @@ Python 退出，发现 `report.json` 缺失或损坏时原子补写 `Success=fal
 主体，第六阶段在该范围之外继续应用配置的首尾余量。
 
 脊柱定位和重建以整体范围配置为范围事实源。第四阶段按配置首尾标签展开全部中间椎体；
-当前整体默认范围为颈椎 `C1 → T1`、胸椎 `C7 → L1`、腰椎 `T12 → S1`、胸腰椎 `C7 → S1`、全脊柱 `C1 → S1`，
+当前整体默认范围为颈椎 `C1 → T1`、胸椎 `C7 → L1`、腰椎 `T12 → S1`、胸腰椎 `C7 → S1`、全脊柱 `C2 → S1`，
 供三状位 MPR 和冠状位、矢状位 CPR 共用；颈椎 CPR 排除 C1 后使用 C2–T1。
 颈椎仅横状位 MPR 通过 `face_extension_mm` 在底侧另向外扩 `5 mm`，顶侧不扩；
 胸腰椎和全脊柱通过 `face_extension_mm` 在三种 MPR 状位上下各增加 `50 mm`，

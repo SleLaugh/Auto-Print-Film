@@ -78,8 +78,10 @@ A 处理完成后 B 命中 A，B 的完整快照不依赖 A 后续可变的输�
 | 7 重建与输出 | 跳过 HU 采样、回正后取景及定位图几何计算，重新加窗写 DICOM | 正常执行 |
 | 8 校验与报告 | 校验本次输出并生成本次报告 | 正常执行 |
 
-模型缓存必须能确定当前 `nnUNet_results` 下的数据集、默认 trainer/plans、配置、fold、
-`checkpoint_final.pth`、`dataset.json` 和 `plans.json`。模型文件、应用算法或有效配置变化时
+模型缓存必须能确定当前 `nnUNet_results` 下的数据集、默认 trainer、实际生效的 plans、
+configuration、fold、`checkpoint_final.pth`、`dataset.json` 和 `plans.json`。
+这三个模型选项使用 `model_rules` 覆盖全局默认后的值；自定义 `plans` 也参与缓存身份校验。
+模型文件、应用算法或有效配置变化时
 旧版本不能冒充新版本。开启功能后，历史分割缺少这些来源凭据时首次可能重新推理；
 关闭功能保留原来的本地缓存兼容规则。执行途中源数据或模型发生变化，不发布新的共享快照。
 还会校验官方 nnUNet 启动入口、实际外部 Python 和 nnUNet 包源码，避免外部推理环境升级后

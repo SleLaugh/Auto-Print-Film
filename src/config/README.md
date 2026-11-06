@@ -118,6 +118,18 @@ JSON 后下一次任务启动即可生效，无需重新打包。
 | `model_id` | 正整数 | nnUNet 数据集 ID。 |
 | `configuration` | 可选 | 覆盖默认 nnUNet 配置，例如 `3d_fullres`。 |
 | `fold` | 可选 | 覆盖默认训练折；值会传给 nnUNet 的 `-f` 参数。 |
+| `plans` | 可选字符串 | 覆盖全局训练计划名称，对应 `-p`。 |
+
+`nnuNet_config.json` 提供全局默认值，命中的模型规则按字段覆盖：
+
+| 模型规则中的字段 | 未填写时使用的全局字段 | 全局也未填写时 |
+| --- | --- | --- |
+| `configuration` | `_configuration` | `3d_fullres` |
+| `fold` | `_fold` | `0` |
+| `plans` | `_plans` | `nnUNetPlans` |
+
+三个字段独立处理。例如只写 `configuration`，`fold` 和 `plans` 仍使用全局默认值；
+只写 `model_id` 和层厚区间时，三个字段全部继承全局默认值。
 
 层厚区间是闭区间，匹配条件为 `min <= ScanThickness <= max`。区间不能重叠；没有
 任何区间命中时任务会明确失败，不会自动选择临近模型。例如 `0–1.5` 和 `1.6–4.5`
@@ -131,6 +143,22 @@ JSON 后下一次任务启动即可生效，无需重新打包。
 | 颈椎、胸椎、腰椎、胸腰椎、全脊柱 | CT：`0–1.5`、`1.6–4.5`、`4.6–6.0 mm` | `292`、`297`、`298` |
 | 肺部 | CT：`0–1.5 mm` | `315` |
 | 骶骨 | 已禁用 | — |
+
+如需接入自定义模型，可在对应规则中填写 `configuration: "3d_lowres"`、`fold: "all"`
+和实际的 `plans` 名称；其他未填写这些字段的规则仍使用全局默认。
+`plans` 是训练计划名称，实际方案内容保存在 `plans.json`；`all` 对应单独训练的
+`fold_all` 权重，不表示合并数字 fold。模型训练结果部署到 `nnUNet_results`，目录如下：
+
+```text
+nnUNet_results/<数据集名称>/
+  nnUNetTrainer__<plans>__<configuration>/
+    dataset.json
+    plans.json
+    fold_<fold>/checkpoint_final.pth
+```
+
+程序按 `Dataset<ID>_` 精确匹配编号，并向 nnUNet 传递完整数据集名称，避免
+不同长度的数据集编号被外部命令的前缀匹配混为同一编号。
 
 ### `localization`
 
@@ -353,14 +381,15 @@ CPR、Localizer不执行上下裁空，整张无支持层保留并标记`no_sour
 | 胸椎 | 是 | `C7`–`L1` 整体范围 | 横 MPR、冠 MPR/CPR、矢 MPR/CPR |
 | 腰椎 | 是 | `T12`–`S1`；`L1_L2` 至 `L5_S1` 椎间隙 | 横 MPR/椎间隙、冠 MPR/CPR、矢 MPR/CPR |
 | 胸腰椎 | 是 | `C7`–`S1` 整体范围 | 横 MPR、冠 MPR/CPR、矢 MPR/CPR |
-| 全脊柱 | 是 | `C1`–`S1` 整体范围 | 横 MPR、冠 MPR/CPR、矢 MPR/CPR |
+| 全脊柱 | 是 | `C2`–`S1` 整体范围 | 横 MPR、冠 MPR/CPR、矢 MPR/CPR |
 | 肺部 | 是 | `lung`–`lung` 整体范围 | 横 MPR、冠 MPR、矢 MPR |
 | 骶骨 | 否 | — | — |
 | 髋骨 | 是 | `hip_left`–`hip_right` 整体范围 | 横 MPR、冠 MPR、矢 MPR |
 
 原独立切割部位 `脊柱` 更名为 `胸腰椎`，整体范围保持 `C7`–`S1`（19 个椎体）；
-新增 `全脊柱`，整体范围为 `C1`–`S1`（25 个椎体）。两者的模型规则、切割步骤和
-重建算法一致，三状位 MPR 与冠状位、矢状位 CPR 共用各自的整体范围，不配置椎间隙。
+`全脊柱` 当前整体范围为 `C2`–`S1`（C2–C7、T1–T12、L1–L5、S1，共 24 个椎体）。
+两者的模型规则、切割步骤和重建算法一致，三状位 MPR 与冠状位、矢状位 CPR 共用
+各自的整体范围，不配置椎间隙。
 CPR 使用完整标签范围，不排除椎体。扫描和分割结果需要覆盖所选范围；S1 标签缺失时
 沿用 `sacrum` 回退。调用方使用 `"SlicePart": "胸腰椎"` 或 `"SlicePart": "全脊柱"`，
 并在 `plane_configs` 中显式传入需要的五种组合；默认请求仍只生成横状位 MPR。

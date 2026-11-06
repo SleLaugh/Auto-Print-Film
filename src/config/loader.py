@@ -144,6 +144,7 @@ def load_app_config(
             "configuration", "_configuration", fallback="3d_fullres"
         )),
         fold=str(nn_value("fold", "_fold", fallback="0")),
+        plans=nn_value("plans", "_plans", fallback="nnUNetPlans"),
         continue_mode=_coerce_bool(nn_value(
             "continue_mode", "_continue", fallback=True
         ), "nnunet.continue_mode"),

@@ -9,15 +9,22 @@ from unittest.mock import patch
 import SimpleITK as sitk
 
 from src.core.context import ProcessingContext
-from src.models import Request
+from src.models import Request, SlicePartEnum
 from src.stages.stage_segmentation import SegmentationStage
 
 
 class SegmentationInferenceOptionsTest(unittest.TestCase):
     def run_inference(self, options):
-        stage = SegmentationStage({"_continue": False, **options})
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            # 不读取运行测试机器上的模型目录，以固定这里验证的数值模型参数。
+            stage = SegmentationStage({
+                "_continue": False,
+                **{key: str(root / key) for key in (
+                    "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
+                )},
+                **options,
+            })
             input_path = root / "nifti" / "raw_0000.nii.gz"
             input_path.parent.mkdir()
             input_path.touch()
@@ -26,6 +33,7 @@ class SegmentationInferenceOptionsTest(unittest.TestCase):
                 dicom_dir=str(root / "dicom"),
                 output_dir=str(root / "output"),
                 cache_dir=str(root / "cache"),
+                slice_part=SlicePartEnum.颈椎,
                 scan_thickness=1.0,
             )
             context = ProcessingContext(request)

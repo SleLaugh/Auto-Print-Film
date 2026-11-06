@@ -55,7 +55,7 @@ class SpinePartConfigTest(unittest.TestCase):
                 self.assertEqual(request.to_dict(), payload)
 
     def test_spine_localization_uses_one_range_without_interspaces(self):
-        for slice_part, start_label in (("胸腰椎", "C7"), ("全脊柱", "C1")):
+        for slice_part, start_label in (("胸腰椎", "C7"), ("全脊柱", "C2")):
             with self.subTest(slice_part=slice_part):
                 self.assertEqual(
                     localization_profiles_for(self.config, slice_part),
@@ -69,7 +69,7 @@ class SpinePartConfigTest(unittest.TestCase):
 
     def test_whole_spine_matches_thoracolumbar_config_except_start_label(self):
         expected = deepcopy(self.config["slice_parts"]["胸腰椎"])
-        expected["localization"]["regions"]["default"]["start_label"] = "C1"
+        expected["localization"]["regions"]["default"]["start_label"] = "C2"
 
         self.assertEqual(self.config["slice_parts"]["全脊柱"], expected)
 

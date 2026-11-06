@@ -132,9 +132,12 @@ def test_missing_adapter_reports_fallback_reason(adapter):
 
 
 def test_stage_passes_only_adapter_thread_environment_and_keeps_predict_arguments(adapter, tmp_path):
+    model_paths = {key: str(tmp_path / key) for key in (
+        "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
+    )}
     stage = SegmentationStage({
         "nnUNet_python": sys.executable, "export_resampling_threads": 3,
-        "nnUNet_results": "/external/models", "num_processes_segmentation_export": 2,
+        "num_processes_segmentation_export": 2, **model_paths,
     })
     output = tmp_path / "seg.nii.gz"
     with (
@@ -150,7 +153,8 @@ def test_stage_passes_only_adapter_thread_environment_and_keeps_predict_argument
         "-npp", "1", "-nps", "2", "--continue_prediction",
     ]
     assert run.call_args.kwargs["env"][nnunet_command.EXPORT_THREADS_ENV] == "3"
-    assert run.call_args.kwargs["env"]["nnUNet_results"] == "/external/models"
+    for key, expected in model_paths.items():
+        assert run.call_args.kwargs["env"][key] == expected
     assert any("已启用" in item.args[0] for item in log.call_args_list)
 
 

@@ -22,6 +22,7 @@ from src.core.context import ProcessingContext
 from src.core.errors import ExternalProcessError
 from src.core.inference_process import InferenceProcessAborted, run_inference_process
 from src.core.nnunet_command import EXPORT_THREADS_ENV, nnunet_inference_launch
+from src.core.nnunet_dataset import resolve_nnunet_dataset_name
 from src.config import (
     load_app_config,
     load_slice_part_config,
@@ -48,6 +49,7 @@ class SegmentationStage(BaseStage):
         default_config = {
             "_configuration": "3d_fullres",  # 模型配置：使用哪种网络架构配置
             "_fold": "0",  # 训练折数（fold）：使用哪个折的模型权重
+            "_plans": "nnUNetPlans",  # 默认训练计划，可由单条模型规则覆盖
             "_continue": True,  # 外部 nnUNet 跳过已有输出；阶段缓存另行判断
             "disable_tta": False,  # 是否关闭推理时的镜像增强
             "step_size": 0.5,  # 滑窗步长比例，范围为 (0, 1]
@@ -89,6 +91,7 @@ class SegmentationStage(BaseStage):
         # 应用配置
         self._configuration = default_config.get('_configuration', "3d_fullres")
         self._fold = str(default_config.get('_fold', "0"))
+        self._plans = default_config.get('_plans', "nnUNetPlans")
         self._continue = default_config.get('_continue', True)
         self._predict_command = default_config.get('nnUNet_predict_command', 'nnUNetv2_predict')
         self._predict_python = default_config.get('nnUNet_python', '')
@@ -211,6 +214,7 @@ class SegmentationStage(BaseStage):
                     self._generate_segmentation(
                         output_dir, input_path, dataset_id, configuration, fold,
                         inference_log_dir=Path(request.output_dir) / "log",
+                        plans=model_info.get('plans', self._plans),
                     )
                     if reuse_session is not None and not reuse_session.disabled:
                         try:
@@ -244,6 +248,7 @@ class SegmentationStage(BaseStage):
         configuration: str,
         fold: str,
         inference_log_dir: Path | None = None,
+        plans: str = "nnUNetPlans",
     ) -> None:
         """锁内生成独立推理结果，最后发布 seg，避免半成品被当作缓存。"""
 
@@ -252,6 +257,7 @@ class SegmentationStage(BaseStage):
                 self._generate_segmentation_attempt(
                     output_dir, input_path, dataset_id, configuration, fold,
                     inference_log_dir=inference_log_dir, attempt=attempt,
+                    plans=plans,
                 )
                 return
             except ExternalProcessError as error:
@@ -271,6 +277,7 @@ class SegmentationStage(BaseStage):
         self, output_dir: Path, input_path: Path, dataset_id: Any,
         configuration: str, fold: str, *,
         inference_log_dir: Path | None, attempt: int,
+        plans: str = "nnUNetPlans",
     ) -> None:
         """每次尝试使用新工作目录，避免继续模式复用上一次的半成品。"""
 
@@ -290,6 +297,7 @@ class SegmentationStage(BaseStage):
                 cache_pass_fds=workspace.pass_fds,
                 inference_log_dir=inference_log_dir,
                 attempt=attempt,
+                plans=plans,
             )
             if not temporary_seg.is_file():
                 raise FileNotFoundError(f"未找到nnUNet输出文件: {temporary_seg}")
@@ -397,6 +405,7 @@ class SegmentationStage(BaseStage):
                 self._configuration,
             ),
             'fold': str(model_mapping.get('fold', self._fold)),
+            'plans': model_mapping.get('plans', self._plans),
             'matched_by': 'slice_part_config',
         }
 
@@ -536,7 +545,8 @@ class SegmentationStage(BaseStage):
                               continue_mode: bool,
                               cache_pass_fds: tuple[int, ...] = (),
                               inference_log_dir: Path | None = None,
-                              attempt: int = 1):
+                              attempt: int = 1,
+                              plans: str = "nnUNetPlans"):
         """
         执行nnUNet推理命令
         
@@ -551,6 +561,7 @@ class SegmentationStage(BaseStage):
             cache_pass_fds: POSIX预测子进程继承工作目录租约，父进程退出后仍保护写入目录
             inference_log_dir: 独立于临时缓存的原始推理日志目录，失败及重试日志均保留
             attempt: 当前尝试序号
+            plans: 训练计划名称，对应 nnUNet 的 -p 参数
         """
         # 构建命令
         prefix, export_adapter_enabled, export_adapter_reason = nnunet_inference_launch(
@@ -561,16 +572,27 @@ class SegmentationStage(BaseStage):
                 f"[nnUNet] 导出通道并行适配器已启用，线程数 {self._export_resampling_threads}"
                 if export_adapter_enabled else f"[nnUNet] 导出通道并行未启用：{export_adapter_reason}"
             )
+        env = external_process_environment()
+        for key, value in self._nnunet_env_vars.items():
+            if value:
+                env[key] = value
+                DebugLog(f"    设置环境变量: {key}={value}")
+        dataset_name = resolve_nnunet_dataset_name(
+            dataset_id,
+            (env.get(key, '') for key in ('nnUNet_results', 'nnUNet_raw', 'nnUNet_preprocessed')),
+        )
         cmd = prefix + [
             "-i", str(input_dir),
             "-o", str(output_path.parent),  # 输出目录
-            "-d", str(dataset_id),
+            "-d", dataset_name,
             "-c", configuration,
             "-f", fold,
             "-step_size", str(self._step_size),
             "-npp", str(self._num_processes_preprocessing),
             "-nps", str(self._num_processes_segmentation_export),
         ]
+        if plans != "nnUNetPlans":
+            cmd.extend(["-p", plans])
         if self._disable_tta:
             cmd.append("--disable_tta")
         
@@ -579,16 +601,11 @@ class SegmentationStage(BaseStage):
             cmd.append("--continue_prediction")
         
         # 设置环境变量（合并当前环境变量和nnUNet环境变量）
-        env = external_process_environment()
         # 所有 spawn worker 都继承诊断开关；原生崩溃及时打印 Python 调用栈。
         env["PYTHONFAULTHANDLER"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
         if export_adapter_enabled:
             env[EXPORT_THREADS_ENV] = str(self._export_resampling_threads)
-        for key, value in self._nnunet_env_vars.items():
-            if value:  # 如果值不为空
-                env[key] = value
-                DebugLog(f"    设置环境变量: {key}={value}")
         
         command_text = shlex.join(cmd)
         DebugLog(f"    执行命令: {command_text}")

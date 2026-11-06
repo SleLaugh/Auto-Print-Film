@@ -115,8 +115,11 @@ class ExternalNnUNetTest(unittest.TestCase):
                     load_app_config(defaults={field: False}, environ={})
 
     def test_segmentation_keeps_arguments_and_model_environment_for_external_command(self):
+        model_paths = {key: str(self.root / key) for key in (
+            "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
+        )}
         stage = SegmentationStage({
-            "nnUNet_predict_command": str(self.command), "nnUNet_results": "/external/models",
+            "nnUNet_predict_command": str(self.command), **model_paths,
         })
         input_dir = self.root / "中文 input"
         output = self.root / "segmentation/seg.nii.gz"
@@ -133,7 +136,8 @@ class ExternalNnUNetTest(unittest.TestCase):
             "-d", "292", "-c", "3d_fullres", "-f", "0",
             "-step_size", "0.5", "-npp", "1", "-nps", "1", "--continue_prediction",
         ])
-        self.assertEqual(run.call_args.kwargs["env"]["nnUNet_results"], "/external/models")
+        for key, expected in model_paths.items():
+            self.assertEqual(run.call_args.kwargs["env"][key], expected)
 
     def test_external_python_entry_propagates_arguments_and_exit_code(self):
         package = self.root / "stub/nnunetv2/inference"

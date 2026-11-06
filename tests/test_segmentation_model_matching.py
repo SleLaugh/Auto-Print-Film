@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.core.context import ProcessingContext
-from src.models import Request
+from src.models import Request, SlicePartEnum
 from src.stages.stage_segmentation import SegmentationStage
 
 
@@ -23,12 +23,16 @@ class SegmentationModelMatchingTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.config = json.loads(PART_CONFIG_PATH.read_text(encoding="utf-8"))
+        cls.config["slice_parts"]["腰椎"]["model_rules"]["CT"][0].update({
+            "model_id": 29222, "configuration": "3d_lowres", "fold": "all",
+            "plans": "nnUNetPlans_Lowres3mm",
+        })
         cls.stage = SegmentationStage({"slice_part_config": cls.config})
 
     def test_lumbar_boundaries_select_expected_models(self):
         cases = (
-            (0.0, 292),
-            (1.5, 292),
+            (0.0, 29222),
+            (1.5, 29222),
             (1.6, 297),
             (4.5, 297),
             (4.6, 298),
@@ -39,6 +43,10 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             with self.subTest(thickness=thickness):
                 model = self.stage._match_model("腰椎", "CT", thickness)
                 self.assertEqual(model["model_id"], expected_model)
+                if expected_model == 29222:
+                    self.assertEqual(model["configuration"], "3d_lowres")
+                    self.assertEqual(model["fold"], "all")
+                    self.assertEqual(model["plans"], "nnUNetPlans_Lowres3mm")
                 self.assertGreaterEqual(
                     thickness,
                     model["min_scan_thickness"],
@@ -112,6 +120,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             request = Request(
                 dicom_dir=str(root / "dicom"),
                 output_dir=str(root / "output"),
+                slice_part=SlicePartEnum.颈椎,
                 scan_thickness=1.0,
                 cache_dir=str(root / "cache"),
             )
@@ -140,6 +149,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             request = Request(
                 dicom_dir=str(root / "dicom"),
                 output_dir=str(root / "output"),
+                slice_part=SlicePartEnum.颈椎,
                 scan_thickness=1.0,
                 cache_dir=str(root / "cache"),
             )
@@ -182,6 +192,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             request = Request(
                 dicom_dir=str(root / "dicom"),
                 output_dir=str(root / "output"),
+                slice_part=SlicePartEnum.颈椎,
                 scan_thickness=1.0,
                 cache_dir=str(root / "cache"),
             )
@@ -209,6 +220,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
             request = Request(
                 dicom_dir=str(root / "dicom"),
                 output_dir=str(root / "output"),
+                slice_part=SlicePartEnum.颈椎,
                 scan_thickness=1.0,
             )
             context = ProcessingContext(request)

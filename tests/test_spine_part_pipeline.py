@@ -1,4 +1,4 @@
-"""胸腰椎 C7–S1 与全脊柱 C1–S1 贯通定位、解剖、MPR / CPR 和 DICOM 链路。"""
+"""胸腰椎 C7–S1 与全脊柱 C2–S1 贯通定位、解剖、MPR / CPR 和 DICOM 链路。"""
 
 import json
 from pathlib import Path
@@ -24,12 +24,12 @@ from src.stages.stage_spatial_correction import SpatialCorrectionStage
 @pytest.mark.parametrize("sacral_label", ("vertebrae_S1", "sacrum"))
 @pytest.mark.parametrize("fill_percent", (0.0, 80.0, 100.0))
 @pytest.mark.parametrize("part,cervical_start", (
-    (SlicePartEnum.胸腰椎, 7), (SlicePartEnum.全脊柱, 1),
+    (SlicePartEnum.胸腰椎, 7), (SlicePartEnum.全脊柱, 2),
 ))
 def test_whole_spine_reaches_all_five_series_with_real_sacral_label(
     tmp_path, monkeypatch, sacral_label, fill_percent, part, cervical_start,
 ):
-    """同次请求完整定位 19 / 25 标签，兼容 S1 别名并实际写出五套切片。"""
+    """同次请求完整定位 19 / 24 标签，兼容 S1 别名并实际写出五套切片。"""
 
     label_names = (
         [f"vertebrae_C{index}" for index in range(cervical_start, 8)]
@@ -105,7 +105,7 @@ def test_whole_spine_reaches_all_five_series_with_real_sacral_label(
 
     localization = context.get_result("localization")
     anatomy = context.get_result("anatomical_analysis")
-    assert len(label_names) == (19 if part is SlicePartEnum.胸腰椎 else 25)
+    assert len(label_names) == (19 if part is SlicePartEnum.胸腰椎 else 24)
     assert list(localization["label_targets"]) == label_names
     assert excluded_label not in localization["coords"]
     diagnostic = anatomy["anatomical_geometry_diagnostics"]
@@ -129,7 +129,7 @@ def test_whole_spine_reaches_all_five_series_with_real_sacral_label(
         assert len(plan["slices"]) == 3
         if plan["slice_type"] == "CPR":
             assert plan["geometry_type"] == "curved_stack"
-            # 全脊柱保留 C1，不能沿用颈椎 CPR 的环椎排除规则。
+            # CPR 保留当前配置范围内的全部标签，全脊柱从 C2 开始。
             assert plan["source_labels"] == label_names
             assert len(plan["curve_points"]) >= len(label_names)
         else:

@@ -2211,7 +2211,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             ),
             (
                 SlicePartEnum.全脊柱,
-                ("C1", "C7", "T6", "L3", "S1"),
+                ("C2", "C7", "T6", "L3", "S1"),
                 SingleLabelWholeRangePlanner(),
             ),
         )
@@ -2246,7 +2246,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
     def test_whole_spine_coronal_mpr_keeps_cpr_excluded_endpoint(self):
         """CPR 排除项不能把冠状位 MPR 的整体目标终点缩到 L5。"""
 
-        for part, start in ((SlicePartEnum.胸腰椎, "C7"), (SlicePartEnum.全脊柱, "C1")):
+        for part, start in ((SlicePartEnum.胸腰椎, "C7"), (SlicePartEnum.全脊柱, "C2")):
             with self.subTest(slice_part=part.value):
                 labels = (start, "L5", "S1")
                 localization_result = self._spine_localization_result(labels, part.value)
@@ -2325,7 +2325,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             localization = self._spine_localization_result(labels, part.value)
             expected = [
                 f"vertebrae_{label}" for label in labels
-                if part is not SlicePartEnum.颈椎 or label != "C1"
+                if part not in (SlicePartEnum.颈椎, SlicePartEnum.全脊柱) or label != "C1"
             ]
             for plane in (PlaneTypeEnum.冠状位, PlaneTypeEnum.矢状位):
                 with self.subTest(slice_part=part.value, plane=plane.value):

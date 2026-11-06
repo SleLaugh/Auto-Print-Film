@@ -12,7 +12,7 @@ import pytest
 
 from src.core.context import ProcessingContext
 from src.core.errors import ExternalProcessError
-from src.models import Request
+from src.models import Request, SlicePartEnum
 from src.stages import stage_segmentation as segmentation_module
 from src.stages.stage_segmentation import SegmentationStage
 
@@ -46,11 +46,17 @@ def cache_case(tmp_path):
         dicom_dir=str(tmp_path / "unused-dicom"),
         output_dir=str(tmp_path / "output"),
         cache_dir=str(tmp_path / "cache"),
+        slice_part=SlicePartEnum.颈椎,
         scan_thickness=1.0,
     )
     context = ProcessingContext(request)
     context.set_result("preprocessing", {"nifti_path": str(input_path)})
-    stage = SegmentationStage({"_continue": False})
+    stage = SegmentationStage({
+        "_continue": False,
+        **{key: str(tmp_path / key) for key in (
+            "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
+        )},
+    })
     return stage, context, output_dir, outside
 
 

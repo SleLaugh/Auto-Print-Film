@@ -42,9 +42,16 @@ class NnUNetConfig:
     """模型 ID 到单次推理最长秒数的映射，键为无前导零的正整数字符串。"""
     inference_max_retries: int = 1
     """外部推理失败后的额外重试次数，只允许 0 或 1。"""
+    plans: str = "nnUNetPlans"
+    """默认训练计划名称；模型规则可用 plans 单独覆盖。"""
 
     def __post_init__(self) -> None:
         """在构造配置时拒绝非法推理选项，避免启动外部推理后才失败。"""
+        if (not isinstance(self.plans, str) or not self.plans.strip()
+                or self.plans != self.plans.strip()
+                or any(value in self.plans for value in ("/", "\\", "\x00", "__"))
+                or self.plans in {".", ".."}):
+            raise ValueError("nnunet.plans 必须是有效的训练计划名称")
         if not isinstance(self.disable_tta, bool):
             raise ValueError("nnunet.disable_tta 必须是布尔值 true/false")
         if (
@@ -163,6 +170,7 @@ class AppConfig:
             "nnunet": {
                 "configuration": self.nnunet.configuration,
                 "fold": self.nnunet.fold,
+                "plans": self.nnunet.plans,
                 "continue_mode": self.nnunet.continue_mode,
                 "disable_tta": self.nnunet.disable_tta,
                 "step_size": self.nnunet.step_size,

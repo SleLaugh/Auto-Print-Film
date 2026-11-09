@@ -26,9 +26,7 @@ def _model_config(overrides):
 
 
 def test_lumbar_custom_model_uses_own_plans_and_cache_on_retry(tmp_path):
-    roots = {name: str(tmp_path / name) for name in (
-        "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
-    )}
+    roots = {"nnUNet_results": str(tmp_path / "nnUNet_results")}
     for name in ("Dataset292_Liver", "Dataset29222_ctver"):
         (Path(roots["nnUNet_results"]) / name).mkdir(parents=True)
     stage = SegmentationStage({
@@ -102,9 +100,7 @@ def test_model_rules_reject_invalid_plans_names(plans):
 def test_model_fields_independently_override_file_defaults_in_prediction(tmp_path, overrides, expected):
     defaults = {
         "_configuration": "3d_fullres", "_fold": "2", "_plans": "GlobalPlans",
-        **{key: str(tmp_path / key) for key in (
-            "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
-        )},
+        "nnUNet_results": str(tmp_path / "nnUNet_results"),
     }
     path = tmp_path / "nnuNet_config.json"
     path.write_text(json.dumps(defaults))

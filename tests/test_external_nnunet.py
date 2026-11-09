@@ -115,9 +115,7 @@ class ExternalNnUNetTest(unittest.TestCase):
                     load_app_config(defaults={field: False}, environ={})
 
     def test_segmentation_keeps_arguments_and_model_environment_for_external_command(self):
-        model_paths = {key: str(self.root / key) for key in (
-            "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
-        )}
+        model_paths = {"nnUNet_results": str(self.root / "nnUNet_results")}
         stage = SegmentationStage({
             "nnUNet_predict_command": str(self.command), **model_paths,
         })

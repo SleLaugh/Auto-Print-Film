@@ -90,17 +90,11 @@ class PreflightValidator:
 
     @staticmethod
     def _validate_model_directories(config: AppConfig) -> None:
-        """检查 nnUNet 三个标准目录均已配置且在当前机器存在。"""
-        values = {
-            "nnUNet_raw": config.nnunet.raw,
-            "nnUNet_preprocessed": config.nnunet.preprocessed,
-            "nnUNet_results": config.nnunet.results,
-        }
-        for name, value in values.items():
-            if not value:
-                raise DependencyError(f"未配置 {name}")
-            if not Path(resolve_application_path(value)).is_dir():
-                raise DependencyError(
-                    f"{name} 目录不存在",
-                    details={"setting": name},
-                )
+        """检查推理所需的训练结果根目录已配置且在当前机器存在。"""
+        if not config.nnunet.results:
+            raise DependencyError("未配置 nnUNet_results")
+        if not Path(resolve_application_path(config.nnunet.results)).is_dir():
+            raise DependencyError(
+                "nnUNet_results 目录不存在",
+                details={"setting": "nnUNet_results"},
+            )

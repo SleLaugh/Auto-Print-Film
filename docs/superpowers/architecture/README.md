@@ -91,12 +91,14 @@
   毫米数值，第二阶段按 `slice_part_config.json` 中包含上下边界的区间选择模型，
   不再使用扫描厚度档位枚举。
 - `slice_part_config.json` 是切割部位启用状态、模型区间、定位区域、允许切法和范围扩展的
-  唯一配置源；`nnuNet_config.json` 保存 nnUNet 全局默认运行参数和路径。命中的
+  唯一配置源；`nnuNet_config.json` 保存 nnUNet 全局默认运行参数、模型根目录和外部入口。命中的
   `model_rules` 可用 `configuration`、`fold`、`plans` 分别覆盖 `_configuration`、
   `_fold`、`_plans`，未填写的字段各自继承默认值，详见[配置校验设计](2026-10-08-配置校验与回归门禁设计.md)。
 - `dev build` 以 PyInstaller onedir 生成直接可执行的应用；JSON 位于程序旁的
   `src/config/`。nnUNet、PyTorch 和模型属于外部推理环境，外部命令由
   `nnUNet_predict_command` 指定，`nnUNet_python` 仅在需要指定外部解释器时使用。
+- 推理部署只需 `nnUNet_results` 下所用模型的完整训练产物，模型预检及查找只使用这个
+  根目录；`nnUNet_raw`、`nnUNet_preprocessed` 训练数据目录不再作为应用配置或预检依赖。
 - nnUNet 的预处理与导出进程数均默认 `1`，分别由 `num_processes_preprocessing` /
   `num_processes_segmentation_export` 传给 `-npp` / `-nps`，严格接受正整数；
   这些设置减少并发资源占用，不改变模型、TTA 或滑窗步长。

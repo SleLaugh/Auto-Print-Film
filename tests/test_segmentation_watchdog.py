@@ -22,8 +22,7 @@ from src.stages.stage_segmentation import SegmentationStage
 
 @pytest.fixture(autouse=True)
 def isolate_model_directories(tmp_path, monkeypatch):
-    for key in ("nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results"):
-        monkeypatch.setenv(key, str(tmp_path / key))
+    monkeypatch.setenv("nnUNet_results", str(tmp_path / "nnUNet_results"))
 
 
 def _context(root):

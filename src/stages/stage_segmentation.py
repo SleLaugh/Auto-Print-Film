@@ -59,9 +59,7 @@ class SegmentationStage(BaseStage):
             "inference_timeout_seconds": 1800.0,
             "inference_timeout_seconds_by_model": {},
             "inference_max_retries": 1,
-            # nnUNet 环境变量。为空时沿用系统环境变量；相对路径按应用根目录解析。
-            "nnUNet_raw": "",
-            "nnUNet_preprocessed": "",
+            # 训练结果目录。为空时沿用系统环境变量；相对路径按应用根目录解析。
             "nnUNet_results": "",
             "nnUNet_predict_command": "nnUNetv2_predict",
             "nnUNet_python": "",
@@ -126,10 +124,9 @@ class SegmentationStage(BaseStage):
         )
         validate_slice_part_config(self._slice_part_config)
         
-        # 设置nnUNet环境变量
+        # 仅配置推理和定位共用的训练结果目录。
         self._nnunet_env_vars = {
-            key: resolve_application_path(default_config.get(key, ''))
-            for key in ('nnUNet_raw', 'nnUNet_preprocessed', 'nnUNet_results')
+            'nnUNet_results': resolve_application_path(default_config.get('nnUNet_results', '')),
         }
 
     def execute(self, context: ProcessingContext) -> ProcessingContext:
@@ -573,13 +570,17 @@ class SegmentationStage(BaseStage):
                 if export_adapter_enabled else f"[nnUNet] 导出通道并行未启用：{export_adapter_reason}"
             )
         env = external_process_environment()
+        for key in ('nnUNet_raw', 'nnUNet_preprocessed'):
+            env.pop(key, None)
         for key, value in self._nnunet_env_vars.items():
             if value:
                 env[key] = value
                 DebugLog(f"    设置环境变量: {key}={value}")
+        if env.get('nnUNet_results'):
+            env['nnUNet_results'] = resolve_application_path(env['nnUNet_results'])
         dataset_name = resolve_nnunet_dataset_name(
             dataset_id,
-            (env.get(key, '') for key in ('nnUNet_results', 'nnUNet_raw', 'nnUNet_preprocessed')),
+            (env.get('nnUNet_results', ''),),
         )
         cmd = prefix + [
             "-i", str(input_dir),
@@ -710,8 +711,7 @@ class SegmentationStage(BaseStage):
 
         model_id = int(dataset_id)
         directories = {
-            key: env.get(key) or "未配置"
-            for key in ("nnUNet_results", "nnUNet_raw", "nnUNet_preprocessed")
+            "nnUNet_results": env.get("nnUNet_results") or "未配置",
         }
         details = {"model_id": model_id, "returncode": returncode}
         output = '\n'.join((stderr, stdout))
@@ -723,7 +723,7 @@ class SegmentationStage(BaseStage):
                 f"nnUNet 推理失败：未找到模型 {model_id}"
                 f"（未找到 Dataset{model_id:03d}* 数据集目录）。"
                 f"查找目录：{locations}。"
-                "请检查 nnUNet 路径配置，或部署该模型对应的完整训练结果。"
+                "请检查 nnUNet_results 路径配置，或部署该模型对应的完整训练结果。"
             )
             details.update(reason="dataset_not_found", directories=directories)
         else:

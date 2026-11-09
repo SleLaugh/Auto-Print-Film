@@ -31,7 +31,7 @@ def resolve_nnunet_dataset_name(dataset_id: str | int, roots: Iterable[str]) -> 
         names = sorted(candidates)
         raise DependencyError(
             f"nnUNet 模型 {model_id} 对应多个数据集名称：{'、'.join(names)}。"
-            "请统一 nnUNet_raw、nnUNet_preprocessed、nnUNet_results 中该编号的目录名称。",
+            "请检查 nnUNet_results 中该编号的目录名称，确保模型 ID 唯一。",
             stage="segmentation",
             details={"reason": "dataset_ambiguous", "model_id": model_id, "candidates": names},
         )

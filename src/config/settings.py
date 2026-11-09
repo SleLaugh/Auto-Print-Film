@@ -8,14 +8,10 @@ from typing import Any, Dict
 
 @dataclass(frozen=True)
 class NnUNetConfig:
-    """nnUNet 目录和全局推理参数。"""
+    """nnUNet 训练结果目录、外部推理入口和全局推理参数。"""
 
-    raw: str = ""
-    """nnUNet_raw 目录；空值表示未配置。"""
-    preprocessed: str = ""
-    """nnUNet_preprocessed 目录；空值表示未配置。"""
     results: str = ""
-    """nnUNet_results 目录；定位和推理共同使用。"""
+    """完整训练结果的根目录；定位和推理共用，不依赖训练数据目录。"""
     configuration: str = "3d_fullres"
     """传给 nnUNetv2_predict 的网络配置名称。"""
     fold: str = "0"
@@ -184,8 +180,6 @@ class AppConfig:
                     self.nnunet.inference_timeout_seconds_by_model
                 ),
                 "inference_max_retries": self.nnunet.inference_max_retries,
-                "raw_configured": bool(self.nnunet.raw),
-                "preprocessed_configured": bool(self.nnunet.preprocessed),
                 "results_configured": bool(self.nnunet.results),
             },
             "pipeline": {

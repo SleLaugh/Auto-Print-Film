@@ -304,9 +304,7 @@ def _external_prediction_worker(root):
     stage = SegmentationStage({
         "nnUNet_predict_command": str(root / "fake_predict.py"),
         "nnUNet_python": sys.executable,
-        **{key: str(root / key) for key in (
-            "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
-        )},
+        "nnUNet_results": str(root / "nnUNet_results"),
     })
     request = Request(
         dicom_dir=str(root / "unused-dicom"),

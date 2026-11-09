@@ -1,10 +1,15 @@
-"""Numeric ID prefixes must not select another dataset's weights or labels."""
+"""Model lookup uses trained results without unrelated training directories."""
+
+import os
+import subprocess
 
 import pytest
 
 from src.core.errors import DependencyError
 from src.core.nnunet_dataset import resolve_nnunet_dataset_name
+from src.runtime import config_candidates
 from src.stages.stage_localization import LocalizationStage
+from src.stages.stage_segmentation import SegmentationStage
 
 
 def test_exact_id_boundary_ignores_longer_ids_and_deduplicates_roots(tmp_path):
@@ -58,11 +63,89 @@ def test_localization_never_reads_labels_from_longer_numeric_id(tmp_path):
     correct = tmp_path / "Dataset292_Liver/nnUNetTrainer__nnUNetPlans__3d_fullres/dataset.json"
     correct.parent.mkdir(parents=True)
     correct.write_text('{}')
-    stage = LocalizationStage({
-        "nnUNet_results": str(tmp_path), "nnUNet_raw": str(tmp_path),
-        "nnUNet_preprocessed": str(tmp_path),
-    })
+    stage = LocalizationStage({"nnUNet_results": str(tmp_path)})
     assert stage._find_dataset_json({"model_id": 292}) == correct
     correct.unlink()
     with pytest.raises(FileNotFoundError, match="未找到模型"):
         stage._find_dataset_json({"model_id": 292})
+
+
+@pytest.mark.parametrize("trained_model_present", [True, False])
+def test_inference_ignores_legacy_training_directories(tmp_path, monkeypatch, trained_model_present):
+    results = tmp_path / "results"
+    results.mkdir()
+    if trained_model_present:
+        (results / "Dataset292_Trained").mkdir()
+    legacy_paths = {}
+    for name in ("nnUNet_raw", "nnUNet_preprocessed"):
+        legacy_root = tmp_path / name
+        (legacy_root / "Dataset292_Legacy").mkdir(parents=True)
+        legacy_paths[name] = str(legacy_root)
+        monkeypatch.setenv(name, str(legacy_root))
+    stage = SegmentationStage({"nnUNet_results": str(results), **legacy_paths})
+    captured = {}
+
+    def run_inference(command, **options):
+        captured.update(command=command, environment=options["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("src.stages.stage_segmentation.run_inference_process", run_inference)
+    monkeypatch.setattr(stage, "_normalize_output_file", lambda *args: None)
+    stage._run_nnunet_inference(
+        tmp_path / "input", tmp_path / "input/raw_0000.nii.gz", tmp_path / "output/seg.nii.gz",
+        292, "3d_fullres", "0", False,
+    )
+
+    expected_dataset = "Dataset292_Trained" if trained_model_present else "292"
+    command = captured["command"]
+    assert command[command.index("-d") + 1] == expected_dataset
+    assert captured["environment"]["nnUNet_results"] == str(results)
+    for name, value in legacy_paths.items():
+        assert name not in captured["environment"]
+        assert os.environ[name] == value
+
+
+def test_localization_does_not_fall_back_to_legacy_training_labels(tmp_path, monkeypatch):
+    results = tmp_path / "results"
+    correct = results / "Dataset292_Trained/dataset.json"
+    correct.parent.mkdir(parents=True)
+    correct.write_text('{}')
+    legacy_paths = {}
+    for name in ("nnUNet_raw", "nnUNet_preprocessed"):
+        legacy_root = tmp_path / name
+        legacy_dataset = legacy_root / "Dataset292_Legacy/dataset.json"
+        legacy_dataset.parent.mkdir(parents=True)
+        legacy_dataset.write_text('{}')
+        legacy_paths[name] = str(legacy_root)
+        monkeypatch.setenv(name, str(legacy_root))
+    stage = LocalizationStage({"nnUNet_results": str(results), **legacy_paths})
+
+    assert stage._find_dataset_json({"model_id": 292}) == correct
+    correct.unlink()
+    with pytest.raises(FileNotFoundError, match="未找到模型"):
+        stage._find_dataset_json({"model_id": 292})
+
+
+@pytest.mark.parametrize("configuration_source", ["explicit_empty", "file_empty", "file_missing", "no_file"])
+def test_localization_uses_environment_results_when_configuration_is_empty(
+    tmp_path, monkeypatch, configuration_source,
+):
+    results = tmp_path / "results"
+    dataset = results / "Dataset292_Trained/dataset.json"
+    dataset.parent.mkdir(parents=True)
+    dataset.write_text('{}')
+    monkeypatch.setenv("nnUNet_results", str(results))
+    candidates = []
+    if configuration_source in {"file_empty", "file_missing"}:
+        config_path = tmp_path / "nnuNet_config.json"
+        config_path.write_text('{"nnUNet_results": ""}' if configuration_source == "file_empty" else '{}')
+        candidates.append(config_path)
+    monkeypatch.setattr(
+        "src.stages.stage_localization.config_candidates",
+        lambda name: candidates if name == "nnuNet_config.json" else config_candidates(name),
+    )
+    config = {"nnUNet_results": ""} if configuration_source == "explicit_empty" else None
+
+    stage = LocalizationStage(config)
+
+    assert stage._find_dataset_json({"model_id": 292}) == dataset

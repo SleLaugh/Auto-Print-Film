@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable
 import json
 import math
+import os
 
 import numpy as np
 import SimpleITK as sitk
@@ -135,29 +136,33 @@ class LocalizationOperations(
 
     def _load_nnunet_config(self):
         """
-        加载 nnUNet 路径配置，用于根据模型 ID 查找 dataset.json。
+        加载 nnUNet 训练结果目录，用于根据模型 ID 查找 dataset.json。
 
         定位阶段不重新匹配模型，只复用 segmentation 阶段得到的 model_id。
         这里读取路径配置，是为了把 label 名称转换成真实 label id。
+        目录为空或缺失时沿用 nnUNet_results 环境变量。
         """
-        injected_keys = ('nnUNet_raw', 'nnUNet_preprocessed', 'nnUNet_results')
+        injected_keys = ('nnUNet_results',)
         if any(key in self.config for key in injected_keys):
             self._nnunet_paths = {
-                key: resolve_application_path(self.config.get(key, ''))
+                key: resolve_application_path(self.config.get(key) or os.environ.get(key, ''))
                 for key in injected_keys
             }
             return
 
         config_paths = config_candidates("nnuNet_config.json")
 
-        self._nnunet_paths = {}
+        self._nnunet_paths = {
+            key: resolve_application_path(os.environ.get(key, ''))
+            for key in injected_keys
+        }
         for config_path in config_paths:
             if not config_path.exists():
                 continue
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
             self._nnunet_paths = {
-                key: resolve_application_path(config.get(key, ''))
+                key: resolve_application_path(config.get(key) or os.environ.get(key, ''))
                 for key in injected_keys
             }
             return
@@ -224,9 +229,9 @@ class LocalizationOperations(
         当前分割输出一一对应。真实运行中模型目录可能存在多个相同 ID 的
         dataset.json，sidecar 文件能避免定位阶段读到不匹配的 label 字典。
 
-        如果 sidecar 不存在，再按 nnUNet 目录查找。nnUNet 目录常见形态
-        是 Dataset292_xxx 或 Dataset315_xxx。优先从 nnUNet_results 查找，
-        因为它最贴近实际用于推理的模型；找不到再查 preprocessed/raw。
+        如果 sidecar 不存在，只在 nnUNet_results 中查找完整训练结果。
+        数据集目录常见形态是 Dataset292_xxx 或 Dataset315_xxx，
+        不使用训练数据目录中的标签定义。
         """
         if seg_path:
             sidecar_dataset_json = Path(seg_path).parent / "dataset.json"
@@ -240,8 +245,6 @@ class LocalizationOperations(
         dataset_prefix = f"Dataset{int(dataset_id):03d}_"
         roots = [
             self._nnunet_paths.get('nnUNet_results', ''),
-            self._nnunet_paths.get('nnUNet_preprocessed', ''),
-            self._nnunet_paths.get('nnUNet_raw', ''),
         ]
 
         for root_value in roots:

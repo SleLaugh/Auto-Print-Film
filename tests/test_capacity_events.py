@@ -130,9 +130,7 @@ def test_inference_events_surround_only_subprocess_execution(tmp_path, returncod
     request = request_for(tmp_path)
     stage = SegmentationStage({
         "export_resampling_threads": 1,
-        **{key: str(tmp_path / key) for key in (
-            "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
-        )},
+        "nnUNet_results": str(tmp_path / "nnUNet_results"),
     })
     def run(command, **kwargs):
         assert records(request)[-1]["event"] == "inference_start"

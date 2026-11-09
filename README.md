@@ -102,20 +102,25 @@ python -m pip install -r requirements.txt
 src/config/nnuNet_config.json
 ```
 
-此文件同时配置外部推理入口和模型目录。本机外部入口为：
+本项目只调用训练好的模型做推理。路径相关配置只需模型根目录和外部推理入口，例如：
 
 ```json
 {
-  "nnUNet_predict_command": "/home/peng/opt/fsl/bin/nnUNetv2_predict",
-  "nnUNet_python": ""
+  "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",
+  "nnUNet_predict_command": "/home/peng/opt/fsl/bin/nnUNetv2_predict"
 }
 ```
 
-`nnUNet_predict_command` 指向外部可执行命令。上面的入口自带外部 Python 路径，
-所以 `nnUNet_python` 留空。`nnUNet_raw`、`nnUNet_preprocessed`、`nnUNet_results`
-只配置模型目录，不能代替命令路径。
+`nnUNet_results` 指向包含各个 `Dataset<ID>_<名称>` 的模型根目录，不是单个权重文件。
+部署时只需复制所用模型的完整训练产物，不需要原始或预处理后的训练数据。
+旧配置中的 `nnUNet_raw`、`nnUNet_preprocessed` 可删除，应用不再读取或检查它们。
+`nnUNet_predict_command` 指向外部可执行命令；若 `nnUNetv2_predict` 已在运行环境的
+`PATH` 中，可省略该项，只填写模型根目录。
 服务启动时的 PATH 可能与开发终端不同，生产配置应填写命令的完整路径。
-发布程序已读取这些 JSON 字段，修改后下一次任务启动生效，无需重新打包。
+上面的入口自带外部 Python 路径，无需配置 `nnUNet_python`；该字段仅用于需要显式
+指定外部解释器的高级配置，详见[生产部署说明](docs/production.md)。
+旧发布包需重新构建并更新完整应用包，才能取消训练数据目录预检；升级后修改路径配置
+在下一次任务启动生效，无需再次打包。
 
 推理速度和后台进程数可以通过同一 JSON 的顶层字段调整。将以下字段合并到原 JSON，保留其他字段：
 
@@ -188,31 +193,26 @@ JSON 中 `disable_tta` 使用布尔值，默认 `false`，设为 `true` 会关�
 上述字段。升级后直接修改外置 `src/config/nnuNet_config.json`，下一次任务启动生效，
 无需再次打包；模型无需重新训练，外部 nnUNet 环境无需重新安装。
 
-下面是模型目录配置项的空值示例；当前配置保留本机已有的路径，首次发布也会沿用：
+下面是模型根目录配置项的空值示例；当前配置保留本机已有的路径，首次发布也会沿用：
 
 ```json
 {
-  "nnUNet_raw": "",
-  "nnUNet_preprocessed": "",
   "nnUNet_results": ""
 }
 ```
 
-模型路径为空时，程序沿用系统已有的 `nnUNet_raw`、`nnUNet_preprocessed`、`nnUNet_results` 环境变量。外部命令入口仍由 `nnUNet_predict_command` 指定。
+模型路径为空时，程序沿用系统已有的 `nnUNet_results` 环境变量。外部命令入口由
+`nnUNet_predict_command` 指定，未配置时从 PATH 查找 `nnUNetv2_predict`。
 
 Linux / macOS 临时设置示例：
 
 ```bash
-export nnUNet_raw=/data/nnUNet_raw
-export nnUNet_preprocessed=/data/nnUNet_preprocessed
 export nnUNet_results=/data/nnUNet_results
 ```
 
 Windows PowerShell 临时设置示例：
 
 ```powershell
-$env:nnUNet_raw = "D:/nnUNet/nnUNet_raw"
-$env:nnUNet_preprocessed = "D:/nnUNet/nnUNet_preprocessed"
 $env:nnUNet_results = "D:/nnUNet/nnUNet_results"
 ```
 
@@ -220,8 +220,6 @@ $env:nnUNet_results = "D:/nnUNet/nnUNet_results"
 
 ```json
 {
-  "nnUNet_raw": "/data/nnUNet_raw",
-  "nnUNet_preprocessed": "/data/nnUNet_preprocessed",
   "nnUNet_results": "/data/nnUNet_results"
 }
 ```
@@ -230,8 +228,6 @@ Windows 示例：
 
 ```json
 {
-  "nnUNet_raw": "D:/nnUNet/nnUNet_raw",
-  "nnUNet_preprocessed": "D:/nnUNet/nnUNet_preprocessed",
   "nnUNet_results": "D:/nnUNet/nnUNet_results"
 }
 ```
@@ -285,9 +281,18 @@ Windows 示例：
 全局也未填写时，内建默认分别为 `3d_fullres`、`0`、`nnUNetPlans`。
 `plans` 是训练计划名称，方案内容保存在模型目录的 `plans.json`；`fold=all` 加载
 单独训练的 `fold_all/checkpoint_final.pth`，不表示自动合并所有数字 fold。
-模型训练结果应放在 `nnUNet_results/<数据集名称>/` 下的
-`nnUNetTrainer__<plans>__<configuration>/`，包含 `dataset.json`、`plans.json`
-和对应权重。应用按 `Dataset<ID>_` 匹配编号，向 nnUNet 传完整名称，避免不同长度编号
+模型训练结果应按以下结构放在 `nnUNet_results` 下：
+
+```text
+nnUNet_results/
+  Dataset<ID>_<名称>/
+    nnUNetTrainer__<plans>__<configuration>/
+      dataset.json
+      plans.json
+      fold_<fold>/checkpoint_final.pth
+```
+
+应用只在这个模型根目录中按 `Dataset<ID>_` 匹配编号，向 nnUNet 传完整名称，避免不同长度编号
 的数字前缀冲突。完整字段说明见 [切割部位配置](src/config/README.md#model_rules)。
 旧发布包需重新构建并更新程序后才支持全局 `_plans` 和模型规则的 `plans`；升级后修改
 外置 JSON 在下次任务启动时生效。
@@ -295,7 +300,7 @@ Windows 示例：
 该文件同时管理切割部位是否启用、模型规则、定位区域、允许的状位与切法、范围扩展以及
 定位图状位；
 新增或调整切割部位时不再同步修改其他配置文件。`nnuNet_config.json` 只保存推理参数
-和 nnUNet 路径。当前已启用的脊柱、颅脑和髋骨按 `0-1.5mm`、`1.6-4.5mm`、`4.6-6mm`
+以及模型根目录、外部推理入口。当前已启用的脊柱、颅脑和髋骨按 `0-1.5mm`、`1.6-4.5mm`、`4.6-6mm`
 分别选择对应的薄层、3mm、6mm 模型；脊柱薄层默认使用 `292`。
 肺部目前只有 `0-1.5mm` 的模型。外部厚度未命中
 任何区间或同时命中重叠区间时，分割阶段会明确失败，不会自动选择临近模型。
@@ -942,9 +947,8 @@ fail-fast 被跳过的后续阶段。默认主链中的
 显式调用参数 > 环境变量 > 本机配置 > 仓库默认配置
 ```
 
-当前 `nnuNet_config.json` 保留已有的模型目录。迁移到其他机器时按实际位置调整，
-也可以将这些项设为空，再通过 `nnUNet_raw`、`nnUNet_preprocessed`、
-`nnUNet_results` 环境变量配置模型目录。
+当前 `nnuNet_config.json` 保留已有的模型根目录。迁移到其他机器时按实际位置调整
+`nnUNet_results`，也可以将该项设为空，再通过同名环境变量配置模型根目录。
 
 程序启动后会先检查请求能力、输入目录、输出目录关系、nnUNet 命令和模型目录；
 预检失败不会清理旧业务结果；入口仍会尽力写入失败 `report.json`，因此可能创建输出目录。

@@ -35,8 +35,6 @@ def source(tmp_path, monkeypatch):
         path.write_text(f"source file: {name}\n", encoding="utf-8")
     write_json(root / "src/config/nnuNet_config.json", {
         "_configuration": "3d_fullres",
-        "nnUNet_raw": "/configured-models/nnUNet_raw",
-        "nnUNet_preprocessed": "/configured-models/nnUNet_preprocessed",
         "nnUNet_results": "/configured-models/nnUNet_results",
     })
     write_json(root / "src/config/logger_config.json", {"base_dir": "OperatorLog"})

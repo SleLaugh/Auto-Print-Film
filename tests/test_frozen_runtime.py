@@ -40,8 +40,6 @@ class FrozenRuntimeTest(unittest.TestCase):
             shutil.copy2(path, self.config_dir / path.name)
         self._write_json("nnuNet_config.json", {
             "_configuration": "3d_fullres", "_fold": "0", "_continue": True,
-            "nnUNet_raw": "models/raw",
-            "nnUNet_preprocessed": "models/preprocessed",
             "nnUNet_results": "models/results",
             "nnUNet_predict_command": "inference/predict",
         })
@@ -126,23 +124,20 @@ class FrozenRuntimeTest(unittest.TestCase):
             prefix = nnunet_command_prefix("inference/predict")
             config = load_app_config(environ={})
             segmentation = SegmentationStage({
-                "nnUNet_raw": config.nnunet.raw,
-                "nnUNet_preprocessed": config.nnunet.preprocessed,
                 "nnUNet_results": config.nnunet.results,
                 "slice_part_config": config.slice_part_config,
             })
         self.assertEqual(prefix, [str(self.root / "inference/predict")])
-        self.assertEqual(segmentation._nnunet_env_vars["nnUNet_raw"], str(self.root / "models/raw"))
+        self.assertEqual(segmentation._nnunet_env_vars, {"nnUNet_results": str(self.root / "models/results")})
 
     def test_model_preflight_and_stages_resolve_paths_without_worker_cwd(self):
-        for name in ("raw", "preprocessed", "results"):
-            (self.root / "models" / name).mkdir(parents=True)
+        (self.root / "models/results").mkdir(parents=True)
         command = self.root / "inference/predict"
         command.parent.mkdir()
         command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         command.chmod(0o755)
         data = json.loads((self.config_dir / "nnuNet_config.json").read_text(encoding="utf-8"))
-        data["nnUNet_preprocessed"] = "$AUTOPRINT_MODEL_TEST_ROOT/preprocessed"
+        data["nnUNet_results"] = "$AUTOPRINT_MODEL_TEST_ROOT/results"
         self._write_json("nnuNet_config.json", data)
         input_dir = self.unrelated_cwd / "dicom"
         input_dir.mkdir()
@@ -153,7 +148,7 @@ class FrozenRuntimeTest(unittest.TestCase):
             segmentation = SegmentationStage(data)
             localization = LocalizationStage(data)
         self.assertEqual(segmentation._nnunet_env_vars, localization._nnunet_paths)
-        self.assertEqual(segmentation._nnunet_env_vars["nnUNet_preprocessed"], str(self.root / "models/preprocessed"))
+        self.assertEqual(segmentation._nnunet_env_vars, {"nnUNet_results": str(self.root / "models/results")})
         self.assertFalse(output_dir.exists())
 
     def test_development_subprocess_environment_is_an_unchanged_independent_copy(self):
@@ -162,6 +157,30 @@ class FrozenRuntimeTest(unittest.TestCase):
             child = runtime.external_process_environment(environment)
         self.assertEqual(child, environment)
         self.assertIsNot(child, environment)
+
+    def test_direct_stages_resolve_relative_environment_results_from_executable_root(self):
+        dataset = self.root / "models/results/Dataset292_Trained/dataset.json"
+        dataset.parent.mkdir(parents=True)
+        dataset.write_text('{}', encoding="utf-8")
+        with self._frozen(), patch.dict(os.environ, {"nnUNet_results": "models/results"}):
+            segmentation = SegmentationStage({"nnUNet_results": ""})
+            localization = LocalizationStage({"nnUNet_results": ""})
+            with (
+                patch("src.stages.stage_segmentation.run_inference_process") as run,
+                patch.object(segmentation, "_normalize_output_file"),
+            ):
+                run.return_value = subprocess.CompletedProcess([], 0, "", "")
+                segmentation._run_nnunet_inference(
+                    self.root / "input", self.root / "input/raw_0000.nii.gz",
+                    self.root / "output/seg.nii.gz", 292, "3d_fullres", "0", True,
+                )
+
+            child = run.call_args.kwargs["env"]
+            command = run.call_args.args[0]
+            self.assertEqual(child["nnUNet_results"], str(self.root / "models/results"))
+            self.assertEqual(command[command.index("-d") + 1], "Dataset292_Trained")
+            self.assertEqual(localization._find_dataset_json({"model_id": 292}), dataset)
+            self.assertEqual(os.environ["nnUNet_results"], "models/results")
 
     def test_frozen_external_environment_restores_original_path_or_removes_bootloader_path(self):
         for original in (None, "", "/external/cuda/lib:/system/lib"):

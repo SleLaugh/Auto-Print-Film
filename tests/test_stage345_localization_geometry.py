@@ -656,8 +656,6 @@ class LocalizationGeometryTest(unittest.TestCase):
             )
             stage._nnunet_paths = {
                 "nnUNet_results": str(temp_path / "nnUNet_results"),
-                "nnUNet_preprocessed": "",
-                "nnUNet_raw": "",
             }
 
             dataset_json_path = stage._find_dataset_json({"dataset_id": 1}, seg_path=str(seg_path))
@@ -3062,8 +3060,6 @@ class LocalizationGeometryTest(unittest.TestCase):
             ]
             nnunet_paths = {
                 "nnUNet_results": str(temp_path / "nnUNet_results"),
-                "nnUNet_preprocessed": "",
-                "nnUNet_raw": "",
             }
             for stage in stages:
                 stage._nnunet_paths = nnunet_paths
@@ -3323,8 +3319,6 @@ class LocalizationGeometryTest(unittest.TestCase):
             ]
             nnunet_paths = {
                 "nnUNet_results": str(temp_path / "nnUNet_results"),
-                "nnUNet_preprocessed": "",
-                "nnUNet_raw": "",
             }
             for stage in stages:
                 stage._nnunet_paths = nnunet_paths

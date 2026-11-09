@@ -147,17 +147,29 @@ JSON 后下一次任务启动即可生效，无需重新打包。
 如需接入自定义模型，可在对应规则中填写 `configuration: "3d_lowres"`、`fold: "all"`
 和实际的 `plans` 名称；其他未填写这些字段的规则仍使用全局默认。
 `plans` 是训练计划名称，实际方案内容保存在 `plans.json`；`all` 对应单独训练的
-`fold_all` 权重，不表示合并数字 fold。模型训练结果部署到 `nnUNet_results`，目录如下：
+`fold_all` 权重，不表示合并数字 fold。推理只需部署所用模型的完整训练产物，
+无需复制训练数据。`nnuNet_config.json` 中的 `nnUNet_results` 是唯一模型根目录：
 
 ```text
-nnUNet_results/<数据集名称>/
+nnUNet_results/Dataset<ID>_<名称>/
   nnUNetTrainer__<plans>__<configuration>/
     dataset.json
     plans.json
     fold_<fold>/checkpoint_final.pth
 ```
 
-程序按 `Dataset<ID>_` 精确匹配编号，并向 nnUNet 传递完整数据集名称，避免
+路径相关的最小配置如下；`nnUNetv2_predict` 已在 PATH 中时，可省略命令项：
+
+```json
+{
+  "nnUNet_results": "/data/nnUNet_results",
+  "nnUNet_predict_command": "/path/to/bin/nnUNetv2_predict"
+}
+```
+
+`nnUNet_raw`、`nnUNet_preprocessed` 是训练数据目录，应用不再读取或检查，可从旧配置
+删除。`nnUNet_python` 无需填写空值，仅在需要显式指定外部解释器时配置。
+程序只在 `nnUNet_results` 中按 `Dataset<ID>_` 精确匹配编号，并向 nnUNet 传递完整数据集名称，避免
 不同长度的数据集编号被外部命令的前缀匹配混为同一编号。
 
 ### `localization`

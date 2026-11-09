@@ -112,8 +112,6 @@ class Pipeline:
                 config.nnunet.inference_timeout_seconds_by_model
             ),
             "inference_max_retries": config.nnunet.inference_max_retries,
-            "nnUNet_raw": config.nnunet.raw,
-            "nnUNet_preprocessed": config.nnunet.preprocessed,
             "nnUNet_results": config.nnunet.results,
             "nnUNet_predict_command": config.nnunet.predict_command,
             "nnUNet_python": config.nnunet.python_executable,

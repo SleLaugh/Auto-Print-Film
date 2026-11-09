@@ -58,7 +58,9 @@ class SegmentationFailureReportTest(unittest.TestCase):
                 self.assertIn(f"未找到模型 {model_id}", str(error))
                 self.assertIn(f"Dataset{model_id:03d}*", str(error))
                 self.assertIn("nnUNet_results=/models/trained", str(error))
-                self.assertIn("nnUNet_raw=未配置", str(error))
+                self.assertNotIn("nnUNet_raw", str(error))
+                self.assertNotIn("nnUNet_preprocessed", str(error))
+                self.assertEqual(error.details["directories"], {"nnUNet_results": "/models/trained"})
                 self.assertNotIn("Traceback", str(error))
                 self.assertEqual(error.details["reason"], "dataset_not_found")
 
@@ -191,6 +193,7 @@ class SegmentationFailureReportTest(unittest.TestCase):
         stderr = self.missing_trace(298)
         with patch.dict("os.environ", {
             "nnUNet_results": "/old/results", "nnUNet_raw": "/inherited/raw",
+            "nnUNet_preprocessed": "/inherited/preprocessed",
         }), patch("src.stages.stage_segmentation.run_inference_process") as run:
             run.return_value = subprocess.CompletedProcess([], 1, "predict startup", stderr)
             with self.assertRaises(ExternalProcessError) as caught:
@@ -200,7 +203,8 @@ class SegmentationFailureReportTest(unittest.TestCase):
                 )
         message = str(caught.exception)
         self.assertIn("nnUNet_results=/configured/results", message)
-        self.assertIn("nnUNet_raw=/inherited/raw", message)
+        self.assertNotIn("nnUNet_raw", message)
+        self.assertNotIn("nnUNet_preprocessed", message)
         self.assertNotIn("/old/results", message)
         self.assertNotIn("Traceback", message)
         logged = "\n".join(str(call.args[0]) for call in self.error_log.call_args_list)
@@ -211,6 +215,8 @@ class SegmentationFailureReportTest(unittest.TestCase):
         self.assertIn("-nps", command)
         self.assertIn(shlex.join(command), logged)
         self.assertEqual(run.call_args.kwargs["env"]["nnUNet_results"], "/configured/results")
+        self.assertNotIn("nnUNet_raw", run.call_args.kwargs["env"])
+        self.assertNotIn("nnUNet_preprocessed", run.call_args.kwargs["env"])
 
     def test_inference_logs_both_raw_streams_and_reports_stdout_cause(self):
         stage = SegmentationStage({"nnUNet_results": "/configured/results"})

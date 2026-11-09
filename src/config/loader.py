@@ -137,8 +137,6 @@ def load_app_config(
     default_pipeline = _section(default_data, "pipeline")
 
     nnunet = NnUNetConfig(
-        raw=str(nn_value("raw", "nnUNet_raw")),
-        preprocessed=str(nn_value("preprocessed", "nnUNet_preprocessed")),
         results=str(nn_value("results", "nnUNet_results")),
         configuration=str(nn_value(
             "configuration", "_configuration", fallback="3d_fullres"

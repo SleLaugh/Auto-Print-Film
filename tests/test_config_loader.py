@@ -64,7 +64,7 @@ class ConfigLoaderTest(unittest.TestCase):
                 "_fold": "2",
                 "_plans": "nnUNetPlans_Custom",
                 "_continue": False,
-                "nnUNet_raw": "/models/raw",
+                "nnUNet_results": "/models/results",
             },
         )
 
@@ -72,7 +72,34 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.nnunet.fold, "2")
         self.assertEqual(config.nnunet.plans, "nnUNetPlans_Custom")
         self.assertFalse(config.nnunet.continue_mode)
-        self.assertEqual(config.nnunet.raw, "/models/raw")
+        self.assertEqual(config.nnunet.results, "/models/results")
+
+    def test_legacy_training_paths_are_ignored_in_all_configuration_sources(self):
+        config = load_app_config(
+            explicit={
+                "nnunet": {"raw": "/explicit/raw", "preprocessed": "/explicit/preprocessed"},
+                "nnUNet_raw": "/explicit/flat/raw",
+                "nnUNet_preprocessed": "/explicit/flat/preprocessed",
+            },
+            environ={"nnUNet_raw": "/environment/raw", "nnUNet_preprocessed": "/environment/preprocessed"},
+            defaults={
+                "nnunet": {"raw": "/default/raw", "preprocessed": "/default/preprocessed"},
+                "nnUNet_raw": "/default/flat/raw",
+                "nnUNet_preprocessed": "/default/flat/preprocessed",
+                "nnUNet_results": "/models/results",
+            },
+        )
+
+        pipeline = Pipeline(config=config)
+        segmentation = next(stage for stage in pipeline.stages if stage.name == "segmentation")
+        localization = next(stage for stage in pipeline.stages if stage.name == "localization")
+        expected_paths = {"nnUNet_results": "/models/results"}
+        self.assertEqual(segmentation._nnunet_env_vars, expected_paths)
+        self.assertEqual(localization._nnunet_paths, expected_paths)
+        self.assertNotIn("raw_configured", config.summary()["nnunet"])
+        self.assertNotIn("preprocessed_configured", config.summary()["nnunet"])
+        self.assertNotIn("nnUNet_raw", segmentation.config)
+        self.assertNotIn("nnUNet_preprocessed", localization.config)
 
     def test_string_false_is_parsed_as_false(self):
         """环境变量形式的字符串 false 不能被 Python bool 规则误判为 True。"""
@@ -374,8 +401,6 @@ class ConfigLoaderTest(unittest.TestCase):
             "_fold": "3",
             "_plans": "nnUNetPlans_Custom",
             "_continue": False,
-            "nnUNet_raw": "/central/raw",
-            "nnUNet_preprocessed": "/central/preprocessed",
             "nnUNet_results": "/central/results",
         }
 
@@ -387,12 +412,12 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(segmentation._plans, "nnUNetPlans_Custom")
         self.assertFalse(segmentation._continue)
         self.assertEqual(
-            segmentation._nnunet_env_vars["nnUNet_results"],
-            "/central/results",
+            segmentation._nnunet_env_vars,
+            {"nnUNet_results": "/central/results"},
         )
         self.assertEqual(
-            localization._nnunet_paths["nnUNet_results"],
-            "/central/results",
+            localization._nnunet_paths,
+            {"nnUNet_results": "/central/results"},
         )
 
     def test_default_pipeline_injects_loaded_config_into_model_stages(self):

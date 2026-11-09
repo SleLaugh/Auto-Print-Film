@@ -53,9 +53,7 @@ def cache_case(tmp_path):
     context.set_result("preprocessing", {"nifti_path": str(input_path)})
     stage = SegmentationStage({
         "_continue": False,
-        **{key: str(tmp_path / key) for key in (
-            "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
-        )},
+        "nnUNet_results": str(tmp_path / "nnUNet_results"),
     })
     return stage, context, output_dir, outside
 

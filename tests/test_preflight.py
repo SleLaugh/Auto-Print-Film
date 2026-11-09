@@ -151,6 +151,40 @@ class PreflightTest(unittest.TestCase):
 
             self.assertFalse(output_dir.exists())
 
+    def test_preflight_accepts_only_the_trained_model_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_dir = root / "dicom"
+            input_dir.mkdir()
+            results_dir = root / "results"
+            results_dir.mkdir()
+            output_dir = root / "output"
+            config = AppConfig(nnunet=NnUNetConfig(results=str(results_dir)))
+
+            PreflightValidator(executable_finder=lambda _: "/bin/true").validate(
+                make_request("腰椎", "MPR", "横状位", str(input_dir), str(output_dir)),
+                config,
+            )
+
+            self.assertFalse(output_dir.exists())
+
+    def test_preflight_rejects_missing_or_invalid_trained_model_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_dir = root / "dicom"
+            input_dir.mkdir()
+            regular_file = root / "checkpoint.pth"
+            regular_file.touch()
+            output_dir = root / "output"
+            request = make_request("腰椎", "MPR", "横状位", str(input_dir), str(output_dir))
+            validator = PreflightValidator(executable_finder=lambda _: "/bin/true")
+
+            for results in ("", str(root / "missing"), str(regular_file)):
+                with self.subTest(results=results), self.assertRaisesRegex(DependencyError, "nnUNet_results"):
+                    validator.validate(request, AppConfig(nnunet=NnUNetConfig(results=results)))
+
+            self.assertFalse(output_dir.exists())
+
     def test_preflight_rejects_output_containing_input(self):
         """验证 `test_preflight_rejects_output_containing_input` 场景符合预期。"""
 

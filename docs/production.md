@@ -204,18 +204,27 @@ S1 使用实际 `label_targets`，优先 `vertebrae_S1`、只提供 `sacrum` 时
 不变，坐标端点、诊断及 `L5_S1` 的主体配对和输出计划均使用实际标签名。
 详细方法见[统一姿态说明](superpowers/modules/reconstruction/2026-10-16-统一解剖姿态与三状位回正设计.md)。
 
-`nnUNet_raw`、`nnUNet_preprocessed`、`nnUNet_results` 只配置模型目录。外部推理命令需要单独指定；服务的 PATH 可能不包含开发环境的命令目录，生产应使用完整命令路径。本机已确认的配置为（合并到原 JSON，保留其他字段）：
+推理部署只配置 `nnUNet_results` 模型根目录和外部推理入口，不需要原始或预处理后的
+训练数据。旧配置中的 `nnUNet_raw`、`nnUNet_preprocessed` 可删除，应用不再读取或检查。
+服务的 PATH 可能不包含开发环境的命令目录，生产应使用完整命令路径。
+本机路径配置如下（合并到原 JSON，保留其他字段）：
 
 ```json
 {
-  "nnUNet_predict_command": "/home/peng/opt/fsl/bin/nnUNetv2_predict",
-  "nnUNet_python": ""
+  "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",
+  "nnUNet_predict_command": "/home/peng/opt/fsl/bin/nnUNetv2_predict"
 }
 ```
 
-这会直接执行已有 FSL 环境的 nnUNet 入口，该入口自带外部 Python 路径，所以 `nnUNet_python` 留空。当前运行目录的配置文件为 `/home/peng/03_data/demo/Project/发布/AutoSliceServer/src/config/nnuNet_config.json`。现有发布程序已经支持读取这两个字段，补充配置后下次任务启动即生效，无需重新打包或修改 Worker。
+这会直接执行已有 FSL 环境的 nnUNet 入口，该入口自带外部 Python 路径，因此无需填写
+`nnUNet_python`。如果 `nnUNetv2_predict` 已在服务的 PATH 中，可省略命令项，只填写
+`nnUNet_results`。模型根目录也可由同名环境变量提供。
+当前运行目录的配置文件为 `/home/peng/03_data/demo/Project/发布/AutoSliceServer/src/config/nnuNet_config.json`。
+旧发布包需重新构建并更新完整应用包，才能取消训练数据目录预检；升级后修改路径配置
+在下一次任务启动生效，无需再次打包或修改 Worker。
 
-迁移机器时把命令路径调整为该机器上的外部入口；也可指定已有外部环境的 Python，例如：
+迁移机器时调整模型根目录和外部入口路径。只有需要显式指定已有外部环境的 Python 时，
+才使用可选的 `nnUNet_python`，例如：
 
 ```json
 {
@@ -241,16 +250,18 @@ S1 使用实际 `label_targets`，优先 `vertebrae_S1`、只提供 `sacrum` 时
 省略某个字段就继承对应默认值；只填写 `model_id` 和层厚区间时，三个字段全部继承。
 自定义字段须与该模型的训练结果一致；`fold: "all"` 需要实际存在
 `fold_all/checkpoint_final.pth`，不表示自动合并所有数字 fold。
-部署新模型时将完整训练结果放到以下位置：
+部署新模型时只复制所用模型的完整训练产物，包含模型说明、训练计划和对应权重，
+并保留以下结构；无需复制训练用原始数据或预处理数据：
 
 ```text
-nnUNet_results/<数据集名称>/nnUNetTrainer__<plans>__<configuration>/
+nnUNet_results/Dataset<ID>_<名称>/nnUNetTrainer__<plans>__<configuration>/
   dataset.json
   plans.json
   fold_<fold>/checkpoint_final.pth
 ```
 
-`plans` 选择训练计划名称并传为 `-p`，须与训练结果目录匹配。应用按 `Dataset<ID>_`
+`nnUNet_results` 指向上述根目录，不指向数据集子目录或单个权重文件。
+`plans` 选择训练计划名称并传为 `-p`，须与训练结果目录匹配。应用只在该根目录中按 `Dataset<ID>_`
 精确匹配数据集并传完整名称，避免不同长度编号的前缀冲突。
 旧发布包需更新包含上述配置支持的程序，随后修改外置 JSON 即可在下次任务生效。
 配置示例与字段优先级见 [切割部位配置](../src/config/README.md#model_rules)。

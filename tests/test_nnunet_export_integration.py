@@ -132,9 +132,7 @@ def test_missing_adapter_reports_fallback_reason(adapter):
 
 
 def test_stage_passes_only_adapter_thread_environment_and_keeps_predict_arguments(adapter, tmp_path):
-    model_paths = {key: str(tmp_path / key) for key in (
-        "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
-    )}
+    model_paths = {"nnUNet_results": str(tmp_path / "nnUNet_results")}
     stage = SegmentationStage({
         "nnUNet_python": sys.executable, "export_resampling_threads": 3,
         "num_processes_segmentation_export": 2, **model_paths,

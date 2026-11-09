@@ -20,9 +20,7 @@ class SegmentationInferenceOptionsTest(unittest.TestCase):
             # 不读取运行测试机器上的模型目录，以固定这里验证的数值模型参数。
             stage = SegmentationStage({
                 "_continue": False,
-                **{key: str(root / key) for key in (
-                    "nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results",
-                )},
+                "nnUNet_results": str(root / "nnUNet_results"),
                 **options,
             })
             input_path = root / "nifti" / "raw_0000.nii.gz"

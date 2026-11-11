@@ -31,7 +31,9 @@ class NnUNetConfig:
     num_processes_segmentation_export: int = 1
     """分割导出进程数，对应 -nps；默认单进程以控制主机内存占用。"""
     export_resampling_threads: int = 1
-    """每个导出进程的通道重采样线程数（1～4）；1 保留官方原始调用。"""
+    """每个导出进程的 CPU 通道重采样线程数（1～4）；不控制 GPU 开关。"""
+    export_resampling_device_by_model: dict[str, str] = field(default_factory=dict)
+    """模型 ID 到导出重采样设备 cpu/gpu 的映射；未列出的模型使用 cpu。"""
     inference_timeout_seconds: float = 1800.0
     """每次外部推理允许的最长秒数；各模型可独立覆盖。"""
     inference_timeout_seconds_by_model: dict[str, float] = field(default_factory=dict)
@@ -67,6 +69,17 @@ class NnUNetConfig:
                 raise ValueError(f"nnunet.{name} 必须是正整数")
         if self.export_resampling_threads > 4:
             raise ValueError("nnunet.export_resampling_threads 必须为 1～4 的正整数")
+        if not isinstance(self.export_resampling_device_by_model, dict):
+            raise ValueError("nnunet.export_resampling_device_by_model 必须是模型 ID 到设备的对象")
+        for model_id, device in self.export_resampling_device_by_model.items():
+            if not isinstance(model_id, str) or not re.fullmatch(r"[1-9][0-9]*", model_id):
+                raise ValueError(
+                    "nnunet.export_resampling_device_by_model 的模型 ID 必须是无前导零的正整数字符串"
+                )
+            if not isinstance(device, str) or device not in ("cpu", "gpu"):
+                raise ValueError(
+                    f"nnunet.export_resampling_device_by_model.{model_id} 必须为 cpu 或 gpu"
+                )
         self._validate_timeout(self.inference_timeout_seconds, "inference_timeout_seconds")
         if not isinstance(self.inference_timeout_seconds_by_model, dict):
             raise ValueError("nnunet.inference_timeout_seconds_by_model 必须是模型 ID 到秒数的对象")
@@ -175,6 +188,9 @@ class AppConfig:
                     self.nnunet.num_processes_segmentation_export
                 ),
                 "export_resampling_threads": self.nnunet.export_resampling_threads,
+                "export_resampling_device_by_model": dict(
+                    self.nnunet.export_resampling_device_by_model
+                ),
                 "inference_timeout_seconds": self.nnunet.inference_timeout_seconds,
                 "inference_timeout_seconds_by_model": dict(
                     self.nnunet.inference_timeout_seconds_by_model

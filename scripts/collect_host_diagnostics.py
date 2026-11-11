@@ -95,7 +95,7 @@ def process_kind(comm: str, command: bytes, *, cwd: str | None = None) -> str | 
         entry = executable
 
     name = Path(entry).name.lower()
-    if name.startswith("nnunetv2_predict") or name == "nnunet_export.py":
+    if name.startswith("nnunetv2_predict") or name in {"nnunet_export.py", "nnunet_gpu_export.py"}:
         return "nnunet"
     project_main = name == "main.py" and (
         Path(entry).parent.name.lower() == "autoprintfilm"

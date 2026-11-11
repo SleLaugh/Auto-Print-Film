@@ -75,19 +75,24 @@ def _coerce_int(value: Any, field_name: str) -> int:
     raise ValueError(f"{field_name} 必须是正整数")
 
 
-def _coerce_timeout_map(value: Any) -> Dict[str, float]:
+def _coerce_model_map(value: Any, field_name: str, value_name: str) -> Dict[str, Any]:
     """环境变量支持 JSON 对象文本；其他来源也可直接传入映射。"""
-    field_name = "nnunet.inference_timeout_seconds_by_model"
     if isinstance(value, str):
         try:
             value = json.loads(value)
         except json.JSONDecodeError as error:
             raise ValueError(f"{field_name} 必须是有效 JSON 对象") from error
     if not isinstance(value, Mapping):
-        raise ValueError(f"{field_name} 必须是模型 ID 到秒数的对象")
+        raise ValueError(f"{field_name} 必须是模型 ID 到{value_name}的对象")
+    return dict(value)
+
+
+def _coerce_timeout_map(value: Any) -> Dict[str, float]:
+    field_name = "nnunet.inference_timeout_seconds_by_model"
+    values = _coerce_model_map(value, field_name, "秒数")
     return {
         key: _coerce_float(timeout, f"{field_name}.{key}")
-        for key, timeout in value.items()
+        for key, timeout in values.items()
     }
 
 
@@ -167,6 +172,9 @@ def load_app_config(
         export_resampling_threads=_coerce_int(nn_value(
             "export_resampling_threads", "export_resampling_threads", fallback=1
         ), "nnunet.export_resampling_threads"),
+        export_resampling_device_by_model=_coerce_model_map(nn_value(
+            "export_resampling_device_by_model", "export_resampling_device_by_model", fallback={}
+        ), "nnunet.export_resampling_device_by_model", "设备"),
         inference_timeout_seconds=_coerce_float(nn_value(
             "inference_timeout_seconds", "inference_timeout_seconds", fallback=1800.0
         ), "nnunet.inference_timeout_seconds"),

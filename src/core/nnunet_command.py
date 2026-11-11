@@ -14,12 +14,14 @@ from src.runtime import application_root
 
 
 DEFAULT_PREDICT_COMMAND = "nnUNetv2_predict"
+GPU_PREDICT_COMMAND = "src/inference/nnunet_gpu_export.py"
 EXTERNAL_PREDICT_CODE = (
     "import sys; "
     "from nnunetv2.inference.predict_from_raw_data import predict_entry_point; "
     "sys.argv[0] = 'nnUNetv2_predict'; sys.exit(predict_entry_point())"
 )
 EXPORT_THREADS_ENV = "AUTOPRINTFILM_NNUNET_EXPORT_THREADS"
+RESAMPLING_DEVICE_ENV = "AUTOPRINTFILM_NNUNET_RESAMPLING_DEVICE"
 
 
 def _adapter_path() -> Path:
@@ -28,6 +30,19 @@ def _adapter_path() -> Path:
         bundle = Path(getattr(sys, "_MEIPASS", application_root() / "_internal"))
         return bundle / "nnunet_adapter" / "nnunet_export.py"
     return Path(__file__).resolve().parents[1] / "inference" / "nnunet_export.py"
+
+
+def gpu_adapter_path() -> Path:
+    """Locate the bundled GPU entry script in source and executable releases."""
+    return _adapter_path().with_name("nnunet_gpu_export.py")
+
+
+def gpu_adapter_sources() -> tuple[Path, ...]:
+    """Include every local module imported by the external GPU entry point."""
+    directory = gpu_adapter_path().parent
+    return tuple(directory / name for name in (
+        "nnunet_gpu_export.py", "nnunet_gpu_resampling.py", "nnunet_export.py",
+    ))
 
 
 def _same_syntax(node: ast.AST, source: str) -> bool:
@@ -123,6 +138,10 @@ def nnunet_inference_launch(
 ) -> tuple[list[str], bool, str]:
     """Return a command prefix, adapter status and an observable fallback reason."""
     original = nnunet_command_prefix(predict_command, python_executable)
+    if python_executable and Path(original[-1]) == gpu_adapter_path():
+        # The GPU entry already installs the export adapter. Keep its command
+        # while passing the configured CPU channel count to fallback workers.
+        return original, True, ""
     if export_resampling_threads == 1:
         return original, False, ""
     interpreter = None
@@ -153,6 +172,8 @@ def _location(value: str) -> str:
     if not isinstance(value, str) or not value:
         raise DependencyError("nnUNet 外部命令或解释器必须是非空字符串")
     expanded = os.path.expanduser(os.path.expandvars(value))
+    if getattr(sys, "frozen", False) and expanded == GPU_PREDICT_COMMAND:
+        return str(gpu_adapter_path())
     if os.path.dirname(expanded):
         path = Path(expanded)
         if not path.is_absolute():

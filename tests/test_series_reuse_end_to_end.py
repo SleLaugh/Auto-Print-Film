@@ -200,7 +200,8 @@ def test_reused_series_remains_a_donor_after_original_cache_is_deleted(lung_reus
     second = _pipeline().run(_request(parent, "B"))
     assert second.success, second.errors
     assert len(inference_calls) == 1
-    assert (parent / "B" / "cache" / "315" / "segmentation" / "seg.nii.gz").is_file()
+    model_id = str(inference_calls[0]["dataset_id"])
+    assert (parent / "B" / "cache" / model_id / "segmentation" / "seg.nii.gz").is_file()
     shutil.rmtree(parent / "A" / "cache")
     pipeline = _pipeline()
     _forbid_middle_stages(pipeline, monkeypatch)
@@ -310,7 +311,8 @@ def test_plan_round_trip_retains_b_original_plan_and_label_sidecar(lung_reuse_ca
     adopted = _pipeline().run(_request(parent, "B"))
     assert adopted.success, adopted.errors
     assert len(inference_calls) == 1
-    label_map = parent / "B" / "cache" / "315" / "segmentation" / "dataset.json"
+    model_id = str(inference_calls[0]["dataset_id"])
+    label_map = parent / "B" / "cache" / model_id / "segmentation" / "dataset.json"
     assert json.loads(label_map.read_text(encoding="utf-8"))["labels"]["lung"] == 1
     # No model directory exists: a different plan must use the retained sidecar.
     changed_pipeline = _pipeline()

@@ -196,5 +196,8 @@ def test_frozen_spec_packages_external_script_without_inference_dependencies():
         "SPECPATH": str(ROOT), "Analysis": analysis, "PYZ": Mock(), "EXE": Mock(), "COLLECT": Mock(),
     })
     kwargs = analysis.call_args.kwargs
-    assert kwargs["datas"] == [(str(ROOT / "src/inference/nnunet_export.py"), "nnunet_adapter")]
+    assert kwargs["datas"] == [
+        (str(ROOT / "src/inference" / name), "nnunet_adapter")
+        for name in ("nnunet_export.py", "nnunet_gpu_export.py", "nnunet_gpu_resampling.py")
+    ]
     assert {"torch", "nnunetv2"}.issubset(kwargs["excludes"])

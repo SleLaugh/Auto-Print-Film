@@ -21,7 +21,9 @@ from src.capacity import capacity_enabled, capacity_inference, record_capacity_d
 from src.core.context import ProcessingContext
 from src.core.errors import ExternalProcessError
 from src.core.inference_process import InferenceProcessAborted, run_inference_process
-from src.core.nnunet_command import EXPORT_THREADS_ENV, nnunet_inference_launch
+from src.core.nnunet_command import (
+    EXPORT_THREADS_ENV, RESAMPLING_DEVICE_ENV, nnunet_inference_launch,
+)
 from src.core.nnunet_dataset import resolve_nnunet_dataset_name
 from src.config import (
     load_app_config,
@@ -55,7 +57,8 @@ class SegmentationStage(BaseStage):
             "step_size": 0.5,  # 滑窗步长比例，范围为 (0, 1]
             "num_processes_preprocessing": 1,  # 限制预处理后台进程数
             "num_processes_segmentation_export": 1,  # 限制导出后台进程数
-            "export_resampling_threads": 1,  # 每个导出进程的通道并行数；1 使用原命令
+            "export_resampling_threads": 1,  # 每个导出进程的 CPU 通道并行数
+            "export_resampling_device_by_model": {},  # 未指定模型的重采样使用 CPU
             "inference_timeout_seconds": 1800.0,
             "inference_timeout_seconds_by_model": {},
             "inference_max_retries": 1,
@@ -97,7 +100,7 @@ class SegmentationStage(BaseStage):
         inference_keys = (
             "disable_tta", "step_size",
             "num_processes_preprocessing", "num_processes_segmentation_export",
-            "export_resampling_threads",
+            "export_resampling_threads", "export_resampling_device_by_model",
             "inference_timeout_seconds", "inference_timeout_seconds_by_model",
             "inference_max_retries",
         )
@@ -113,6 +116,9 @@ class SegmentationStage(BaseStage):
         self._num_processes_preprocessing = inference_config.num_processes_preprocessing
         self._num_processes_segmentation_export = inference_config.num_processes_segmentation_export
         self._export_resampling_threads = inference_config.export_resampling_threads
+        self._export_resampling_device_by_model = dict(
+            inference_config.export_resampling_device_by_model
+        )
         self._inference_timeout_seconds = inference_config.inference_timeout_seconds
         self._inference_timeout_seconds_by_model = (
             inference_config.inference_timeout_seconds_by_model
@@ -566,8 +572,8 @@ class SegmentationStage(BaseStage):
         )
         if self._export_resampling_threads > 1:
             RunLog(
-                f"[nnUNet] 导出通道并行适配器已启用，线程数 {self._export_resampling_threads}"
-                if export_adapter_enabled else f"[nnUNet] 导出通道并行未启用：{export_adapter_reason}"
+                f"[nnUNet] 导出适配器已启用，CPU 通道线程数 {self._export_resampling_threads}"
+                if export_adapter_enabled else f"[nnUNet] 导出适配器未启用：{export_adapter_reason}"
             )
         env = external_process_environment()
         for key in ('nnUNet_raw', 'nnUNet_preprocessed'):
@@ -605,6 +611,11 @@ class SegmentationStage(BaseStage):
         # 所有 spawn worker 都继承诊断开关；原生崩溃及时打印 Python 调用栈。
         env["PYTHONFAULTHANDLER"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
+        # Each child receives its own model's setting, including on retries.
+        # Never mutate the parent environment: concurrent models may differ.
+        resampling_device = self._export_resampling_device_by_model.get(str(dataset_id), "cpu")
+        env[RESAMPLING_DEVICE_ENV] = resampling_device
+        DebugLog(f"    模型 {dataset_id} 的导出重采样设备配置: {resampling_device}")
         if export_adapter_enabled:
             env[EXPORT_THREADS_ENV] = str(self._export_resampling_threads)
         

@@ -38,7 +38,7 @@
                 "CT": [
                     {
                         "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
-                        "model_id": 294
+                        "model_id": 901
                     },
                     {
                         "scan_thickness_range_mm": { "min": 1.6, "max": 4.5 },
@@ -406,7 +406,7 @@
                 "CT": [
                     {
                         "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
-                        "model_id": 315
+                        "model_id": 903
                     }
                 ]
             },
@@ -471,7 +471,7 @@
                 "CT": [
                     {
                         "scan_thickness_range_mm": { "min": 0.0, "max": 1.5 },
-                        "model_id": 294
+                        "model_id": 902
                     },
                     {
                         "scan_thickness_range_mm": { "min": 1.6, "max": 4.5 },

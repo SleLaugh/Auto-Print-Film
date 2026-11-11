@@ -135,14 +135,18 @@ JSON 后下一次任务启动即可生效，无需重新打包。
 任何区间命中时任务会明确失败，不会自动选择临近模型。例如 `0–1.5` 和 `1.6–4.5`
 不会重叠，但 `1.55` 不属于任何一个区间。
 
-当前配置中的模型选择如下：
+当前配置中的 CT 模型选择如下，括号内为导出重采样的设备配置：
 
-| 部位 | 检查类型与层厚区间 | 模型 |
-| --- | --- | --- |
-| 颅脑、髋骨 | CT：`0–1.5`、`1.6–4.5`、`4.6–6.0 mm` | `294`、`297`、`298` |
-| 颈椎、胸椎、腰椎、胸腰椎、全脊柱 | CT：`0–1.5`、`1.6–4.5`、`4.6–6.0 mm` | `292`、`297`、`298` |
-| 肺部 | CT：`0–1.5 mm` | `315` |
-| 骶骨 | 已禁用 | — |
+| 部位 | `0–1.5 mm` | `1.6–4.5 mm` | `4.6–6.0 mm` |
+| --- | --- | --- | --- |
+| 颅脑 | `901`（GPU） | `297`（CPU） | `298`（CPU） |
+| 髋骨 | `902`（GPU） | `297`（CPU） | `298`（CPU） |
+| 颈椎、胸椎、腰椎、胸腰椎、全脊柱 | `292`（GPU） | `297`（CPU） | `298`（CPU） |
+| 肺部 | `903`（GPU） | 无匹配规则 | 无匹配规则 |
+| 骶骨 | 已禁用 | 已禁用 | 已禁用 |
+
+当前启用的模型共六个：`292`、`297`、`298`、`901`、`902`、`903`。`315` 只保留在
+重采样设备和超时配置中，没有启用的部位规则引用它；`294` 已不在当前模型规则中。
 
 如需接入自定义模型，可在对应规则中填写 `configuration: "3d_lowres"`、`fold: "all"`
 和实际的 `plans` 名称；其他未填写这些字段的规则仍使用全局默认。
@@ -158,17 +162,41 @@ nnUNet_results/Dataset<ID>_<名称>/
     fold_<fold>/checkpoint_final.pth
 ```
 
-路径相关的最小配置如下；`nnUNetv2_predict` 已在 PATH 中时，可省略命令项：
+当前项目入口和 CPU/GPU 映射如下；模型根目录和外部 Python 路径按部署机器调整：
 
 ```json
 {
-  "nnUNet_results": "/data/nnUNet_results",
-  "nnUNet_predict_command": "/path/to/bin/nnUNetv2_predict"
+  "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",
+  "nnUNet_predict_command": "src/inference/nnunet_gpu_export.py",
+  "nnUNet_python": "/home/peng/opt/fsl/bin/python",
+  "export_resampling_threads": 4,
+  "export_resampling_device_by_model": {
+    "292": "gpu",
+    "315": "gpu",
+    "901": "gpu",
+    "902": "gpu",
+    "903": "gpu"
+  }
 }
 ```
 
 `nnUNet_raw`、`nnUNet_preprocessed` 是训练数据目录，应用不再读取或检查，可从旧配置
-删除。`nnUNet_python` 无需填写空值，仅在需要显式指定外部解释器时配置。
+删除。上述入口必须由已经安装 nnUNet、PyTorch 的外部 `nnUNet_python` 执行。
+入口相对路径在源码运行时解析为项目脚本，在发布程序中解析为包内
+`_internal/nnunet_adapter/nnunet_gpu_export.py`；旧发布包须重新构建并整体更新。
+`export_resampling_device_by_model` 的键为任意正整数模型 ID 字符串，值只能为 `cpu`
+或 `gpu`，未列出的模型默认 `cpu`，因此当前 `297`、`298` 使用 CPU。将某项改成
+`cpu` 即可让该模型使用 CPU，例如 `"903": "cpu"`。应用按本次选中的模型 ID 精确匹配，
+不依赖训练计划的数据集名称，也不会匹配其他编号的前缀。这个字段仅影响导出重采样，
+不改变神经网络推理设备。上述 GPU 配置不代表已完成各模型的结果与资源占用验证。
+当前肺部模型 `903` 使用全局单次超时 `1800` 秒；保留的 `"315": 180.0` 超时项只对
+模型 `315` 生效，不会随部位切换自动转移到 `903`。
+外部环境变量 `NNUNET_GPU_RESAMPLING=0` 可全局强制 CPU，默认 `1` 允许按模型映射选择。
+`export_resampling_threads` 控制 CPU 路径的通道并行数，范围 `1` 至 `4`，不控制 GPU；
+无需将当前的 `4` 改成 `1`。GPU 使用 float32 插值，最终标签可能出现微小差异。
+模型权重、`plans.json` 和已安装 nnUNet 的文件均不修改。现有 `disable_tta=true`、
+`step_size=0.7` 及导出进程数 `1` 保留。更多部署和显存说明见
+[生产部署说明](../../docs/production.md)。
 程序只在 `nnUNet_results` 中按 `Dataset<ID>_` 精确匹配编号，并向 nnUNet 传递完整数据集名称，避免
 不同长度的数据集编号被外部命令的前缀匹配混为同一编号。
 
@@ -355,7 +383,8 @@ FOV = N*output_spacing_mm
 小截面和不限制目标适配的一轴仍可留空气，冠状位100也不承诺零空气或胶片格四边满铺。
 
 高占比允许包络外皮肤、肋骨、腹部、大腿或骶尾结构越框，低占比逐渐露出；
-80不保证已包含全体表，扫描外仍为正常无数据背景。模型294无独立sacrum/coccyx，
+80不保证已包含全体表，扫描外仍为正常无数据背景。当前薄层髋骨模型902只有左右髋骨标签，
+无独立sacrum/coccyx；
 左右髋骨包络不等于所有骶尾结构保护；所选标签及余量完整保留，不补全扫描外数据。
 
 诊断selected_region记录basis、margin_mm、centering、canvas及未加余量的

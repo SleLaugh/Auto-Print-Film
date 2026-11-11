@@ -3,18 +3,26 @@
     "_fold": "0",
     "_plans": "nnUNetPlans",
     "_continue": true,
-    "disable_tta": false,
-    "step_size": 0.5,
+    "disable_tta": true,
+    "step_size": 0.7,
     "num_processes_preprocessing": 1,
     "num_processes_segmentation_export": 1,
     "export_resampling_threads": 4,
+    "export_resampling_device_by_model": {
+        "292": "gpu",
+        "315": "gpu",
+        "901": "gpu",
+        "902": "gpu",
+        "903": "gpu"
+    },
     "inference_timeout_seconds": 1800.0,
     "inference_timeout_seconds_by_model": {
         "315": 180.0
     },
     "inference_max_retries": 1,
     "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",
-    "nnUNet_predict_command": "/home/peng/opt/fsl/bin/nnUNetv2_predict",
+    "nnUNet_predict_command": "src/inference/nnunet_gpu_export.py",
+    "nnUNet_python": "/home/peng/opt/fsl/bin/python",
     "pipeline": {
         "series_reuse_enabled": false
     }

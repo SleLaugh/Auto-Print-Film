@@ -29,7 +29,8 @@ dev build
 
 直接入口为 `dist/AutoPrintFilm/AutoPrintFilm`，压缩包为
 `dist/AutoPrintFilm-linux-x64.tar.gz`。整体移动应用目录，保留 `_internal/` 和符号链接；
-生产端无需安装应用 Python 或运行 `main.py`，包内不交付应用源码脚本。
+生产端无需安装应用 Python 或运行 `main.py`；外部推理所需的三个适配脚本随包放在
+`_internal/nnunet_adapter/`，由已有的 nnUNet Python 环境执行。
 JSON 配置外置于产物的 `src/config/`，可直接编辑；每次构建默认同步当前源码的全部
 JSON 配置，应用目录和压缩包都会包含。仅在需要沿用上次 `dist` 中的配置修改时使用
 `dev build --keep-config`。
@@ -93,8 +94,8 @@ python -m pip install -r requirements.txt
 
 ## 配置外部 nnUNet
 
-分割阶段调用外部 `nnUNetv2_predict`。应用依赖安装不会安装 nnUNet，还需配置已有的
-外部命令入口和模型目录。
+分割阶段通过项目的推理入口调用外部 nnUNet。应用依赖安装不会安装 nnUNet，仍需配置
+已有的 nnUNet/PyTorch Python 环境和模型目录。
 
 默认配置文件是：
 
@@ -102,55 +103,75 @@ python -m pip install -r requirements.txt
 src/config/nnuNet_config.json
 ```
 
-本项目只调用训练好的模型做推理。路径相关配置只需模型根目录和外部推理入口，例如：
+本项目只调用训练好的模型做推理。当前项目入口和按模型选择重采样设备的配置如下：
 
 ```json
 {
   "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",
-  "nnUNet_predict_command": "/home/peng/opt/fsl/bin/nnUNetv2_predict"
+  "nnUNet_predict_command": "src/inference/nnunet_gpu_export.py",
+  "nnUNet_python": "/home/peng/opt/fsl/bin/python",
+  "export_resampling_device_by_model": {
+    "292": "gpu",
+    "315": "gpu",
+    "901": "gpu",
+    "902": "gpu",
+    "903": "gpu"
+  }
 }
 ```
+
+`export_resampling_device_by_model` 的键为模型 ID 字符串，值只能是 `cpu` 或 `gpu`。
+当前薄层脊柱模型 `292`、颅脑 `901`、髋骨 `902`、肺部 `903` 均配置为 GPU 重采样；
+中厚层模型 `297`、`298` 未列出，默认 CPU。`315` 仍保留 GPU 配置，但当前切割部位规则
+没有使用它。完整层厚对应关系见[模型选择表](src/config/README.md#model_rules)。
+若要让某个模型使用 CPU，将对应值改为 `cpu`，例如 `"903": "cpu"`；其他模型也可按
+同样方式添加。应用按本次实际选中的正整数模型 ID 精确匹配。
+这个字段只选择导出阶段的重采样设备，不改变神经网络推理使用的设备。设备配置不代表
+已完成各模型的 GPU 验证；当前接入没有 `901`、`902`、`903` 的 GPU 结果验证结论。
 
 `nnUNet_results` 指向包含各个 `Dataset<ID>_<名称>` 的模型根目录，不是单个权重文件。
 部署时只需复制所用模型的完整训练产物，不需要原始或预处理后的训练数据。
 旧配置中的 `nnUNet_raw`、`nnUNet_preprocessed` 可删除，应用不再读取或检查它们。
-`nnUNet_predict_command` 指向外部可执行命令；若 `nnUNetv2_predict` 已在运行环境的
-`PATH` 中，可省略该项，只填写模型根目录。
-服务启动时的 PATH 可能与开发终端不同，生产配置应填写命令的完整路径。
-上面的入口自带外部 Python 路径，无需配置 `nnUNet_python`；该字段仅用于需要显式
-指定外部解释器的高级配置，详见[生产部署说明](docs/production.md)。
-旧发布包需重新构建并更新完整应用包，才能取消训练数据目录预检；升级后修改路径配置
-在下一次任务启动生效，无需再次打包。
+`nnUNet_predict_command` 的上述相对路径由程序解析：源码运行时使用项目脚本，发布程序
+使用包内 `_internal/nnunet_adapter/nnunet_gpu_export.py`，不依赖服务的当前工作目录。
+`nnUNet_python` 必须指向已安装 nnUNet、PyTorch 的外部 Python；迁移机器时调整此路径
+和模型根目录，不能填主应用的 Python 或 `AutoPrintFilm` 可执行程序。
+这项接入不修改外部 nnUNet 安装文件、模型 `plans.json` 或权重，也不需要重新训练。
+旧发布包必须先重新构建并更新完整应用目录；升级后调整外置配置，在下一次任务启动生效。
+原来的官方 `nnUNetv2_predict` 命令调用仍受支持，详见[生产部署说明](docs/production.md)。
 
-推理速度和后台进程数可以通过同一 JSON 的顶层字段调整。将以下字段合并到原 JSON，保留其他字段：
+推理速度和后台进程数可以通过同一 JSON 的顶层字段调整。以下与当前仓库配置一致：
 
 ```json
 {
-  "disable_tta": false,
-  "step_size": 0.5,
+  "disable_tta": true,
+  "step_size": 0.7,
   "num_processes_preprocessing": 1,
   "num_processes_segmentation_export": 1,
   "export_resampling_threads": 4
 }
 ```
 
-`export_resampling_threads` 控制单病例恢复原始分辨率时的通道并行，取值为 `1` 至 `4`。
-仓库配置为 `4`；旧配置未提供此字段时沿用 `1`，设为 `1` 可恢复原命令及原导出路径。
-它与 `-nps` 的导出进程数不同：一个病例的各类别通道在同一个导出进程内并行处理，
-不增加服务的任务并发数，也不改变模型、TTA、滑窗步长、插值阶数或标签判定规则。
+支持的浮点重采样在 GPU 上以 float32 插值，按通道或切片分批处理，
+然后交回 nnUNet 生成标签和写盘；这可能在类别分数非常接近的位置产生少量标签差异。
+显存工作预算至多按 4 GiB 估算，它不是整个推理进程的显存硬上限；没有通用的 GPU
+显存不足后自动重跑 CPU 的机制。
 
-应用通过项目自带的外部推理入口运行优化，不修改已安装的 nnUNet。入口使用配置的
-外部 Python，或从已确认的官方 `nnUNetv2_predict` Python 启动脚本中读取解释器。
-自定义命令无法确认时保留原调用，RunLog 会说明优化未启用；此时不要把主应用的
-Python 或打包后的可执行程序当作推理解释器。
-并行仅用于官方默认重采样器的多通道、线性、原尺寸恢复路径，其他实现和无须重采样
-的情况继续使用原函数。单病例的大体积导出仍会使用较多内存；并行线程与其他在途
-任务共同占用 CPU 和内存，可按真实负载在 `2`、`4` 之间比较。
+`NNUNET_GPU_RESAMPLING` 环境变量默认为 `1`，表示允许按模型配置选择设备；设为 `0`
+可全局强制所有模型使用 CPU 重采样，无须逐项修改映射。
+日志中 `[GPU resampling]` 的 `backend=cuda_float32` 表示实际使用 GPU；CUDA 不可用或
+参数不支持时记录回退原因。直接调用入口时，显式 `-device cpu/mps` 也会关闭 GPU 重采样。
+`export_resampling_threads` 只控制 CPU 路径的类别通道并行，取值为 `1` 至 `4`；
+仓库保留 `4`，旧配置未提供时为 `1`。设为 `1` 仅关闭 CPU 通道并行，不会关闭 GPU。
+CPU 通道并行仅覆盖官方默认重采样器的多通道线性原尺寸恢复，其余情况使用原函数。
+它与 `-nps` 的导出进程数不同，不增加服务的任务并发数；GPU 重采样也不改变 TTA 或
+滑窗步长。`num_processes_segmentation_export` 继续为 `1`，并发任务仍需共同考虑主机
+内存和 GPU 显存占用。
 
 启用项目入口后，`log/nnunet-*.stdout.log` 会追加带 `[AutoPrintFilm nnUNet]` 前缀的
 粗阶段耗时，用于区分恢复原尺寸、标签判定及文件写出，不需要开启全部 DebugLog。
-已有分割缓存仍直接复用；比较优化前后时使用新的测试缓存目录，勿删除生产在途缓存。
-旧发布包需要重新构建并更新完整应用目录，才能包含该入口和新增配置字段。
+已有分割缓存仍直接复用；切换重采样方式后如需重新生成分割，应使用新的缓存目录，
+勿删除生产在途缓存。发布时只需应用包自带的适配脚本，无需复制原方案压缩包或测试材料。
 
 Python 分割阶段会把每次推理的标准输出、标准错误实时保存到任务的
 `log/nnunet-*.stdout.log`、`log/nnunet-*.stderr.log`，不依赖 DebugLog 开关。
@@ -167,8 +188,9 @@ Python 分割阶段会把每次推理的标准输出、标准错误实时保存�
 }
 ```
 
-时限单位为秒，必须为有限正数；模型覆盖项的键为模型 ID 字符串。仓库配置中肺部模型
-`315` 每次最多 180 秒，其他模型默认 1800 秒，可根据实际数据调整。
+时限单位为秒，必须为有限正数；模型覆盖项的键为模型 ID 字符串。仓库仍保留 `315`
+单次 180 秒的覆盖项，但当前部位规则不使用该模型。当前肺部模型为 `903`，与其他启用
+模型一样使用单次 1800 秒的全局时限；`315` 的覆盖项不会自动应用到 `903`。
 Linux 下超时、原生崩溃或后台 worker 异常退出后，只有确认本次推理进程组已清理，
 才会用全新的临时目录额外重试一次；`inference_max_retries=0` 可关闭重试。
 缺少模型等明确配置错误直接失败，重试仍失败时写入失败报告。计时只覆盖单次外部推理，
@@ -183,8 +205,8 @@ JSON 中 `disable_tta` 使用布尔值，默认 `false`，设为 `true` 会关�
 既支持这些顶层字段，也支持放在 `nnunet` 段中。
 单病例的预处理原本实际已限制为 1 个进程；本次默认主要将导出进程池从 3 减为 1，
 以减少主机内存和并发资源占用，不改变模型、TTA 或滑窗步长。
-需要进一步减少模型前向工作量时，可试 `disable_tta=true`、保持 `step_size=0.5`，
-再按效果测试 `0.75`。先依据阶段计时确认滑窗预测是否为主要耗时。
+当前已关闭镜像增强并使用 `step_size=0.7`；如需继续调整，先依据阶段计时确认滑窗预测
+是否为主要耗时，再比较其他步长。
 这些调整可能影响分割及自动切割定位，应比较实际病例的耗时和切割结果。
 分割缓存仍按模型 ID 复用；测试参数变化时使用新的 `-c` 目录，或清理对应的
 `<cache>/<model_id>/segmentation/`，否则会跳过推理。
@@ -301,8 +323,8 @@ nnUNet_results/
 定位图状位；
 新增或调整切割部位时不再同步修改其他配置文件。`nnuNet_config.json` 只保存推理参数
 以及模型根目录、外部推理入口。当前已启用的脊柱、颅脑和髋骨按 `0-1.5mm`、`1.6-4.5mm`、`4.6-6mm`
-分别选择对应的薄层、3mm、6mm 模型；脊柱薄层默认使用 `292`。
-肺部目前只有 `0-1.5mm` 的模型。外部厚度未命中
+分别选择对应的薄层、3mm、6mm 模型；薄层脊柱使用 `292`、颅脑使用 `901`、髋骨使用
+`902`，中厚层分别使用 `297`、`298`。肺部目前只有 `0-1.5mm` 的模型 `903`。外部厚度未命中
 任何区间或同时命中重叠区间时，分割阶段会明确失败，不会自动选择临近模型。
 
 统一切割部位配置在应用启动时严格校验。未知字段、重叠模型区间、未在 `label_aliases`

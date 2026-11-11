@@ -102,12 +102,20 @@ def _engine_identity(config):
     """Identify the external engine without importing torch or starting CUDA."""
     from .nnunet_command import (
         DEFAULT_PREDICT_COMMAND, _launcher_python, _official_launcher_source,
-        nnunet_command_prefix,
+        gpu_adapter_path, gpu_adapter_sources, nnunet_command_prefix,
     )
     options = config.nnunet
     prefix = nnunet_command_prefix(options.predict_command, options.python_executable)
     launcher = {}
-    if options.predict_command == DEFAULT_PREDICT_COMMAND and options.python_executable:
+    environment = external_process_environment()
+    gpu_resampling = None
+    if options.python_executable and Path(prefix[-1]) == gpu_adapter_path():
+        interpreter = [prefix[0]]
+        launcher = {str(path): _hash_file(path) for path in gpu_adapter_sources()}
+        gpu_resampling = environment.get("NNUNET_GPU_RESAMPLING", "1")
+        if gpu_resampling not in {"0", "1"}:
+            raise ValueError("NNUNET_GPU_RESAMPLING 必须为 0 或 1")
+    elif options.predict_command == DEFAULT_PREDICT_COMMAND and options.python_executable:
         interpreter = [prefix[0]]
     else:
         command = prefix[-1]
@@ -126,7 +134,7 @@ def _engine_identity(config):
     )
     result = subprocess.run(
         [executable, *interpreter[1:], "-c", script],
-        env=external_process_environment(), capture_output=True, text=True,
+        env=environment, capture_output=True, text=True,
         timeout=10, check=True, encoding="utf-8",
     )
     locations = json.loads(result.stdout)
@@ -139,8 +147,11 @@ def _engine_identity(config):
             sources[str(path)] = _hash_file(path)
     if not sources:
         raise ValueError("nnUNet 源码不可读，保留原调用")
-    return {"interpreter": [str(executable), *interpreter[1:]],
-            "generation": _generation(executable), "launcher": launcher, "sources": sources}
+    identity = {"interpreter": [str(executable), *interpreter[1:]],
+                "generation": _generation(executable), "launcher": launcher, "sources": sources}
+    if gpu_resampling is not None:
+        identity["gpu_resampling"] = gpu_resampling
+    return identity
 
 
 class SeriesReuseSession:

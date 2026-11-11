@@ -65,7 +65,7 @@ class SegmentationModelMatchingTest(unittest.TestCase):
     def test_lung_only_supports_existing_thin_slice_model(self):
         self.assertEqual(
             self.stage._match_model("肺部", "CT", 1.5)["model_id"],
-            315,
+            903,
         )
         with self.assertRaisesRegex(ValueError, "未找到匹配"):
             self.stage._match_model("肺部", "CT", 1.6)

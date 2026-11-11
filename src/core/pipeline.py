@@ -107,6 +107,9 @@ class Pipeline:
             "num_processes_preprocessing": config.nnunet.num_processes_preprocessing,
             "num_processes_segmentation_export": config.nnunet.num_processes_segmentation_export,
             "export_resampling_threads": config.nnunet.export_resampling_threads,
+            "export_resampling_device_by_model": dict(
+                config.nnunet.export_resampling_device_by_model
+            ),
             "inference_timeout_seconds": config.nnunet.inference_timeout_seconds,
             "inference_timeout_seconds_by_model": dict(
                 config.nnunet.inference_timeout_seconds_by_model

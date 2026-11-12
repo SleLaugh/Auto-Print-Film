@@ -29,7 +29,7 @@ dev build
 
 直接入口为 `dist/AutoPrintFilm/AutoPrintFilm`，压缩包为
 `dist/AutoPrintFilm-linux-x64.tar.gz`。整体移动应用目录，保留 `_internal/` 和符号链接；
-生产端无需安装应用 Python 或运行 `main.py`；外部推理所需的三个适配脚本随包放在
+生产端无需安装应用 Python 或运行 `main.py`；外部推理所需的适配脚本随包放在
 `_internal/nnunet_adapter/`，由已有的 nnUNet Python 环境执行。
 JSON 配置外置于产物的 `src/config/`，可直接编辑；每次构建默认同步当前源码的全部
 JSON 配置，应用目录和压缩包都会包含。仅在需要沿用上次 `dist` 中的配置修改时使用
@@ -110,6 +110,7 @@ src/config/nnuNet_config.json
   "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",
   "nnUNet_predict_command": "src/inference/nnunet_gpu_export.py",
   "nnUNet_python": "/home/peng/opt/fsl/bin/python",
+  "acceleration_scheme": "scheme6",
   "export_resampling_device_by_model": {
     "292": "gpu",
     "315": "gpu",
@@ -126,8 +127,16 @@ src/config/nnuNet_config.json
 没有使用它。完整层厚对应关系见[模型选择表](src/config/README.md#model_rules)。
 若要让某个模型使用 CPU，将对应值改为 `cpu`，例如 `"903": "cpu"`；其他模型也可按
 同样方式添加。应用按本次实际选中的正整数模型 ID 精确匹配。
-这个字段只选择导出阶段的重采样设备，不改变神经网络推理使用的设备。设备配置不代表
-已完成各模型的 GPU 验证；当前接入没有 `901`、`902`、`903` 的 GPU 结果验证结论。
+`acceleration_scheme` 选择加速方案，设备映射仍用 `gpu` / `cpu`：
+
+| 方案 | 配置为 `gpu` 的模型使用的处理 |
+| --- | --- |
+| `scheme2` | 保留现有 GPU 输出重采样，标签判定与写盘沿用原流程 |
+| `scheme6` | 增加 GPU 输入 cubic 重采样、跳过推理后不用的临时掩膜重采样，并在 GPU 上合并输出标签 |
+
+配置为 `cpu` 或未列出的模型使用 CPU 重采样；这些设置不改变网络预测设备。
+方案 6 保留原来的裁剪、临时掩膜创建和归一化，只在没有真实分割输入、也不是级联模型时
+跳过临时掩膜的重采样和最终类型转换。设备配置本身不代表已完成对应模型的病例验证。
 
 `nnUNet_results` 指向包含各个 `Dataset<ID>_<名称>` 的模型根目录，不是单个权重文件。
 部署时只需复制所用模型的完整训练产物，不需要原始或预处理后的训练数据。
@@ -139,6 +148,12 @@ src/config/nnuNet_config.json
 这项接入不修改外部 nnUNet 安装文件、模型 `plans.json` 或权重，也不需要重新训练。
 旧发布包必须先重新构建并更新完整应用目录；升级后调整外置配置，在下一次任务启动生效。
 原来的官方 `nnUNetv2_predict` 命令调用仍受支持，详见[生产部署说明](docs/production.md)。
+
+方案 6 的 GPU 输入重采样需要外部 nnUNet Python 可导入 CuPy。可在该外部环境安装与
+CUDA 兼容的 CuPy，也可将独立依赖目录通过 `GPU_INPUT_CUPY_PATH` 传给服务及子进程。
+本机外部 `/home/peng/opt/fsl/bin/python` 已安装 CuPy 13.6.0 和 fastrlock 0.8.3，
+直接运行当前配置即可；安装没有升级 NumPy，也没有修改 nnUNet/PyTorch 文件。
+CuPy 不属于主应用的基础依赖。
 
 推理速度和后台进程数可以通过同一 JSON 的顶层字段调整。以下与当前仓库配置一致：
 
@@ -152,15 +167,23 @@ src/config/nnuNet_config.json
 }
 ```
 
-支持的浮点重采样在 GPU 上以 float32 插值，按通道或切片分批处理，
-然后交回 nnUNet 生成标签和写盘；这可能在类别分数非常接近的位置产生少量标签差异。
-显存工作预算至多按 4 GiB 估算，它不是整个推理进程的显存硬上限；没有通用的 GPU
-显存不足后自动重跑 CPU 的机制。
+输出重采样保留现有 float32 插值和类型转换顺序；方案 6 在 GPU 中逐类比较并保留最大
+分数的标签，只把最终标签下载到 CPU，再沿用原几何恢复和写盘。输入 cubic 使用 float64
+工作精度、与本机原 `skimage.resize` 一致的半像素坐标和范围裁剪，不改成线性插值。
+输出工作预算至多按 4 GiB 估算，输入 CuPy 分配器上限为 8 GiB，并受空闲显存限制；
+这不是整个推理进程的显存硬上限。方案 6 输入缺少 CuPy、CUDA 不可用或预算不足时明确
+报错，不静默替换算法；不支持 GPU 标签合并的输出记录原因并回到原导出流程。
+
+方案 6 已在本机模型 `292`、`901`、`902`、`903` 上完成 40 组配对运行，但分割及最终
+DICOM 并非全部一致，不能将其视为逐体素无损或成片完全等价的替换。迁移环境及输出差异
+见[方案 6 的验证范围](docs/production.md#scheme6-validation)。
 
 `NNUNET_GPU_RESAMPLING` 环境变量默认为 `1`，表示允许按模型配置选择设备；设为 `0`
 可全局强制所有模型使用 CPU 重采样，无须逐项修改映射。
-日志中 `[GPU resampling]` 的 `backend=cuda_float32` 表示实际使用 GPU；CUDA 不可用或
-参数不支持时记录回退原因。直接调用入口时，显式 `-device cpu/mps` 也会关闭 GPU 重采样。
+方案 2 日志中 `[GPU resampling]` 的 `backend=cuda_float32` 表示实际使用 GPU；CUDA
+不可用或参数不支持时记录回退原因。方案 6 的 `[S6 GPU input resampling]` 记录输入设备，
+`[S6 preprocessor]` 记录是否跳过临时掩膜，`[S6 GPU merge]` 记录标签合并及回退情况。
+直接调用入口时，显式 `-device cpu/mps` 也会关闭 GPU 重采样。
 `export_resampling_threads` 只控制 CPU 路径的类别通道并行，取值为 `1` 至 `4`；
 仓库保留 `4`，旧配置未提供时为 `1`。设为 `1` 仅关闭 CPU 通道并行，不会关闭 GPU。
 CPU 通道并行仅覆盖官方默认重采样器的多通道线性原尺寸恢复，其余情况使用原函数。

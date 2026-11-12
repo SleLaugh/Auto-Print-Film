@@ -32,7 +32,7 @@ nnUNet、PyTorch、CUDA 和模型继续使用现有外部环境，不打入应�
 ├── AutoPrintFilm/
 │   ├── AutoPrintFilm               # 直接运行的 Linux 可执行程序
 │   ├── _internal/                 # 程序依赖库，必须一同保留
-│   │   └── nnunet_adapter/       # 三个外部推理适配脚本
+│   │   └── nnunet_adapter/       # 外部推理适配脚本
 │   ├── src/
 │   │   └── config/                # 外置 JSON，可直接编辑
 │   │       ├── nnuNet_config.json
@@ -48,8 +48,9 @@ nnUNet、PyTorch、CUDA 和模型继续使用现有外部环境，不打入应�
 ```
 
 应用代码已打入程序，不再交付 `main.py`、`src/` 下的应用 `.py` 文件或独立 `python/` 目录。
-`_internal/nnunet_adapter/` 保留 `nnunet_export.py`、`nnunet_gpu_export.py` 和
-`nnunet_gpu_resampling.py`，供已有的外部 nnUNet Python 环境执行。开发 `.venv`、模型、
+`_internal/nnunet_adapter/` 保留 `nnunet_export.py`、`nnunet_gpu_export.py`、
+`nnunet_gpu_resampling.py` 及方案 6 的 `nnunet_s6_input.py`、`nnunet_s6_preprocess.py`、
+`nnunet_s6_merge.py`、`nnunet_s6_adapter.py`，供已有的外部 nnUNet Python 环境执行。开发 `.venv`、模型、
 病例数据及原 GPU 方案的测试材料均不在包中。
 
 当前目标为 **Linux x86_64，构建基线 Ubuntu 22.04**。其他 Linux 机器需验证系统库和 ABI 兼容性；这不是 Windows/macOS 包，也不承诺仅满足某个 glibc 最低版本就能运行全部影像处理库。
@@ -217,6 +218,7 @@ S1 使用实际 `label_targets`，优先 `vertebrae_S1`、只提供 `sacrum` 时
   "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",
   "nnUNet_predict_command": "src/inference/nnunet_gpu_export.py",
   "nnUNet_python": "/home/peng/opt/fsl/bin/python",
+  "acceleration_scheme": "scheme6",
   "export_resampling_device_by_model": {
     "292": "gpu",
     "315": "gpu",
@@ -233,20 +235,72 @@ S1 使用实际 `label_targets`，优先 `vertebrae_S1`、只提供 `sacrum` 时
 `nnUNet_python` 必须指向已安装 nnUNet、PyTorch 的外部 Python，不能指向本包的
 `AutoPrintFilm` 可执行程序或仅装有应用依赖的 Python。迁移机器时调整外部 Python
 和模型根目录；模型根目录也可由同名环境变量提供。
-当前运行目录的配置文件为 `/home/peng/03_data/demo/Project/发布/AutoSliceServer/src/config/nnuNet_config.json`。
-旧发布包必须先重新 `dev build` 并更新完整应用目录，确认包含三个适配脚本后再使用
+本次源码改造使用的配置文件为
+`/home/peng/03_data/demo/code/AutoPrintFilm/src/config/nnuNet_config.json`。
+第 3 节所列发布服务目录不是本次源码修改目标；部署时须重新构建并更新该目录的程序和配置。
+旧发布包必须先重新 `dev build` 并更新完整应用目录，确认包含上述适配脚本后再使用
 此配置；仅修改旧包的 JSON 不会增加 GPU 能力。升级后修改路径配置在下一次任务
 启动生效，无需再次打包或修改 Worker。不需要把方案压缩包、基准脚本或测试报告放进发布目录。
+
+`acceleration_scheme` 接受 `scheme2` 或 `scheme6`，模型设备仍由
+`export_resampling_device_by_model` 中的 `gpu` / `cpu` 选择。`scheme2` 保留项目原有的
+GPU 输出重采样；`scheme6` 在 GPU 模型上增加输入 cubic 重采样、跳过不用的临时掩膜
+重采样和类型转换、GPU 输出标签合并。网络、权重、裁剪、归一化以及最终文件格式不变。
+真实分割输入或级联模型不走临时掩膜跳过步骤。
+
+方案 6 需要外部 nnUNet Python 能导入 CuPy 及其依赖。本机
+`/home/peng/opt/fsl/bin/python` 已安装 CuPy 13.6.0 和 fastrlock 0.8.3，直接使用当前配置
+即可；安装没有升级 NumPy 或替换 nnUNet/PyTorch。迁移机器时为该外部 Python 准备
+与 CUDA 兼容的 CuPy。也可使用独立安装目录，通过服务环境变量 `GPU_INPUT_CUPY_PATH`
+传给推理子进程。例如本机保留的独立对比依赖目录：
+
+```bash
+export GPU_INPUT_CUPY_PATH=/home/peng/03_data/demo/Image/scheme6_compare_10000740_10000755/deps
+export CUDA_PATH=/usr/local/cuda-12.8
+```
+
+独立目录是可选方式，本机正式运行不依赖上述 Image 目录；迁移机器时使用目标机器
+实际的 CuPy 目录和 CUDA Toolkit。
+CuPy 不打入主应用 Python，`dev build` 不负责安装它。没有修改已安装 nnUNet 的文件、
+`plans.json` 或模型权重；应用运行时通过自己的适配层选择处理函数。
+
+<a id="scheme6-validation"></a>
+
+**方案 6 的验证范围与输出差异**
+
+2026-11-12 在本机 Linux、RTX 5090、nnUNet 2.6.0、PyTorch
+`2.9.0.dev20250805+cu128`、CuPy 13.6.0 环境中，对模型 `292`（腰椎 12 组）、
+`901`（颅脑 2 组）、`902`（髋骨 4 组）、`903`（肺部 22 组）分别新跑方案 2 和方案 6。
+40 组共 80 次运行成功，使用独立缓存和相同的 `fold=0`、`step_size=0.7`、关闭 TTA 参数。
+输入重采样实现对应本机 nnUNet 所调用的 `skimage.resize` 语义；不同 nnUNet、数值库
+版本或自定义预处理器不能仅凭同名函数视为兼容，迁移后需重新验证。
+
+本轮总耗时减少 17.27%，分割阶段减少 37.57%。进程树内存采样峰值的逐任务均值从
+7.05 降至 5.19 GiB，最大任务显存采样峰值从 3.25 升至 3.91 GiB。各方案每任务仅跑
+一次，这些结果不能作为其他模型、机器或并发负载的性能保证；`315` 未参加本轮验证。
+
+40 组分割的物理几何一致，但 34 组存在标签差异，合计 1,417 个体素；最低前景 Dice
+为 0.9999028843。最终 DICOM 只有 13 组在所比较的几何、窗参数和存储像素上完全一致
+（忽略 UID 和生成时间），另 27 组存在差异，其中 1,841/3,369 个文件矩阵尺寸不同。
+分割高度重合不代表成片完全等价，也不构成准确率提高的证据。需要保留方案 2 行为时将
+`acceleration_scheme` 改回 `scheme2`，同时为实际重新推理使用新的缓存和输出目录；
+普通本地分割缓存仍可能按模型 ID 命中，单改配置不会强制重跑。
+
+逐例结果及资源原始采样保存在本机
+`/home/peng/03_data/demo/Image/scheme6_compare_10000740_10000755/`，
+汇总为其中的 `comparison_report.txt` 和 `comparison_summary.json`；这些材料不随应用发布。
 
 如需使用原来的官方预测入口，仍可配置为：
 
 ```json
 {
   "nnUNet_predict_command": "nnUNetv2_predict",
-  "nnUNet_python": "/home/peng/opt/fsl/bin/python"
+  "nnUNet_python": "/home/peng/opt/fsl/bin/python",
+  "acceleration_scheme": "scheme2"
 }
 ```
 
+方案 6 的 GPU 模型要求项目入口，改用官方命令时应同时切回 `scheme2`，否则配置校验报错。
 此时不启用 GPU 重采样，`export_resampling_threads` 大于 `1` 时仍使用已有 CPU 通道并行。
 也可仅把 `nnUNet_predict_command` 设为官方可执行文件的绝对路径，并删除 `nnUNet_python`，
 使用该入口自带的解释器路径；两个字段均未配置时沿用 PATH 中的 `nnUNetv2_predict`。
@@ -314,10 +368,11 @@ Python 显式配置支持顶层字段和 `nnunet` 嵌套段，优先于环境变
 的字符串，值严格为 `cpu` 或 `gpu`；未列出的模型默认 CPU。当前配置为模型
 `292`、`315`、`901`、`902`、`903` 请求 GPU，`297`、`298` 沿用默认 CPU。
 应用按本次实际传给 `-d` 的模型 ID 精确匹配，不依赖 `plans.json` 中的数据集名称。
-此字段只影响导出重采样，不切换神经网络推理设备；它也不会启用模型，实际选择仍由
+方案 2 中此字段控制导出重采样；方案 6 中同时控制输入重采样与 GPU 标签合并。
+它不切换神经网络推理设备，也不会启用模型，实际选择仍由
 `slice_part_config.json` 中已启用部位的 `model_rules` 决定。当前 CT 规则为：
 
-| 模型 ID | 使用部位 | 扫描层厚（mm） | 导出重采样配置 |
+| 模型 ID | 使用部位 | 扫描层厚（mm） | 重采样设备配置 |
 | --- | --- | --- | --- |
 | 292 | 颈椎、胸椎、腰椎、胸腰椎、全脊柱 | 0–1.5 | `gpu` |
 | 901 | 颅脑 | 0–1.5 | `gpu` |
@@ -328,13 +383,18 @@ Python 显式配置支持顶层字段和 `nnunet` 嵌套段，优先于环境变
 
 骶骨当前禁用。模型 `315` 虽保留 GPU 配置，但当前没有启用的部位规则使用它；肺部已使用
 `903`，且只配置了 0–1.5 mm 规则。GPU 配置表示请求设备，实际是否使用 GPU 需查看本次
-推理日志；方案原有验证基于模型 `292`，其他模型的 GPU 分割结果和显存占用尚未验证。
+推理日志。方案包中的 Dataset291 基准不能直接作为这些模型或整个切割流程的性能结论；
+部署效果应以本机实际病例的分割、切片结果和耗时对比为准。
 
-GPU 入口将支持的浮点重采样分批放到 GPU，以 float32 插值，再由原有
-nnUNet 导出流程判定标签和写盘；模型权重、`plans.json` 和已安装 nnUNet 的文件都不修改。
-float32 与原 CPU 计算精度不同，类别分数接近的位置可能出现少量标签差异。
-显存预算按空闲显存的 65%、至多 4 GiB 估算，用于选择批次和分块；这不是整个推理
-进程的显存硬上限，模型和其他在途任务仍占显存，也没有通用的 OOM 后自动重跑 CPU 机制。
+输出重采样保留已有 float32 插值与类型转换顺序。方案 2 将通道分数返回 CPU 再生成标签；
+方案 6 在 GPU 中逐类比较，分数相同时保留原顺序中先出现的类别，仅下载最终标签，
+再用原几何恢复和写盘过程。输入 cubic 采用 float64 工作精度，与本机原 `skimage.resize`
+一致的半像素坐标（`grid_mode=True`）、边缘处理和范围裁剪；独立轴最近邻使用 float64
+坐标。保留原临时掩膜的创建、裁剪与归一化用途，仅跳过推理后不用的重采样和类型转换。
+输出工作预算按空闲显存的 65%、至多 4 GiB 估算，输入 CuPy 分配器上限为 8 GiB，
+且不超过当时空闲显存的 70%；这不是整个推理进程的显存硬上限，其他进程和模型仍占显存。
+方案 6 输入缺少 CuPy、CUDA 不可用或预算不足时明确报错，不悄悄切换到 CPU 或线性插值；
+GPU 标签合并不支持的情况会记录原因并返回原导出流程。
 
 环境变量 `NNUNET_GPU_RESAMPLING` 默认为 `1`，允许按上述模型映射选择设备；需要全局
 关闭时，在启动应用的服务或终端环境设为 `0`，下一次推理的所有模型都使用 CPU 重采样。
@@ -343,11 +403,15 @@ float32 与原 CPU 计算精度不同，类别分数接近的位置可能出现�
 `export_resampling_threads`，仅对官方默认重采样器的多通道线性原尺寸恢复做通道并行，
 其余路径保留原函数。不要为接入 GPU 把此字段改成 `1`；当前的 `4` 用于 CPU 路径。
 每次推理的 `nnunet-*.stdout.log` 会保存 `[AutoPrintFilm nnUNet]` 粗阶段耗时，
-便于区分重采样、标签判定和写出。`[GPU resampling]` 中 `backend=cuda_float32` 表示
+便于区分重采样、标签判定和写出。方案 2 的 `[GPU resampling]` 中 `backend=cuda_float32` 表示
 实际使用 GPU，`reference_fallback` 表示回退 CPU 并由 `fallback_reason` 说明原因；
 `configured_resampler` 表示走原配置的重采样（当前默认 CPU），`identity` 表示无需重采样。
 复用已有分割时不会产生新的推理日志，需查看最初生成该分割时的日志。
-CUDA 不可用时回到 CPU 适配器；直接调用入口
+方案 6 的 `[S6 GPU input resampling]` 中 `backend=cupyx_cuda_cubic_skimage` 表示输入
+实际使用 GPU，`[S6 preprocessor]` 记录临时掩膜是否跳过；`[S6 GPU merge]` 中
+`backend=s6_gpu_resample_dtype_quantized_merge` 表示实际在 GPU 合并标签，
+`original_export_fallback` 则表示回到原导出流程并由 `fallback_reason` 说明原因。
+方案 2 在 CUDA 不可用时回到 CPU 适配器；直接调用入口
 并传入 `-device cpu/mps` 时关闭 GPU 重采样。此配置不是增加 `-nps`；单病例的一个导出任务
 不会因为增大进程池而自动拆成多个通道任务。
 

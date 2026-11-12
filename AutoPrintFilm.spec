@@ -9,7 +9,11 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(root / "src/inference" / name), "nnunet_adapter")
-        for name in ("nnunet_export.py", "nnunet_gpu_export.py", "nnunet_gpu_resampling.py")
+        for name in (
+            "nnunet_export.py", "nnunet_gpu_export.py", "nnunet_gpu_resampling.py",
+            "nnunet_s6_adapter.py", "nnunet_s6_input.py", "nnunet_s6_preprocess.py",
+            "nnunet_s6_merge.py",
+        )
     ],
     hiddenimports=[],
     hookspath=[],

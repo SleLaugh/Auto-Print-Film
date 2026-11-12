@@ -22,6 +22,7 @@ EXTERNAL_PREDICT_CODE = (
 )
 EXPORT_THREADS_ENV = "AUTOPRINTFILM_NNUNET_EXPORT_THREADS"
 RESAMPLING_DEVICE_ENV = "AUTOPRINTFILM_NNUNET_RESAMPLING_DEVICE"
+ACCELERATION_SCHEME_ENV = "AUTOPRINTFILM_NNUNET_ACCELERATION_SCHEME"
 
 
 def _adapter_path() -> Path:
@@ -42,6 +43,8 @@ def gpu_adapter_sources() -> tuple[Path, ...]:
     directory = gpu_adapter_path().parent
     return tuple(directory / name for name in (
         "nnunet_gpu_export.py", "nnunet_gpu_resampling.py", "nnunet_export.py",
+        "nnunet_s6_adapter.py", "nnunet_s6_input.py", "nnunet_s6_preprocess.py",
+        "nnunet_s6_merge.py",
     ))
 
 

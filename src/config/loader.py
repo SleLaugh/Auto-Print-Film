@@ -172,6 +172,9 @@ def load_app_config(
         export_resampling_threads=_coerce_int(nn_value(
             "export_resampling_threads", "export_resampling_threads", fallback=1
         ), "nnunet.export_resampling_threads"),
+        acceleration_scheme=nn_value(
+            "acceleration_scheme", "acceleration_scheme", fallback="scheme2"
+        ),
         export_resampling_device_by_model=_coerce_model_map(nn_value(
             "export_resampling_device_by_model", "export_resampling_device_by_model", fallback={}
         ), "nnunet.export_resampling_device_by_model", "设备"),

@@ -22,7 +22,8 @@ from src.core.context import ProcessingContext
 from src.core.errors import ExternalProcessError
 from src.core.inference_process import InferenceProcessAborted, run_inference_process
 from src.core.nnunet_command import (
-    EXPORT_THREADS_ENV, RESAMPLING_DEVICE_ENV, nnunet_inference_launch,
+    ACCELERATION_SCHEME_ENV, EXPORT_THREADS_ENV, RESAMPLING_DEVICE_ENV,
+    gpu_adapter_path, nnunet_inference_launch,
 )
 from src.core.nnunet_dataset import resolve_nnunet_dataset_name
 from src.config import (
@@ -58,6 +59,7 @@ class SegmentationStage(BaseStage):
             "num_processes_preprocessing": 1,  # 限制预处理后台进程数
             "num_processes_segmentation_export": 1,  # 限制导出后台进程数
             "export_resampling_threads": 1,  # 每个导出进程的 CPU 通道并行数
+            "acceleration_scheme": "scheme2",
             "export_resampling_device_by_model": {},  # 未指定模型的重采样使用 CPU
             "inference_timeout_seconds": 1800.0,
             "inference_timeout_seconds_by_model": {},
@@ -100,7 +102,7 @@ class SegmentationStage(BaseStage):
         inference_keys = (
             "disable_tta", "step_size",
             "num_processes_preprocessing", "num_processes_segmentation_export",
-            "export_resampling_threads", "export_resampling_device_by_model",
+            "export_resampling_threads", "export_resampling_device_by_model", "acceleration_scheme",
             "inference_timeout_seconds", "inference_timeout_seconds_by_model",
             "inference_max_retries",
         )
@@ -116,6 +118,7 @@ class SegmentationStage(BaseStage):
         self._num_processes_preprocessing = inference_config.num_processes_preprocessing
         self._num_processes_segmentation_export = inference_config.num_processes_segmentation_export
         self._export_resampling_threads = inference_config.export_resampling_threads
+        self._acceleration_scheme = inference_config.acceleration_scheme
         self._export_resampling_device_by_model = dict(
             inference_config.export_resampling_device_by_model
         )
@@ -614,7 +617,12 @@ class SegmentationStage(BaseStage):
         # Each child receives its own model's setting, including on retries.
         # Never mutate the parent environment: concurrent models may differ.
         resampling_device = self._export_resampling_device_by_model.get(str(dataset_id), "cpu")
+        if (self._acceleration_scheme == "scheme6" and resampling_device == "gpu"
+                and Path(prefix[-1]) != gpu_adapter_path()):
+            raise ValueError("scheme6 需要 nnUNet_predict_command=src/inference/nnunet_gpu_export.py 和 nnUNet_python")
         env[RESAMPLING_DEVICE_ENV] = resampling_device
+        env[ACCELERATION_SCHEME_ENV] = self._acceleration_scheme
+        RunLog(f"[nnUNet] 模型 {dataset_id} 加速方案: {self._acceleration_scheme}；重采样设备: {resampling_device}")
         DebugLog(f"    模型 {dataset_id} 的导出重采样设备配置: {resampling_device}")
         if export_adapter_enabled:
             env[EXPORT_THREADS_ENV] = str(self._export_resampling_threads)

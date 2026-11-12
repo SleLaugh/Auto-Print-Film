@@ -18,6 +18,14 @@ _MODULE = 'nnunetv2.preprocessing.resampling.default_resampling'
 _SUPPORTED_KWARGS = {'is_seg', 'order', 'order_z', 'force_separate_z',
                      'separate_z_anisotropy_threshold'}
 _DEVICE_ENV = 'AUTOPRINTFILM_NNUNET_RESAMPLING_DEVICE'
+_SCHEME_ENV = 'AUTOPRINTFILM_NNUNET_ACCELERATION_SCHEME'
+
+
+def _scheme():
+    value = os.environ.get(_SCHEME_ENV, 'scheme2')
+    if value not in ('scheme2', 'scheme6'):
+        raise ValueError(f'{_SCHEME_ENV} must be scheme2 or scheme6')
+    return value
 
 
 def _device():
@@ -100,6 +108,7 @@ def main():
     # callable. No lambdas/closures are submitted to the multiprocessing pool.
     _enabled()
     _device()
+    scheme = _scheme()
     # Explicit CPU/MPS prediction must not start CUDA in the export workers.
     # Leave parsing/validation of the complete CLI to nnUNet itself.
     device = 'cuda'
@@ -113,6 +122,15 @@ def main():
     os.environ.setdefault(baseline.EXPORT_THREADS_ENV, '4')
     prediction = importlib.import_module('nnunetv2.inference.predict_from_raw_data')
     prediction.export_prediction_from_logits = export_prediction_from_logits
+    active_scheme = 'scheme2'
+    if scheme == 'scheme6' and _device() == 'gpu' and _enabled():
+        from nnunet_s6_adapter import install_scheme6
+        install_scheme6(prediction)
+        active_scheme = 'scheme6'
+    print('[AutoPrintFilm nnUNet] ' + json.dumps({
+        'requested_scheme': scheme, 'active_scheme': active_scheme,
+        'requested_device': _device(), 'gpu_enabled': _enabled(),
+    }), flush=True)
     sys.argv[0] = 'nnUNetv2_predict'
     return prediction.predict_entry_point()
 

@@ -107,6 +107,7 @@ class Pipeline:
             "num_processes_preprocessing": config.nnunet.num_processes_preprocessing,
             "num_processes_segmentation_export": config.nnunet.num_processes_segmentation_export,
             "export_resampling_threads": config.nnunet.export_resampling_threads,
+            "acceleration_scheme": config.nnunet.acceleration_scheme,
             "export_resampling_device_by_model": dict(
                 config.nnunet.export_resampling_device_by_model
             ),

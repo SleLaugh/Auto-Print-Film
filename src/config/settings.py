@@ -32,6 +32,8 @@ class NnUNetConfig:
     """分割导出进程数，对应 -nps；默认单进程以控制主机内存占用。"""
     export_resampling_threads: int = 1
     """每个导出进程的 CPU 通道重采样线程数（1～4）；不控制 GPU 开关。"""
+    acceleration_scheme: str = "scheme2"
+    """scheme2 保留现有导出优化；scheme6 对 GPU 模型启用输入重采样和标签融合。"""
     export_resampling_device_by_model: dict[str, str] = field(default_factory=dict)
     """模型 ID 到导出重采样设备 cpu/gpu 的映射；未列出的模型使用 cpu。"""
     inference_timeout_seconds: float = 1800.0
@@ -69,6 +71,8 @@ class NnUNetConfig:
                 raise ValueError(f"nnunet.{name} 必须是正整数")
         if self.export_resampling_threads > 4:
             raise ValueError("nnunet.export_resampling_threads 必须为 1～4 的正整数")
+        if self.acceleration_scheme not in ("scheme2", "scheme6"):
+            raise ValueError("nnunet.acceleration_scheme 必须为 scheme2 或 scheme6")
         if not isinstance(self.export_resampling_device_by_model, dict):
             raise ValueError("nnunet.export_resampling_device_by_model 必须是模型 ID 到设备的对象")
         for model_id, device in self.export_resampling_device_by_model.items():
@@ -188,6 +192,7 @@ class AppConfig:
                     self.nnunet.num_processes_segmentation_export
                 ),
                 "export_resampling_threads": self.nnunet.export_resampling_threads,
+                "acceleration_scheme": self.nnunet.acceleration_scheme,
                 "export_resampling_device_by_model": dict(
                     self.nnunet.export_resampling_device_by_model
                 ),

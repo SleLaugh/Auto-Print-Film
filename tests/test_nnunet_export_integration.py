@@ -198,6 +198,10 @@ def test_frozen_spec_packages_external_script_without_inference_dependencies():
     kwargs = analysis.call_args.kwargs
     assert kwargs["datas"] == [
         (str(ROOT / "src/inference" / name), "nnunet_adapter")
-        for name in ("nnunet_export.py", "nnunet_gpu_export.py", "nnunet_gpu_resampling.py")
+        for name in (
+            "nnunet_export.py", "nnunet_gpu_export.py", "nnunet_gpu_resampling.py",
+            "nnunet_s6_adapter.py", "nnunet_s6_input.py", "nnunet_s6_preprocess.py",
+            "nnunet_s6_merge.py",
+        )
     ]
     assert {"torch", "nnunetv2"}.issubset(kwargs["excludes"])

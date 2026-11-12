@@ -8,6 +8,7 @@
     "num_processes_preprocessing": 1,
     "num_processes_segmentation_export": 1,
     "export_resampling_threads": 4,
+    "acceleration_scheme": "scheme6",
     "export_resampling_device_by_model": {
         "292": "gpu",
         "315": "gpu",

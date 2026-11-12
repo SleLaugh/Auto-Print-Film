@@ -135,7 +135,7 @@ JSON 后下一次任务启动即可生效，无需重新打包。
 任何区间命中时任务会明确失败，不会自动选择临近模型。例如 `0–1.5` 和 `1.6–4.5`
 不会重叠，但 `1.55` 不属于任何一个区间。
 
-当前配置中的 CT 模型选择如下，括号内为导出重采样的设备配置：
+当前配置中的 CT 模型选择如下，括号内为重采样设备配置：
 
 | 部位 | `0–1.5 mm` | `1.6–4.5 mm` | `4.6–6.0 mm` |
 | --- | --- | --- | --- |
@@ -169,6 +169,7 @@ nnUNet_results/Dataset<ID>_<名称>/
   "nnUNet_results": "/home/peng/03_data/00_nnUnet/model/nnUNet_results",
   "nnUNet_predict_command": "src/inference/nnunet_gpu_export.py",
   "nnUNet_python": "/home/peng/opt/fsl/bin/python",
+  "acceleration_scheme": "scheme6",
   "export_resampling_threads": 4,
   "export_resampling_device_by_model": {
     "292": "gpu",
@@ -187,13 +188,27 @@ nnUNet_results/Dataset<ID>_<名称>/
 `export_resampling_device_by_model` 的键为任意正整数模型 ID 字符串，值只能为 `cpu`
 或 `gpu`，未列出的模型默认 `cpu`，因此当前 `297`、`298` 使用 CPU。将某项改成
 `cpu` 即可让该模型使用 CPU，例如 `"903": "cpu"`。应用按本次选中的模型 ID 精确匹配，
-不依赖训练计划的数据集名称，也不会匹配其他编号的前缀。这个字段仅影响导出重采样，
-不改变神经网络推理设备。上述 GPU 配置不代表已完成各模型的结果与资源占用验证。
+不依赖训练计划的数据集名称，也不会匹配其他编号的前缀。
+`acceleration_scheme` 只能为 `scheme2` 或 `scheme6`：当前 `scheme6` 为 GPU 模型启用
+GPU 输入 cubic 重采样、跳过推理后不用的临时掩膜重采样和类型转换、GPU 标签合并；
+改为 `scheme2` 即恢复项目原有的 GPU 输出重采样方案。两种方案都保留 `gpu` / `cpu`
+映射，且不改变网络预测设备。CPU 模型继续使用 CPU 重采样；真实分割输入或级联模型
+保留原临时掩膜处理。方案 6 的 GPU 模型必须使用上述项目入口，切换到官方
+`nnUNetv2_predict` 时还须将方案改为 `scheme2`。设备配置本身不代表已完成对应模型的病例验证。
 当前肺部模型 `903` 使用全局单次超时 `1800` 秒；保留的 `"315": 180.0` 超时项只对
 模型 `315` 生效，不会随部位切换自动转移到 `903`。
 外部环境变量 `NNUNET_GPU_RESAMPLING=0` 可全局强制 CPU，默认 `1` 允许按模型映射选择。
 `export_resampling_threads` 控制 CPU 路径的通道并行数，范围 `1` 至 `4`，不控制 GPU；
-无需将当前的 `4` 改成 `1`。GPU 使用 float32 插值，最终标签可能出现微小差异。
+无需将当前的 `4` 改成 `1`。输出保留现有 float32 插值与类型转换顺序；方案 6 在 GPU
+直接比较分数、保留最大分数的标签，输入 cubic 则以 float64 工作精度匹配原来的半像素
+坐标和范围裁剪，不改变裁剪、临时掩膜创建和归一化。
+方案 6 还需要外部 nnUNet Python 可导入 CuPy；本机 `/home/peng/opt/fsl/bin/python`
+已安装 CuPy 13.6.0 和 fastrlock 0.8.3。也可用环境变量 `GPU_INPUT_CUPY_PATH` 指定独立
+依赖目录。输入 GPU 失败会明确报错，标签合并不支持的情况会记录回退原因。
+切换方案或设备只影响后续实际推理；已有本地分割缓存仍可能直接复用。需要确认新配置的
+输出时，使用新的缓存和输出目录，并查看该次 `nnunet-*.stdout.log` 中的实际处理记录。
+本机四个模型的配对运行已完成，分割及最终 DICOM 存在差异；验证范围与迁移限制见
+[生产部署说明](../../docs/production.md#scheme6-validation)。
 模型权重、`plans.json` 和已安装 nnUNet 的文件均不修改。现有 `disable_tta=true`、
 `step_size=0.7` 及导出进程数 `1` 保留。更多部署和显存说明见
 [生产部署说明](../../docs/production.md)。

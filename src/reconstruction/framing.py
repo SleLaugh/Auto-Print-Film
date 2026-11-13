@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import SimpleITK as sitk
 
+from src.core.label_index import SparseLabelIndex
 from src.models.request import parse_fill_percent
 from src.reconstruction.body_framing import BodyFramingSupport
 from src.reconstruction.framing_context import FramingContext
@@ -26,6 +27,71 @@ class InterspaceFramingGeometry:
     extension_upper_pixels: tuple[int, int] = (0, 0)
 
 
+def _target_label_ids(coords: dict, plan: dict) -> set[int]:
+    names = plan.get("source_labels") or []
+    # 旧 planner 的这两个名称表示整个目标范围，并非模型标签名。
+    if not names or any(name in {
+        "correction_scope_bbox", "anatomical_geometry.global_frame"
+    } for name in names):
+        names = list(coords)
+    return {
+        int(value)
+        for name in names
+        for value in coords.get(name, {}).get("label_ids", [])
+        if int(value) != 0
+    }
+
+
+class FramingLabelIndex:
+    """同一重建阶段内共享目标索引，所持分割图在此作用域内必须不可变。
+
+    SimpleITK 每次返回的 ndarray view 身份不同，因此绑定原图对象和持有的
+    view，不以另一次 GetArrayViewFromImage 的 ndarray 身份判断是否可复用。
+    不保留各计划的完整点云，也不跨请求或回正前后分割快照使用。
+    """
+
+    def __init__(self, segmentation: sitk.Image, label_ids):
+        self._segmentation = segmentation
+        self._array = sitk.GetArrayViewFromImage(segmentation)
+        self._index = SparseLabelIndex(self._array, label_ids)
+
+    @classmethod
+    def for_plans(
+        cls, segmentation: sitk.Image, coords: dict, plans: list[dict], *,
+        context: FramingContext | None = None,
+        merge_context_into_target: bool = False,
+    ) -> "FramingLabelIndex | None":
+        """仅为需要三维点云的计划收集标签；纯 CPR 请求保持仅掩膜路径。"""
+
+        point_plans = [plan for plan in plans if plan.get("geometry_type") != "curved_stack"]
+        if len(point_plans) < 2:
+            return None
+        ids = set()
+        for plan in point_plans:
+            ids.update(_target_label_ids(coords, plan))
+            if context is not None and selected_region_framing(plan) is None and (
+                merge_context_into_target or (parse_fill_percent(plan.get("fill_percent")) or 0) > 0
+            ):
+                ids.update(int(value) for value in context.label_ids if int(value) != 0)
+        return cls(segmentation, ids) if ids else None
+
+    def indices(self, segmentation: sitk.Image, ids: set[int]) -> np.ndarray | None:
+        """不属于原图或未包含全部标签时回退扫描，不能返回不完整的点集。"""
+
+        if segmentation is not self._segmentation or not self._index.contains_ids(ids):
+            return None
+        return self._index.indices(ids)
+
+
+def _merge_ordered_indices(first: np.ndarray, second: np.ndarray, shape: tuple) -> np.ndarray:
+    """合并不同标签体素，保持 argwhere 的 C-order 行序及列连续内存布局。"""
+
+    flat = np.sort(np.concatenate([
+        np.ravel_multi_index(first.T, shape), np.ravel_multi_index(second.T, shape),
+    ]))
+    return np.asarray(np.unravel_index(flat, shape)).T
+
+
 class TargetFramer:
     """按配置选择整组解剖区域取景，或用完整人体约束肺/髋的共同画布。"""
 
@@ -42,6 +108,7 @@ class TargetFramer:
         body_support: BodyFramingSupport | None = None,
         source_image: sitk.Image | None = None,
         source_support: SourceImageSupport | None = None,
+        label_index: FramingLabelIndex | None = None,
     ):
         self.shared_geometry = shared_geometry
         self.symmetry_plane = symmetry_plane
@@ -57,23 +124,21 @@ class TargetFramer:
                     else SourceImageSupport(source_image)
                 )
         self._source_required_size = None
-        names = plan.get("source_labels") or []
-        # 旧 planner 的这两个名称表示整个目标范围，并非模型标签名。
-        if not names or any(name in {
-            "correction_scope_bbox", "anatomical_geometry.global_frame"
-        } for name in names):
-            names = list(coords)
-        ids = {
-            int(value)
-            for name in names
-            for value in coords.get(name, {}).get("label_ids", [])
-            if int(value) != 0
-        }
+        ids = _target_label_ids(coords, plan)
         if not ids:
             raise ValueError(f"plan={plan.get('plan_id')} 缺少用于居中的目标 label_ids")
         array = sitk.GetArrayViewFromImage(segmentation)
-        selected = np.isin(array, list(ids))
-        if not np.any(selected):
+        curved = plan.get("geometry_type") == "curved_stack"
+
+        def indices_for(selected_ids):
+            cached = label_index.indices(segmentation, selected_ids) if label_index is not None else None
+            return cached if cached is not None else np.argwhere(np.isin(array, list(selected_ids)))
+
+        # MPR 构造内上下文裁剪和物理点云共用同一份目标索引。CPR 继续
+        # 只生成掩膜；即使同请求含 MPR，也不为 CPR 展开整个目标点云。
+        selected = np.isin(array, list(ids)) if curved else None
+        target_indices = None if curved else indices_for(ids)
+        if not (np.any(selected) if curved else len(target_indices)):
             raise ValueError(f"plan={plan.get('plan_id')} 分割图中未找到目标标签 {sorted(ids)}")
         direction = np.asarray(segmentation.GetDirection()).reshape(3, 3)
         self.voxel_axes = direction * np.asarray(segmentation.GetSpacing())
@@ -95,14 +160,17 @@ class TargetFramer:
                 # 相邻标签仅补充显示，不延长切片层组。颅脑的骨性支持也须
                 # 剔除脑底以外的面部/下颌；上端只增加计划明确允许的颅顶余量。
                 # 零 FillPercent 同样受限，不能因保留原像素间距而漏掉颅顶取景。
-                target_indices = np.argwhere(selected)
+                if target_indices is None:
+                    target_indices = np.argwhere(selected)
                 axis_steps = self.voxel_axes.T @ axis
                 # 两组体素共用原点，范围比较可省去相同的原点投影。
                 target_depths = target_indices[:, ::-1] @ axis_steps
                 half_support = float(np.abs(axis_steps).sum() / 2)
                 lower = float(target_depths.min() - half_support)
                 upper = float(target_depths.max() + half_support + upper_extension)
-                extra_indices = np.argwhere(np.isin(array, list(extra_ids)))
+                extra_indices = (
+                    np.argwhere(np.isin(array, list(extra_ids))) if curved else indices_for(extra_ids)
+                )
                 extra_depths = extra_indices[:, ::-1] @ axis_steps
                 keep = (extra_depths + half_support > lower + 1e-7) & (
                     extra_depths - half_support < upper - 1e-7
@@ -110,20 +178,21 @@ class TargetFramer:
                 extra_indices = extra_indices[keep]
                 if len(extra_indices):
                     self.context_label_ids = tuple(sorted(map(int, np.unique(array[tuple(extra_indices.T)]))))
-                    if merge_context_into_target or plan.get("geometry_type") == "curved_stack":
+                    if curved:
                         selected[tuple(extra_indices.T)] = True
+                    elif merge_context_into_target:
+                        target_indices = _merge_ordered_indices(target_indices, extra_indices, array.shape)
                     else:
                         self._context_points = (
                             extra_indices[:, ::-1] @ self.voxel_axes.T + segmentation.GetOrigin()
                         )
         self.mask = None
-        if plan.get("geometry_type") == "curved_stack":
+        if curved:
             # CPR 只使用展开后的掩膜并集，无需展开全体目标体素的三维坐标。
             self.mask = sitk.GetImageFromArray(selected.astype(np.uint8))
             self.mask.CopyInformation(segmentation)
         else:
-            indices = np.argwhere(selected)
-            self.points = indices[:, ::-1] @ self.voxel_axes.T + segmentation.GetOrigin()
+            self.points = target_indices[:, ::-1] @ self.voxel_axes.T + segmentation.GetOrigin()
         self._body_points = None
         self._body_voxel_axes = None
         self._body_region = None
@@ -933,6 +1002,7 @@ def prepare_interspace_framing(
     context: FramingContext | None = None,
     symmetry_planes: dict[str, SymmetryFramingPlane] | None = None,
     prepared_framers: dict[int, TargetFramer] | None = None,
+    label_index: FramingLabelIndex | None = None,
 ) -> InterspaceFramingGeometry:
     """以前面各组画布中位数及全部计划的显示尺寸需求确定共同采样比例。
 
@@ -968,6 +1038,7 @@ def prepare_interspace_framing(
         framer = TargetFramer(
             segmentation, coords, plan, context=context,
             symmetry_plane=(symmetry_planes or {}).get(str(plan.get("plan_id", ""))),
+            **({"label_index": label_index} if label_index is not None else {}),
         )
         prepared = _PreparedInterspaceFramer(plan, framer) if prepared_framers is not None else None
         for planned_slice in plan["slices"]:

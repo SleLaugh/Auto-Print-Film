@@ -47,6 +47,7 @@ from src.reconstruction.spine_localizer import (
     build_spine_localizer_surface,
 )
 from src.reconstruction.framing import (
+    FramingLabelIndex,
     TargetFramer,
     frame_curved_slice,
     curved_group_bounds,
@@ -199,6 +200,11 @@ class ReconstructionStage(BaseStage):
                 axis_xyz=tuple(frame["superior_inferior_axis"][axis] for axis in "xyz"),
             )
             merge_framing_support = True
+        with resource_operation("reconstruction", "prepare_framing_label_index"):
+            framing_label_index = FramingLabelIndex.for_plans(
+                segmentation, loc_result.get("coords", {}), plans,
+                context=framing_context, merge_context_into_target=merge_framing_support,
+            )
         symmetry_planes = {
             str(plan.get("plan_id", "")): plane
             for plan in plans
@@ -232,6 +238,7 @@ class ReconstructionStage(BaseStage):
                         context=framing_context,
                         symmetry_planes=symmetry_planes,
                         prepared_framers=(prepared_framers if not merge_framing_support else None),
+                        **({"label_index": framing_label_index} if framing_label_index is not None else {}),
                     )
                 shared_geometries[key] = geometry
                 DebugLog(
@@ -272,6 +279,7 @@ class ReconstructionStage(BaseStage):
                                 shared_geometry=shared_geometries.get(
                                     self._interspace_framing_key(plan),
                                 ),
+                                **({"label_index": framing_label_index} if framing_label_index is not None else {}),
                             )
                     try:
                         plan_results.append(

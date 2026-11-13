@@ -14,6 +14,7 @@ import numpy as np
 import SimpleITK as sitk
 
 from src.core.base_stage import BaseStage
+from src.core.label_index import SparseLabelIndex
 from src.core.resources import resource_operation
 from src.config import (
     load_slice_part_config,
@@ -561,11 +562,17 @@ class LocalizationOperations(
         seg_array: np.ndarray,
         label_targets: Dict[str, LabelTarget],
     ) -> Dict[str, _LabelVoxelRegion]:
-        """扫描一次各目标 label，保留后续阶段共同需要的稀疏索引。"""
+        """一次提取全部目标体素，再按标签分配保持原始行序的稀疏索引。"""
 
         regions = {}
+        if not label_targets:
+            return regions
+        label_index = SparseLabelIndex(
+            seg_array,
+            {label_id for target in label_targets.values() for label_id in target.label_ids},
+        )
         for label_name, target in label_targets.items():
-            indices = np.argwhere(np.isin(seg_array, target.label_ids))
+            indices = label_index.indices(target.label_ids)
             bbox = None
             if indices.size:
                 z_min, y_min, x_min = indices.min(axis=0)

@@ -249,6 +249,10 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 interspace_regions=interspace_regions,
                 raw_array_loader=load_spine_raw_array,
                 pose_cache=workspace.get("spine_pose_cache"),
+                validate_interspaces=any(
+                    config.slice_type.value == "椎间隙"
+                    for config in context.request.plane_configs
+                ),
             )
         if spine_geometry is not None and localization_result.get("spine_label_sequence") is not None:
             spine_geometry["label_sequence"] = localization_result["spine_label_sequence"]

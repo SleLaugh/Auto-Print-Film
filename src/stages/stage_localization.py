@@ -2421,6 +2421,7 @@ class LocalizationOperations(
         interspace_regions: Iterable[Dict[str, Any]] | None = None,
         raw_array_loader: Callable[[], np.ndarray] | None = None,
         pose_cache: SpineLabelSymmetryCache | None = None,
+        validate_interspaces: bool = False,
     ) -> Dict[str, Any] | None:
         """
         为第五阶段生成脊柱过滤主体、四棱柱和相邻主体间隙几何。
@@ -2876,6 +2877,34 @@ class LocalizationOperations(
         }
         if interspace_recovered_annotations:
             result["interspace_recovered_annotations"] = interspace_recovered_annotations
+        if validate_interspaces and pair_definitions:
+            from .interspace_geometry import validate_spine_interspace_geometry
+
+            # 旧端面恢复已经读取的原图直接复用；新增核验按需加载且只加载一次。
+            def load_validation_raw():
+                nonlocal raw_array
+                if raw_array is None:
+                    if raw_array_loader is None:
+                        return None
+                    loaded = raw_array_loader()
+                    if loaded is None:
+                        return None
+                    if loaded.shape != seg_array.shape:
+                        raise ValueError("椎间隙端板验证的原图与分割形状不一致")
+                    raw_array = loaded
+                return raw_array
+
+            with resource_operation("anatomical_analysis", "validate_interspaces"):
+                validated, validated_pairs, diagnostics = validate_spine_interspace_geometry(
+                    cls, image, seg_array, label_targets, label_regions,
+                    body_indices, filtered_annotation_centroids, pair_definitions,
+                    raw_array_loader=load_validation_raw,
+                )
+            result["interspace_validation"] = diagnostics
+            if validated:
+                result["interspace_validated_annotations"] = validated
+            if validated_pairs:
+                result["interspace_validated_body_pairs"] = validated_pairs
         return result
 
     @staticmethod

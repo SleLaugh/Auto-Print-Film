@@ -158,17 +158,25 @@ def _has_ct_supported_c2_endplate(annotation: Any) -> bool:
 def _interspace_annotation_view(
     localization_result: Dict[str, Any],
     label_names: Sequence[str],
+    group_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """仅让当前椎间使用恢复的 C2，保持全局姿态和其它区间的旧输入。"""
+    """仅让当前椎间使用验证的主体/端板，保持全局姿态的旧输入。"""
 
     geometry = localization_result.get("spine_geometry")
     if not isinstance(geometry, dict):
         return localization_result
-    recovered = geometry.get("interspace_recovered_annotations")
-    if not isinstance(recovered, dict):
-        return localization_result
     annotations = _filtered_spine_annotations(localization_result)
     replacements = {}
+    validated = geometry.get("interspace_validated_annotations")
+    group = validated.get(group_name) if isinstance(validated, dict) else None
+    if isinstance(group, dict) and all(
+        _has_validated_interspace_endplate(group.get(name), group_name)
+        for name in label_names
+    ):
+        replacements.update({name: group[name] for name in label_names})
+    recovered = geometry.get("interspace_recovered_annotations")
+    if not isinstance(recovered, dict):
+        recovered = {}
     for label_name in label_names:
         previous = annotations.get(label_name)
         candidate = recovered.get(label_name)
@@ -200,13 +208,40 @@ def _interspace_annotation_view(
                 and _has_ct_supported_c2_endplate(partner)
             ):
                 replacements.setdefault(label_name, partner)
+    local_pairs = geometry.get("interspace_validated_body_pairs")
+    pairs = geometry.get("interspace_body_pairs")
+    pair_update = {}
+    if isinstance(group, dict) and isinstance(local_pairs, dict) and group_name in local_pairs:
+        pair_update["interspace_body_pairs"] = {
+            **(pairs if isinstance(pairs, dict) else {}), group_name: local_pairs[group_name],
+        }
     return {
         **localization_result,
         "spine_geometry": {
             **geometry,
             "filtered_annotation_centroids": {**annotations, **replacements},
+            **pair_update,
         },
     }
+
+
+def _has_validated_interspace_endplate(annotation: Any, group_name: Optional[str] = None) -> bool:
+    """单独验证的相向端板必须有原标签和 CT 证据，且绑定当前间隙。"""
+
+    if not isinstance(annotation, dict):
+        return False
+    support = annotation.get("sagittal_endplate_support")
+    faces = annotation.get("sagittal_body_endplates")
+    return (
+        isinstance(support, dict)
+        and support.get("method") == "interspace_validated_endplate"
+        and support.get("required_endplate_side") in {"min", "max"}
+        and (group_name is None or support.get("group_name") == group_name)
+        and isinstance(faces, list) and len(faces) == 1
+        and isinstance(faces[0], dict)
+        and faces[0].get("source") == "original_label"
+        and faces[0].get("ct_validation") == "density_drop"
+    )
 
 
 def _parse_voxel_bbox(value: Any) -> Optional[Dict[str, float]]:
@@ -634,6 +669,7 @@ def _facing_convex_polygon_boundary_pair_2d(
     *,
     upper_boundary=None,
     lower_boundary=None,
+    independently_validated_boundaries: bool = False,
 ) -> Optional[tuple[tuple[float, float], tuple[float, float], float]]:
     """在两条相向端边的共同覆盖中段构造代表性边界对。"""
 
@@ -729,7 +765,7 @@ def _facing_convex_polygon_boundary_pair_2d(
         boundary_normal[0] * interval_unit[0]
         + boundary_normal[1] * interval_unit[1]
     )
-    if alignment < 0.5:
+    if alignment < 0.5 and not independently_validated_boundaries:
         boundary_normal = interval_unit
 
     tangent = (-boundary_normal[1], boundary_normal[0])
@@ -936,8 +972,14 @@ def regularize_cervical_interspace_segments(
             corrected_segments.append(segment)
             continue
 
-        segment_result = _interspace_annotation_view(localization_result, segment.source_labels)
+        segment_result = _interspace_annotation_view(
+            localization_result, segment.source_labels, segment.group_name,
+        )
         endpoint_annotations = _filtered_spine_annotations(segment_result)
+        if all(_has_validated_interspace_endplate(endpoint_annotations.get(name), segment.group_name)
+               for name in segment.source_labels):
+            corrected_segments.append(segment)
+            continue
         endpoint_volumes = []
         for label_name in segment.source_labels:
             annotation = endpoint_annotations.get(label_name)
@@ -1265,7 +1307,7 @@ def _supported_sagittal_endplate_edge(
     support = annotation.get("sagittal_endplate_support")
     single_facing_endplate = (
         isinstance(support, dict)
-        and support.get("method") == "c2_interspace_endplates"
+        and support.get("method") in {"c2_interspace_endplates", "interspace_validated_endplate"}
         and support.get("required_endplate_side") in {"min", "max"}
     )
     if not isinstance(faces, list) or len(faces) != (1 if single_facing_endplate else 2):
@@ -1348,6 +1390,11 @@ def _resolve_interspace_prism_geometry(
         }
         for annotation in (upper_annotation, lower_annotation)
     )
+    independently_validated = all(
+        _has_validated_interspace_endplate(annotation)
+        for annotation in (upper_annotation, lower_annotation)
+    )
+    recovered_pair = recovered_pair or independently_validated
     upper_boundary = _supported_sagittal_endplate_edge(
         upper_annotation, default_frame, toward_lower,
     ) if recovered_pair else None
@@ -1359,6 +1406,7 @@ def _resolve_interspace_prism_geometry(
         closest = _facing_convex_polygon_boundary_pair_2d(
             upper_polygon, lower_polygon,
             upper_boundary=upper_boundary, lower_boundary=lower_boundary,
+            independently_validated_boundaries=independently_validated,
         )
     if closest is None:
         closest = _closest_convex_polygon_pair_2d(upper_polygon, lower_polygon)
@@ -1694,7 +1742,7 @@ def resolve_spine_interspace_segments(
 
     for group_name, upper_label, lower_label in intervals:
         localization_result = _interspace_annotation_view(
-            source_result, (upper_label, lower_label),
+            source_result, (upper_label, lower_label), group_name,
         )
         upper_center = get_label_center(localization_result, upper_label)
         lower_center = get_label_center(localization_result, lower_label)

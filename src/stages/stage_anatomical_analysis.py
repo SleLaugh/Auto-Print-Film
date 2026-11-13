@@ -248,6 +248,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 excluded_labels=excluded_spine_labels,
                 interspace_regions=interspace_regions,
                 raw_array_loader=load_spine_raw_array,
+                pose_cache=workspace.get("spine_pose_cache"),
             )
         if spine_geometry is not None and localization_result.get("spine_label_sequence") is not None:
             spine_geometry["label_sequence"] = localization_result["spine_label_sequence"]

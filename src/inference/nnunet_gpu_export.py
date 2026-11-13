@@ -3,12 +3,18 @@
 Reuse the CPU adapter for CPU requests and unsupported plans. Model weights,
 plans and installed nnUNet files are never overwritten.
 """
+import time
+
+try:
+    _ENTRY_STARTED = time.perf_counter()
+except Exception:
+    _ENTRY_STARTED = None
+
 from functools import partial
 import importlib
 import json
 import os
 import sys
-import time
 
 import numpy as np
 import nnunet_export as baseline
@@ -103,7 +109,7 @@ def export_prediction_from_logits(predicted, properties, configuration_manager, 
         ConfigurationProxy(configuration_manager), baseline._PlansProxy(plans_manager),
         dataset_json_dict_or_file, output_file_truncated, save_probabilities, *args, **kwargs)
 
-def main():
+def _main():
     # Spawn workers must be able to import this real module and its top-level
     # callable. No lambdas/closures are submitted to the multiprocessing pool.
     _enabled()
@@ -120,21 +126,44 @@ def main():
     if device in ('cpu', 'mps'):
         os.environ['NNUNET_GPU_RESAMPLING'] = '0'
     os.environ.setdefault(baseline.EXPORT_THREADS_ENV, '4')
-    prediction = importlib.import_module('nnunetv2.inference.predict_from_raw_data')
+    prediction = baseline.timed_phase(
+        'engine_import', importlib.import_module, 'nnunetv2.inference.predict_from_raw_data',
+        scope='import installed nnUNet and its dependencies; excludes preceding adapter imports',
+    )
     prediction.export_prediction_from_logits = export_prediction_from_logits
     active_scheme = 'scheme2'
     if scheme == 'scheme6' and _device() == 'gpu' and _enabled():
         from nnunet_s6_adapter import install_scheme6
         install_scheme6(prediction)
         active_scheme = 'scheme6'
+    baseline.install_prediction_timing(prediction)
     print('[AutoPrintFilm nnUNet] ' + json.dumps({
         'requested_scheme': scheme, 'active_scheme': active_scheme,
         'requested_device': _device(), 'gpu_enabled': _enabled(),
     }), flush=True)
     sys.argv[0] = 'nnUNetv2_predict'
-    return prediction.predict_entry_point()
+    return baseline.timed_phase(
+        'cli_total', prediction.predict_entry_point,
+        scope='official CLI including model initialization and prediction; inclusive',
+    )
+
+
+def main(entry_started=None):
+    started = _ENTRY_STARTED if entry_started is None else entry_started
+    baseline.phase_timing('entry_imports', started,
+                          scope='script entry to main; includes adapter/NumPy/Torch imports, excludes interpreter/site startup')
+    status = 'failed'
+    try:
+        result = _main()
+        status = 'completed'
+        return result
+    finally:
+        baseline.phase_timing(
+            'entry_script_total', started, status=status,
+            scope='script entry until CLI returns; excludes interpreter startup and exit teardown',
+        )
 
 
 if __name__ == '__main__':
     # Spawn workers import a stable module instead of pickling __main__.
-    sys.exit(importlib.import_module('nnunet_gpu_export').main())
+    sys.exit(importlib.import_module('nnunet_gpu_export').main(entry_started=_ENTRY_STARTED))

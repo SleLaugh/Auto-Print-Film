@@ -6,6 +6,7 @@ from typing import Any, Dict
 import SimpleITK as sitk
 import numpy as np
 
+from src.anatomy.spine_pose import SpineLabelSymmetryCache
 from src.core.context import ProcessingContext
 from src.core.resources import resource_operation
 from src.models import SpatialCorrectionStageResult
@@ -206,6 +207,8 @@ class SpatialCorrectionStage(LocalizationOperations):
             target_mask = self._build_target_mask(seg_array, label_targets)
             correction_scope_bbox = self._build_target_bbox(target_mask)
 
+        # 语义修复已完成；只缓存此时的分割快照，空间校正后必须丢弃。
+        pose_cache = SpineLabelSymmetryCache(seg_array)
         with resource_operation("spatial_correction", "estimate_xy_candidate") as details:
             candidate = self._build_xy_correction_candidate(
                 seg_array,
@@ -213,6 +216,7 @@ class SpatialCorrectionStage(LocalizationOperations):
                 slice_part=request.slice_part.value,
                 label_regions=label_regions,
                 image=image,
+                pose_cache=pose_cache,
             )
             details.update(
                 angle_degrees=candidate["angle_degrees"],
@@ -239,6 +243,7 @@ class SpatialCorrectionStage(LocalizationOperations):
         )
 
         if correction_result["correction_applied"]:
+            pose_cache = None
             with resource_operation(
                 "spatial_correction", "read_corrected_segmentation",
                 path=str(correction_result["seg_for_reconstruction_path"]),
@@ -294,6 +299,7 @@ class SpatialCorrectionStage(LocalizationOperations):
             "slice_rules": slice_rules,
             "candidate": candidate,
             "spine_label_sequence": sequence_diagnostic,
+            "spine_pose_cache": pose_cache,
         }
 
         payload = {

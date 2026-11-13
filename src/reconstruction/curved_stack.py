@@ -16,6 +16,9 @@ class CurvedStackResampler:
     _PARALLEL_OFFSET_SUPPORT_MM = 80.0
     _MAX_DIRECTION_CHANGE_RATIO = 0.9
     _DIRECTION_SMOOTHING_SEARCH_STEPS = 24
+    # 每个临时坐标/插值数组限制在约 64K 个点；长 CPR 不再为每个子曲面
+    # 分配整幅图的坐标、八邻域和权重。只分行，不改变每个像素的求和顺序。
+    _SAMPLING_BLOCK_POINTS = 65536
 
     def __init__(self) -> None:
         """初始化单计划几何缓存；一个重采样器只服务一个切片计划。"""
@@ -23,6 +26,13 @@ class CurvedStackResampler:
         self._prepared_geometry_key: tuple[Any, ...] | None = None
         self._prepared_offset_curves: Dict[float, np.ndarray] = {}
         self._prepared_normals: Dict[float, np.ndarray] = {}
+        self._prepared_field_key: tuple[Any, ...] | None = None
+        self._prepared_curve_samples: np.ndarray | None = None
+        self._prepared_direction_field: np.ndarray | None = None
+        self._prepared_surface_frames: dict[
+            float,
+            tuple[np.ndarray, np.ndarray, tuple[np.ndarray, np.ndarray, np.ndarray]],
+        ] = {}
 
     def sample_slice(
         self,
@@ -67,7 +77,8 @@ class CurvedStackResampler:
             support_mm=maximum_offset_mm,
         )
         offset_curve = offset_curves[offset_mm]
-        tangents, in_plane_directions, slab_directions = self._surface_frame(
+        tangents, in_plane_directions, slab_directions = self._prepared_surface_frame(
+            offset_mm,
             offset_curve,
             preferred_normals[offset_mm],
         )
@@ -181,6 +192,13 @@ class CurvedStackResampler:
                 list(offsets),
                 support_mm=effective_support_mm,
             )
+            self._prepared_field_key = (
+                curve_key, int(rows), tuple(float(value) for value in offset_axis),
+                max(self._PARALLEL_OFFSET_SUPPORT_MM, effective_support_mm),
+            )
+            self._prepared_curve_samples = curve_samples
+            self._prepared_direction_field = self._prepared_normals[offsets[0]]
+            self._prepared_surface_frames = {}
             self._prepared_geometry_key = cache_key
             DebugLog(
                 "    [CPR几何准备] "
@@ -190,6 +208,66 @@ class CurvedStackResampler:
                 f"耗时={time.perf_counter() - prepare_start:.3f}s"
             )
         return self._prepared_offset_curves, self._prepared_normals
+
+    def offset_curves_for_plan(
+        self,
+        plan: Dict[str, Any],
+        *,
+        rows: int,
+        offset_axis: np.ndarray,
+        offsets_mm: list[float],
+        support_mm: float,
+    ) -> Dict[float, np.ndarray]:
+        """为定位图复用相同采样曲线和方向场；不改变 HU/mask 的当前缓存。
+
+        调用方传入已归一化的 offset_axis。定位图可补零或舍入 offset，但必须
+        保持实际曲线、行数、轴和方向场支持范围完全相同才能复用。
+        """
+
+        sampling_curve = self._sampling_curve(plan)
+        offsets = [float(value) for value in offsets_mm]
+        if not all(math.isfinite(value) for value in offsets):
+            raise ValueError("offset_mm 必须是有限数值")
+        support = float(support_mm)
+        if not math.isfinite(support) or support < 0.0:
+            raise ValueError("support_mm 必须是非负有限数值")
+        field_key = (
+            tuple(tuple(float(value) for value in point) for point in sampling_curve),
+            int(rows), tuple(float(value) for value in offset_axis),
+            max(self._PARALLEL_OFFSET_SUPPORT_MM, support,
+                max((abs(value) for value in offsets), default=0.0)),
+        )
+        if getattr(self, "_prepared_field_key", None) == field_key:
+            # 保留原 base + direction * offset 的运算，不从已偏移曲线反推 base。
+            return {
+                offset: self._prepared_curve_samples + self._prepared_direction_field * offset
+                for offset in offsets
+            }
+        curves, _ = self._offset_curve_geometry(
+            self._resample_curve(sampling_curve, rows),
+            offset_axis, offsets, support_mm=support,
+        )
+        return curves
+
+    def _prepared_surface_frame(
+        self,
+        offset_mm: float,
+        offset_curve: np.ndarray,
+        preferred_normals: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """同一 offset 的 mask/HU 共用未按显示方向翻转的逐行坐标系。"""
+
+        frames = getattr(self, "_prepared_surface_frames", None)
+        if frames is None:
+            frames = self._prepared_surface_frames = {}
+        cached = frames.get(offset_mm)
+        # 身份检查也支持覆盖 _prepared_plan_geometry 的兼容调用：它们可能
+        # 每次返回新的曲线，而没有设置主几何缓存键，不能只按 offset 命中。
+        if cached is None or cached[0] is not offset_curve or cached[1] is not preferred_normals:
+            frame = self._surface_frame(offset_curve, preferred_normals)
+            frames[offset_mm] = (offset_curve, preferred_normals, frame)
+            return frame
+        return cached[2]
 
     @classmethod
     def _sampling_curve(cls, plan: Dict[str, Any]) -> np.ndarray:
@@ -291,6 +369,21 @@ class CurvedStackResampler:
         """
 
         tangents = cls._curve_tangents(samples)
+        offset_directions = cls._transport_offset_directions(tangents, preferred_offset_axis)
+        _, in_plane_directions, _ = cls._surface_frame(
+            samples,
+            offset_directions,
+        )
+        return tangents, in_plane_directions, offset_directions
+
+    @classmethod
+    def _transport_offset_directions(
+        cls,
+        tangents: np.ndarray,
+        preferred_offset_axis: np.ndarray,
+    ) -> np.ndarray:
+        """按原逐行顺序输运法向，不计算方向场搜索用不到的横向坐标系。"""
+
         preferred = cls._normalize(np.asarray(preferred_offset_axis, dtype=float))
         offset_directions = np.empty_like(tangents)
         previous: np.ndarray | None = None
@@ -315,12 +408,7 @@ class CurvedStackResampler:
             offset_directions[index] = candidate
             previous = candidate
 
-        _, in_plane_directions, _ = cls._surface_frame(
-            samples,
-            offset_directions,
-        )
-
-        return tangents, in_plane_directions, offset_directions
+        return offset_directions
 
     @classmethod
     def _offset_curve_samples(
@@ -399,8 +487,8 @@ class CurvedStackResampler:
     ) -> np.ndarray:
         """求能在给定范围内保持曲线前进方向的共享单位偏移场。"""
 
-        _, _, base_directions = cls._curve_frame(
-            samples,
+        base_directions = cls._transport_offset_directions(
+            cls._curve_tangents(samples),
             preferred_offset_axis,
         )
         if len(samples) < 3:
@@ -417,15 +505,14 @@ class CurvedStackResampler:
         def smoothed_directions(
             sigma_mm: float,
         ) -> tuple[np.ndarray, float]:
-            guide_curve = (
-                samples
-                if sigma_mm <= 1e-8
-                else cls._smooth_curve_coordinates(samples, sigma_mm)
-            )
-            _, _, directions = cls._curve_frame(
-                guide_curve,
-                preferred_offset_axis,
-            )
+            if sigma_mm <= 1e-8:
+                directions = base_directions
+            else:
+                guide_curve = cls._smooth_curve_coordinates(samples, sigma_mm)
+                directions = cls._transport_offset_directions(
+                    cls._curve_tangents(guide_curve),
+                    preferred_offset_axis,
+                )
             direction_steps = np.linalg.norm(
                 np.diff(directions, axis=0),
                 axis=1,
@@ -593,32 +680,36 @@ class CurvedStackResampler:
         rows = len(curve_samples)
         columns = len(in_plane_offsets)
         accumulated = np.zeros((rows, columns), dtype=np.float32)
-        surface_points = (
-            curve_samples[:, np.newaxis, :]
-            + in_plane_directions[:, np.newaxis, :]
-            * in_plane_offsets[np.newaxis, :, np.newaxis]
-        )
         if is_mask:
             direction = np.asarray(image.GetDirection()).reshape(3, 3)
             inverse_direction = np.linalg.inv(direction).T
             origin = np.asarray(image.GetOrigin())
             spacing = np.asarray(image.GetSpacing())
             size = np.asarray(image.GetSize())
-        for slab_offset in slab_offsets:
-            points = (
-                surface_points
-                + offset_directions[:, np.newaxis, :] * slab_offset
+        block_rows = max(1, self._SAMPLING_BLOCK_POINTS // max(columns, 1))
+        for start in range(0, rows, block_rows):
+            stop = min(start + block_rows, rows)
+            surface_points = (
+                curve_samples[start:stop, np.newaxis, :]
+                + in_plane_directions[start:stop, np.newaxis, :]
+                * in_plane_offsets[np.newaxis, :, np.newaxis]
             )
-            if is_mask:
-                # 二值标签用最近邻采样；厚层取并集，避免把标签当 HU 平均。
-                continuous = ((points - origin) @ inverse_direction) / spacing
-                indices = np.floor(continuous + 0.5).astype(np.intp)
-                valid = np.all((indices >= 0) & (indices < size), axis=-1)
-                indices = np.clip(indices, 0, size - 1)
-                values = source[indices[..., 2], indices[..., 1], indices[..., 0]]
-                np.maximum(accumulated, np.where(valid, values, 0), out=accumulated)
-            else:
-                accumulated += self._sample_linear_grid(image, source, points)
+            block_accumulated = accumulated[start:stop]
+            for slab_offset in slab_offsets:
+                points = (
+                    surface_points
+                    + offset_directions[start:stop, np.newaxis, :] * slab_offset
+                )
+                if is_mask:
+                    # 二值标签用最近邻采样；厚层取并集，避免把标签当 HU 平均。
+                    continuous = ((points - origin) @ inverse_direction) / spacing
+                    indices = np.floor(continuous + 0.5).astype(np.intp)
+                    valid = np.all((indices >= 0) & (indices < size), axis=-1)
+                    indices = np.clip(indices, 0, size - 1)
+                    values = source[indices[..., 2], indices[..., 1], indices[..., 0]]
+                    np.maximum(block_accumulated, np.where(valid, values, 0), out=block_accumulated)
+                else:
+                    block_accumulated += self._sample_linear_grid(image, source, points)
         if is_mask:
             return accumulated
         return accumulated / float(len(slab_offsets))

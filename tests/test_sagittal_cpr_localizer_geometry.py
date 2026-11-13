@@ -188,3 +188,62 @@ def test_projection_requires_finite_slice_center_reference(reference):
 def test_valid_projection_plan_passes_validation():
     _, plan, _, _, _ = _case(oblique=True)
     ReconstructionStage._validate_plan(plan)
+
+
+@pytest.mark.parametrize("oblique", (False, True))
+def test_localizer_reuses_sampling_geometry_with_rounded_offsets_and_added_zero(oblique, monkeypatch):
+    """显示用 offset 舍入/补零不能重算方向场，也不能改变定位图。"""
+
+    image, plan, _, _, _ = _case(oblique=oblique, thickness=4.0)
+    plan["slices"] = [plan["slices"][0], plan["slices"][-1]]
+    plan["offsets_mm"] = [-8.123456789, 8.987654321]
+    for layer, offset in zip(plan["slices"], plan["offsets_mm"]):
+        layer["offset_mm"] = offset
+    expected = ReconstructionStage._build_plan_localizer_render(image, plan)
+    sampler = CurvedStackResampler()
+    sampler.sample_slice(image, plan, plan["slices"][0])
+
+    def unexpected_direction_rebuild(*args, **kwargs):
+        raise AssertionError("定位图不应重新计算相同的方向场")
+
+    monkeypatch.setattr(sampler, "_parallel_offset_directions", unexpected_direction_rebuild)
+    actual = ReconstructionStage._build_plan_localizer_render(
+        image, plan, curved_resampler=sampler,
+    )
+    np.testing.assert_array_equal(actual.line_alpha, expected.line_alpha)
+    np.testing.assert_array_equal(
+        sitk.GetArrayFromImage(actual.background_image),
+        sitk.GetArrayFromImage(expected.background_image),
+    )
+    assert actual.background_image.GetOrigin() == expected.background_image.GetOrigin()
+    assert actual.background_image.GetDirection() == expected.background_image.GetDirection()
+    assert actual.background_image.GetSpacing() == expected.background_image.GetSpacing()
+
+
+@pytest.mark.parametrize("change", ("curve", "rows", "support", "axis"))
+def test_localizer_geometry_reuse_rejects_changed_plan(change):
+    image, plan, _, _, _ = _case(oblique=True, thickness=4.0)
+    sampler = CurvedStackResampler()
+    sampler.sample_slice(image, plan, plan["slices"][0])
+    changed = copy.deepcopy(plan)
+    if change == "curve":
+        changed["curve_points"][1]["x"] += 0.5
+    elif change == "rows":
+        changed["extent_mm"]["height"] += 2.0 * changed["output_spacing_mm"]["y"]
+    elif change == "support":
+        changed["offsets_mm"] = [-95.0, 95.0]
+    else:
+        changed["offset_axis"]["z"] += 0.1
+    expected = ReconstructionStage._curved_localizer_projected_curves(
+        plan=changed, fixed_axis=1,
+    )
+    actual = ReconstructionStage._curved_localizer_projected_curves(
+        plan=changed, fixed_axis=1, curved_resampler=sampler,
+    )
+    assert actual == expected
+    # 显示几何回退不能污染仍可复用的正式切片几何。
+    original = ReconstructionStage._curved_localizer_projected_curves(plan=plan, fixed_axis=1)
+    reused = ReconstructionStage._curved_localizer_projected_curves(
+        plan=plan, fixed_axis=1, curved_resampler=sampler,
+    )
+    assert reused == original

@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 
 import pydicom
 import pytest
@@ -170,7 +171,8 @@ def test_model_change_during_inference_does_not_publish_cache(lung_reuse_case, m
     assert response.success, response.errors
     assert len(inference_calls) == 1
     assert not _ready_markers(parent, "A")
-    assert not (parent / "A" / "cache" / "315" / "segmentation" / "series_reuse.json").exists()
+    segmentation_dir = Path(response.context.get_result("segmentation")["seg_path"]).parent
+    assert not (segmentation_dir / "series_reuse.json").exists()
 
 
 def test_model_change_during_reporting_does_not_publish_ready(lung_reuse_case, monkeypatch):
@@ -204,7 +206,8 @@ def test_session_initialization_failure_never_pairs_old_seg_with_rebuilt_raw(lun
     assert first.success, first.errors
     proof = parent / "A" / "cache" / "metadata" / "source_provenance.json"
     old_proof = proof.read_bytes()
-    marker = parent / "A" / "cache" / "315" / "segmentation" / "series_reuse.json"
+    segmentation_dir = Path(first.context.get_result("segmentation")["seg_path"]).parent
+    marker = segmentation_dir / "series_reuse.json"
     assert marker.is_file()
     source = parent / "A" / "dicom" / "0020.dcm"
     image = pydicom.dcmread(source)

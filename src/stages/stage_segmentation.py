@@ -654,6 +654,7 @@ class SegmentationStage(BaseStage):
                     pass_fds=cache_pass_fds,
                 )
                 capacity_result["outcome"] = "succeeded" if result.returncode == 0 else "failed"
+            self._log_inference_timings(dataset_id, attempt, getattr(result, "timings", None))
             
             # 检查执行结果
             if result.returncode != 0:
@@ -685,6 +686,7 @@ class SegmentationStage(BaseStage):
             self._normalize_output_file(expected_output, output_path)
             
         except InferenceProcessAborted as error:
+            self._log_inference_timings(dataset_id, attempt, error.timings)
             reasons = {
                 "timeout": ("inference_timeout", f"超过单次推理时限 {timeout_seconds:g}s"),
                 "native_worker_crash": ("native_worker_crash", "推理进程发生原生崩溃"),
@@ -717,6 +719,21 @@ class SegmentationStage(BaseStage):
         except Exception as e:
             ErrorLog("    ❌ nnUNet推理过程中发生错误", e)
             raise
+
+    @staticmethod
+    def _log_inference_timings(dataset_id, attempt, timings):
+        if not isinstance(timings, dict) or not timings:
+            return
+        try:
+            RunLog("[nnUNet 进程计时] " + json.dumps({
+                "model_id": str(dataset_id), "attempt": attempt,
+                "measurement": "host_wall; process_monitor_total includes other intervals",
+                "scope": "wait includes child startup/execution/exit and polling delay; overlaps child timings; do not sum",
+                "timings": timings,
+            }, ensure_ascii=False))
+        except Exception:
+            # Optional measurements must not change inference success/failure.
+            pass
 
     @staticmethod
     def _describe_inference_failure(

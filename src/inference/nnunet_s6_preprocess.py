@@ -5,6 +5,7 @@ import json
 import time
 
 import numpy as np
+from nnunet_export import phase_timing
 from nnunetv2.preprocessing.cropping.cropping import crop_to_nonzero
 from nnunetv2.preprocessing.preprocessors.default_preprocessor import DefaultPreprocessor
 from nnunetv2.preprocessing.resampling.default_resampling import compute_new_shape
@@ -70,6 +71,9 @@ class SkipUnusedMaskPreprocessor(DefaultPreprocessor):
             raise
         finally:
             info['seconds'] = time.perf_counter() - started
+            phase_timing('preprocessing_compute', started,
+                         status='completed' if info['state'] == 'completed' else 'failed',
+                         scope='worker run_case_npy; includes GPU input resampling, excludes image-file read and worker startup')
             print('[S6 preprocessor] ' + json.dumps(info), flush=True)
 
 

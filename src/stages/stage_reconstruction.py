@@ -221,6 +221,7 @@ class ReconstructionStage(BaseStage):
                 if key is not None:
                     interspace_groups.setdefault(key, []).append(plan)
             shared_geometries = {}
+            prepared_framers = {}
             for key, group in interspace_groups.items():
                 with resource_operation(
                     "reconstruction", "prepare_interspace_framing",
@@ -230,6 +231,7 @@ class ReconstructionStage(BaseStage):
                         segmentation, loc_result.get("coords", {}), group,
                         context=framing_context,
                         symmetry_planes=symmetry_planes,
+                        prepared_framers=(prepared_framers if not merge_framing_support else None),
                     )
                 shared_geometries[key] = geometry
                 DebugLog(
@@ -246,27 +248,31 @@ class ReconstructionStage(BaseStage):
                     with resource_operation(
                         "reconstruction", "prepare_target_framing", plan_id=plan["plan_id"],
                     ):
-                        target_framer = TargetFramer(
-                            segmentation,
-                            loc_result.get("coords", {}),
-                            plan,
-                            source_image=image,
-                            source_support=(
-                                body_source_support if uses_target_centered_canvas(plan) else None
-                            ),
-                            context=(
-                                FramingContext(
-                                    label_ids=framing_context.label_ids,
-                                    axis_xyz=framing_context.axis_xyz,
-                                    upper_extension_mm=plan.get("framing_superior_extension_mm", 0.0),
-                                ) if merge_framing_support else framing_context
-                            ),
-                            merge_context_into_target=merge_framing_support,
-                            symmetry_plane=symmetry_planes.get(str(plan.get("plan_id", ""))),
-                            shared_geometry=shared_geometries.get(
-                                self._interspace_framing_key(plan),
-                            ),
-                        )
+                        # 间隙共同倍率准备阶段已提取逐层边界；摘要不持有
+                        # 分割 mask/点云，执行时不再扫描同一对完整标签。
+                        target_framer = prepared_framers.pop(id(plan), None)
+                        if target_framer is None:
+                            target_framer = TargetFramer(
+                                segmentation,
+                                loc_result.get("coords", {}),
+                                plan,
+                                source_image=image,
+                                source_support=(
+                                    body_source_support if uses_target_centered_canvas(plan) else None
+                                ),
+                                context=(
+                                    FramingContext(
+                                        label_ids=framing_context.label_ids,
+                                        axis_xyz=framing_context.axis_xyz,
+                                        upper_extension_mm=plan.get("framing_superior_extension_mm", 0.0),
+                                    ) if merge_framing_support else framing_context
+                                ),
+                                merge_context_into_target=merge_framing_support,
+                                symmetry_plane=symmetry_planes.get(str(plan.get("plan_id", ""))),
+                                shared_geometry=shared_geometries.get(
+                                    self._interspace_framing_key(plan),
+                                ),
+                            )
                     try:
                         plan_results.append(
                             self._execute_plan(
@@ -477,6 +483,12 @@ class ReconstructionStage(BaseStage):
                     image, plan,
                     localization_result=localization_result,
                     anatomical_analysis=anatomical_analysis,
+                    curved_resampler=(
+                        resampler
+                        if plan.get("geometry_type") == "curved_stack"
+                        and callable(getattr(resampler, "offset_curves_for_plan", None))
+                        else None
+                    ),
                 )
                 details["has_localizer"] = localizer_render is not None
             DebugLog(
@@ -746,6 +758,7 @@ class ReconstructionStage(BaseStage):
         *,
         localization_result: Dict[str, Any] | None = None,
         anatomical_analysis: Dict[str, Any] | None = None,
+        curved_resampler: CurvedStackResampler | None = None,
     ) -> _LocalizerRender | None:
         """生成定位图背景与亚像素线掩膜，不参与正式切片重建。"""
 
@@ -755,6 +768,7 @@ class ReconstructionStage(BaseStage):
         if plan.get("geometry_type") == "curved_stack":
             return cls._build_curved_plan_localizer_render(
                 image, plan, localizer_surface=surface,
+                curved_resampler=curved_resampler,
             )
         return cls._build_plane_plan_localizer_render(
             image, plan, localizer_surface=surface,
@@ -940,6 +954,7 @@ class ReconstructionStage(BaseStage):
         plan: Dict[str, Any],
         *,
         localizer_surface: SpineLocalizerSurface | None = None,
+        curved_resampler: CurvedStackResampler | None = None,
     ) -> _LocalizerRender | None:
         """投影实际 CPR 中心曲线，并生成亚像素覆盖掩膜。"""
 
@@ -978,6 +993,7 @@ class ReconstructionStage(BaseStage):
         projected_curves = cls._curved_localizer_projected_curves(
             plan=plan,
             fixed_axis=fixed_axis,
+            curved_resampler=curved_resampler,
         )
         coordinate_transform_start = time.perf_counter()
         for projected_points in projected_curves.values():
@@ -1304,6 +1320,7 @@ class ReconstructionStage(BaseStage):
         *,
         plan: Dict[str, Any],
         fixed_axis: int,
+        curved_resampler: CurvedStackResampler | None = None,
     ) -> Dict[float, List[tuple[float, float, float]]]:
         """按实际 CPR 采样曲线和 offset 生成定位曲线。"""
 
@@ -1314,19 +1331,29 @@ class ReconstructionStage(BaseStage):
         curve = CurvedStackResampler._sampling_curve(plan)
         offsets = cls._curved_localizer_offsets(plan)
         rows = cls._curved_localizer_sample_count(plan, len(curve))
-        curve = CurvedStackResampler._resample_curve(curve, rows)
         offset_axis = cls._point_array(plan.get("offset_axis") or {})
         offset_length = float(np.linalg.norm(offset_axis))
         if not np.isfinite(offset_length) or offset_length <= 1e-8:
             return {}
         offset_axis /= offset_length
         try:
-            offset_curves = CurvedStackResampler._offset_curve_samples(
-                curve,
-                offset_axis,
-                offsets,
-                support_mm=CurvedStackResampler._maximum_offset_extent_mm(plan),
-            )
+            # 复用当前计划的小型逐行几何；补零或舍入 offset 仍按原公式生成，
+            # 曲线、行数、方向或有效支持范围不一致时由重采样器重新计算。
+            if curved_resampler is not None:
+                offset_curves = curved_resampler.offset_curves_for_plan(
+                    plan,
+                    rows=rows,
+                    offset_axis=offset_axis,
+                    offsets_mm=offsets,
+                    support_mm=CurvedStackResampler._maximum_offset_extent_mm(plan),
+                )
+            else:
+                offset_curves = CurvedStackResampler._offset_curve_samples(
+                    CurvedStackResampler._resample_curve(curve, rows),
+                    offset_axis,
+                    offsets,
+                    support_mm=CurvedStackResampler._maximum_offset_extent_mm(plan),
+                )
         except ValueError:
             return {}
 

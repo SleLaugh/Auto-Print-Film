@@ -24,6 +24,23 @@ _FATAL_PYTHON_ERROR = re.compile(
 )
 
 
+def _timing_clock():
+    try:
+        return time.perf_counter()
+    except Exception:
+        return None
+
+
+def _record_timing(timings, name, started):
+    ended = _timing_clock()
+    if started is not None and ended is not None:
+        timings[name] = {
+            "seconds": round(ended - started, 6),
+            "start_monotonic": started, "end_monotonic": ended,
+        }
+    return ended
+
+
 class InferenceProcessAborted(RuntimeError):
     """An inference attempt was stopped; retry only after verified cleanup."""
 
@@ -35,12 +52,14 @@ class InferenceProcessAborted(RuntimeError):
         stdout: str,
         stderr: str,
         cleanup_succeeded: bool,
+        timings: dict | None = None,
     ) -> None:
         self.reason = reason
         self.timeout_seconds = timeout_seconds
         self.stdout = stdout
         self.stderr = stderr
         self.cleanup_succeeded = cleanup_succeeded
+        self.timings = timings or {}
         message = {
             "timeout": f"nnUNet inference exceeded {timeout_seconds:g} seconds",
             "native_worker_crash": "nnUNet Python worker reported a fatal native error",
@@ -225,6 +244,8 @@ def run_inference_process(
     stderr = _LogFollower(stderr_path, detect_fatal=True)
     process = None
     cleanup_performed = False
+    timings = {}
+    process_started = None
     try:
         with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
             process_options = (
@@ -232,6 +253,7 @@ def run_inference_process(
                 if _PLATFORM == "posix"
                 else {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)}
             )
+            process_started = _timing_clock()
             process = subprocess.Popen(
                 command,
                 env=env,
@@ -239,6 +261,7 @@ def run_inference_process(
                 stderr=stderr_file,
                 **process_options,
             )
+            spawn_finished = _record_timing(timings, "popen", process_started)
             deadline = time.monotonic() + timeout_seconds
             reason = None
             while True:
@@ -257,13 +280,16 @@ def run_inference_process(
                 stderr.tail()
                 if stderr.fatal_detected:
                     reason = "native_worker_crash"
+            wait_finished = _record_timing(timings, "wait_until_exit_or_abort", spawn_finished)
             # Also stop descendants after a successful main-process exit. They
             # may still own the GPU, log descriptors or an inherited cache lock.
             cleanup_succeeded = (
                 _cleanup(process) if _PLATFORM == "posix" or reason is not None else False
             )
+            _record_timing(timings, "process_group_cleanup", wait_finished)
             cleanup_performed = True
             stdout_tail, stderr_tail = stdout.tail(), stderr.tail()
+            _record_timing(timings, "process_monitor_total", process_started)
             if reason is None and stderr.fatal_detected:
                 reason = "native_worker_crash"
             if reason is not None or (_PLATFORM == "posix" and not cleanup_succeeded):
@@ -273,17 +299,25 @@ def run_inference_process(
                     stdout=stdout_tail,
                     stderr=stderr_tail,
                     cleanup_succeeded=cleanup_succeeded,
+                    timings=timings,
                 )
             result = subprocess.CompletedProcess(command, process.returncode, stdout_tail, stderr_tail)
             result.cleanup_succeeded = cleanup_succeeded
+            result.timings = timings
             return result
     except BaseException as error:
-        if process is not None and not cleanup_performed and not _cleanup(process):
-            raise InferenceProcessAborted(
-                "cleanup_failed",
-                timeout_seconds=timeout_seconds,
-                stdout=stdout.tail(),
-                stderr=stderr.tail(),
-                cleanup_succeeded=False,
-            ) from error
+        if process is not None and not cleanup_performed:
+            cleanup_started = _timing_clock()
+            cleanup_succeeded = _cleanup(process)
+            _record_timing(timings, "process_group_cleanup", cleanup_started)
+            _record_timing(timings, "process_monitor_total", process_started)
+            if not cleanup_succeeded:
+                raise InferenceProcessAborted(
+                    "cleanup_failed",
+                    timeout_seconds=timeout_seconds,
+                    stdout=stdout.tail(),
+                    stderr=stderr.tail(),
+                    cleanup_succeeded=False,
+                    timings=timings,
+                ) from error
         raise

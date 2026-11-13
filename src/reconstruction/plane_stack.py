@@ -157,7 +157,7 @@ class PlaneStackResampler:
         missing_plane = np.zeros((rows, columns), dtype=bool)
         total_overlap = 0.0
 
-        for index in range(image.GetSize()[axis]):
+        for index in self._axis_slab_indices(image, center, normal, thickness, axis_info):
             voxel_index = [0, 0, 0]
             voxel_index[axis] = index
             source_center = image.TransformIndexToPhysicalPoint(voxel_index)
@@ -207,6 +207,49 @@ class PlaneStackResampler:
         np.divide(valid_sum, supported_thickness, out=averaged, where=partial)
         return averaged
 
+    @staticmethod
+    def _axis_slab_indices(
+        image: sitk.Image,
+        center: Tuple[float, float, float],
+        normal: Tuple[float, float, float],
+        thickness: float,
+        axis_info: Tuple[int, float],
+    ) -> range:
+        """仅排除不可能重叠的源层，最终重叠仍按原物理点逐层计算。
+
+        近轴法向的投影步长不是 spacing；反向轴也须保留原索引递增
+        顺序。物理原点很大时，ITK 坐标转换及相减会放大舍入误差，
+        所以用坐标量级扩张区间，再额外保留两端邻层。无法可靠界定
+        时回退全轴，而不改变有效支持或端点的舍入行为。
+        """
+
+        axis, dot = axis_info
+        size = image.GetSize()[axis]
+        spacing = float(image.GetSpacing()[axis])
+        origin = image.GetOrigin()
+        direction = image.GetDirection()
+        step = spacing * dot
+        offset = sum((origin[i] - center[i]) * normal[i] for i in range(3))
+        radius = thickness / 2.0 + spacing / 2.0
+        # 覆盖物理点的乘加、中心相减和法向投影，包括大数相消。
+        coordinate_scale = sum(
+            (abs(origin[i]) + abs(center[i])
+             + abs(direction[3 * i + axis]) * spacing * max(0, size - 1))
+            * abs(normal[i])
+            for i in range(3)
+        )
+        if not all(math.isfinite(value) for value in (step, offset, radius, coordinate_scale)):
+            return range(size)
+        if step == 0.0:
+            return range(size)
+        guard = 64.0 * math.ulp(max(coordinate_scale, radius, 1.0))
+        bounds = ((-radius - offset - guard) / step, (radius - offset + guard) / step)
+        if not all(math.isfinite(value) for value in bounds):
+            return range(size)
+        first = max(0, math.floor(min(bounds)) - 1)
+        stop = min(size, math.ceil(max(bounds)) + 2)
+        return range(first, stop)
+
     def _sample_supported_plane(self, image: sitk.Image, **geometry) -> tuple[np.ndarray, np.ndarray]:
         """返回 HU 和实际源支持，避免把补空气或真实空气按像素值混淆。"""
 
@@ -244,18 +287,18 @@ class PlaneStackResampler:
             first_pixel[axis] + normal[axis] * normal_offset
             for axis in range(3)
         )
-        reference = sitk.Image(columns, rows, 1, sitk.sitkFloat32)
-        reference.SetSpacing((spacing_x, spacing_y, 1.0))
-        reference.SetOrigin(origin)
-        reference.SetDirection(PlaneStackResampler._direction(row_dir, col_dir, normal))
-
         resampler = sitk.ResampleImageFilter()
-        resampler.SetReferenceImage(reference)
+        # SetReferenceImage 只拷贝这些几何量；无需为每个子平面分配像素缓冲。
+        resampler.SetSize((columns, rows, 1))
+        resampler.SetOutputSpacing((spacing_x, spacing_y, 1.0))
+        resampler.SetOutputOrigin(origin)
+        resampler.SetOutputDirection(PlaneStackResampler._direction(row_dir, col_dir, normal))
         resampler.SetInterpolator(sitk.sitkLinear)
         resampler.SetDefaultPixelValue(default_value)
         resampler.SetOutputPixelType(sitk.sitkFloat32)
         sampled = resampler.Execute(image)
-        return sitk.GetArrayFromImage(sampled)[0].astype(np.float32)
+        # GetArrayFromImage 已复制为可写 float32 数组；切片保留其底层数组。
+        return sitk.GetArrayFromImage(sampled)[0]
 
     @staticmethod
     def _point(value: Dict[str, float]) -> Tuple[float, float, float]:

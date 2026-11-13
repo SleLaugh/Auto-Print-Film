@@ -6,15 +6,24 @@ to nnUNet. Only independent channels of its default order-1 resampler run in
 parallel, and each channel still uses the installed nnUNet implementation.
 """
 
+import time
+
+# This starts at script execution, after Python's own interpreter/site startup.
+try:
+    _ENTRY_STARTED = time.perf_counter()
+except Exception:
+    _ENTRY_STARTED = None
+
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
-from functools import partial
+from functools import partial, wraps
 import importlib
+import json
 import os
 from pathlib import Path
 import sys
 import threading
-import time
+from types import GeneratorType
 
 
 EXPORT_THREADS_ENV = "AUTOPRINTFILM_NNUNET_EXPORT_THREADS"
@@ -50,10 +59,126 @@ def _timing(stage, started):
 
 def _timed_call(stage, function, *args, **kwargs):
     started = _clock()
+    status = "failed"
     try:
-        return function(*args, **kwargs)
+        result = function(*args, **kwargs)
+        status = "completed"
+        return result
     finally:
         _timing(stage, started)
+        phase_timing(stage, started, status=status, scope="export_worker; nested export timings overlap")
+
+
+def phase_timing(stage, started, *, status="completed", scope=""):
+    """Record host wall time only; never synchronize CUDA for diagnostics.
+
+    These are inclusive intervals, potentially in different processes. A parent
+    waiting for preprocessing/export overlaps the worker's own measurements;
+    neither durations nor their differences are independent phase totals.
+    """
+    try:
+        if started is None:
+            return
+        ended = time.perf_counter()
+        print("[AutoPrintFilm nnUNet timing] " + json.dumps({
+            "stage": stage, "pid": os.getpid(), "status": status,
+            "seconds": round(ended - started, 6),
+            "start_monotonic": started, "end_monotonic": ended,
+            "measurement": "inclusive_host_wall; no_added_cuda_sync",
+            "scope": scope,
+        }), flush=True)
+    except Exception:
+        # Observation cannot replace the original result or exception.
+        pass
+
+
+def timed_phase(stage, function, *args, scope="", **kwargs):
+    started = _clock()
+    status = "failed"
+    try:
+        result = function(*args, **kwargs)
+        status = "completed"
+        return result
+    finally:
+        phase_timing(stage, started, status=status, scope=scope)
+
+
+class _TimedPreprocessingIterator:
+    """Observe next() on the official file generator without changing its data.
+
+    Only native generators are wrapped. In particular, leave custom augmenters
+    unchanged because upstream uses isinstance() to decide how to close them.
+    """
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        started = _clock()
+        status = "failed"
+        try:
+            value = next(self._wrapped)
+            status = "ready"
+            return value
+        except StopIteration:
+            status = "exhausted"
+            raise
+        finally:
+            phase_timing(
+                "preprocessing_next", started, status=status,
+                scope="parent wait; includes worker startup/read/preprocess/IPC or iterator finish; overlaps worker timings",
+            )
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+def install_prediction_timing(prediction):
+    """Wrap stable public boundaries; preserve signatures used by nnUNet itself."""
+    predictor = getattr(prediction, "nnUNetPredictor", None)
+    if predictor is None:
+        return
+    boundaries = {
+        "initialize_from_trained_model_folder": (
+            "model_initialization", "checkpoint reading, network construction and initialization; not weights-only",
+        ),
+        "predict_from_files": (
+            "prediction_files_total", "includes input setup, preprocessing, prediction, export wait and worker cleanup",
+        ),
+        "predict_logits_from_preprocessed_data": (
+            "predict_logits", "whole predictor call including folds/transfers; host wall time, not CUDA kernel time",
+        ),
+    }
+    for method, (stage, scope) in boundaries.items():
+        original = getattr(predictor, method, None)
+        if original is None or getattr(original, "_autoprintfilm_timed", False):
+            continue
+
+        def wrap(function, stage, scope):
+            @wraps(function)
+            def measured(*args, **kwargs):
+                return timed_phase(stage, function, *args, scope=scope, **kwargs)
+            measured._autoprintfilm_timed = True
+            return measured
+
+        setattr(predictor, method, wrap(original, stage, scope))
+
+    original = getattr(predictor, "predict_from_data_iterator", None)
+    if original is not None and not getattr(original, "_autoprintfilm_timed", False):
+        @wraps(original)
+        def measured_iterator(self, data_iterator, *args, **kwargs):
+            if isinstance(data_iterator, GeneratorType):
+                data_iterator = _TimedPreprocessingIterator(data_iterator)
+            return timed_phase(
+                "prediction_iterator_total", original, self, data_iterator, *args,
+                scope="includes preprocessing waits, prediction, export IPC/wait and worker cleanup; nested intervals overlap",
+                **kwargs,
+            )
+        measured_iterator._autoprintfilm_timed = True
+        predictor.predict_from_data_iterator = measured_iterator
 
 
 def resample_data_or_seg(data, new_shape, is_seg=False, axis=None, order=3,
@@ -193,17 +318,28 @@ def install_export_adapter():
     """Install the stable-module callable that official nnUNet sends to spawn."""
     prediction = importlib.import_module("nnunetv2.inference.predict_from_raw_data")
     prediction.export_prediction_from_logits = export_prediction_from_logits
+    return prediction
 
 
-def main():
-    install_export_adapter()
-    from nnunetv2.inference.predict_from_raw_data import predict_entry_point
-
-    sys.argv[0] = "nnUNetv2_predict"
-    return predict_entry_point()
+def main(entry_started=None):
+    started = _ENTRY_STARTED if entry_started is None else entry_started
+    phase_timing("entry_imports", started, scope="script entry to main; excludes interpreter/site startup")
+    status = "failed"
+    try:
+        prediction = timed_phase("engine_import", install_export_adapter,
+                                 scope="import installed nnUNet and its dependencies")
+        install_prediction_timing(prediction)
+        sys.argv[0] = "nnUNetv2_predict"
+        result = timed_phase("cli_total", prediction.predict_entry_point,
+                             scope="official CLI including model initialization and prediction; inclusive")
+        status = "completed"
+        return result
+    finally:
+        phase_timing("entry_script_total", started, status=status,
+                     scope="script entry until CLI returns; excludes interpreter startup and exit teardown")
 
 
 if __name__ == "__main__":
     # Workers import this file as nnunet_export, never as a transient __main__.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    sys.exit(importlib.import_module("nnunet_export").main())
+    sys.exit(importlib.import_module("nnunet_export").main(entry_started=_ENTRY_STARTED))

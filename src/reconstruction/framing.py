@@ -172,6 +172,7 @@ class TargetFramer:
         self._body_normal_depths = None
         self._body_half_voxel = None
         self._body_group_bounds = None
+        self._slab_bounds_cache = {}
         self._framing_target_size = None
         self._reference_framing = None
         self._skin_edge_geometry = None
@@ -206,6 +207,7 @@ class TargetFramer:
             self._body_normal_depths = None
             self._body_half_voxel = None
             self._body_group_bounds = None
+            self._slab_bounds_cache = {}
             if self._body_points is not None:
                 self._body_half_voxel = np.abs(self._body_voxel_axes.T @ axes).sum(axis=0) / 2
                 projected_body = self._body_points @ axes[:, :2]
@@ -226,13 +228,17 @@ class TargetFramer:
         """求原目标、有界上下文及身体轮廓与当前厚层正重叠的外边界。"""
 
         axes = self._projection_axes
+        center_depth = float(center @ axes[:, 2])
+        thickness = float(plan.get("slice_thickness", 1.0))
+        key = (center_depth, thickness)
+        if key in self._slab_bounds_cache:
+            return self._slab_bounds_cache[key]
         if self._normal_depths is None:
             self._normal_depths = self.points @ axes[:, 2]
         if self._context_points is not None and self._context_normal_depths is None:
             self._context_normal_depths = self._context_points @ axes[:, 2]
         if self._body_points is not None and self._body_normal_depths is None:
             self._body_normal_depths = self._body_points @ axes[:, 2]
-        center_depth = float(center @ axes[:, 2])
         # 只接触厚层边界的体素没有采样厚度，不能让相邻层的目标拉偏中心。
         # 容差为亚纳米级毫米数；额外覆盖大物理坐标投影的浮点舍入误差。
         bounds = []
@@ -243,19 +249,19 @@ class TargetFramer:
         ):
             if points is None:
                 continue
-            half_support = float(plan.get("slice_thickness", 1.0)) / 2 + half_voxel[2]
+            half_support = thickness / 2 + half_voxel[2]
             tolerance = max(1e-7, np.finfo(float).eps * max(abs(center_depth), half_support, 1.0) * 32)
             selected = np.abs(depths - center_depth) < half_support - tolerance
             if np.any(selected):
                 projected = points[selected] @ axes[:, :2]
                 bounds.append((projected.min(axis=0) - half_voxel[:2],
                                projected.max(axis=0) + half_voxel[:2]))
-        if not bounds:
-            return None
-        return (
+        result = None if not bounds else (
             np.min([item[0] for item in bounds], axis=0),
             np.max([item[1] for item in bounds], axis=0),
         )
+        self._slab_bounds_cache[key] = result
+        return result
 
     def _slab_has_body_support(self, plan: dict, center: np.ndarray) -> bool:
         """本层确实存在身体边界时才标记身体轮廓居中。"""
@@ -766,6 +772,69 @@ class TargetFramer:
         return required
 
 
+class _PreparedInterspaceFramer(TargetFramer):
+    """保留椎间隙逐层投影摘要，复用原取景算法，不持有分割或目标点云。"""
+
+    def __init__(self, plan: dict, framer: TargetFramer):
+        self._plan = plan
+        self._slice_projections = {}
+        self._prepared_slabs = {}
+        self.shared_geometry = None
+        self.symmetry_plane = framer.symmetry_plane
+        self.context_label_ids = framer.context_label_ids
+        self.mask = None
+        self._selected_region = None
+        self._body_points = None
+        self._body_group_bounds = None
+        self._source_support = None
+        self._reference_framing = None
+
+    @staticmethod
+    def _geometry_key(item: dict) -> tuple:
+        return tuple(
+            item[field][axis]
+            for field in ("center", "row_dir", "col_dir", "normal") for axis in "xyz"
+        )
+
+    def add_slice(self, framer: TargetFramer, item: dict) -> None:
+        # 调用方已计算本切面的 framing_target_size；以下只复制几个小数组。
+        axes = framer._projection_axes.copy()
+        self._slice_projections[self._geometry_key(item)] = (
+            tuple(value.copy() for value in framer._bounds), axes,
+            framer._framing_target_size.copy(),
+        )
+        if (parse_fill_percent(self._plan.get("fill_percent")) or 0) > 0:
+            center = self._vector(item["center"])
+            key = (tuple(axes.ravel()), float(center @ axes[:, 2]),
+                   float(self._plan.get("slice_thickness", 1.0)))
+            bounds = framer._slab_target_bounds(self._plan, center)
+            self._prepared_slabs[key] = (
+                None if bounds is None else tuple(value.copy() for value in bounds)
+            )
+
+    def plane_target_bounds(self, planned_slice: dict) -> tuple[np.ndarray, np.ndarray]:
+        bounds, axes, target_size = self._slice_projections[self._geometry_key(planned_slice)]
+        self._projection_axes = axes
+        self._framing_target_size = target_size
+        return bounds
+
+    def framing_target_size(self, plan: dict, planned_slice: dict) -> np.ndarray:
+        self.plane_target_bounds(planned_slice)
+        return self._framing_target_size
+
+    def _slab_target_bounds(self, plan: dict, center: np.ndarray):
+        axes = self._projection_axes
+        return self._prepared_slabs[(
+            tuple(axes.ravel()), float(center @ axes[:, 2]),
+            float(plan.get("slice_thickness", 1.0)),
+        )]
+
+    def plane_geometry(self, plan: dict, planned_slice: dict) -> tuple[dict, dict]:
+        if plan is not self._plan or self.shared_geometry is None:
+            raise ValueError("椎间隙投影摘要只能用于已准备共同取景的原计划")
+        return super().plane_geometry(plan, planned_slice)
+
+
 def uses_target_centered_canvas(plan: dict) -> bool:
     """需要共同画布的部位模式，或未配置策略的肺/髋正数兼容计划。"""
 
@@ -863,11 +932,13 @@ def prepare_interspace_framing(
     *,
     context: FramingContext | None = None,
     symmetry_planes: dict[str, SymmetryFramingPlane] | None = None,
+    prepared_framers: dict[int, TargetFramer] | None = None,
 ) -> InterspaceFramingGeometry:
     """以前面各组画布中位数及全部计划的显示尺寸需求确定共同采样比例。
 
     显示需求覆盖原目标整组投影及每个厚层的目标与有界上下文联合范围。
-    逐计划创建并释放目标点云，只保留尺寸统计，避免同时持有多套体素坐标。
+    逐计划创建并释放目标点云，只保留尺寸统计和可选的逐层投影摘要，避免
+    同时持有多套体素坐标。摘要供本轮执行使用，不跨计划或分割快照缓存。
     各间隙的空间位置不参与范围合并，否则不同高度会错误扩大取景视野。
     最后一个间隙不参与画布参考；只有一组时使用该组自身画布。
     """
@@ -898,8 +969,13 @@ def prepare_interspace_framing(
             segmentation, coords, plan, context=context,
             symmetry_plane=(symmetry_planes or {}).get(str(plan.get("plan_id", ""))),
         )
+        prepared = _PreparedInterspaceFramer(plan, framer) if prepared_framers is not None else None
         for planned_slice in plan["slices"]:
             target_size = np.maximum(target_size, framer.framing_target_size(plan, planned_slice))
+            if prepared is not None:
+                prepared.add_slice(framer, planned_slice)
+        if prepared is not None:
+            prepared_framers[id(plan)] = prepared
         del framer
         plan_ids.append(str(plan.get("plan_id", "")))
     shared_size = np.maximum(1, np.rint(np.median(reference_sizes, axis=0)).astype(int))
@@ -912,7 +988,7 @@ def prepare_interspace_framing(
     ], axis=0)
     extension_lower, extension_upper = extension_pixels
     shared_size = shared_size + extension_lower + extension_upper
-    return InterspaceFramingGeometry(
+    geometry = InterspaceFramingGeometry(
         size_xy=tuple(map(int, shared_size)),
         spacing_xy=tuple(map(float, new_spacing)),
         scale=float(scale),
@@ -922,6 +998,10 @@ def prepare_interspace_framing(
         extension_lower_pixels=tuple(map(int, extension_lower)),
         extension_upper_pixels=tuple(map(int, extension_upper)),
     )
+    if prepared_framers is not None:
+        for plan in plans:
+            prepared_framers[id(plan)].shared_geometry = geometry
+    return geometry
 
 
 def fitted_spacing(size, spacing, target_size, fill_percent):

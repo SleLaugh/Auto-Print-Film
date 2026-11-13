@@ -289,6 +289,9 @@ def export_prediction_from_logits(predicted, properties, configuration_manager, 
             return result
         finally:
             info['export_seconds'] = time.perf_counter() - started
+            old_export.baseline.phase_timing('s6_export_total', started,
+                                            status='completed' if info['completed'] else 'failed',
+                                            scope='worker export including fallback; nested export timings overlap')
             print('[S6 GPU merge] ' + json.dumps(info), flush=True)
     try:
         restore_started = time.perf_counter()
@@ -304,4 +307,7 @@ def export_prediction_from_logits(predicted, properties, configuration_manager, 
         info.update(backend='s6_gpu_resample_dtype_quantized_merge', completed=True)
     finally:
         info['export_seconds'] = time.perf_counter() - started
+        old_export.baseline.phase_timing('s6_export_total', started,
+                                        status='completed' if info['completed'] else 'failed',
+                                        scope='worker export including geometry restore and write; overlaps parent export wait')
         print('[S6 GPU merge] ' + json.dumps(info), flush=True)

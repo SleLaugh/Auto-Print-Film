@@ -9,7 +9,7 @@ import sys
 import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -61,6 +61,11 @@ def test_success_preserves_full_logs_and_exit_status(tmp_path):
     assert result.stderr == "details\n"
     assert (tmp_path / "stdout.log").read_text() == result.stdout
     assert (tmp_path / "stderr.log").read_text() == result.stderr
+    assert set(result.timings) == {"popen", "wait_until_exit_or_abort", "process_group_cleanup", "process_monitor_total"}
+    total = result.timings["process_monitor_total"]
+    for interval in result.timings.values():
+        assert total["start_monotonic"] <= interval["start_monotonic"] <= interval["end_monotonic"] <= total["end_monotonic"]
+        assert interval["seconds"] >= 0
 
 
 def test_raw_logs_are_available_before_process_completes(tmp_path):
@@ -94,6 +99,14 @@ def test_raw_logs_are_available_before_process_completes(tmp_path):
     assert "stderr progress" in result.stderr
 
 
+def test_failed_diagnostic_clock_preserves_process_result_and_raw_output(tmp_path):
+    with patch.object(inference_process.time, "perf_counter", side_effect=RuntimeError("diagnostic clock")):
+        result = _run(tmp_path, "print('unchanged')")
+    assert result.returncode == 0
+    assert result.stdout == "unchanged\n"
+    assert result.timings == {}
+
+
 def test_monitor_delay_cannot_accept_success_after_deadline(tmp_path, monkeypatch):
     original_follow = inference_process._LogFollower.follow
 
@@ -106,6 +119,8 @@ def test_monitor_delay_cannot_accept_success_after_deadline(tmp_path, monkeypatc
         _run(tmp_path, "print('finished before monitor resumes')", timeout=0.1)
     assert caught.value.reason == "timeout"
     assert caught.value.cleanup_succeeded is True
+    assert caught.value.timings["wait_until_exit_or_abort"]["seconds"] > 0
+    assert caught.value.timings["process_group_cleanup"]["seconds"] >= 0
 
 
 def test_unread_console_pipe_cannot_block_inference_timeout(tmp_path, pid_file):

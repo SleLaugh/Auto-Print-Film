@@ -14,6 +14,7 @@ from src.utils.Logger_utils import _logger_manager
 _logger_manager.debug_file_enabled = True
 
 from src.core.context import ProcessingContext
+from src.anatomy.spine_pose import SpineLabelSymmetryCache
 from src.config import (
     load_slice_part_config,
     localization_profiles_for,
@@ -3093,6 +3094,7 @@ class LocalizationGeometryTest(unittest.TestCase):
                         _LOCALIZATION_WORKSPACE_KEY,
                         context.metadata,
                     )
+                    self.assertIsNone(context.metadata[_LOCALIZATION_WORKSPACE_KEY]["spine_pose_cache"])
                 else:
                     self.assertNotIn(
                         _LOCALIZATION_WORKSPACE_KEY,
@@ -3253,6 +3255,7 @@ class LocalizationGeometryTest(unittest.TestCase):
         seg_array_reference = weakref.ref(seg_array)
         context.metadata[_LOCALIZATION_WORKSPACE_KEY] = {
             "seg_array": seg_array,
+            "spine_pose_cache": SpineLabelSymmetryCache(seg_array),
         }
         del seg_array
         stage = AnatomicalAnalysisStage()

@@ -5,6 +5,7 @@
 """
 
 import math
+from copy import deepcopy
 from typing import Any, Mapping
 
 import numpy as np
@@ -12,6 +13,39 @@ import SimpleITK as sitk
 from scipy.ndimage import binary_erosion
 
 from src.anatomy.symmetry import estimate_reflection_symmetry_plane
+
+
+class SpineLabelSymmetryCache:
+    """第三至第五阶段共用的单个分割快照姿态缓存。
+
+    快照的分割和逐标签索引在构建后只读；语义修复、空间校正或重载必须
+    创建新快照。强引用校验对象身份，不扫描或 hash 大索引数组，也不以
+    label 编号作为跨病例缓存键。缓存随 localization workspace 一起释放。
+    """
+
+    def __init__(self, seg_array: np.ndarray):
+        self._seg_array = seg_array
+        self._poses: dict[tuple, tuple[np.ndarray, dict[str, Any]]] = {}
+
+    def matches_source(self, seg_array: np.ndarray) -> bool:
+        return self._seg_array is seg_array
+
+    @staticmethod
+    def _key(indices, spacing, origin, direction, max_points):
+        return (
+            id(indices), tuple(spacing), tuple(origin),
+            tuple(direction.ravel()), int(max_points),
+        )
+
+    def _get(self, key: tuple, indices: np.ndarray) -> dict[str, Any] | None:
+        cached = self._poses.get(key)
+        if cached is None or cached[0] is not indices:
+            return None
+        # 第三阶段的聚合诊断与第五阶段的标注不能共享可变结果字典。
+        return deepcopy(cached[1])
+
+    def _put(self, key: tuple, indices: np.ndarray, pose: dict[str, Any]) -> None:
+        self._poses[key] = (indices, deepcopy(pose))
 
 
 def _image_geometry(image: sitk.Image | Mapping[str, Any]):
@@ -51,6 +85,7 @@ def estimate_spine_label_symmetry(
     image: sitk.Image | Mapping[str, Any],
     *,
     max_points: int = 3000,
+    pose_cache: SpineLabelSymmetryCache | None = None,
 ) -> dict[str, Any]:
     """给一个完整椎体生成可序列化的可靠左右轴。
 
@@ -68,6 +103,13 @@ def estimate_spine_label_symmetry(
         raise ValueError("椎体索引包含非有限坐标")
     if not isinstance(max_points, (int, np.integer)) or max_points < 64:
         raise ValueError("逐椎体姿态采样上限至少为 64")
+    source_indices = indices
+    cache_key = None
+    if pose_cache is not None:
+        cache_key = pose_cache._key(indices, spacing, origin, direction, max_points)
+        cached = pose_cache._get(cache_key, indices)
+        if cached is not None:
+            return cached
     point_count = len(indices)
     # 体积内部的近邻误差主要反映随机抽样密度，会掩盖 1–3 度的小角度。
     # 使用标签局部边界提供形状证据；只分配局部 bbox，禁止全 CT 尺寸 Mask。
@@ -92,7 +134,7 @@ def estimate_spine_label_symmetry(
     # 候选绕图像 z 轴的分量必须返回图像 XY 基，而非直接取患者物理 X/Y。
     axial_angle = math.degrees(math.atan2(float(normal @ direction[:, 1]),
                                          float(normal @ direction[:, 0])))
-    return {
+    pose = {
         "symmetry_left_right_axis": _point_dict(normal),
         "symmetry_plane_center": _point_dict(plane_center),
         "symmetry_diagnostics": diagnostics,
@@ -100,6 +142,9 @@ def estimate_spine_label_symmetry(
         "point_count": int(point_count),
         "reliable": bool(reliable),
     }
+    if pose_cache is not None:
+        pose_cache._put(cache_key, source_indices, pose)
+    return pose
 
 
 def estimate_spine_axial_symmetry(
@@ -110,6 +155,7 @@ def estimate_spine_axial_symmetry(
     min_labels: int = 2,
     max_angle_spread_degrees: float = 15.0,
     max_points_per_label: int = 3000,
+    pose_cache: SpineLabelSymmetryCache | None = None,
 ) -> dict[str, Any]:
     """稳健聚合可靠的逐椎体镜像角，供第三阶段生成 XY 回正候选。
 
@@ -122,7 +168,9 @@ def estimate_spine_axial_symmetry(
     labels = []
     skipped = []
     for label_name, indices in label_indices_zyx.items():
-        pose = estimate_spine_label_symmetry(indices, image, max_points=max_points_per_label)
+        pose = estimate_spine_label_symmetry(
+            indices, image, max_points=max_points_per_label, pose_cache=pose_cache,
+        )
         item = {
             "label_name": label_name,
             "point_count": pose["point_count"],

@@ -180,8 +180,7 @@ class PlaneStackSourceSupportTest(unittest.TestCase):
         ) as sample, mock.patch("src.reconstruction.plane_stack.sitk.Image", wraps=sitk.Image) as factory:
             self.sampler._sample_supported_plane(image, **geometry, normal_offset=0)
         self.assertEqual(sample.call_count, 1)
-        self.assertEqual(factory.call_count, 1)
-        self.assertEqual(factory.call_args.args[:3], (9, 5, 1))
+        self.assertEqual(factory.call_count, 0)
 
     def test_stage7_preserves_partial_slab_tissue_in_all_planes_and_windows(self):
         """真实采样、上下裁空、并行双窗和 DICOM 解码不能再次把边缘组织压黑。"""

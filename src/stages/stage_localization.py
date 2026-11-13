@@ -31,7 +31,11 @@ from src.anatomy.hip import estimate_hip_frame_with_diagnostics
 from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 from src.anatomy.spine_labels import resolve_spine_label_name
 from src.anatomy.brain import estimate_brain_frame_with_diagnostics
-from src.anatomy.spine_pose import estimate_spine_axial_symmetry, estimate_spine_label_symmetry
+from src.anatomy.spine_pose import (
+    SpineLabelSymmetryCache,
+    estimate_spine_axial_symmetry,
+    estimate_spine_label_symmetry,
+)
 from src.utils import DebugLog
 from src.runtime import config_candidates, resolve_application_path
 
@@ -760,6 +764,7 @@ class LocalizationOperations(
         slice_part: str | None = None,
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
         image: sitk.Image | None = None,
+        pose_cache: SpineLabelSymmetryCache | None = None,
     ) -> Dict[str, Any]:
         """估计横状位回正候选角；图像写出与应用由第三阶段决定。
 
@@ -822,6 +827,8 @@ class LocalizationOperations(
                 'reason': reason,
             }
         if image is not None:
+            if pose_cache is not None and not pose_cache.matches_source(seg_array):
+                pose_cache = None
             regions = label_regions or self._build_label_voxel_regions(seg_array, label_targets)
             excluded = set(
                 self._resolve_spine_cpr_config(slice_part).get("excluded_labels", [])
@@ -839,6 +846,7 @@ class LocalizationOperations(
                 threshold_degrees=self.correction_angle_threshold_degrees,
                 min_labels=self.correction_min_vertebrae,
                 max_angle_spread_degrees=self.correction_max_label_angle_spread_degrees,
+                pose_cache=pose_cache,
             )
             candidate["skipped_label_names"] = list(dict.fromkeys(
                 skipped + candidate.get("skipped_label_names", [])
@@ -2412,6 +2420,7 @@ class LocalizationOperations(
         excluded_labels: Iterable[str] = (),
         interspace_regions: Iterable[Dict[str, Any]] | None = None,
         raw_array_loader: Callable[[], np.ndarray] | None = None,
+        pose_cache: SpineLabelSymmetryCache | None = None,
     ) -> Dict[str, Any] | None:
         """
         为第五阶段生成脊柱过滤主体、四棱柱和相邻主体间隙几何。
@@ -2424,6 +2433,8 @@ class LocalizationOperations(
 
         if slice_part not in {"颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱"}:
             return None
+        if pose_cache is not None and not pose_cache.matches_source(seg_array):
+            pose_cache = None
 
         excluded_label_set = set(excluded_labels)
         sagittal_geometries: dict[
@@ -2677,7 +2688,7 @@ class LocalizationOperations(
                 label=label_name, source_voxel_count=len(full_indices),
             ):
                 filtered_annotation_centroids[label_name].update(
-                    estimate_spine_label_symmetry(full_indices, image)
+                    estimate_spine_label_symmetry(full_indices, image, pose_cache=pose_cache)
                 )
             if extraction_diagnostic and extraction_diagnostic.get("method") == (
                 "c2_inferior_body_recovery"

@@ -184,7 +184,8 @@ class ExportAdapterTest(unittest.TestCase):
                                     env=environment, capture_output=True, text=True, timeout=30,
                                     encoding="utf-8", check=False)
             self.assertEqual(result.returncode, 17, result.stderr)
-            payload = json.loads(result.stdout.splitlines()[-1])
+            payload = next(json.loads(line) for line in result.stdout.splitlines()
+                           if line.startswith('{"value":'))
             self.assertEqual(payload, {"value": 9, "args": ["nnUNetv2_predict", *arguments],
                                        "module": "nnunet_export"})
             self.assertEqual(json.loads(output.read_text()), 9)

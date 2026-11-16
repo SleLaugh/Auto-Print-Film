@@ -44,6 +44,18 @@ CPR_RANGE_MODE_FULL_LABEL = "full_label"
 CPR_RANGE_MODE_BODY_PRISM = "body_prism"
 
 
+class _CprSegmentationCache:
+    """单次 CPR build 内复用成功读取的分割图像。
+
+    通过私有 helper 参数传递，不进入定位结果或计划。一次 build 返回
+    或抛错后即释放，不跨状位、请求或文件更新复用图像。
+    """
+
+    def __init__(self):
+        self.segmentation_path: str | None = None
+        self.segmentation: sitk.Image | None = None
+
+
 def build_spine_sagittal_cpr_plan(
     request: Any,
     plane_config: Any,
@@ -86,6 +98,7 @@ def build_spine_sagittal_cpr_plans(
             f"CPR 降级: 有效椎体少于 3 个，当前 {len(centers)} 个"
         ]
 
+    segmentation_cache = _CprSegmentationCache()
     image_info = localization_result["image"]
     source_labels = [label_name for label_name, _ in centers]
     annotation_centers = [center for _, center in centers]
@@ -102,6 +115,7 @@ def build_spine_sagittal_cpr_plans(
     anchor_points = _build_annotation_centroid_path(
         localization_result,
         list(zip(source_labels, corrected_annotation_centers)),
+        segmentation_cache=segmentation_cache,
     )
     curve_points = _smooth_cpr_centroid_path_with_straight_endpoints(
         anchor_points,
@@ -121,6 +135,7 @@ def build_spine_sagittal_cpr_plans(
         source_labels,
         curve_points,
         projection_axis=projection_axis,
+        segmentation_cache=segmentation_cache,
     )
     curve_points = _extend_curve_endpoints_for_superior_inferior_margin(
         localization_result,
@@ -173,6 +188,7 @@ def build_spine_sagittal_cpr_plans(
             plane_config.slice_image_count,
             plane=plane_config.plane,
             range_mode=range_mode,
+            segmentation_cache=segmentation_cache,
         )
         slices = [
             PlannedSlice(
@@ -463,6 +479,8 @@ def _resolve_available_spine_label(
 def _build_annotation_centroid_path(
     localization_result: Dict[str, Any],
     centers: List[Tuple[str, Point3D]],
+    *,
+    segmentation_cache: _CprSegmentationCache | None = None,
 ) -> List[Point3D]:
     """在全部过滤标注质心首尾补入主体端面中点。"""
 
@@ -516,6 +534,7 @@ def _build_annotation_centroid_path(
     coords = localization_result.get("coords", {})
     original_segmentation = _read_original_segmentation(
         localization_result,
+        segmentation_cache=segmentation_cache,
     )
     first_face = _extend_existing_endpoint_to_original_label_exit(
         first_face,
@@ -550,6 +569,8 @@ def _build_annotation_centroid_path(
 
 def _read_original_segmentation(
     localization_result: Dict[str, Any],
+    *,
+    segmentation_cache: _CprSegmentationCache | None = None,
 ) -> sitk.Image | None:
     """读取端点沿线检查所需的原始分割；不可用时安全跳过延伸。"""
 
@@ -558,10 +579,21 @@ def _read_original_segmentation(
     )
     if not segmentation_path:
         return None
+    if (
+        segmentation_cache is not None
+        and segmentation_cache.segmentation is not None
+        and segmentation_cache.segmentation_path == str(segmentation_path)
+    ):
+        return segmentation_cache.segmentation
     try:
-        return sitk.ReadImage(str(segmentation_path))
+        segmentation = sitk.ReadImage(str(segmentation_path))
     except (OSError, RuntimeError):
+        # 不缓存失败，保留同次规划后续步骤再次尝试读取的原有行为。
         return None
+    if segmentation_cache is not None:
+        segmentation_cache.segmentation_path = str(segmentation_path)
+        segmentation_cache.segmentation = segmentation
+    return segmentation
 
 
 def _extend_existing_endpoint_to_original_label_exit(
@@ -1039,6 +1071,7 @@ def _resolve_sampling_offsets_mm(
     range_mode: str = CPR_RANGE_MODE_FULL_LABEL,
     *,
     plane: PlaneTypeEnum = PlaneTypeEnum.冠状位,
+    segmentation_cache: _CprSegmentationCache | None = None,
 ) -> tuple[List[float], ResolvedSampling]:
     """按 CPR 有效偏移范围统一计算实际层厚、层间距和数量。"""
 
@@ -1050,6 +1083,7 @@ def _resolve_sampling_offsets_mm(
         plane=plane,
         range_mode=range_mode,
         fallback_spacing=(slice_spacing or slice_thickness or 1.0),
+        segmentation_cache=segmentation_cache,
     )
     sampling = resolve_sampling(
         effective_range_mm=max(0.0, maximum - minimum),
@@ -1078,6 +1112,7 @@ def _resolve_offset_interval_mm(
     fallback_spacing: float = 1.0,
     *,
     plane: PlaneTypeEnum = PlaneTypeEnum.冠状位,
+    segmentation_cache: _CprSegmentationCache | None = None,
 ) -> Tuple[float, float]:
     """返回 CPR 已应用配置扩展后的有效偏移范围。"""
 
@@ -1101,6 +1136,7 @@ def _resolve_offset_interval_mm(
         label_names,
         curve_points,
         offset_axis,
+        segmentation_cache=segmentation_cache,
     )
     if raw_interval is not None:
         return _extend_cpr_offset_interval(
@@ -1286,11 +1322,15 @@ def _raw_label_offset_interval_mm(
     label_names: List[str],
     curve_points: List[Point3D],
     offset_axis: Point3D,
+    *,
+    segmentation_cache: _CprSegmentationCache | None = None,
 ) -> Tuple[float, float] | None:
     """计算原始标签体素相对 CPR 中线沿当前 offset 轴的偏移区间。"""
 
     perf_start = time.perf_counter()
-    segmentation = _read_original_segmentation(localization_result)
+    segmentation = _read_original_segmentation(
+        localization_result, segmentation_cache=segmentation_cache,
+    )
     if segmentation is None:
         return None
     label_ids = _configured_label_ids(localization_result, label_names)
@@ -1351,28 +1391,45 @@ def _extend_curve_endpoints_to_terminal_raw_labels(
     curve_points: List[Point3D],
     *,
     projection_axis: Point3D | None = None,
+    segmentation_cache: _CprSegmentationCache | None = None,
 ) -> List[Point3D]:
     """沿三维首尾切线延长，覆盖实际采样方向上的终端标签外缘。"""
 
     perf_start = time.perf_counter()
     if len(curve_points) < 2 or not label_names:
         return list(curve_points)
-    segmentation = _read_original_segmentation(localization_result)
+    segmentation = _read_original_segmentation(
+        localization_result, segmentation_cache=segmentation_cache,
+    )
     if segmentation is None:
         return list(curve_points)
 
     extended = list(curve_points)
     start_ids = _configured_label_ids(localization_result, [label_names[0]])
     end_ids = _configured_label_ids(localization_result, [label_names[-1]])
+    terminal_points: dict[frozenset[int], np.ndarray] = {}
+
+    def points_for(label_ids: set[int]) -> np.ndarray | None:
+        if not label_ids:
+            return None
+        key = frozenset(label_ids)
+        if key not in terminal_points:
+            points = _raw_label_physical_points(segmentation, label_ids)
+            points.setflags(write=False)
+            terminal_points[key] = points
+        return terminal_points[key]
+
     start_endpoint_index = _endpoint_index_nearest_label(
         extended,
         segmentation,
         start_ids,
+        label_points=points_for(start_ids),
     )
     end_endpoint_index = _endpoint_index_nearest_label(
         extended,
         segmentation,
         end_ids,
+        label_points=points_for(end_ids),
     )
     if (
         start_endpoint_index is not None
@@ -1389,6 +1446,7 @@ def _extend_curve_endpoints_to_terminal_raw_labels(
             segmentation=segmentation,
             label_ids=start_ids,
             projection_axis=projection_axis,
+            label_points=points_for(start_ids),
         )
     if end_ids and end_endpoint_index is not None:
         extended[end_endpoint_index] = _extend_endpoint_to_label_projection(
@@ -1397,6 +1455,7 @@ def _extend_curve_endpoints_to_terminal_raw_labels(
             segmentation=segmentation,
             label_ids=end_ids,
             projection_axis=projection_axis,
+            label_points=points_for(end_ids),
         )
     DebugLog(
         "    [CPR规划性能] 端点延伸到原始标注: "
@@ -1480,12 +1539,15 @@ def _endpoint_index_nearest_label(
     curve_points: List[Point3D],
     segmentation: sitk.Image,
     label_ids: set[int],
+    *,
+    label_points: np.ndarray | None = None,
 ) -> int | None:
     """返回距离指定终端原始标签最近的曲线端点下标。"""
 
     if not label_ids:
         return None
-    label_points = _raw_label_physical_points(segmentation, label_ids)
+    if label_points is None:
+        label_points = _raw_label_physical_points(segmentation, label_ids)
     if label_points.size == 0:
         return None
     endpoint_arrays = [
@@ -1520,13 +1582,16 @@ def _extend_endpoint_to_label_projection(
     segmentation: sitk.Image,
     label_ids: set[int],
     projection_axis: Point3D | None = None,
+    *,
+    label_points: np.ndarray | None = None,
 ) -> Point3D:
     """沿原三维切线延伸端点，使采样曲线覆盖标签体素投影外缘。"""
 
     outward_delta = subtract_points(endpoint, adjacent)
     if vector_length(outward_delta) <= 1e-6:
         return endpoint
-    label_points = _raw_label_physical_points(segmentation, label_ids)
+    if label_points is None:
+        label_points = _raw_label_physical_points(segmentation, label_ids)
     if label_points.size == 0:
         return endpoint
 

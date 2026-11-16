@@ -69,6 +69,28 @@ class _LocalizerRender:
     background_kind: str = "orthogonal_plane"
 
 
+class _LocalizerIntensityCache:
+    """只在同次重建中复用不可变原图的定位线灰度，不持有整卷数组。"""
+
+    def __init__(self, image: sitk.Image):
+        self._image = image
+        self._value: float | None = None
+
+    @staticmethod
+    def compute(image: sitk.Image) -> float:
+        source = sitk.GetArrayViewFromImage(image)
+        minimum = float(np.min(source))
+        maximum = float(np.max(source))
+        return maximum + max(maximum - minimum, 1.0)
+
+    def get(self, image: sitk.Image) -> float:
+        if image is not self._image:
+            return self.compute(image)
+        if self._value is None:
+            self._value = self.compute(image)
+        return self._value
+
+
 class ReconstructionStage(BaseStage):
     """执行切片计划，并按窗位输出派生 CT DICOM 序列。"""
 
@@ -166,6 +188,7 @@ class ReconstructionStage(BaseStage):
 
         with resource_operation("reconstruction", "read_source_image", path=str(image_path)):
             image = sitk.ReadImage(str(image_path))
+        localizer_intensity_cache = _LocalizerIntensityCache(image)
         segmentation_path = (
             loc_result.get("seg_for_reconstruction_path")
             or loc_result.get("corrected_seg_path")
@@ -298,6 +321,7 @@ class ReconstructionStage(BaseStage):
                                     if not getattr(reuse_session, "disabled", False) else None
                                 ),
                                 hu_cache_session=reuse_session,
+                                localizer_intensity_cache=localizer_intensity_cache,
                             )
                         )
                     finally:
@@ -329,6 +353,7 @@ class ReconstructionStage(BaseStage):
         anatomical_analysis: Dict[str, Any] | None = None,
         hu_cache_dir: Path | None = None,
         hu_cache_session: Any = None,
+        localizer_intensity_cache: _LocalizerIntensityCache | None = None,
     ) -> Dict[str, Any]:
         """
         执行一个切片计划。
@@ -497,6 +522,8 @@ class ReconstructionStage(BaseStage):
                         and callable(getattr(resampler, "offset_curves_for_plan", None))
                         else None
                     ),
+                    **({"intensity_cache": localizer_intensity_cache}
+                       if localizer_intensity_cache is not None else {}),
                 )
                 details["has_localizer"] = localizer_render is not None
             DebugLog(
@@ -767,6 +794,7 @@ class ReconstructionStage(BaseStage):
         localization_result: Dict[str, Any] | None = None,
         anatomical_analysis: Dict[str, Any] | None = None,
         curved_resampler: CurvedStackResampler | None = None,
+        intensity_cache: _LocalizerIntensityCache | None = None,
     ) -> _LocalizerRender | None:
         """生成定位图背景与亚像素线掩膜，不参与正式切片重建。"""
 
@@ -777,9 +805,11 @@ class ReconstructionStage(BaseStage):
             return cls._build_curved_plan_localizer_render(
                 image, plan, localizer_surface=surface,
                 curved_resampler=curved_resampler,
+                **({"intensity_cache": intensity_cache} if intensity_cache is not None else {}),
             )
         return cls._build_plane_plan_localizer_render(
             image, plan, localizer_surface=surface,
+            **({"intensity_cache": intensity_cache} if intensity_cache is not None else {}),
         )
 
     @classmethod
@@ -789,6 +819,7 @@ class ReconstructionStage(BaseStage):
         plan: Dict[str, Any],
         *,
         localizer_surface: SpineLocalizerSurface | None = None,
+        intensity_cache: _LocalizerIntensityCache | None = None,
     ) -> _LocalizerRender | None:
         """在固定参考面上绘制细定位线，仅按背景物理边界裁线。
 
@@ -845,11 +876,10 @@ class ReconstructionStage(BaseStage):
             sitk.GetArrayViewFromImage(representative_slice).shape,
             dtype=np.float32,
         )
-        source_array = sitk.GetArrayViewFromImage(image)
-        source_min = float(np.min(source_array))
-        source_max = float(np.max(source_array))
-        intensity_span = max(source_max - source_min, 1.0)
-        line_value = source_max + intensity_span
+        line_value = (
+            intensity_cache.get(image) if intensity_cache is not None
+            else _LocalizerIntensityCache.compute(image)
+        )
 
         for planned_slice in plan.get("slices", []):
             if localizer_surface is not None:
@@ -963,6 +993,7 @@ class ReconstructionStage(BaseStage):
         *,
         localizer_surface: SpineLocalizerSurface | None = None,
         curved_resampler: CurvedStackResampler | None = None,
+        intensity_cache: _LocalizerIntensityCache | None = None,
     ) -> _LocalizerRender | None:
         """投影实际 CPR 中心曲线，并生成亚像素覆盖掩膜。"""
 
@@ -993,10 +1024,10 @@ class ReconstructionStage(BaseStage):
             sitk.GetArrayViewFromImage(representative_slice).shape,
             dtype=np.float32,
         )
-        source_array = sitk.GetArrayViewFromImage(image)
-        source_min = float(np.min(source_array))
-        source_max = float(np.max(source_array))
-        line_value = source_max + max(source_max - source_min, 1.0)
+        line_value = (
+            intensity_cache.get(image) if intensity_cache is not None
+            else _LocalizerIntensityCache.compute(image)
+        )
 
         projected_curves = cls._curved_localizer_projected_curves(
             plan=plan,

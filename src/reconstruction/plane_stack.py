@@ -61,21 +61,12 @@ class PlaneStackResampler:
             )
         else:
             offsets = self._slab_offsets(image, thickness)
-            sampled_planes = [
-                self._sample_supported_plane(
-                    image=image,
-                    first_pixel=first_pixel,
-                    normal=normal,
-                    row_dir=row_dir,
-                    col_dir=col_dir,
-                    columns=columns,
-                    rows=rows,
-                    spacing_x=spacing_x,
-                    spacing_y=spacing_y,
-                    normal_offset=offset,
-                )
-                for offset in offsets
-            ]
+            sample_plane = self._prepare_supported_plane_sampler(
+                image=image, first_pixel=first_pixel, normal=normal,
+                row_dir=row_dir, col_dir=col_dir, columns=columns, rows=rows,
+                spacing_x=spacing_x, spacing_y=spacing_y,
+            )
+            sampled_planes = [sample_plane(offset) for offset in offsets]
             plane_arrays = [plane for plane, _ in sampled_planes]
             averaged = np.mean(plane_arrays, axis=0)
             support_count = np.sum(
@@ -156,6 +147,11 @@ class PlaneStackResampler:
         supported_thickness = np.zeros((rows, columns), dtype=np.float64)
         missing_plane = np.zeros((rows, columns), dtype=bool)
         total_overlap = 0.0
+        sample_plane = self._prepare_supported_plane_sampler(
+            image=image, first_pixel=first_pixel, normal=normal,
+            row_dir=row_dir, col_dir=col_dir, columns=columns, rows=rows,
+            spacing_x=spacing_x, spacing_y=spacing_y,
+        )
 
         for index in self._axis_slab_indices(image, center, normal, thickness, axis_info):
             voxel_index = [0, 0, 0]
@@ -179,18 +175,7 @@ class PlaneStackResampler:
             if overlap <= 0:
                 continue
 
-            plane, supported = self._sample_supported_plane(
-                image=image,
-                first_pixel=first_pixel,
-                normal=normal,
-                row_dir=row_dir,
-                col_dir=col_dir,
-                columns=columns,
-                rows=rows,
-                spacing_x=spacing_x,
-                spacing_y=spacing_y,
-                normal_offset=center_offset,
-            )
+            plane, supported = sample_plane(center_offset)
             weighted_sum += (plane - default_value) * overlap
             valid_sum += np.where(supported, plane, 0.0) * overlap
             supported_thickness += supported * overlap
@@ -266,6 +251,51 @@ class PlaneStackResampler:
             supported[ambiguous] = ~np.isposinf(verification[ambiguous])
         plane[~supported] = -1024.0
         return plane, supported
+
+    def _prepare_supported_plane_sampler(self, image: sitk.Image, **geometry):
+        """只在一次 slab 内复用固定配置；每个偏移仍独立执行二维重采样。
+
+        filter 仅由返回的局部闭包持有，多个 slice 或线程不会共享可变状态。
+        自定义采样实现和测试替换仍走原调用路径，不绕过其覆盖行为。
+        """
+
+        if (self._sample_plane is not _ORIGINAL_SAMPLE_PLANE
+                or getattr(self._sample_supported_plane, "__func__", None)
+                is not _ORIGINAL_SAMPLE_SUPPORTED_PLANE):
+            return lambda offset: self._sample_supported_plane(
+                image=image, **geometry, normal_offset=offset,
+            )
+
+        first_pixel = geometry["first_pixel"]
+        normal = geometry["normal"]
+        resampler = sitk.ResampleImageFilter()
+        resampler.SetSize((geometry["columns"], geometry["rows"], 1))
+        resampler.SetOutputSpacing((geometry["spacing_x"], geometry["spacing_y"], 1.0))
+        resampler.SetOutputDirection(PlaneStackResampler._direction(
+            geometry["row_dir"], geometry["col_dir"], normal,
+        ))
+        resampler.SetInterpolator(sitk.sitkLinear)
+        resampler.SetOutputPixelType(sitk.sitkFloat32)
+        floating = image.GetPixelID() in {sitk.sitkFloat32, sitk.sitkFloat64}
+
+        def sample(offset):
+            # 沿用 _sample_plane 的逐分量算式与运算顺序，避免平移舍入差异。
+            resampler.SetOutputOrigin(tuple(
+                first_pixel[axis] + normal[axis] * offset for axis in range(3)
+            ))
+            # 上一偏移可能为浮点源复查过 Inf，须重新设回 NaN。
+            resampler.SetDefaultPixelValue(float("nan"))
+            plane = sitk.GetArrayFromImage(resampler.Execute(image))[0]
+            supported = ~np.isnan(plane)
+            if floating and not np.all(supported):
+                resampler.SetDefaultPixelValue(float("inf"))
+                verification = sitk.GetArrayFromImage(resampler.Execute(image))[0]
+                ambiguous = ~supported
+                supported[ambiguous] = ~np.isposinf(verification[ambiguous])
+            plane[~supported] = -1024.0
+            return plane, supported
+
+        return sample
 
     @staticmethod
     def _sample_plane(
@@ -343,3 +373,8 @@ class PlaneStackResampler:
             row_dir[1], col_dir[1], normal[1],
             row_dir[2], col_dir[2], normal[2],
         )
+
+
+# 保留初始方法身份，类级或实例级替换方法时也不能绕过替换后的实现。
+_ORIGINAL_SAMPLE_PLANE = PlaneStackResampler._sample_plane
+_ORIGINAL_SAMPLE_SUPPORTED_PLANE = PlaneStackResampler._sample_supported_plane

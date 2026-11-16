@@ -1721,7 +1721,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             return_value=corrected,
         ) as correction, patch(
             "src.planning.spine_cpr._build_annotation_centroid_path",
-            side_effect=lambda _localization, centers: [
+            side_effect=lambda _localization, centers, **_kwargs: [
                 center for _, center in centers
             ],
         ) as build_path:

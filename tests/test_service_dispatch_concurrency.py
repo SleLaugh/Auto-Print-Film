@@ -1,8 +1,8 @@
 """Compile actual service admission methods and exercise harmless real children.
 
 The C# service project and its dependencies live outside this repository. This
-harness substitutes the database/configuration and startup recovery only, keeping
-the actual admission, process launch, tracking and task-status methods intact.
+harness substitutes database/configuration, task creation and report processing,
+keeping the actual hospital scheduler, recovery, admission and launcher intact.
 """
 
 import os
@@ -15,6 +15,11 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SERVICE_SOURCE = (
+    PROJECT_ROOT
+    / "服务端/Apps/ElincloudAISliceServer.AISliceDicomService"
+    / "AISliceDicomWorker.cs"
+)
 
 
 def _dotnet_sdk():
@@ -30,10 +35,7 @@ def _dotnet_sdk():
     pytest.skip("A .NET SDK >= 6 is required for the C# admission regression test")
 
 
-def _method(source, name):
-    """Extract an entire actual C# method without rewriting its implementation."""
-    match = re.search(rf"^        private [^\n]*\b{name}\(", source, re.MULTILINE)
-    assert match is not None, f"Service method {name} is missing"
+def _block(source, match):
     body_start = source.index("{", match.end())
     depth = 1
     end = body_start + 1
@@ -43,17 +45,33 @@ def _method(source, name):
     return source[match.start():end]
 
 
+def _methods(source, name):
+    """Extract actual C# methods, including overloads, without rewriting them."""
+    matches = list(re.finditer(rf"^        private [^\n]*\b{name}\(", source, re.MULTILINE))
+    assert matches, f"Service method {name} is missing"
+    return "\n\n".join(_block(source, match) for match in matches)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="The harmless worker uses a POSIX shell")
-def test_parallel_service_dispatch_obeys_output_and_global_limits(tmp_path):
+def test_service_dispatch_fairness_and_global_process_limits(tmp_path):
     dotnet, sdk_major = _dotnet_sdk()
-    source = (PROJECT_ROOT / "服务端/AISliceDicomService.cs").read_text("utf-8")
+    source = SERVICE_SOURCE.read_text("utf-8")
     methods = "\n\n".join(
-        _method(source, name)
+        _methods(source, name)
         for name in (
-            "ProcessSingleStudy",
-            "StartUnprocessedTasks",
+            "BusinessLogic",
+            "PrepareHospitalTasks",
+            "ProcessPendingSeries",
+            "DispatchHospitalTasks",
+            "HasAvailableProcessSlot",
+            "TryStartNextHospitalTask",
             "StartUnprocessedSeries",
             "UpdateSeriesRecordStatus",
+            "IsTerminalSliceRecord",
+            "IsTerminalSliceStatus",
+            "AggregateSliceStatus",
+            "BuildImageExaminationKey",
+            "RestoreRunningProcesses",
             "IsProcessRunning",
             "TryGetRunningProcessStartTime",
             "GetSeriesCacheDirectory",
@@ -68,8 +86,11 @@ def test_parallel_service_dispatch_obeys_output_and_global_limits(tmp_path):
     harness = (PROJECT_ROOT / "tests/fixtures/service_dispatch_harness.cs").read_text(
         "utf-8"
     )
+    queue = re.search(r"^        private sealed class HospitalDispatchQueue\b", source, re.MULTILINE)
+    assert queue is not None, "Service hospital queue is missing"
     (tmp_path / "Program.cs").write_text(
-        harness.replace("// ACTUAL_SERVICE_METHODS", methods), encoding="utf-8"
+        harness.replace("// ACTUAL_SERVICE_METHODS", methods)
+        .replace("// ACTUAL_HOSPITAL_QUEUE", _block(source, queue)), encoding="utf-8"
     )
     (tmp_path / "Harness.csproj").write_text(
         '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
@@ -106,3 +127,4 @@ def test_parallel_service_dispatch_obeys_output_and_global_limits(tmp_path):
     assert run.returncode == 0, run.stdout + run.stderr
     assert "All 7 dispatch scenarios passed" in run.stdout
     assert "Series reuse invocation arguments passed" in run.stdout
+    assert "Hospital fairness and complete-scan ordering passed" in run.stdout

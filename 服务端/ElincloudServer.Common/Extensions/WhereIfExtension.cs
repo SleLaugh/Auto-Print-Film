@@ -1,0 +1,30 @@
+﻿using System.Linq.Expressions;
+
+namespace ElincloudServer.Common
+{
+    /// <summary>
+    /// WereIf拓展
+    /// </summary>
+    /// <remarks>
+    /// sle 2025年5月23日17:18:24
+    /// </remarks>
+    public static class WhereIfExtension
+    {
+        public static IQueryable<T> WhereIf<T>(this IQueryable<T> source, Expression<Func<T, bool>> predicate, bool condition)
+        {
+            return condition ? source.Where(predicate) : source;
+        }
+        public static IQueryable<T> WhereIf<T>(this IQueryable<T> source, Expression<Func<T, int, bool>> predicate, bool condition)
+        {
+            return condition ? source.Where(predicate) : source;
+        }
+        public static IEnumerable<T> WhereIf<T>(this IEnumerable<T> source, Func<T, bool> predicate, bool condition)
+        {
+            return condition ? source.Where(predicate) : source;
+        }
+        public static IEnumerable<T> WhereIf<T>(this IEnumerable<T> source, Func<T, int, bool> predicate, bool condition)
+        {
+            return condition ? source.Where(predicate) : source;
+        }
+    }
+}

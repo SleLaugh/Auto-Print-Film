@@ -4,10 +4,51 @@ using System.Linq.Expressions;
 
 // The process methods inserted below are copied at test time from the service.
 // External service dependencies are replaced by these deliberately small stubs.
-enum SliceImageStatus { 未切割, 正在切割, 切割失败, 已切割 }
-class SlicePlanConfigInfo { public string ID = "plan"; }
-class RISExamination { public string ID = "test"; public int SliceImageStatus; }
-class HospitalInfo { }
+enum SliceImageStatus { 未切割, 正在切割, 切割失败, 已切割, 不切割 }
+enum DicomImageCategories { 原始影像 }
+class SlicePlanConfigInfo
+{
+    public string ID = "plan", StudyTypeName = "CT";
+    public bool IsEnabel = true;
+}
+class RISExamination
+{
+    public string ID = "test", PatientID = "patient", ImageExaminationID = "image", ImagePatientID = "image-patient";
+    public int SliceImageStatus;
+}
+class HospitalInfo { public string ID = "hospital", Name = "hospital", HospitalGroupID = "hospital", Code = "hospital"; }
+class ExaminationImage
+{
+    public string ExaminationID = "image", PatientID = "image-patient", SeriesInstanceUID = "test";
+    public int SliceImageStatus, Category;
+    public bool ReceiveCompleted = true;
+}
+class V_ExaminationImage
+{
+    public string ExaminationID = "test", PatientID = "patient", ImageExaminationID = "image", ImagePatientID = "image-patient";
+    public string StudyTypeName = "CT", SeriesInstanceUID = "test";
+    public DateTime StudyDate = DateTime.MinValue;
+    public int SliceImageStatus;
+    public bool IsUrgent;
+}
+class Preset { public List<object> BodyPartMappings = new() { new() }; }
+class AIDicomSliceContext
+{
+    public HospitalInfo Hospital = new();
+    public SqlAccess Instance = new();
+    public List<SlicePlanConfigInfo> SlicePlans = new() { new() };
+    public Preset Preset = new();
+}
+static class DBServices
+{
+    public static readonly Dictionary<string, SqlAccess> Databases = new();
+    public static SqlAccess GetHospitalDBInstance(string id) => Databases[id];
+}
+static class CommonBL
+{
+    public static List<SlicePlanConfigInfo> GetSlicePlanConfigInfos(string id) => new() { new() };
+    public static Preset GetAIDicomSlicePresetConfigInfo(string code) => new();
+}
 namespace ElincloudServer.Common.Utils
 {
     static class EnumUtil
@@ -35,14 +76,30 @@ class AIFilmSliceRecord
 class SqlAccess
 {
     public Action? BeforeUpdate;
+    public Action<object, string[]>? ObserveUpdate;
+    public Action<Type>? BeforeRead;
+    public List<V_ExaminationImage> PendingSeries = new();
+    public readonly Dictionary<string, List<AIFilmSliceRecord>> StudyRecords = new();
+    public List<T> GetMuch<T>(Expression<Func<T, bool>>? predicate = null)
+    {
+        BeforeRead?.Invoke(typeof(T));
+        IEnumerable<T> items = typeof(T) == typeof(V_ExaminationImage)
+            ? PendingSeries.Cast<T>() : typeof(T) == typeof(AIFilmSliceRecord)
+            ? StudyRecords.Values.SelectMany(records => records).Cast<T>() : Enumerable.Empty<T>();
+        return predicate == null ? items.ToList() : items.Where(predicate.Compile()).ToList();
+    }
     public void Update<T>(T record, Expression<Func<T, bool>> predicate, params string[] columns)
-        => BeforeUpdate?.Invoke();
+    {
+        ObserveUpdate?.Invoke(record!, columns);
+        BeforeUpdate?.Invoke();
+    }
 }
 class Config { public string ExecutablePath = ""; public int MaxConcurrentCount = 8; }
 class AISliceDicomServiceUtil
 {
     public static readonly AISliceDicomServiceUtil Instance = new();
     public readonly Config AIFilmSliceConfigInfo = new();
+    public List<HospitalInfo> HospitalInfos = new();
     public void PrintLogAction(string message, bool error = false, object? context = null, Exception? exception = null) { }
 }
 
@@ -53,39 +110,60 @@ class Worker : IDisposable
     private readonly Dictionary<int, DateTime> RunningProcesses = new();
     private readonly Dictionary<string, Dictionary<int, DateTime>> RunningOutputs = new(
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-    private List<AIFilmSliceRecord> StudyRecords = new();
+    private string? NextHospitalID;
+    private bool RunningProcessesRestored;
     private Action<List<AIFilmSliceRecord>>? MonitorStudy;
+    public Action<List<AIFilmSliceRecord>, AIDicomSliceContext>? MonitorHospital;
 
-    // Startup restores processes before the service dispatches parallel studies.
-    private void RestoreRunningProcesses() { }
-    private static string BuildWindowPresetJson(IEnumerable<SlicePlanConfigInfo> plans) => "[]";
+    // ACTUAL_HOSPITAL_QUEUE
+
+    private static string BuildWindowPresetJson(IEnumerable<SlicePlanConfigInfo> plans, AIDicomSliceContext context) => "[]";
     private List<AIFilmSliceRecord> CreateMissingSeriesTasks(RISExamination examination,
-        List<SlicePlanConfigInfo> plans, SqlAccess database, HospitalInfo hospital) => StudyRecords;
-    private void MonitorTaskCompletion(RISExamination examination, List<AIFilmSliceRecord> records,
-        List<SlicePlanConfigInfo> plans, SqlAccess database, SliceImageStatus originalStatus)
-        => MonitorStudy?.Invoke(records);
+        List<V_ExaminationImage> series, AIDicomSliceContext context) => context.Instance.StudyRecords[examination.ID];
+    private void MonitorPendingSeriesTasks(List<AIFilmSliceRecord> records, AIDicomSliceContext context)
+    {
+        MonitorStudy?.Invoke(records);
+        MonitorHospital?.Invoke(records, context);
+    }
+    private static void SetExaminationStatus(RISExamination examination, SliceImageStatus status,
+        AIDicomSliceContext context) => examination.SliceImageStatus = (int)status;
+    private static void UpdateExaminationImageStatus(V_ExaminationImage series, SliceImageStatus status,
+        AIDicomSliceContext context) => series.SliceImageStatus = (int)status;
 
     // ACTUAL_SERVICE_METHODS
 
-    public void Dispatch(AIFilmSliceRecord record, int maximum, SqlAccess database,
+    public bool Dispatch(AIFilmSliceRecord record, int maximum, SqlAccess database,
         IEnumerable<AIFilmSliceRecord>? seriesRecords = null)
-        => StartUnprocessedSeries(record, new() { new() }, maximum, database, seriesRecords);
+        => StartUnprocessedSeries(record, new() { new() }, maximum, new() { Instance = database }, seriesRecords);
     public Process LaunchForArguments(string cacheDir, string outputDir)
         => StartAutoPrintFilm(8, Environment.CurrentDirectory, cacheDir, outputDir,
-            "CT", "肺部", 1.5, "[]", "[]")
+            "CT", "肺部", 1.5, "[]", "[]", out _)
             ?? throw new Exception("Argument regression child was not admitted");
     public void RestoreTrackedProcess(int processID, DateTime startTime, string outputDir)
         => TrackRunningProcess(processID, startTime, outputDir);
     public void RunStudy(List<AIFilmSliceRecord> records, SqlAccess database,
         Action<List<AIFilmSliceRecord>> monitor)
     {
-        StudyRecords = records;
+        database.StudyRecords["test"] = records;
         MonitorStudy = monitor;
-        ProcessSingleStudy(new(), new() { new() }, database, new());
+        AIDicomSliceContext context = new() { Instance = database };
+        var prepared = ProcessPendingSeries(new(), new() { new() }, context);
+        DispatchHospitals(8, (context, prepared));
+    }
+    public void RunBusiness() => BusinessLogic();
+    public void DispatchHospitals(int maximum,
+        params (AIDicomSliceContext Context, List<AIFilmSliceRecord> Records)[] hospitals)
+    {
+        AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.MaxConcurrentCount = maximum;
+        DispatchHospitalTasks(hospitals.Select(hospital => new HospitalDispatchQueue
+        {
+            Context = hospital.Context,
+            Tasks = new(hospital.Records.Select(record => (record, hospital.Records))),
+        }).ToList());
     }
     public bool HoldsProcessLock => Monitor.IsEntered(ProcessNumLock);
     public int LiveCount { get { RefreshRunningProcesses(); return RunningProcesses.Count; } }
-    public void Dispose()
+    public void ReleaseProcesses()
     {
         foreach (int id in RunningProcesses.Keys.ToArray())
         {
@@ -100,6 +178,7 @@ class Worker : IDisposable
         }
         RefreshRunningProcesses();
     }
+    public void Dispose() => ReleaseProcesses();
 }
 
 static class Program
@@ -163,8 +242,261 @@ static class Program
     static int Started(IEnumerable<AIFilmSliceRecord> records)
         => records.Count(record => record.SliceImageStatus == (int)SliceImageStatus.正在切割);
 
+    static (AIDicomSliceContext Context, List<AIFilmSliceRecord> Records) Hospital(
+        Worker worker, string id, int taskCount, List<string> starts)
+    {
+        var hospital = new HospitalInfo { ID = id, Name = id, HospitalGroupID = id, Code = id };
+        SqlAccess database = Database(worker);
+        database.ObserveUpdate = (record, columns) =>
+        {
+            if (record is AIFilmSliceRecord task && task.ProcessID > 0
+                && task.SliceImageStatus == (int)SliceImageStatus.正在切割
+                && columns.Contains(AIFilmSliceRecord._ProcessID)) starts.Add(id);
+        };
+        return (new() { Hospital = hospital, Instance = database },
+            Enumerable.Range(0, taskCount).Select(i => Record($"{id}-series-{i}")).ToList());
+    }
+
+    static void AddStudy(AIDicomSliceContext context, AIFilmSliceRecord record, string id,
+        bool urgent = false, DateTime? studyDate = null)
+    {
+        record.ExaminationID = id;
+        record.SeriesInstanceUID = id + "-series";
+        context.Instance.StudyRecords[id] = new() { record };
+        context.Instance.PendingSeries.Add(new()
+        {
+            ExaminationID = id, SeriesInstanceUID = record.SeriesInstanceUID,
+            IsUrgent = urgent, StudyDate = studyDate ?? DateTime.Today,
+        });
+    }
+
+    static void TestHospitalFairness(string executable)
+    {
+        Config config = AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo;
+
+        TestStudyDateOrdering();
+
+        // With five free slots, each hospital starts once before anyone starts twice.
+        using (Worker worker = new())
+        {
+            List<string> starts = new();
+            var a = Hospital(worker, "first-A", 5, starts);
+            var b = Hospital(worker, "first-B", 5, starts);
+            var c = Hospital(worker, "first-C", 5, starts);
+            worker.DispatchHospitals(5, a, b, c);
+            Check(starts.SequenceEqual(new[] { "first-A", "first-B", "first-C", "first-A", "first-B" })
+                && worker.LiveCount == 5, "Hospitals did not share the first round of slots fairly");
+        }
+
+        // The scan order is always A/B/C, while a single released slot must rotate
+        // across scans. Full-capacity scans must never advance that stored priority.
+        using (Worker worker = new())
+        {
+            List<string> starts = new();
+            var hospitals = new[] { "cycle-A", "cycle-B", "cycle-C" }
+                .Select(id => Hospital(worker, id, 4, starts)).ToArray();
+            for (int round = 0; round < 9; round++)
+            {
+                worker.DispatchHospitals(1, hospitals);
+                Check(starts.Count == round + 1 && starts[^1] == hospitals[round % 3].Context.Hospital.ID,
+                    "A busy first hospital starved a later hospital across scans");
+                for (int fullScan = 0; fullScan <= round % 3; fullScan++)
+                    worker.DispatchHospitals(1, hospitals);
+                Check(starts.Count == round + 1 && worker.LiveCount == 1,
+                    "A full-capacity scan admitted another child");
+                worker.ReleaseProcesses();
+                foreach (var hospital in hospitals)
+                    foreach (var record in hospital.Records.Where(record => record.ProcessID > 0))
+                        record.SliceImageStatus = (int)SliceImageStatus.已切割;
+            }
+        }
+
+        // Sharing is work-conserving: an active hospital can consume all spare slots.
+        using (Worker worker = new())
+        {
+            List<string> starts = new();
+            var active = Hospital(worker, "single-active", 7, starts);
+            worker.DispatchHospitals(4, Hospital(worker, "empty-before", 0, starts), active,
+                Hospital(worker, "empty-after", 0, starts));
+            Check(Started(active.Records) == 4 && worker.LiveCount == 4,
+                "Empty hospitals prevented the only active hospital from filling capacity");
+        }
+
+        // Skip empty, unconfigured, and cold-series blocked candidates, including a
+        // blocked head within an otherwise runnable hospital's own queue.
+        using (Worker worker = new())
+        {
+            List<string> starts = new();
+            var blocked = Hospital(worker, "blocked", 2, starts);
+            var leader = Record("blocked-cold", "leader");
+            worker.Dispatch(leader, 4, Database(worker));
+            blocked.Records[0].OutputDir = Record("blocked-cold", "follower").OutputDir;
+            blocked.Records[1].SliceConfigIDs = "missing-plan";
+            var active = Hospital(worker, "skip-active", 3, starts);
+            active.Records[0].OutputDir = Record("blocked-cold", "other-follower").OutputDir;
+            worker.DispatchHospitals(3, Hospital(worker, "skip-empty", 0, starts), blocked, active);
+            Check(starts.SequenceEqual(new[] { "skip-active", "skip-active" })
+                && Started(blocked.Records) == 0 && active.Records[0].ProcessID == -1
+                && worker.LiveCount == 3, "Blocked hospital or blocked queue head stopped runnable work");
+        }
+
+        // Spawn failure uses no turn or capacity; the next runnable task from the
+        // same hospital can start before moving on to the next hospital.
+        using (Worker worker = new())
+        {
+            List<string> starts = new();
+            var failed = Hospital(worker, "spawn-recovery-A", 2, starts);
+            var other = Hospital(worker, "spawn-recovery-B", 2, starts);
+            config.ExecutablePath = Path.Combine(Environment.CurrentDirectory, "missing-fairness-worker");
+            failed.Context.Instance.ObserveUpdate += (record, columns) =>
+            {
+                if (record is AIFilmSliceRecord task && task.SliceImageStatus == (int)SliceImageStatus.切割失败)
+                    config.ExecutablePath = executable;
+            };
+            worker.DispatchHospitals(2, failed, other);
+            Check(failed.Records[0].SliceImageStatus == (int)SliceImageStatus.切割失败
+                && starts.SequenceEqual(new[] { "spawn-recovery-A", "spawn-recovery-B" })
+                && worker.LiveCount == 2, "Spawn failure blocked remaining hospitals or reserved capacity");
+        }
+
+        // Even persistently failing database writes after a real launch must use
+        // that hospital's turn, preserve the child, and give the next turn to B.
+        using (Worker worker = new())
+        {
+            List<string> starts = new();
+            var a = Hospital(worker, "database-fair-A", 3, starts);
+            var b = Hospital(worker, "database-fair-B", 3, starts);
+            foreach (var record in a.Records) record.CacheDir = Path.Combine(Path.GetDirectoryName(record.OutputDir)!, "cache");
+            a.Context.Instance.BeforeUpdate = () => throw new Exception("Persistent database outage after spawn");
+            worker.DispatchHospitals(2, a, b);
+            Check(starts.SequenceEqual(new[] { "database-fair-A", "database-fair-B" })
+                && worker.LiveCount == 2, "Database failure lost the child or consumed another hospital's turn");
+        }
+
+        // A bad input combined with a database failure must also skip to B.
+        using (Worker worker = new())
+        {
+            List<string> starts = new();
+            var a = Hospital(worker, "bad-input-A", 1, starts);
+            var b = Hospital(worker, "bad-input-B", 1, starts);
+            a.Records[0].InputDir = Path.Combine(Environment.CurrentDirectory, "missing-input");
+            a.Context.Instance.BeforeUpdate = () => throw new Exception("Cannot save failed input status");
+            worker.DispatchHospitals(1, a, b);
+            Check(starts.SequenceEqual(new[] { "bad-input-B" }) && worker.LiveCount == 1,
+                "An invalid task and failed status write blocked another hospital");
+        }
+
+        TestCompleteBusinessScan();
+        TestBusinessRecovery(executable);
+        Console.WriteLine("Hospital fairness and complete-scan ordering passed");
+    }
+
+    static void TestStudyDateOrdering()
+    {
+        using Worker worker = new();
+        List<string> startedExaminations = new();
+        var hospital = Hospital(worker, "study-date", 3, new());
+        AddStudy(hospital.Context, hospital.Records[0], "date-late", studyDate: new DateTime(2026, 1, 3));
+        AddStudy(hospital.Context, hospital.Records[1], "date-early", studyDate: new DateTime(2026, 1, 1));
+        AddStudy(hospital.Context, hospital.Records[2], "date-middle", studyDate: new DateTime(2026, 1, 2));
+        hospital.Context.Instance.ObserveUpdate += (record, columns) =>
+        {
+            if (record is AIFilmSliceRecord task && task.ProcessID > 0)
+                startedExaminations.Add(task.ExaminationID);
+        };
+        AISliceDicomServiceUtil.Instance.HospitalInfos = new() { hospital.Context.Hospital };
+        DBServices.Databases[hospital.Context.Hospital.HospitalGroupID] = hospital.Context.Instance;
+        AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.MaxConcurrentCount = 1;
+        worker.RunBusiness();
+        Check(startedExaminations.SequenceEqual(new[] { "date-early" }),
+            "Non-urgent examinations were not dispatched in StudyDate order");
+        AISliceDicomServiceUtil.Instance.HospitalInfos = new();
+        DBServices.Databases.Clear();
+    }
+
+    static void TestCompleteBusinessScan()
+    {
+        using Worker worker = new();
+        List<string> starts = new();
+        var a = Hospital(worker, "business-A", 10, starts);
+        var b = Hospital(worker, "business-B", 1, starts);
+        var broken = Hospital(worker, "business-broken", 0, starts);
+        // The urgent study is last in the database, but its preparation finishes
+        // after a normal study. Dispatch must use urgency, not completion order.
+        for (int i = 0; i < a.Records.Count; i++) AddStudy(a.Context, a.Records[i], $"normal-{i}", urgent: i == 9);
+        AddStudy(b.Context, b.Records[0], "hospital-b");
+        var contexts = new[] { a.Context, broken.Context, b.Context };
+        AISliceDicomServiceUtil.Instance.HospitalInfos = contexts.Select(context => context.Hospital).ToList();
+        foreach (var context in contexts) DBServices.Databases[context.Hospital.HospitalGroupID] = context.Instance;
+        broken.Context.Instance.BeforeRead = type =>
+        {
+            if (type == typeof(V_ExaminationImage)) throw new Exception("One hospital's pending-view query failed");
+        };
+        int monitored = 0;
+        using ManualResetEventSlim normalPrepared = new(false);
+        worker.MonitorHospital = (records, context) =>
+        {
+            Check(worker.LiveCount == 0, "A hospital started children before all hospitals completed monitoring");
+            if (records[0].ExaminationID == "normal-9")
+                Check(normalPrepared.Wait(TimeSpan.FromSeconds(5)), "The normal study did not finish before the urgent study");
+            else if (context.Hospital.ID == "business-A") normalPrepared.Set();
+            Interlocked.Increment(ref monitored);
+        };
+        foreach (var context in new[] { a.Context, b.Context })
+            context.Instance.ObserveUpdate += (record, columns) =>
+            {
+                if (record is AIFilmSliceRecord task && task.ProcessID > 0)
+                    Check(monitored == 11, "Dispatch began before the complete cross-hospital scan finished");
+            };
+        AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.MaxConcurrentCount = 2;
+        worker.RunBusiness();
+        Check(monitored == 11 && starts.SequenceEqual(new[] { "business-A", "business-B" })
+            && a.Records[9].ProcessID > 0 && a.Records.Take(9).All(record => record.ProcessID == -1),
+            "Business scan failed to preserve urgent priority, hospital fairness, or per-hospital error isolation");
+        // Monitoring still happens when every process slot remains occupied.
+        worker.MonitorHospital = (records, context) => Interlocked.Increment(ref monitored);
+        worker.RunBusiness();
+        Check(monitored == 22 && starts.Count == 2 && worker.LiveCount == 2,
+            "A saturated business scan skipped hospital monitoring or started extra children");
+        AISliceDicomServiceUtil.Instance.HospitalInfos = new();
+        DBServices.Databases.Clear();
+    }
+
+    static void TestBusinessRecovery(string executable)
+    {
+        using Worker worker = new();
+        List<string> starts = new();
+        var a = Hospital(worker, "restore-first", 1, starts);
+        var b = Hospital(worker, "restore-last", 1, starts);
+        using Process restored = Process.Start(new ProcessStartInfo
+        {
+            FileName = executable, UseShellExecute = false, CreateNoWindow = true,
+        }) ?? throw new Exception("Could not start recovery child");
+        b.Records[0].SliceImageStatus = (int)SliceImageStatus.正在切割;
+        b.Records[0].ProcessID = restored.Id;
+        b.Records[0].StartDate = restored.StartTime;
+        AddStudy(a.Context, a.Records[0], "recovery-a");
+        AddStudy(b.Context, b.Records[0], "recovery-b");
+        AISliceDicomServiceUtil.Instance.HospitalInfos = new() { a.Context.Hospital, b.Context.Hospital };
+        DBServices.Databases[a.Context.Hospital.ID] = a.Context.Instance;
+        DBServices.Databases[b.Context.Hospital.ID] = b.Context.Instance;
+        AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.MaxConcurrentCount = 1;
+        int monitored = 0;
+        worker.MonitorHospital = (records, context) =>
+        {
+            Check(worker.LiveCount == 1, "Startup recovery did not account for a later hospital's live process");
+            monitored++;
+        };
+        worker.RunBusiness();
+        Check(monitored == 2 && starts.Count == 0 && worker.LiveCount == 1 && a.Records[0].ProcessID == -1,
+            "A late hospital's restored child did not reserve its global slot before dispatch");
+        AISliceDicomServiceUtil.Instance.HospitalInfos = new();
+        DBServices.Databases.Clear();
+    }
+
     public static void Main(string[] args)
     {
+        ThreadPool.SetMinThreads(8, 8);
         Config config = AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo;
         config.ExecutablePath = args[0];
 
@@ -406,8 +738,8 @@ static class Program
                 monitorCalls++;
                 Check(leader.SliceImageStatus == (int)SliceImageStatus.正在切割,
                     "Leader reached a terminal status before completion monitoring");
-                Check(Started(followers) == 1 && worker.LiveCount == 1,
-                    "Study loop released multiple followers before recognizing the finished producer");
+                Check(Started(followers) == 0 && worker.LiveCount == 0,
+                    "Study monitoring started a child before completing the preparation phase");
                 leader.SliceImageStatus = (int)terminal;
                 if (terminal == SliceImageStatus.切割失败)
                     leader.Message = "seg.nii.gz 中未找到目标Label体素: vertebrae_C1";
@@ -483,5 +815,6 @@ static class Program
             Check(Started(new[] { second }) == 1 && worker.LiveCount == 1, "Exited child retained slot/output");
         }
         Console.WriteLine("All 7 dispatch scenarios passed");
+        TestHospitalFairness(args[0]);
     }
 }

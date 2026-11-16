@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+此文件由 Web 项目的发布/打包过程使用。可以通过编辑此 MSBuild 文件
+自定义此过程的行为。为了解与此相关的更多内容，请访问 https://go.microsoft.com/fwlink/?LinkID=208121。 
+-->
+<Project>
+  <PropertyGroup>
+    <_PublishTargetUrl>E:\SVN\研发\协和科研合作项目\AI切图\服务端\ElincloudAISliceServer\..\发布\ElincloudAISliceServer\</_PublishTargetUrl>
+    <History>True|2026-09-03T09:07:29.1562840Z||;True|2026-09-03T13:30:00.2520801+08:00||;</History>
+    <LastFailureDetails />
+  </PropertyGroup>
+</Project>

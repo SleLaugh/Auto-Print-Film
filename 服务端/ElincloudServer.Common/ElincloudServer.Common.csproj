@@ -1,0 +1,59 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|AnyCPU'">
+		<TargetFramework>net6.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<BaseOutputPath>..\Bin</BaseOutputPath>
+		<OutputType>Library</OutputType>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|AnyCPU'">
+		<TargetFramework>net6.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<DebugType>none</DebugType>
+		<!-- 禁用调试信息生成 -->
+		<Nullable>enable</Nullable>
+		<BaseOutputPath>..\Bin</BaseOutputPath>
+		<OutputType>Library</OutputType>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Compile Remove="bin\**" />
+		<EmbeddedResource Remove="bin\**" />
+		<None Remove="bin\**" />
+	</ItemGroup>
+
+
+	<ItemGroup>
+		<PackageReference Include="Aliyun.OSS.SDK.NetCore" Version="2.14.1" />
+		<PackageReference Include="AWSSDK.Core" Version="4.0.0-preview.4" />
+		<PackageReference Include="AWSSDK.S3" Version="4.0.0-preview.4" />
+		<PackageReference Include="DM.DmProvider" Version="8.3.1.37876" />
+		<PackageReference Include="fo-dicom.NetCore" Version="4.0.8" />
+		<PackageReference Include="HuaweiCloud.SDK.OBS.Core" Version="3.22.3.4" />
+		<PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.1" />
+		<PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
+		<PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="8.0.0" />
+		<PackageReference Include="Mono.Posix.NETStandard" Version="1.0.0" />
+		<PackageReference Include="MySql.Data" Version="9.0.0" />
+		<PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+		<PackageReference Include="Oracle.ManagedDataAccess.Core" Version="23.5.0" />
+		<PackageReference Include="SharpZipLib" Version="1.4.2" />
+		<PackageReference Include="SixLabors.ImageSharp" Version="3.1.6" />
+		<PackageReference Include="System.Drawing.Common" Version="9.0.4" />
+		<PackageReference Include="System.Management" Version="8.0.0" />
+		<PackageReference Include="System.ServiceModel.Http" Version="4.10.3" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Reference Include="ElincloudServer.Entity">
+	    <HintPath>..\ElincloudAISliceServer.Libs\ElincloudServer.Entity.dll</HintPath>
+	  </Reference>
+	</ItemGroup>
+
+</Project>

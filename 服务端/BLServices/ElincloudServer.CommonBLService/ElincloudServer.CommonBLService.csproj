@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|AnyCPU'">
+		<TargetFramework>net6.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<BaseOutputPath>..\..\Bin</BaseOutputPath>
+		<OutputType>Library</OutputType>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|AnyCPU'">
+		<TargetFramework>net6.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<DebugType>none</DebugType>
+		<!-- 禁用调试信息生成 -->
+		<Nullable>enable</Nullable>
+		<BaseOutputPath>..\..\Bin</BaseOutputPath>
+		<OutputType>Library</OutputType>
+	</PropertyGroup>
+
+	<ItemGroup>
+	  <Compile Remove="bin\**" />
+	  <EmbeddedResource Remove="bin\**" />
+	  <None Remove="bin\**" />
+	</ItemGroup>
+
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.AspNetCore.Http" Version="2.1.34" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\..\ElincloudServer.Common\ElincloudServer.Common.csproj" />
+		<ProjectReference Include="..\..\Entities\ElincloudAISliceServer.DBEntity\ElincloudAISliceServer.DBEntity.csproj" />
+		<ProjectReference Include="..\..\Entities\ElincloudAISliceServer.Entity\ElincloudAISliceServer.Entity.csproj" />
+	</ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="ElincloudServer.DBEntity">
+      <HintPath>..\..\ElincloudAISliceServer.Libs\ElincloudServer.DBEntity.dll</HintPath>
+    </Reference>
+    <Reference Include="ElincloudServer.DBService">
+      <HintPath>..\..\ElincloudAISliceServer.Libs\ElincloudServer.DBService.dll</HintPath>
+    </Reference>
+    <Reference Include="ElincloudServer.Entity">
+      <HintPath>..\..\ElincloudAISliceServer.Libs\ElincloudServer.Entity.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>

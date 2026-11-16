@@ -41,6 +41,16 @@ namespace ElincloudAISliceServer.AISliceDicomService
 
         private bool RunningProcessesRestored;
 
+        // 多家医院共用全局进程池，不预留固定名额；游标只记录下一次成功启动应轮到的医院，满额空轮不推进。
+        private string? NextHospitalID;
+
+        private sealed class HospitalDispatchQueue
+        {
+            // 每轮先准备各医院的内存队列，再统一启动 Python，避免单院查询顺序抢占全局名额。
+            public AIDicomSliceContext Context;
+            public Queue<(AIFilmSliceRecord Record, List<AIFilmSliceRecord> SeriesRecords)> Tasks = new();
+        }
+
         #endregion
 
         #region 初始化与 Worker 生命周期
@@ -106,120 +116,125 @@ namespace ElincloudAISliceServer.AISliceDicomService
         /// </summary>
         private void BusinessLogic()
         {
-            // 恢复全部医院的旧进程后才能派发新任务，避免前一个医院先占满新名额。
+            // 调度分为“恢复全部医院进程 -> 准备全部医院任务 -> 统一轮转启动”三步，不能在 foreach 医院时立即启动，
+            // 否则前面的医院可能先占满全局名额；代价是本轮第一条新任务要等医院准备阶段结束。
             RestoreRunningProcesses();
             AISliceDicomServiceUtil.Instance.PrintLogAction($"共有[{AISliceDicomServiceUtil.Instance.HospitalInfos.Count}]个医院的数据需要处理！");
+            List<HospitalDispatchQueue> hospitals = new List<HospitalDispatchQueue>();
             foreach (HospitalInfo hospital in AISliceDicomServiceUtil.Instance.HospitalInfos)
             {
-                AISliceDicomServiceUtil.Instance.PrintLogAction($"开始处理[{hospital.Name}]的数据！");
-
-                #region 处理单个医院
-
-                #region 创建上下文
-
-                AIDicomSliceContext context = new AIDicomSliceContext();
-                context.Hospital = hospital;
-                context.Instance = DBServices.GetHospitalDBInstance(hospital.HospitalGroupID);
-                context.SlicePlans = CommonBL.GetSlicePlanConfigInfos(hospital.HospitalGroupID).FindAll(i => i.IsEnabel);   // 过滤掉不启用的
-                context.Preset = CommonBL.GetAIDicomSlicePresetConfigInfo(hospital.Code);
-
-                if (context.Preset == null || context.Preset.BodyPartMappings == null || context.Preset.BodyPartMappings.Count == 0)
+                try
                 {
-                    AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]无预设配置，跳过！");
-                    continue;
+                    HospitalDispatchQueue? queue = PrepareHospitalTasks(hospital);
+                    if (queue != null) hospitals.Add(queue);
                 }
-
-                if (context.SlicePlans == null || context.SlicePlans.Count == 0)
+                catch (Exception ex)
                 {
-                    AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]无切割方案，跳过！");
-                    continue;
+                    // 单院配置、查询失败不应阻止其他医院监测和派发；首次全局进程恢复仍须成功。
+                    AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]准备切割任务异常！", true, null, ex);
                 }
-
-                #endregion
-
-                List<string> studyTypes = context.SlicePlans.Select(i => i.StudyTypeName).ToList();
-
-                // 唯一调度入口：V_ExaminationImage。
-                // 视图已经过滤 ReceiveCompleted=1 且 SliceImageStatus 为未切割/正在切割，
-                // 并通过 ImageExaminationID + ImagePatientID 关联出内部检查号和内部患者号。
-                // 因此这里不再查询 ExaminationImage，也不再反查 RISExamination。
-                // Category 仍在此处限定为原始影像；不使用 IsArchived。
-                List<V_ExaminationImage> pendingSeries = context.Instance.GetMuch<V_ExaminationImage>();
-
-                // 加急是检查级属性：同一检查下所有序列 IsUrgent 一致，取首条即可。
-                // 排序后加急检查排在前面，会优先进入下面的 8 条批次派发。
-                var pendingGroups = pendingSeries
-                    .Where(item => !string.IsNullOrWhiteSpace(item.ExaminationID)
-                        && !string.IsNullOrWhiteSpace(item.PatientID)
-                        && !string.IsNullOrWhiteSpace(item.ImageExaminationID)
-                        && !string.IsNullOrWhiteSpace(item.ImagePatientID))
-                    .GroupBy(item => BuildImageExaminationKey(item.ExaminationID, item.PatientID))
-                    .Select(group => new
-                    {
-                        Key = group.Key,
-                        IsUrgent = group.First().IsUrgent,
-                        Items = group.ToList()
-                    })
-                    .OrderByDescending(group => group.IsUrgent)
-                    .ToList();
-
-                if (pendingGroups.Count > 0)
-                {
-                    AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]需要处理{pendingGroups.Count}条数据！");
-                    // 每次循环处理的数量
-                    int handleCount = 8;
-                    // 循环次数
-                    int loopCount = (int)Math.Ceiling((double)pendingGroups.Count / handleCount);
-                    // 大循环
-                    for (int i = 0; i < loopCount; i++)
-                    {
-                        // 获取本次循环要处理的数据
-                        var sublist = pendingGroups.Skip(handleCount * i).Take(handleCount).ToList();
-                        // 开始本次小循环
-                        List<Task> subTasks = new List<Task>();
-                        foreach (var pendingGroup in sublist)
-                        {
-                            V_ExaminationImage firstSeries = pendingGroup.Items.First();
-                            if (!studyTypes.Contains(firstSeries.StudyTypeName))
-                            {
-                                continue;
-                            }
-
-                            // 视图直接提供 RIS 内部检查号/患者号，以及影像侧关联号。
-                            // 构造一个仅用于传递编号的对象，不从 RISExamination 表读取检查实体。
-                            RISExamination examination = new RISExamination
-                            {
-                                ID = firstSeries.ExaminationID,
-                                PatientID = firstSeries.PatientID,
-                                ImageExaminationID = firstSeries.ImageExaminationID,
-                                ImagePatientID = firstSeries.ImagePatientID
-                            };
-
-                            // 同一序列按 SeriesInstanceUID 去重，后续创建任务和状态回写均按序列处理。
-                            List<V_ExaminationImage> seriesForExamination = pendingGroup.Items
-                                                                                                                 .GroupBy(item => item.SeriesInstanceUID, StringComparer.OrdinalIgnoreCase)
-                                                                                                                 .Select(group => group.First())
-                                                                                                                 .ToList();
-
-                            System.Threading.Tasks.Task subtask = new System.Threading.Tasks.Task(new Action(() =>
-                            {
-                                ProcessPendingSeries(examination, seriesForExamination, context);
-                                AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{examination.ID}]的数据处理完成！");
-                            }));
-                            subTasks.Add(subtask);
-                            subtask.Start();
-                        }
-                        //等待线程池结束,执行下一次循环
-                        Task.WaitAll(subTasks.ToArray());
-                    }
-                    AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]的数据处理完成！");
-                }
-                else
-                {
-                    AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]没有要处理的数据！");
-                }
-                #endregion
             }
+            DispatchHospitalTasks(hospitals);
+        }
+
+        /// <summary>
+        /// 只创建任务和处理完成报告，不启动进程；保留医院内部加急和 StudyDate 排序。
+        /// </summary>
+        private HospitalDispatchQueue? PrepareHospitalTasks(HospitalInfo hospital)
+        {
+            AISliceDicomServiceUtil.Instance.PrintLogAction($"开始处理[{hospital.Name}]的数据！");
+
+            AIDicomSliceContext context = new AIDicomSliceContext
+            {
+                Hospital = hospital,
+                Instance = DBServices.GetHospitalDBInstance(hospital.HospitalGroupID),
+                SlicePlans = CommonBL.GetSlicePlanConfigInfos(hospital.HospitalGroupID).FindAll(i => i.IsEnabel),
+                Preset = CommonBL.GetAIDicomSlicePresetConfigInfo(hospital.Code)
+            };
+
+            if (context.Preset == null || context.Preset.BodyPartMappings == null || context.Preset.BodyPartMappings.Count == 0)
+            {
+                AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]无预设配置，跳过！");
+                return null;
+            }
+            if (context.SlicePlans == null || context.SlicePlans.Count == 0)
+            {
+                AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]无切割方案，跳过！");
+                return null;
+            }
+
+            HospitalDispatchQueue queue = new HospitalDispatchQueue { Context = context };
+            List<string> studyTypes = context.SlicePlans.Select(i => i.StudyTypeName).ToList();
+            List<V_ExaminationImage> pendingSeries = context.Instance.GetMuch<V_ExaminationImage>();
+
+            // 这里只查询、创建缺失记录和监测已有任务，不启动 Python；StudyDate 按约定一定存在，不做空值或格式校验。
+            // 检查下任一序列加急则检查整体优先；同一优先级按最早 StudyDate、检查号排序，检查内再按 StudyDate 和序列号排序。
+            var pendingGroups = pendingSeries
+                .Where(item => !string.IsNullOrWhiteSpace(item.ExaminationID)
+                    && !string.IsNullOrWhiteSpace(item.PatientID)
+                    && !string.IsNullOrWhiteSpace(item.ImageExaminationID)
+                    && !string.IsNullOrWhiteSpace(item.ImagePatientID))
+                .GroupBy(item => BuildImageExaminationKey(item.ExaminationID, item.PatientID))
+                .Select(group => new
+                {
+                    Key = group.Key,
+                    IsUrgent = group.Any(item => item.IsUrgent),
+                    StudyDate = group.Min(item => item.StudyDate),
+                    Items = group
+                        .OrderBy(item => item.StudyDate)
+                        .ThenBy(item => item.SeriesInstanceUID, StringComparer.OrdinalIgnoreCase)
+                        .ToList()
+                })
+                .OrderByDescending(group => group.IsUrgent)
+                .ThenBy(group => group.StudyDate)
+                .ThenBy(group => group.Key, StringComparer.Ordinal)
+                .ToList();
+
+            if (pendingGroups.Count == 0)
+            {
+                AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]没有要处理的数据！");
+                return queue;
+            }
+
+            AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]需要处理{pendingGroups.Count}条数据！");
+            const int handleCount = 8;
+            int loopCount = (int)Math.Ceiling((double)pendingGroups.Count / handleCount);
+            for (int i = 0; i < loopCount; i++)
+            {
+                var sublist = pendingGroups.Skip(handleCount * i).Take(handleCount).ToList();
+                List<Task<List<AIFilmSliceRecord>>> subTasks = new List<Task<List<AIFilmSliceRecord>>>();
+                foreach (var pendingGroup in sublist)
+                {
+                    V_ExaminationImage firstSeries = pendingGroup.Items.First();
+                    if (!studyTypes.Contains(firstSeries.StudyTypeName)) continue;
+
+                    RISExamination examination = new RISExamination
+                    {
+                        ID = firstSeries.ExaminationID,
+                        PatientID = firstSeries.PatientID,
+                        ImageExaminationID = firstSeries.ImageExaminationID,
+                        ImagePatientID = firstSeries.ImagePatientID
+                    };
+                    List<V_ExaminationImage> seriesForExamination = pendingGroup.Items
+                        .GroupBy(item => item.SeriesInstanceUID, StringComparer.OrdinalIgnoreCase)
+                        .Select(group => group.First())
+                        .ToList();
+                    subTasks.Add(Task.Run(() => ProcessPendingSeries(examination, seriesForExamination, context)));
+                }
+
+                Task.WaitAll(subTasks.ToArray());
+                foreach (Task<List<AIFilmSliceRecord>> subTask in subTasks)
+                {
+                    List<AIFilmSliceRecord> records = subTask.Result;
+                    foreach (AIFilmSliceRecord record in records)
+                    {
+                        if (record.SliceImageStatus == (int)SliceImageStatus.未切割)
+                            queue.Tasks.Enqueue((record, records));
+                    }
+                }
+            }
+            AISliceDicomServiceUtil.Instance.PrintLogAction($"[{hospital.Name}]本轮任务监测完成，待派发{queue.Tasks.Count}条！");
+            return queue;
         }
 
         #endregion
@@ -230,24 +245,14 @@ namespace ElincloudAISliceServer.AISliceDicomService
         /// 以序列为粒度处理本轮队列。检查对象仅携带视图提供的内部编号，
         /// 不从 RISExamination 表读取；只有本轮序列全部进入终态后，才查询底层影像表核对全检查状态。
         /// </summary>
-        private void ProcessPendingSeries(RISExamination examination, List<V_ExaminationImage> pendingSeries, AIDicomSliceContext context)
+        private List<AIFilmSliceRecord> ProcessPendingSeries(RISExamination examination, List<V_ExaminationImage> pendingSeries, AIDicomSliceContext context)
         {
             try
             {
-                // 创建
                 List<AIFilmSliceRecord> records = CreateMissingSeriesTasks(examination, pendingSeries, context);
-                StartUnprocessedTasks(records, context);
-
-                int completedCount = records.Count(IsTerminalSliceRecord);
+                // 先确认已有任务状态，启动统一交给跨医院轮转；返回本检查本轮任务，让上层只把“未切割”记录放入医院队列。
                 MonitorPendingSeriesTasks(records, context);
-                if (records.Count(IsTerminalSliceRecord) > completedCount)
-                {
-                    // 失败也可能生成正式缓存；本轮报告处理后立即放行同序列的下一个部位。
-                    StartUnprocessedTasks(records, context);
-                }
 
-                // 任务记录是序列下的明细。只有该序列所有任务终态后才写回
-                // ExaminationImage.SliceImageStatus。
                 foreach (V_ExaminationImage series in pendingSeries
                     .GroupBy(item => item.SeriesInstanceUID, StringComparer.OrdinalIgnoreCase)
                     .Select(group => group.First()))
@@ -255,10 +260,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
                     List<AIFilmSliceRecord> seriesRecords = records
                         .Where(item => string.Equals(item.SeriesInstanceUID, series.SeriesInstanceUID, StringComparison.OrdinalIgnoreCase))
                         .ToList();
-                    if (seriesRecords.Count == 0 || !seriesRecords.All(IsTerminalSliceRecord))
-                    {
-                        continue;
-                    }
+                    if (seriesRecords.Count == 0 || !seriesRecords.All(IsTerminalSliceRecord)) continue;
                     UpdateExaminationImageStatus(series, AggregateSliceStatus(seriesRecords), context);
                 }
 
@@ -273,38 +275,35 @@ namespace ElincloudAISliceServer.AISliceDicomService
                 if (!currentBatchFinished)
                 {
                     SetExaminationStatus(examination, SliceImageStatus.正在切割, context);
-                    return;
+                    return records;
                 }
 
-                // 本轮序列全部终态后，才重新读取该检查的全部序列；这一步用于防止
-                // 本轮处理期间新到的序列让检查被过早标记为完成。
                 List<ExaminationImage> allSeries = context.Instance.GetMuch<ExaminationImage>()
                     .Where(item => item.ExaminationID == examination.ImageExaminationID
                         && item.PatientID == examination.ImagePatientID
                         && item.Category == (int)DicomImageCategories.原始影像)
                     .ToList();
-
                 List<ExaminationImage> distinctSeries = allSeries
                     .GroupBy(item => item.SeriesInstanceUID, StringComparer.OrdinalIgnoreCase)
                     .Select(group => group.First())
                     .ToList();
 
                 if (distinctSeries.Count == 0 || distinctSeries.Any(item =>
-                    !item.ReceiveCompleted
-                    || !IsTerminalSliceStatus(item.SliceImageStatus)))
+                    !item.ReceiveCompleted || !IsTerminalSliceStatus(item.SliceImageStatus)))
                 {
                     SetExaminationStatus(examination, SliceImageStatus.正在切割, context);
-                    return;
+                    return records;
                 }
 
                 SetExaminationStatus(examination, AggregateSliceStatus(distinctSeries), context);
+                return records;
             }
             catch (Exception ex)
             {
                 AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{examination.ID}]的数据处理异常！", true, null, ex);
+                return new List<AIFilmSliceRecord>();
             }
         }
-
 
         /// <summary>
         /// 创建缺失的序列切割任务。
@@ -511,82 +510,116 @@ namespace ElincloudAISliceServer.AISliceDicomService
         /// 启动本轮已经创建、处于“未切割”状态的任务。
         /// 此方法不扫描原始 DICOM 序列，只根据任务记录启动任务。
         /// </summary>
-        private void StartUnprocessedTasks(List<AIFilmSliceRecord> records, AIDicomSliceContext context)
+        private void DispatchHospitalTasks(List<HospitalDispatchQueue> hospitals)
         {
+            if (hospitals.Count == 0) return;
             int maxConcurrentCount = AISliceDicomServiceUtil.Instance.AIFilmSliceConfigInfo.MaxConcurrentCount;
+            int index = hospitals.FindIndex(hospital => hospital.Context.Hospital.ID == NextHospitalID);
+            if (index < 0) index = 0;
+            int idleHospitals = 0;
 
-            foreach (AIFilmSliceRecord record in records)
+            // 每次成功启动才把优先权交给下一家医院；全局名额已满时保留 NextHospitalID，下一轮从同一家医院继续。
+            while (idleHospitals < hospitals.Count)
             {
-                // 只启动“未切割”状态的任务；已运行、已完成、失败和不切割的记录均不在此处启动。
-                if (record.SliceImageStatus != (int)SliceImageStatus.未切割)
+                if (!HasAvailableProcessSlot(maxConcurrentCount)) return;
+                bool started = TryStartNextHospitalTask(hospitals[index], maxConcurrentCount);
+                index = (index + 1) % hospitals.Count;
+                if (started)
                 {
-                    continue;
+                    NextHospitalID = hospitals[index].Context.Hospital.ID;
+                    idleHospitals = 0;
                 }
-
-                // 任务配置 ID 可能为空（例如不切割记录），先判断状态后再解析配置。
-                List<SlicePlanConfigInfo> recordSlicePlans = string.IsNullOrWhiteSpace(record.SliceConfigIDs)
-                    ? new List<SlicePlanConfigInfo>()
-                    : context.SlicePlans.FindAll(i => record.SliceConfigIDs.Split(',').Contains(i.ID));
-
-                if (recordSlicePlans.Count == 0)
+                else
                 {
-                    // 正常情况下，未切割任务必须具有切割方案；避免空配置启动 Python。
-                    continue;
+                    idleHospitals++;
                 }
-
-                StartUnprocessedSeries(record, recordSlicePlans, maxConcurrentCount, context, records);
             }
+        }
+
+        private bool HasAvailableProcessSlot(int maxConcurrentCount)
+        {
+            lock (ProcessNumLock)
+            {
+                // 名额按真实存活的 Python PID 计算，而不是按数据库任务状态，避免恢复、退出或写库失败造成虚假名额。
+                RefreshRunningProcesses();
+                return RunningProcesses.Count < maxConcurrentCount;
+            }
+        }
+
+        private bool TryStartNextHospitalTask(HospitalDispatchQueue hospital, int maxConcurrentCount)
+        {
+            while (hospital.Tasks.Count > 0 && HasAvailableProcessSlot(maxConcurrentCount))
+            {
+                var candidate = hospital.Tasks.Dequeue();
+                AIFilmSliceRecord record = candidate.Record;
+                if (record.SliceImageStatus != (int)SliceImageStatus.未切割) continue;
+
+                try
+                {
+                    List<SlicePlanConfigInfo> recordSlicePlans = string.IsNullOrWhiteSpace(record.SliceConfigIDs) ? new List<SlicePlanConfigInfo>() : hospital.Context.SlicePlans.FindAll(i => record.SliceConfigIDs.Split(',').Contains(i.ID));
+                    if (recordSlicePlans.Count == 0) continue;
+                    // 只有真实启动成功才算该医院获得一次轮次；名额、目录或启动失败都继续尝试该院其他候选。
+                    if (StartUnprocessedSeries(record, recordSlicePlans, maxConcurrentCount, hospital.Context, candidate.SeriesRecords))
+                        return true;
+                }
+                catch (Exception ex)
+                {
+                    AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{record.ExaminationID}]序列[{record.SeriesInstanceUID}]派发异常！", true, null, ex);
+                }
+            }
+            return false;
         }
 
         /// <summary>
         /// 启动一条未切割任务。全局并发名额、输出目录占用和同序列缓存复用条件由启动方法统一校验。
         /// </summary>
-        private void StartUnprocessedSeries(AIFilmSliceRecord record, List<SlicePlanConfigInfo> slicePlans, int maxConcurrentCount, AIDicomSliceContext context, IEnumerable<AIFilmSliceRecord>? seriesRecords = null)
+        private bool StartUnprocessedSeries(AIFilmSliceRecord record, List<SlicePlanConfigInfo> slicePlans, int maxConcurrentCount, AIDicomSliceContext context, IEnumerable<AIFilmSliceRecord>? seriesRecords = null)
         {
             if (!Directory.Exists(record.InputDir))
             {
                 string message = $"DICOM目录不存在：{record.InputDir}";
                 UpdateSeriesRecordStatus(record, SliceImageStatus.切割失败, 0, MinStartDate, message, context);
                 AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{record.ExaminationID}]序列[{record.SeriesInstanceUID}]{message}", true);
-                return;
+                return false;
             }
 
+            // 返回值表示是否已创建 OS 进程，不是数据库写入是否成功；进程已启动后即算掉本医院轮次，避免同轮重复派发。
+            bool processStarted = false;
             try
             {
                 string cacheDir = GetSeriesCacheDirectory(record.OutputDir);
-                // 同序列任务继续复用同一缓存；先保存旧记录的缓存迁移，失败时不启动新进程。
-                // 数据库写入在调度锁外，之后由启动方法原子检查名额、输出目录及序列占用。
                 if (!string.Equals(record.CacheDir, cacheDir, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                 {
                     record.CacheDir = cacheDir;
                     context.Instance.Update<AIFilmSliceRecord>(record, item => item.ID == record.ID, nameof(AIFilmSliceRecord.CacheDir));
                 }
 
-                // 成片成功与缓存生成是两个条件：缺体素等后续失败仍可能留下可复用缓存。
-                // 先确认同序列有已结束任务，启动锁内再检查缓存；不根据错误消息判断。
                 StringComparison pathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-
                 bool allowSeriesConcurrency = seriesRecords != null && seriesRecords.Any(completed =>
                     (completed.SliceImageStatus == (int)SliceImageStatus.已切割 || completed.SliceImageStatus == (int)SliceImageStatus.切割失败)
                     && !string.IsNullOrWhiteSpace(completed.OutputDir)
                     && string.Equals(GetSeriesCacheDirectory(completed.OutputDir), cacheDir, pathComparison)
                     && !IsOutputProcessRunning(completed.OutputDir));
 
-                using Process? process = StartAutoPrintFilm(maxConcurrentCount, record.InputDir, cacheDir, record.OutputDir, record.StudyTypeName, record.SlicePartName, record.ScanThickness, record.PlaneConfigJson, BuildWindowPresetJson(slicePlans, context), allowSeriesConcurrency);
-                // 名额已满、输出目录被占用或同序列首任务仍在运行时保留待处理，继续扫描其他任务。
-                if (process == null)
-                {
-                    return;
-                }
+                using Process? process = StartAutoPrintFilm(maxConcurrentCount, record.InputDir, cacheDir, record.OutputDir, record.StudyTypeName, record.SlicePartName, record.ScanThickness, record.PlaneConfigJson, BuildWindowPresetJson(slicePlans, context), out processStarted, allowSeriesConcurrency);
+                if (process == null) return false;
 
                 UpdateSeriesRecordStatus(record, SliceImageStatus.正在切割, process.Id, process.StartTime, string.Empty, context);
             }
             catch (Exception ex)
             {
                 RefreshRunningProcesses();
-                UpdateSeriesRecordStatus(record, SliceImageStatus.切割失败, 0, MinStartDate, ex.Message, context);
+                try
+                {
+                    UpdateSeriesRecordStatus(record, SliceImageStatus.切割失败, 0, MinStartDate, ex.Message, context);
+                }
+                catch (Exception updateException)
+                {
+                    AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{record.ExaminationID}]序列[{record.SeriesInstanceUID}]保存启动失败状态异常！", true, null, updateException);
+                }
                 AISliceDicomServiceUtil.Instance.PrintLogAction($"检查号[{record.ExaminationID}]序列[{record.SeriesInstanceUID}]启动Python失败！", true, null, ex);
             }
+            return processStarted;
         }
 
         /// <summary>
@@ -1076,8 +1109,9 @@ namespace ElincloudAISliceServer.AISliceDicomService
         /// 同序列已有结束任务且正式缓存已生成后，不同输出目录可按全局上限并行。
         /// </summary>
         /// <returns>启动成功后的进程；名额、输出目录或同序列首任务限制不允许启动时返回null。</returns>
-        private Process? StartAutoPrintFilm(int maxConcurrentCount, string inputDir, string cacheDir, string outDir, string studyType, string slicePart, double scanThickness, string planeConfigJson, string windowPresetJson, bool allowSeriesConcurrency = false)
+        private Process? StartAutoPrintFilm(int maxConcurrentCount, string inputDir, string cacheDir, string outDir, string studyType, string slicePart, double scanThickness, string planeConfigJson, string windowPresetJson, out bool processStarted, bool allowSeriesConcurrency = false)
         {
+            processStarted = false;
             // 首次恢复涉及数据库读取；业务循环在并发派发前已完成恢复。
             RestoreRunningProcesses();
             string executablePath = Path.GetFullPath(
@@ -1120,7 +1154,7 @@ namespace ElincloudAISliceServer.AISliceDicomService
             lock (ProcessNumLock)
             {
                 RefreshRunningProcesses();
-                // 检查、启动和登记必须持同一把锁，避免并发派发抢占同一名额或首任务资格。
+                // 检查名额、输出目录、启动和登记必须持同一把锁，避免多个派发线程同时抢同一空位或序列。
                 if (RunningProcesses.Count >= maxConcurrentCount || RunningOutputs.ContainsKey(outputKey))
                 {
                     return null;
@@ -1137,6 +1171,9 @@ namespace ElincloudAISliceServer.AISliceDicomService
 
                 Process process = Process.Start(startInfo)
                     ?? throw new InvalidOperationException("AutoPrintFilm进程启动失败");
+
+                // 进程启动后立即置 true；后续读取启动时间或写库失败，也算已占用本轮医院机会。
+                processStarted = true;
 
                 // 先跟踪真实进程，再返回调用方写数据库；写入失败也不会漏计活进程。
                 TrackRunningProcess(process.Id, MinStartDate, outputKey);

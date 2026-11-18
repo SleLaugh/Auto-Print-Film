@@ -143,24 +143,35 @@ class PlanningGeometryTest(unittest.TestCase):
             [3.0, 8.0],
         ])
 
-    def test_cover_segment_range_treats_zero_as_missing_parameter(self):
-        """层厚或层间距为 0 且未提供数量时，有效参数不足两个。"""
+    def test_cover_segment_range_completes_thickness_or_spacing_only(self):
+        """只提供层厚或层间距时，按相接厚层覆盖目标。"""
 
         for thickness, spacing in (
             (0.0, 1.0),
             (1.0, 0.0),
         ):
             with self.subTest(thickness=thickness, spacing=spacing):
-                with self.assertRaisesRegex(
-                    ValueError,
-                    "必须传入其中两个或三个",
-                ):
-                    cover_segment_range(
-                        target_start=Point3D(0.0, 0.0, 0.0),
-                        target_end=Point3D(0.0, 0.0, 10.0),
-                        slice_thickness=thickness,
-                        slice_spacing=spacing,
-                    )
+                range_start, range_end = cover_segment_range(
+                    target_start=Point3D(0.0, 0.0, 0.0),
+                    target_end=Point3D(0.0, 0.0, 10.0),
+                    slice_thickness=thickness,
+                    slice_spacing=spacing,
+                )
+                centers = interpolate_points(range_start, range_end, spacing=1.0)
+                self.assertEqual([point.z for point in centers], [i + 0.5 for i in range(10)])
+
+    def test_cover_segment_range_count_only_places_centers_inside_outer_edges(self):
+        for count, expected_start, expected_end in ((1, 5.0, 5.0), (4, 1.25, 8.75)):
+            with self.subTest(count=count):
+                range_start, range_end = cover_segment_range(
+                    target_start=Point3D(0.0, 0.0, 0.0),
+                    target_end=Point3D(0.0, 0.0, 10.0),
+                    slice_thickness=0.0,
+                    slice_spacing=0.0,
+                    slice_image_count=count,
+                )
+                self.assertEqual(range_start.z, expected_start)
+                self.assertEqual(range_end.z, expected_end)
 
     def test_interpolate_points_generates_centers_from_start_to_end_by_spacing(self):
         points = interpolate_points(

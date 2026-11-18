@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import main
 from src.config import AppConfig
+from src.models import Request
 from src.models.enums import PlaneTypeEnum
 
 
@@ -71,6 +72,40 @@ class MainPlaneConfigsTest(unittest.TestCase):
         """验证 `test_parse_plane_configs_none_uses_request_default` 场景符合预期。"""
 
         self.assertIsNone(main.parse_plane_configs(None))
+
+    def test_cli_accepts_single_sampling_parameter_with_zero_placeholders(self):
+        """CLI 传入一个有效采样参数和两个 0 时，可通过请求校验。"""
+
+        for field_name, value in (
+            ("SliceThickness", 5),
+            ("SliceSpacing", 5),
+            ("SliceImageCount", 20),
+        ):
+            with self.subTest(field_name=field_name):
+                payload = {
+                    "Plane": "冠状位",
+                    "SliceThickness": 0,
+                    "SliceSpacing": 0,
+                    "SliceImageCount": 0,
+                    "WindowPresets": ["骨窗"],
+                }
+                payload[field_name] = value
+                with patch.object(sys, "argv", [
+                    "main.py", "-i", "/tmp/dicom", "-o", "/tmp/output",
+                    "--scan_thickness", "1.0",
+                    "--plane_configs", json.dumps([payload]),
+                ]):
+                    args = main.parse_arguments()
+                configs = main.parse_plane_configs(args.plane_configs)
+                request = Request(
+                    dicom_dir=args.input,
+                    output_dir=args.output,
+                    scan_thickness=args.scan_thickness,
+                    plane_configs=configs,
+                )
+
+                self.assertEqual(request.validate(), (True, None))
+                self.assertEqual(configs[0].to_dict()[field_name], value)
 
     def test_parse_plane_configs_rejects_non_array_json(self):
         # 顶层必须是数组，因为一次请求可以包含多个状位配置。

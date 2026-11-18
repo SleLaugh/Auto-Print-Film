@@ -6,10 +6,12 @@ cd "$(dirname "$0")/.."
 DICOM_ROOT="/home/peng/03_data/demo/Image/dicom"
 RESULT_ROOT="/home/peng/03_data/demo/Image/result"
 PYTHON_BIN=".venv/bin/python"
-# 格式: "切割部位|状位|切割方式|层厚(mm)|层间距(mm)[|FillPercent]"
+# 格式: "切割部位|状位|切割方式|层厚(mm)|层间距(mm)[|FillPercent[|SliceImageCount]]"
 # 同一部位和状位可以配置多条，批量请求会按此处顺序全部保留。
-# 整组统一居中/缩放；末尾 |80 表示本组目标整体范围占画面 80%，第六项填 0 或省略则不缩放。
-# 本脚本不读取 .vscode/launch.json；层厚/层间距由第四、五项决定。
+# 整组统一居中/缩放；第六项填 80 表示本组目标整体范围占画面 80%，填 0 或省略则不缩放。
+# 第七项为可选数量；只传数量可写 "腰椎|横状位|MPR|0|0|80|20"，不设比例可写 "...|0|0||20"。
+# 层厚、间距、数量中的 0 表示未配置，至少一项非零；数量为空或省略时不传该字段。
+# 本脚本不读取 .vscode/launch.json；层厚/层间距/数量由第四、五、七项决定。
 SLICE_TYPE_CONFIGS=(
     "颈椎|横状位|MPR|5|5|80"
     "颈椎|横状位|椎间隙|3|3|80"
@@ -91,7 +93,7 @@ fi
 build_plane_configs() {
     local slice_part="$1"
     local plane item configured_part configured_plane configured_slice_type
-    local configured_thickness configured_spacing configured_fill matched
+    local configured_thickness configured_spacing configured_fill configured_count matched
     local config_args=()
 
     for plane in "横状位" "矢状位" "冠状位"; do
@@ -103,7 +105,8 @@ build_plane_configs() {
                 configured_slice_type \
                 configured_thickness \
                 configured_spacing \
-                configured_fill <<< "$item"
+                configured_fill \
+                configured_count <<< "$item"
             if [[ "$configured_part" == "$slice_part" && "$configured_plane" == "$plane" ]]; then
                 config_args+=(
                     "$plane"
@@ -111,6 +114,7 @@ build_plane_configs() {
                     "$configured_thickness"
                     "$configured_spacing"
                     "$configured_fill"
+                    "$configured_count"
                 )
                 matched=1
             fi
@@ -126,8 +130,8 @@ import json
 import sys
 
 configs = []
-for index in range(1, len(sys.argv), 5):
-    plane, slice_type, slice_thickness, slice_spacing, fill_percent = sys.argv[index:index + 5]
+for index in range(1, len(sys.argv), 6):
+    plane, slice_type, slice_thickness, slice_spacing, fill_percent, image_count = sys.argv[index:index + 6]
     configs.append({
         "Plane": plane,
         "SliceThickness": float(slice_thickness),
@@ -137,6 +141,14 @@ for index in range(1, len(sys.argv), 5):
     })
     if fill_percent:
         configs[-1]["FillPercent"] = float(fill_percent)
+    if image_count:
+        try:
+            count = int(image_count)
+        except ValueError as error:
+            raise ValueError("SliceImageCount 必须是 0 或大于 0 的整数") from error
+        if count < 0:
+            raise ValueError("SliceImageCount 必须是 0 或大于 0 的整数")
+        configs[-1]["SliceImageCount"] = count
 print(json.dumps(configs, ensure_ascii=False, separators=(",", ":")))
 ' "${config_args[@]}"
 }

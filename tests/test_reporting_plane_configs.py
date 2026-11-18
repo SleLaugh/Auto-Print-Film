@@ -293,6 +293,53 @@ class ReportingPlaneConfigsTest(unittest.TestCase):
             21,
         )
 
+    def test_single_sampling_parameter_preserves_requested_zeros_beside_actual_values(self):
+        """单项配置的两个 0 原样报告，计算后的层厚、间距、张数独立返回。"""
+
+        cases = (
+            ((0, 0, 4), (2.75, 2.75, 4)),
+            ((5, 0, 0), (5.0, 5.0, 3)),
+            ((0, 5, 0), (5.0, 5.0, 3)),
+        )
+        for requested, actual in cases:
+            with self.subTest(requested=requested):
+                request = Request.from_dict({
+                    "dicom_dir": "/tmp/dicom",
+                    "output_dir": "/tmp/output",
+                    "ScanThickness": 1.0,
+                    "plane_configs": [{
+                        "Plane": "矢状位",
+                        "SliceThickness": requested[0],
+                        "SliceSpacing": requested[1],
+                        "SliceImageCount": requested[2],
+                        "WindowPresets": ["骨窗"],
+                    }],
+                })
+                context = ProcessingContext(request)
+                context.set_result("reconstruction", {"outputs": [{
+                    "config_id": "配置01",
+                    "plane": "矢状位",
+                    "slice_type": "MPR",
+                    "group_name": "whole_range",
+                    "slice_thickness": actual[0],
+                    "slice_spacing": actual[1],
+                    "slice_count": actual[2],
+                    "window_outputs": {"骨窗": "/tmp/矢状位/骨窗"},
+                }]})
+
+                plane = ReportingStage()._build_delivery_report(context)["PlaneList"][0]
+                region = plane["WindowPresetList"][0]["RegionList"][0]
+
+                self.assertEqual(
+                    (plane["SliceThickness"], plane["SliceSpacing"], plane["SliceImageCount"]),
+                    requested,
+                )
+                self.assertEqual(
+                    (region["ActualSliceThickness"], region["ActualSliceSpacing"],
+                     region["ActualSliceImageCount"]),
+                    actual,
+                )
+
     def test_delivery_report_uses_actual_slice_type_and_sampling_per_plane(self):
         """横状位椎间隙、矢状位 MPR、冠状位 CPR 必须按实际输出分别报告。"""
 

@@ -7,6 +7,8 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
+from src.models import Request
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT_ROOT / "scripts" / "batch_test_plan.sh"
@@ -234,6 +236,72 @@ class BatchTestPlanScriptTest(unittest.TestCase):
         configs = json.loads(result.stdout)
         self.assertTrue(configs)
         self.assertTrue(all(config["FillPercent"] == 0 for config in configs))
+
+    def test_single_sampling_parameters_are_forwarded_and_accepted(self):
+        result = self._build_configs_for_entries([
+            "腰椎|横状位|MPR|0|0||20",
+            "腰椎|矢状位|MPR|5|0|80|0",
+            "腰椎|冠状位|MPR|0|5|80|0",
+        ])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        configs = json.loads(result.stdout)
+        self.assertEqual(
+            [(config["SliceThickness"], config["SliceSpacing"], config["SliceImageCount"])
+             for config in configs],
+            [(0.0, 0.0, 20), (5.0, 0.0, 0), (0.0, 5.0, 0)],
+        )
+        self.assertNotIn("FillPercent", configs[0])
+        self.assertEqual([config["FillPercent"] for config in configs[1:]], [80, 80])
+        self.assertTrue(all(type(config["SliceImageCount"]) is int for config in configs))
+        request = Request.from_dict({
+            "dicom_dir": "/tmp/dicom",
+            "output_dir": "/tmp/output",
+            "ScanThickness": 1.0,
+            "plane_configs": configs,
+        })
+        self.assertEqual(request.validate(), (True, None))
+
+    def test_legacy_rows_and_empty_count_preserve_optional_fields(self):
+        result = self._build_configs_for_entries([
+            "腰椎|横状位|MPR|5|5",
+            "腰椎|矢状位|MPR|5|5|80",
+            "腰椎|冠状位|MPR|5|5|0|",
+        ])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        configs = json.loads(result.stdout)
+        self.assertTrue(all("SliceImageCount" not in config for config in configs))
+        self.assertNotIn("FillPercent", configs[0])
+        self.assertEqual(configs[1]["FillPercent"], 80)
+        self.assertEqual(configs[2]["FillPercent"], 0)
+
+    def test_invalid_explicit_count_fails_config_generation(self):
+        for count in ("-1", "1.5", "0.0", "nan", "true", "invalid"):
+            with self.subTest(count=count):
+                result = self._build_configs_for_entries([
+                    f"腰椎|横状位|MPR|0|0|80|{count}",
+                    "腰椎|矢状位|MPR|5|5|80",
+                    "腰椎|冠状位|MPR|5|5|80",
+                ])
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("SliceImageCount 必须是 0 或大于 0 的整数", result.stderr)
+                self.assertEqual(result.stdout, "")
+
+    @staticmethod
+    def _build_configs_for_entries(entries):
+        definitions = SCRIPT.read_text(encoding="utf-8").split('# 格式: "dicom目录名')[0]
+        configured_entries = " ".join(shlex.quote(entry) for entry in entries)
+        command = (
+            definitions
+            + f"\nSLICE_TYPE_CONFIGS=({configured_entries})"
+            + '\nbuild_plane_configs "腰椎"'
+        )
+        return subprocess.run(
+            ["bash", "-c", command, str(SCRIPT)],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", check=False,
+        )
 
     def test_chinese_plane_parses_under_c_locale_with_utf8_mode(self):
         """精简 Linux 的 C locale 下，显式 UTF-8 模式仍应正确解析中文请求。"""

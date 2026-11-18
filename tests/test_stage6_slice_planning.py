@@ -5509,28 +5509,35 @@ class Stage6SlicePlanningTest(unittest.TestCase):
     def test_lumbar_interspace_count_applies_to_every_interval(self):
         """数量 20 表示每个有效椎间隙分别生成 20 张。"""
 
-        request = Request(
-            dicom_dir="/tmp/dicom",
-            output_dir="/tmp/output",
-            slice_part=SlicePartEnum.腰椎,
-            plane_configs=[PlaneConfig(
-                plane=PlaneTypeEnum.横状位,
-                slice_thickness=2.0,
-                slice_spacing=2.0,
-                slice_image_count=20,
-                window_presets=["骨窗"],
-                slice_type=SliceType.椎间隙,
-            )],
-        )
+        for thickness, spacing in ((2.0, 2.0), (0.0, 0.0)):
+            with self.subTest(thickness=thickness, spacing=spacing):
+                request = Request(
+                    dicom_dir="/tmp/dicom",
+                    output_dir="/tmp/output",
+                    slice_part=SlicePartEnum.腰椎,
+                    plane_configs=[PlaneConfig(
+                        plane=PlaneTypeEnum.横状位,
+                        slice_thickness=thickness,
+                        slice_spacing=spacing,
+                        slice_image_count=20,
+                        window_presets=["骨窗"],
+                        slice_type=SliceType.椎间隙,
+                    )],
+                )
 
-        result = LumbarInterspacePlanner().build_plans(
-            request,
-            self._lumbar_localization_result(),
-        )
+                result = LumbarInterspacePlanner().build_plans(
+                    request,
+                    self._lumbar_localization_result(),
+                )
 
-        self.assertEqual(len(result.plans), 5)
-        self.assertTrue(all(len(plan.slices) == 20 for plan in result.plans))
-        self.assertEqual(sum(len(plan.slices) for plan in result.plans), 100)
+                self.assertEqual(len(result.plans), 5)
+                self.assertTrue(all(len(plan.slices) == 20 for plan in result.plans))
+                self.assertEqual(sum(len(plan.slices) for plan in result.plans), 100)
+                if thickness == 0:
+                    for plan in result.plans:
+                        self.assertAlmostEqual(plan.slice_thickness, 0.05)
+                        self.assertAlmostEqual(plan.slice_spacing, 0.05)
+                        self.assertAlmostEqual(plan.sampling_details["total_range_mm"], 1.0)
 
     def test_straight_plan_calculates_missing_spacing_from_count(self):
         """给定层厚和数量后，每个计划根据自己的有效范围计算层间距。"""
@@ -5559,31 +5566,82 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         self.assertEqual(plan.sampling_details["effective_range_mm"], 11.0)
         self.assertEqual(plan.sampling_details["total_range_mm"], 11.0)
 
+    def test_straight_plan_resolves_single_sampling_parameter(self):
+        """单项配置应生成相接厚层，单张在中点，自动张数向外完整覆盖。"""
+
+        cases = (
+            ((0, 0, 4), 2.75, [9.125, 6.375, 3.625, 0.875], 11.0, 0.0),
+            ((0, 0, 1), 11.0, [5.0], 11.0, 0.0),
+            ((5, 0, 0), 5.0, [10.0, 5.0, 0.0], 15.0, 2.0),
+            ((0, 5, 0), 5.0, [10.0, 5.0, 0.0], 15.0, 2.0),
+        )
+        for values, expected_step, expected_centers, total_range, extension in cases:
+            with self.subTest(values=values):
+                thickness, spacing, count = values
+                request = Request(
+                    dicom_dir="/tmp/dicom",
+                    output_dir="/tmp/output",
+                    slice_part=SlicePartEnum.肺部,
+                    plane_configs=[PlaneConfig(
+                        plane=PlaneTypeEnum.横状位,
+                        slice_thickness=thickness,
+                        slice_spacing=spacing,
+                        slice_image_count=count,
+                        window_presets=["肺窗"],
+                    )],
+                )
+
+                plan = SingleLabelWholeRangePlanner().build_plans(
+                    request,
+                    self._lumbar_localization_result(),
+                ).plans[0]
+
+                self.assertEqual(plan.slice_thickness, expected_step)
+                self.assertEqual(plan.slice_spacing, expected_step)
+                self.assertEqual(
+                    [item.center.z for item in plan.slices],
+                    expected_centers,
+                )
+                self.assertEqual(plan.sampling_details["effective_range_mm"], 11.0)
+                self.assertEqual(plan.sampling_details["total_range_mm"], total_range)
+                self.assertEqual(plan.sampling_details["start_extension_mm"], extension)
+                self.assertEqual(plan.sampling_details["end_extension_mm"], extension)
+
     def test_cpr_count_generates_exact_number_of_offsets(self):
         """CPR 数量直接决定每套偏移曲面的实际输出张数。"""
 
-        request = Request(
-            dicom_dir="/tmp/dicom",
-            output_dir="/tmp/output",
-            slice_part=SlicePartEnum.腰椎,
-            plane_configs=[PlaneConfig(
-                plane=PlaneTypeEnum.冠状位,
-                slice_thickness=2.0,
-                slice_spacing=2.0,
-                slice_image_count=20,
-                window_presets=["骨窗"],
-                slice_type=SliceType.CPR,
-            )],
-        )
+        for thickness, spacing in ((2.0, 2.0), (0.0, 0.0)):
+            with self.subTest(thickness=thickness, spacing=spacing):
+                request = Request(
+                    dicom_dir="/tmp/dicom",
+                    output_dir="/tmp/output",
+                    slice_part=SlicePartEnum.腰椎,
+                    plane_configs=[PlaneConfig(
+                        plane=PlaneTypeEnum.冠状位,
+                        slice_thickness=thickness,
+                        slice_spacing=spacing,
+                        slice_image_count=20,
+                        window_presets=["骨窗"],
+                        slice_type=SliceType.CPR,
+                    )],
+                )
 
-        plan = SingleLabelWholeRangePlanner().build_plans(
-            request,
-            self._spine_localization_result(("L1", "L2", "L3"), "腰椎"),
-        ).plans[0]
+                plan = SingleLabelWholeRangePlanner().build_plans(
+                    request,
+                    self._spine_localization_result(("L1", "L2", "L3"), "腰椎"),
+                ).plans[0]
 
-        self.assertEqual(len(plan.slices), 20)
-        self.assertEqual(len(plan.offsets_mm), 20)
-        self.assertEqual(plan.sampling_details["slice_image_count"], 20)
+                self.assertEqual(len(plan.slices), 20)
+                self.assertEqual(len(plan.offsets_mm), 20)
+                self.assertEqual(plan.sampling_details["slice_image_count"], 20)
+                if thickness == 0:
+                    self.assertEqual(plan.slice_thickness, 0.5)
+                    self.assertEqual(plan.slice_spacing, 0.5)
+                    self.assertEqual(plan.offsets_mm, list(np.arange(-4.75, 5.0, 0.5)))
+                    self.assertEqual(
+                        [item.offset_mm for item in plan.slices],
+                        plan.offsets_mm,
+                    )
 
     def test_planning_names_multiple_configs_for_same_plane_in_order(self):
         """同一状位多套配置必须生成唯一计划编号和连续输出名称。"""

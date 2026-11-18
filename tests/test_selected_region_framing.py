@@ -380,8 +380,10 @@ def test_lower_occupancy_reveals_original_hu_outside_100_region_without_precropp
         item = plan["slices"][1]  # Both HU sentinels lie in this original slab.
         dataset = pydicom.dcmread(Path(output["window_outputs"]["骨窗"]) / "2.dcm")
         size, spacing, output_axes, origin, center = _geometry(dataset)
-        centers.append(center @ axes[:, :2]);fovs.append(size * spacing)
-        matrix.append(size);spacings.append(spacing)
+        centers.append(center @ axes[:, :2])
+        fovs.append(size * spacing)
+        matrix.append(size)
+        spacings.append(spacing)
         # Independently inspect the production sampler's HU at physical marker
         # coordinates. A cropped/reused 100% image could only add padding here.
         sampler = TargetFramer(seg, coords, plan, source_image=source)

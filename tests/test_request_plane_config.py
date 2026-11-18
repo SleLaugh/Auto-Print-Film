@@ -384,19 +384,33 @@ class PlaneConfigRequestTest(unittest.TestCase):
                 })
                 self.assertEqual(request.validate(), (True, None))
 
-    def test_request_rejects_only_one_sampling_parameter(self):
-        """只传层厚、层间距、数量中的一个时请求无效。"""
+    def test_request_accepts_each_single_sampling_parameter(self):
+        """只传层厚、层间距或数量，均可进入后续按有效范围补全的阶段。"""
 
-        self._assert_invalid(
-            [
-                {
-                    "Plane": "横状位",
-                    "SliceThickness": 1,
-                    "WindowPresets": ["骨窗"],
-                },
-            ],
-            "必须传入其中两个或三个",
-        )
+        for sampling in (
+            {"SliceThickness": 5},
+            {"SliceSpacing": 5},
+            {"SliceImageCount": 20},
+        ):
+            with self.subTest(sampling=sampling):
+                request = Request.from_dict({
+                    "dicom_dir": "/tmp/dicom",
+                    "output_dir": "/tmp/output",
+                    "ScanThickness": 1.0,
+                    "plane_configs": [{
+                        "Plane": "横状位",
+                        "WindowPresets": ["骨窗"],
+                        **sampling,
+                    }],
+                })
+
+                self.assertEqual(request.validate(), (True, None))
+                serialized = request.plane_configs[0].to_dict()
+                for field_name in ("SliceThickness", "SliceSpacing", "SliceImageCount"):
+                    if field_name in sampling:
+                        self.assertEqual(serialized[field_name], sampling[field_name])
+                    else:
+                        self.assertNotIn(field_name, serialized)
 
     def test_zero_sampling_parameter_is_treated_as_not_configured(self):
         """层厚、层间距或数量为 0 时，应由其余两个参数计算。"""
@@ -458,19 +472,56 @@ class PlaneConfigRequestTest(unittest.TestCase):
         self.assertIsNone(config.slice_thickness)
         self.assertEqual(config.requested_slice_thickness, 0)
 
-    def test_two_zero_sampling_parameters_leave_too_few_values(self):
-        """两个参数为 0 时只剩一个有效参数，请求应被拒绝。"""
+    def test_two_zero_sampling_parameters_leave_valid_single_parameter(self):
+        """两个参数为 0 时，保留唯一有效参数和各字段的原始请求值。"""
 
-        self._assert_invalid(
-            [{
-                "Plane": "横状位",
-                "SliceThickness": 0,
-                "SliceSpacing": 0,
-                "SliceImageCount": 20,
-                "WindowPresets": ["骨窗"],
-            }],
-            "必须传入其中两个或三个",
-        )
+        for thickness, spacing, count in ((5, 0, 0), (0, 5, 0), (0, 0, 20)):
+            with self.subTest(thickness=thickness, spacing=spacing, count=count):
+                request = Request.from_dict({
+                    "dicom_dir": "/tmp/dicom",
+                    "output_dir": "/tmp/output",
+                    "ScanThickness": 1.0,
+                    "plane_configs": [{
+                        "Plane": "横状位",
+                        "SliceThickness": thickness,
+                        "SliceSpacing": spacing,
+                        "SliceImageCount": count,
+                        "WindowPresets": ["骨窗"],
+                    }],
+                })
+                config = request.plane_configs[0]
+
+                self.assertEqual(request.validate(), (True, None))
+                self.assertEqual(
+                    (config.slice_thickness, config.slice_spacing, config.slice_image_count),
+                    (thickness or None, spacing or None, count or None),
+                )
+                self.assertEqual(
+                    (
+                        config.requested_slice_thickness,
+                        config.requested_slice_spacing,
+                        config.requested_slice_image_count,
+                    ),
+                    (thickness, spacing, count),
+                )
+
+    def test_request_rejects_no_effective_sampling_parameters(self):
+        """三项全部未配置或为 0 时，仍须拒绝请求。"""
+
+        for sampling in (
+            {},
+            {"SliceThickness": 0, "SliceSpacing": 0, "SliceImageCount": 0},
+            {"SliceThickness": None, "SliceSpacing": 0},
+        ):
+            with self.subTest(sampling=sampling):
+                self._assert_invalid(
+                    [{
+                        "Plane": "横状位",
+                        "WindowPresets": ["骨窗"],
+                        **sampling,
+                    }],
+                    "至少传入其中一个",
+                )
 
     def test_negative_sampling_parameters_are_rejected(self):
         """0 表示未配置，但负数仍然是非法输入。"""

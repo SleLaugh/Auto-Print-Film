@@ -81,7 +81,7 @@ def parse_fill_percent(value: Any) -> float | None:
 
 @dataclass
 class PlaneConfig:
-    """单个重建状位的采样和显示配置。"""
+    """单个重建状位的采样和显示配置；层厚、层间距、数量至少提供一项。"""
     # 重建状位：横状位、矢状位或冠状位。
     plane: PlaneTypeEnum
     # 目标层厚，单位按业务输入约定使用 mm。
@@ -335,7 +335,7 @@ class Request:
         """
         校验请求参数是否足够执行流水线。
 
-        这里先做结构层校验：路径不能为空，每项状位配置必须提供两个或三个有效
+        这里先做结构层校验：路径不能为空，每项状位配置必须提供至少一个有效
         采样参数，并配置至少一个窗位。真实路径是否存在仍由各阶段读取时处理。
         """
         if not self.dicom_dir:
@@ -370,9 +370,9 @@ class Request:
                 plane_config.slice_image_count,
             )
             provided_count = sum(value is not None for value in sampling_values)
-            if provided_count not in (2, 3):
+            if provided_count == 0:
                 return False, (
-                    f"{plane_value} 层厚、层间距、数量必须传入其中两个或三个"
+                    f"{plane_value} 层厚、层间距、数量必须至少传入其中一个"
                 )
 
             for name, value in (

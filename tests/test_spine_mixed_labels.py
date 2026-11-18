@@ -149,7 +149,8 @@ def test_unavailable_misaligned_or_unsupported_ct_cannot_repair(raw_kind):
     case = _case()
     raw = case[1]
     if raw_kind == "none":
-        source = lambda: None
+        def source():
+            return None
     elif raw_kind == "shape":
         source = raw[:-1]
     elif raw_kind == "loader_error":

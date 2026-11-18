@@ -47,7 +47,7 @@ def resolve_sampling(
     slice_spacing: float | None,
     slice_image_count: int | None,
 ) -> ResolvedSampling:
-    """三个采样参数传入两个或三个；值为 0 时按未配置处理。"""
+    """至少传入一个采样参数；单参数按层厚等于层间距补齐，0 表示未配置。"""
 
     effective_range = _non_negative_finite_float(
         effective_range_mm,
@@ -61,11 +61,23 @@ def resolve_sampling(
         value is not None
         for value in (thickness, spacing, image_count)
     )
-    if provided_count not in (2, 3):
-        raise ValueError("层厚、层间距、数量必须传入其中两个或三个")
+    if provided_count == 0:
+        raise ValueError("层厚、层间距、数量必须至少传入其中一个")
 
     adjusted = False
     adjustment_reason = ""
+
+    if provided_count == 1:
+        if image_count is not None:
+            # 只指定数量时，将有效范围均分为相接的厚层，保持请求张数。
+            equal_value = effective_range / image_count
+            if equal_value <= RANGE_TOLERANCE_MM:
+                raise ValueError("当前有效范围和数量无法计算出有效的层厚、层间距")
+            thickness = spacing = equal_value
+        elif thickness is not None:
+            spacing = thickness
+        else:
+            thickness = spacing
 
     if thickness is not None and spacing is not None and image_count is None:
         remaining_range = max(0.0, effective_range - thickness)

@@ -19,10 +19,10 @@ class SlicePolicyTest(unittest.TestCase):
     """验证 SliceType 只决定显式切法及其定位范围。"""
 
     def test_slice_types_resolve_localization_profiles(self):
-        """MPR/CPR 共用整体范围，椎间隙使用相邻椎体范围。"""
+        """MPR、CPR 分别使用普通区域和脊柱区间，椎间隙使用相邻椎体范围。"""
 
         self.assertEqual(localization_profile_for_slice_type("MPR"), "whole_range")
-        self.assertEqual(localization_profile_for_slice_type("CPR"), "whole_range")
+        self.assertEqual(localization_profile_for_slice_type("CPR"), "spine_range")
         self.assertEqual(localization_profile_for_slice_type("椎间隙"), "interspace")
 
 

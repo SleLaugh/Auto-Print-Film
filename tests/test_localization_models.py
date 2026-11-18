@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from src.models import LocalizationResult, NiftiImageInfo
 
@@ -81,6 +82,18 @@ class LocalizationModelsTest(unittest.TestCase):
             True,
         )
         self.assertEqual(data["coords"], {})
+        # 旧实体调用无需新增必填参数；新契约通过实体自身序列化。
+        for field in ("pose_config", "resolved_pose_config", "anatomical_regions"):
+            self.assertEqual(data[field], {})
+        configured = replace(
+            result,
+            pose_config={"method": "spine", "labels": ["L1", "S1"]},
+            resolved_pose_config={"method": "spine", "labels": ["vertebrae_L1", "sacrum"]},
+            anatomical_regions={"default": {"target_labels": ["vertebrae_L1", "sacrum"]}},
+        ).to_dict()
+        self.assertEqual(configured["pose_config"]["labels"], ["L1", "S1"])
+        self.assertEqual(configured["resolved_pose_config"]["labels"], ["vertebrae_L1", "sacrum"])
+        self.assertEqual(configured["anatomical_regions"]["default"]["target_labels"], ["vertebrae_L1", "sacrum"])
         self.assertEqual(
             data["debug_vertebral_body_prism_mask_overlay_path"],
             "/tmp/椎体四棱柱掩膜.nii.gz",

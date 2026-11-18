@@ -74,7 +74,7 @@ def test_geometry_bridge_uses_only_brain_for_pose_and_stack_bounds():
     image = object()
     expected = (object(), {"target": "brain"})
     with patch(
-        "src.stages.stage_localization.estimate_brain_frame_with_diagnostics",
+        "src.anatomy.pose.estimate_brain_frame_with_diagnostics",
         return_value=expected,
     ) as estimate:
         result = LocalizationOperations._build_anatomical_geometry("颅脑", brain, image)

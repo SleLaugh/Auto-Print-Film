@@ -521,8 +521,8 @@ class ConfigLoaderTest(unittest.TestCase):
 
         unknown_label = deepcopy(base_config)
         unknown_label["slice_parts"]["腰椎"]["localization"]["regions"]["default"][
-            "start_label"
-        ] = "L0"
+            "bounds"
+        ]["upper"]["labels"] = ["L0"]
         cases.append((unknown_label, "未在 label_aliases 中定义"))
 
         duplicate_alias = deepcopy(base_config)
@@ -635,7 +635,9 @@ class ConfigLoaderTest(unittest.TestCase):
             for plane in ("横状位", "冠状位", "矢状位")
         ])
         cervical = config["slice_parts"]["颈椎"]
-        self.assertEqual(cervical["localization"]["regions"]["default"]["end_label"], "T1")
+        self.assertEqual(cervical["localization"]["pose"]["roles"]["end"], "T1")
+        self.assertEqual(cervical["localization"]["regions"]["default"]["target_labels"][-1], "T1")
+        self.assertEqual(cervical["localization"]["regions"]["cpr_range"]["end_label"], "T1")
         self.assertEqual(
             cervical["slice_rules"]["横状位"]["MPR"]["face_extension_mm"]["bottom_mm"],
             5.0,

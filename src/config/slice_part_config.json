@@ -51,8 +51,29 @@
                 ]
             },
             "localization": {
+                "pose": {
+                    "method": "brain",
+                    "labels": ["brain"]
+                },
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "brain", "end_label": "brain" }
+                    "default": {
+                        "type": "whole_range",
+                        "target_labels": ["brain"],
+                        "bounds": {
+                            "upper": {
+                                "labels": ["brain"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            },
+                            "lower": {
+                                "labels": ["brain"],
+                                "edge": "lower",
+                                "reduce": "min",
+                                "offset_mm": 0.0
+                            }
+                        }
+                    }
                 }
             },
             "slice_rules": {
@@ -98,17 +119,68 @@
                 ]
             },
             "localization": {
+                "pose": {
+                    "method": "spine",
+                    "labels": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1"],
+                    "roles": {
+                        "start": "C1",
+                        "end": "T1"
+                    },
+                    "fit_excluded_labels": ["C1"]
+                },
+                "regions": {
+                    "default": {
+                        "type": "whole_range",
+                        "target_labels": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1"],
+                        "bounds": {
+                            "upper": {
+                                "labels": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            },
+                            "lower": {
+                                "labels": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "T1"],
+                                "edge": "lower",
+                                "reduce": "min",
+                                "offset_mm": 0.0
+                            }
+                        }
+                    },
+                    "cpr_range": {
+                        "type": "spine_range",
+                        "start_label": "C1",
+                        "end_label": "T1"
+                    },
+                    "C2_C3": {
+                        "type": "interspace",
+                        "start_label": "C2",
+                        "end_label": "C3"
+                    },
+                    "C3_C4": {
+                        "type": "interspace",
+                        "start_label": "C3",
+                        "end_label": "C4"
+                    },
+                    "C4_C5": {
+                        "type": "interspace",
+                        "start_label": "C4",
+                        "end_label": "C5"
+                    },
+                    "C5_C6": {
+                        "type": "interspace",
+                        "start_label": "C5",
+                        "end_label": "C6"
+                    },
+                    "C6_C7": {
+                        "type": "interspace",
+                        "start_label": "C6",
+                        "end_label": "C7"
+                    }
+                },
                 "spine_cpr": {
                     "full_label": true,
                     "excluded_labels": ["C1"]
-                },
-                "regions": {
-                    "default": { "type": "whole_range", "start_label": "C1", "end_label": "T1" },
-                    "C2_C3": { "type": "interspace", "start_label": "C2", "end_label": "C3" },
-                    "C3_C4": { "type": "interspace", "start_label": "C3", "end_label": "C4" },
-                    "C4_C5": { "type": "interspace", "start_label": "C4", "end_label": "C5" },
-                    "C5_C6": { "type": "interspace", "start_label": "C5", "end_label": "C6" },
-                    "C6_C7": { "type": "interspace", "start_label": "C6", "end_label": "C7" }
                 }
             },
             "slice_rules": {
@@ -131,7 +203,7 @@
                         "localizer_plane": "矢状位"
                     },
                     "CPR": {
-                        "regions": ["default"],
+                        "regions": ["cpr_range"],
                         "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
                         "localizer_plane": "矢状位"
                     }
@@ -143,7 +215,7 @@
                         "localizer_plane": "冠状位"
                     },
                     "CPR": {
-                        "regions": ["default"],
+                        "regions": ["cpr_range"],
                         "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
                         "localizer_plane": "冠状位"
                     }
@@ -169,11 +241,41 @@
                 ]
             },
             "localization": {
-                "spine_cpr": {
-                    "full_label": true
+                "pose": {
+                    "method": "spine",
+                    "labels": ["C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1"],
+                    "roles": {
+                        "start": "C7",
+                        "end": "L1"
+                    }
                 },
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "C7", "end_label": "L1" }
+                    "default": {
+                        "type": "whole_range",
+                        "target_labels": ["C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1"],
+                        "bounds": {
+                            "upper": {
+                                "labels": ["C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            },
+                            "lower": {
+                                "labels": ["C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1"],
+                                "edge": "lower",
+                                "reduce": "min",
+                                "offset_mm": 0.0
+                            }
+                        }
+                    },
+                    "cpr_range": {
+                        "type": "spine_range",
+                        "start_label": "C7",
+                        "end_label": "L1"
+                    }
+                },
+                "spine_cpr": {
+                    "full_label": true
                 }
             },
             "slice_rules": {
@@ -191,7 +293,7 @@
                         "localizer_plane": "矢状位"
                     },
                     "CPR": {
-                        "regions": ["default"],
+                        "regions": ["cpr_range"],
                         "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
                         "localizer_plane": "矢状位"
                     }
@@ -203,7 +305,7 @@
                         "localizer_plane": "冠状位"
                     },
                     "CPR": {
-                        "regions": ["default"],
+                        "regions": ["cpr_range"],
                         "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
                         "localizer_plane": "冠状位"
                     }
@@ -229,16 +331,66 @@
                 ]
             },
             "localization": {
-                "spine_cpr": {
-                    "full_label": true
+                "pose": {
+                    "method": "spine",
+                    "labels": ["T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                    "roles": {
+                        "start": "T12",
+                        "end": "S1"
+                    }
                 },
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "T12", "end_label": "S1" },
-                    "L1_L2": { "type": "interspace", "start_label": "L1", "end_label": "L2" },
-                    "L2_L3": { "type": "interspace", "start_label": "L2", "end_label": "L3" },
-                    "L3_L4": { "type": "interspace", "start_label": "L3", "end_label": "L4" },
-                    "L4_L5": { "type": "interspace", "start_label": "L4", "end_label": "L5" },
-                    "L5_S1": { "type": "interspace", "start_label": "L5", "end_label": "S1" }
+                    "default": {
+                        "type": "whole_range",
+                        "target_labels": ["T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                        "bounds": {
+                            "upper": {
+                                "labels": ["T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            },
+                            "lower": {
+                                "labels": ["T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                                "edge": "lower",
+                                "reduce": "min",
+                                "offset_mm": 0.0
+                            }
+                        }
+                    },
+                    "cpr_range": {
+                        "type": "spine_range",
+                        "start_label": "T12",
+                        "end_label": "S1"
+                    },
+                    "L1_L2": {
+                        "type": "interspace",
+                        "start_label": "L1",
+                        "end_label": "L2"
+                    },
+                    "L2_L3": {
+                        "type": "interspace",
+                        "start_label": "L2",
+                        "end_label": "L3"
+                    },
+                    "L3_L4": {
+                        "type": "interspace",
+                        "start_label": "L3",
+                        "end_label": "L4"
+                    },
+                    "L4_L5": {
+                        "type": "interspace",
+                        "start_label": "L4",
+                        "end_label": "L5"
+                    },
+                    "L5_S1": {
+                        "type": "interspace",
+                        "start_label": "L5",
+                        "end_label": "S1"
+                    }
+                },
+                "spine_cpr": {
+                    "full_label": true
                 }
             },
             "slice_rules": {
@@ -261,7 +413,7 @@
                         "localizer_plane": "矢状位"
                     },
                     "CPR": {
-                        "regions": ["default"],
+                        "regions": ["cpr_range"],
                         "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
                         "localizer_plane": "矢状位"
                     }
@@ -273,7 +425,7 @@
                         "localizer_plane": "冠状位"
                     },
                     "CPR": {
-                        "regions": ["default"],
+                        "regions": ["cpr_range"],
                         "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
                         "localizer_plane": "冠状位"
                     }
@@ -299,11 +451,41 @@
                 ]
             },
             "localization": {
-                "spine_cpr": {
-                    "full_label": true
+                "pose": {
+                    "method": "spine",
+                    "labels": ["C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                    "roles": {
+                        "start": "C7",
+                        "end": "S1"
+                    }
                 },
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "C7", "end_label": "S1" }
+                    "default": {
+                        "type": "whole_range",
+                        "target_labels": ["C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                        "bounds": {
+                            "upper": {
+                                "labels": ["C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            },
+                            "lower": {
+                                "labels": ["C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                                "edge": "lower",
+                                "reduce": "min",
+                                "offset_mm": 0.0
+                            }
+                        }
+                    },
+                    "cpr_range": {
+                        "type": "spine_range",
+                        "start_label": "C7",
+                        "end_label": "S1"
+                    }
+                },
+                "spine_cpr": {
+                    "full_label": true
                 }
             },
             "slice_rules": {
@@ -321,7 +503,7 @@
                         "localizer_plane": "矢状位"
                     },
                     "CPR": {
-                        "regions": ["default"],
+                        "regions": ["cpr_range"],
                         "face_extension_mm": {"top_mm": 50.0, "bottom_mm": 50.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
                         "localizer_plane": "矢状位"
                     }
@@ -333,7 +515,7 @@
                         "localizer_plane": "冠状位"
                     },
                     "CPR": {
-                        "regions": ["default"],
+                        "regions": ["cpr_range"],
                         "face_extension_mm": {"top_mm": 50.0, "bottom_mm": 50.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
                         "localizer_plane": "冠状位"
                     }
@@ -359,11 +541,41 @@
                 ]
             },
             "localization": {
-                "spine_cpr": {
-                    "full_label": true
+                "pose": {
+                    "method": "spine",
+                    "labels": ["C2", "C3", "C4", "C5", "C6", "C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                    "roles": {
+                        "start": "C2",
+                        "end": "S1"
+                    }
                 },
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "C2", "end_label": "S1" }
+                    "default": {
+                        "type": "whole_range",
+                        "target_labels": ["C2", "C3", "C4", "C5", "C6", "C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                        "bounds": {
+                            "upper": {
+                                "labels": ["C2", "C3", "C4", "C5", "C6", "C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            },
+                            "lower": {
+                                "labels": ["C2", "C3", "C4", "C5", "C6", "C7", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "L1", "L2", "L3", "L4", "L5", "S1"],
+                                "edge": "lower",
+                                "reduce": "min",
+                                "offset_mm": 0.0
+                            }
+                        }
+                    },
+                    "cpr_range": {
+                        "type": "spine_range",
+                        "start_label": "C2",
+                        "end_label": "S1"
+                    }
+                },
+                "spine_cpr": {
+                    "full_label": true
                 }
             },
             "slice_rules": {
@@ -381,7 +593,7 @@
                         "localizer_plane": "矢状位"
                     },
                     "CPR": {
-                        "regions": ["default"],
+                        "regions": ["cpr_range"],
                         "face_extension_mm": {"top_mm": 50.0, "bottom_mm": 50.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
                         "localizer_plane": "矢状位"
                     }
@@ -393,7 +605,7 @@
                         "localizer_plane": "冠状位"
                     },
                     "CPR": {
-                        "regions": ["default"],
+                        "regions": ["cpr_range"],
                         "face_extension_mm": {"top_mm": 50.0, "bottom_mm": 50.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
                         "localizer_plane": "冠状位"
                     }
@@ -411,8 +623,29 @@
                 ]
             },
             "localization": {
+                "pose": {
+                    "method": "lung",
+                    "labels": ["lung"]
+                },
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "lung", "end_label": "lung" }
+                    "default": {
+                        "type": "whole_range",
+                        "target_labels": ["lung"],
+                        "bounds": {
+                            "upper": {
+                                "labels": ["lung"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            },
+                            "lower": {
+                                "labels": ["lung"],
+                                "edge": "lower",
+                                "reduce": "min",
+                                "offset_mm": 0.0
+                            }
+                        }
+                    }
                 }
             },
             "slice_rules": {
@@ -484,8 +717,32 @@
                 ]
             },
             "localization": {
+                "pose": {
+                    "method": "hip",
+                    "roles": {
+                        "left": "hip_left",
+                        "right": "hip_right"
+                    }
+                },
                 "regions": {
-                    "default": { "type": "whole_range", "start_label": "hip_left", "end_label": "hip_right" }
+                    "default": {
+                        "type": "whole_range",
+                        "target_labels": ["hip_left", "hip_right"],
+                        "bounds": {
+                            "upper": {
+                                "labels": ["hip_left", "hip_right"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            },
+                            "lower": {
+                                "labels": ["hip_left", "hip_right"],
+                                "edge": "lower",
+                                "reduce": "min",
+                                "offset_mm": 0.0
+                            }
+                        }
+                    }
                 }
             },
             "slice_rules": {

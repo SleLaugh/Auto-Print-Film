@@ -15,7 +15,7 @@ from .anatomy import AnatomicalGeometryResult
 
 
 CutConfig = Dict[str, Any] | list[Dict[str, Any]]
-"""原始定位范围配置：whole_range 为对象，interspace 为 start/end 对象数组。"""
+"""定位范围：whole_range 保存具名区域，spine_range 保存端点，interspace 为端点数组。"""
 
 
 @dataclass
@@ -121,12 +121,12 @@ class NiftiImageInfo:
 class LocalizationResult:
     """第三至第五阶段调试汇总实体，对应 metadata/localization_result.json。"""
     slice_part: str  # 请求处理的切割部位，如 颅脑、腰椎、肺部
-    localization_profile: str  # 定位范围方案，如 whole_range 或 interspace
+    localization_profile: str  # 定位范围方案：whole_range、spine_range 或 interspace
     seg_path: str  # 当前用于定位的分割文件路径
     model: Dict[str, Any]  # 分割阶段匹配到的模型信息
     dataset_json_path: str  # 当前模型对应的 dataset.json 路径
     image: NiftiImageInfo  # 分割图像空间信息
-    cut_config: CutConfig  # 当前原始配置；whole_range 为对象，interspace 为区间数组
+    cut_config: CutConfig  # 当前原始配置；MPR 具名区域、CPR 端点或椎间隙区间数组
     cut_configs: Dict[str, CutConfig]  # 当前部位按定位范围方案保存的原始对象或数组
     resolved_cut_config: Dict[str, Any]  # alias 解析后的内部对象；椎间数组放在 intervals
     resolved_cut_configs: Dict[str, Dict[str, Any]]  # 全部范围方案解析后的内部对象
@@ -151,6 +151,9 @@ class LocalizationResult:
     anatomical_geometry: Optional[AnatomicalGeometryResult] = None  # 第五阶段统一解剖坐标；未适配部位为空
     spine_geometry: Optional[Dict[str, Any]] = None  # 仅脊柱生成；标注质心供 CPR，原始 coords/bbox 仍代表全量标注
     spine_cpr_config: Dict[str, Any] = field(default_factory=dict)  # CPR 范围模式及脊柱几何排除标签
+    pose_config: Dict[str, Any] = field(default_factory=dict)  # 回正方法及其独立标签来源，保留配置别名
+    resolved_pose_config: Dict[str, Any] = field(default_factory=dict)  # 回正输入解析成当前模型的实际标签
+    anatomical_regions: Dict[str, Any] = field(default_factory=dict)  # 具名区域在全局及专用方向上的基础范围
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化第三至第五阶段的调试汇总结果。"""
@@ -167,6 +170,9 @@ class LocalizationResult:
             'resolved_cut_config': self.resolved_cut_config,
             'resolved_cut_configs': self.resolved_cut_configs,
             'slice_rules': self.slice_rules,
+            'pose_config': self.pose_config,
+            'resolved_pose_config': self.resolved_pose_config,
+            'anatomical_regions': self.anatomical_regions,
             'label_targets': {
                 name: target.to_dict()
                 for name, target in self.label_targets.items()

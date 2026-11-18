@@ -6,7 +6,10 @@ import numpy as np
 import pytest
 import SimpleITK as sitk
 
-from src.models import LabelTarget
+from src.core.context import ProcessingContext
+from src.models import LabelTarget, Request, SlicePartEnum
+from src.stages.stage_anatomical_analysis import AnatomicalAnalysisStage
+from src.stages.stage_localization import _LOCALIZATION_WORKSPACE_KEY
 from src.stages.stage_localization import LocalizationStage
 
 
@@ -108,7 +111,9 @@ def test_recovery_maps_identical_body_back_when_si_index_direction_is_reversed(s
     )
 
 
-def test_stage5_keeps_existing_annotations_when_c2_is_recovered():
+@pytest.mark.parametrize("cpr_excluded", ([], ["vertebrae_C2"]))
+@pytest.mark.parametrize("fit_excluded", ([], ["vertebrae_C2"]))
+def test_stage5_keeps_existing_annotations_when_c2_is_recovered(tmp_path, monkeypatch, cpr_excluded, fit_excluded):
     array = np.zeros((120, 100, 200), dtype=np.uint8)
     array[60:112] = _c2_with_dens_and_articular_wings()
     array[32:52, 10:40, 70:130] = 24
@@ -130,3 +135,68 @@ def test_stage5_keeps_existing_annotations_when_c2_is_recovered():
     assert actual["interspace_body_pairs"]["C3_C4"] == baseline["interspace_body_pairs"]["C3_C4"]
     assert "C2_C3" in actual["interspace_body_pairs"]
     np.testing.assert_array_equal(array, original)
+
+    # 改 CPR 选用标签不能把仅供椎间隙的恢复 C2 重新纳入整体回正；即便
+    # 回正也排除 C2，C2_C3 仍需要同一份主体证据。
+    stage = AnatomicalAnalysisStage()
+    labels = list(targets)
+    pose = {
+        "method": "spine", "labels": ["C2", "C3", "C4"],
+        "roles": {"start": "C2", "end": "C4"},
+        "fit_excluded_labels": [name.removeprefix("vertebrae_") for name in fit_excluded],
+    }
+    cut = {"regions": {"default": {
+        "type": "whole_range", "target_labels": labels,
+        "bounds": {
+            "upper": {"labels": labels, "edge": "upper", "reduce": "max", "offset_mm": 0.0},
+            "lower": {"labels": labels, "edge": "lower", "reduce": "min", "offset_mm": 0.0},
+        },
+    }}}
+    seg_path, raw_path = str(tmp_path / "seg.nii.gz"), str(tmp_path / "raw.nii.gz")
+    raw_image = sitk.GetImageFromArray(np.zeros(array.shape, dtype=np.int16))
+    raw_image.CopyInformation(image)
+    sitk.WriteImage(raw_image, raw_path)
+    context = ProcessingContext(Request(
+        dicom_dir=str(tmp_path), output_dir=str(tmp_path / "out"), slice_part=SlicePartEnum.颈椎,
+    ))
+    context.set_result("localization", {
+        "pose_config": pose, "resolved_pose_config": stage._resolve_pose_aliases(pose),
+        "seg_for_reconstruction_path": seg_path, "raw_for_reconstruction_path": raw_path,
+        "resolved_cut_config": cut,
+        "resolved_cut_configs": {
+            "whole_range": cut,
+            "interspace": {"intervals": [{
+                "region": "C2_C3", "start_labels": ["vertebrae_C2"], "end_labels": ["vertebrae_C3"],
+            }]},
+        },
+        "spine_cpr_config": {"full_label": True, "excluded_labels": cpr_excluded},
+        "localization_result_path": "",
+    })
+    label_regions = stage._build_label_voxel_regions(array, targets)
+    target_mask = stage._build_target_mask(array, targets)
+    context.metadata[_LOCALIZATION_WORKSPACE_KEY] = {
+        "seg_path": seg_path, "image": image, "seg_array": array,
+        "label_targets": targets, "label_regions": label_regions,
+        "label_coordinates": stage._extract_label_coordinates(array, targets, label_regions=label_regions),
+        "target_mask": target_mask, "correction_scope_bbox": stage._build_target_bbox(target_mask),
+    }
+    expected_pose, _ = stage._build_anatomical_geometry(
+        "颈椎", target_mask, image,
+        label_indices_zyx={name: region.indices_zyx for name, region in label_regions.items()},
+        start_label="vertebrae_C2", end_label="vertebrae_C4",
+        label_pose_annotations=baseline["filtered_annotation_centroids"],
+    )
+    monkeypatch.setattr("src.stages.stage_anatomical_analysis.is_debug_file_enabled", lambda: False)
+    with patch("src.stages.stage_localization.estimate_spine_label_symmetry", return_value={}), \
+         patch.object(stage, "_build_anatomical_geometry", wraps=stage._build_anatomical_geometry) as estimate:
+        stage.execute(context)
+    result = context.get_result("anatomical_analysis")
+    assert result["anatomical_geometry"] == expected_pose.to_dict()
+    assert result["spine_geometry"]["filtered_annotation_centroids"]["vertebrae_C2"]["found"] is False
+    assert "vertebrae_C2" in result["spine_geometry"]["interspace_recovered_annotations"]
+    assert result["spine_geometry"]["excluded_from_annotation_centroids"] == []
+    pose_annotations = estimate.call_args.kwargs["label_pose_annotations"]
+    if fit_excluded:
+        assert "vertebrae_C2" not in pose_annotations
+    else:
+        assert pose_annotations["vertebrae_C2"] == baseline["filtered_annotation_centroids"]["vertebrae_C2"]

@@ -49,7 +49,7 @@ def test_geometry_bridge_passes_support_separately_from_target():
     sentinel_image = object()
     expected = (object(), {"pose_source": "pleural_envelope"})
     with patch(
-        "src.stages.stage_localization.estimate_lung_frame_with_diagnostics",
+        "src.anatomy.pose.estimate_lung_frame_with_diagnostics",
         return_value=expected,
     ) as estimate:
         result = LocalizationOperations._build_anatomical_geometry(

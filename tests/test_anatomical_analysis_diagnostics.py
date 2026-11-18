@@ -45,12 +45,26 @@ def _small_context(tmp_path):
         dicom_dir=str(tmp_path / "dicom"), output_dir=str(tmp_path / "output"),
         slice_part=SlicePartEnum.腰椎,
     ))
+    pose_config = {
+        "method": "spine", "labels": ["L1", "L2"],
+        "roles": {"start": "L1", "end": "L2"},
+    }
+    target_labels = list(targets)
+    whole_range = {"regions": {"default": {
+        "type": "whole_range", "target_labels": target_labels,
+        "bounds": {
+            "upper": {"labels": target_labels, "edge": "upper", "reduce": "max", "offset_mm": 0.0},
+            "lower": {"labels": target_labels, "edge": "lower", "reduce": "min", "offset_mm": 0.0},
+        },
+    }}}
     context.set_result("localization", {
+        "pose_config": pose_config,
+        "resolved_pose_config": stage._resolve_pose_aliases(pose_config),
         "seg_for_reconstruction_path": seg_path,
         "raw_for_reconstruction_path": str(raw_path),
-        "resolved_cut_config": cut_config,
+        "resolved_cut_config": whole_range,
         "resolved_cut_configs": {
-            "whole_range": cut_config,
+            "whole_range": whole_range,
             "interspace": {"intervals": [{
                 "region": "L1_L2", **cut_config,
             }]},

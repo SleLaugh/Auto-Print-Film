@@ -320,8 +320,18 @@ def test_stage_checks_actual_raw_geometry_before_collision_recovery(tmp_path, mo
         plane_configs=[PlaneConfig(plane=PlaneTypeEnum.横状位, slice_type=SliceType.椎间隙,
                                   slice_thickness=5., slice_spacing=5., window_presets=["软组织窗"])],
     ))
-    cut = {"start_labels": ["vertebrae_L1"], "end_labels": ["vertebrae_L4"]}
+    labels = list(targets)
+    pose = {"method": "spine", "labels": ["L1", "L2", "L3", "L4"],
+            "roles": {"start": "L1", "end": "L4"}}
+    cut = {"regions": {"default": {
+        "type": "whole_range", "target_labels": labels,
+        "bounds": {
+            "upper": {"labels": labels, "edge": "upper", "reduce": "max", "offset_mm": 0.0},
+            "lower": {"labels": labels, "edge": "lower", "reduce": "min", "offset_mm": 0.0},
+        },
+    }}}
     context.set_result("localization", {
+        "pose_config": pose, "resolved_pose_config": stage._resolve_pose_aliases(pose),
         "seg_for_reconstruction_path": seg_path, "raw_for_reconstruction_path": raw_path,
         "resolved_cut_config": cut, "resolved_cut_configs": {
             "whole_range": cut, "interspace": {"intervals": [

@@ -326,10 +326,17 @@ def _cpr_plan_identity(
 def configured_spine_cpr_labels(
     localization_result: Dict[str, Any],
 ) -> List[str]:
-    """按整体区域及 CPR 排除配置生成椎体列表。"""
+    """按独立的 CPR 脊柱区间及排除配置生成椎体列表。"""
 
-    configured_labels = configured_whole_range_spine_labels(
-        localization_result,
+    profiles = localization_result.get("resolved_cut_configs") or {}
+    cpr_range = profiles.get("spine_range")
+    if cpr_range is None and isinstance((profiles.get("whole_range") or {}).get("regions"), dict):
+        # 新契约必须独立提供 CPR 区间，不能把 MPR 的目标当作隐式 CPR 范围。
+        return []
+    configured_labels = (
+        _configured_spine_interval_labels(cpr_range)
+        if cpr_range is not None
+        else configured_whole_range_spine_labels(localization_result)
     )
     if configured_labels is None:
         return []
@@ -349,8 +356,9 @@ def configured_spine_cpr_labels(
 
 def configured_whole_range_spine_labels(
     localization_result: Dict[str, Any],
+    region_name: str | None = None,
 ) -> List[str] | None:
-    """按整体区域的起止标签展开当前脊柱部位标签。"""
+    """读取 MPR 的目标标签；CPR 的首尾范围不参与 MPR 范围计算。"""
 
     resolved_cut_configs = localization_result.get("resolved_cut_configs")
     resolved_cut_config = (
@@ -360,6 +368,28 @@ def configured_whole_range_spine_labels(
     )
     if not isinstance(resolved_cut_config, dict):
         return None
+
+    regions = resolved_cut_config.get("regions")
+    if isinstance(regions, dict):
+        if region_name is not None:
+            selected = regions.get(region_name)
+            if selected is None:
+                raise ValueError(f"未配置 MPR 区域: {region_name}")
+            region_values = [selected]
+        else:
+            region_values = regions.values()
+        labels = list(dict.fromkeys(
+            label for region in region_values for label in region["target_labels"]
+        ))
+        return labels if all(
+            label in SPINE_CONFIG_LABEL_ORDER or label == "sacrum" for label in labels
+        ) else None
+    # 独立几何调用和既有定位结果可直接提供首尾；磁盘配置只接受新区域格式。
+    return _configured_spine_interval_labels(resolved_cut_config)
+
+
+def _configured_spine_interval_labels(resolved_cut_config: Dict[str, Any]) -> List[str] | None:
+    """将一个已解析的首尾椎体区间展开为有序标签，不读取 MPR 偏移。"""
 
     start_label = _first_configured_label(
         resolved_cut_config.get("start_labels")
@@ -371,14 +401,19 @@ def configured_whole_range_spine_labels(
         return None
 
     try:
-        start_index = SPINE_CONFIG_LABEL_ORDER.index(start_label)
-        end_index = SPINE_CONFIG_LABEL_ORDER.index(end_label)
+        start_index = SPINE_CONFIG_LABEL_ORDER.index("vertebrae_S1" if start_label == "sacrum" else start_label)
+        end_index = SPINE_CONFIG_LABEL_ORDER.index("vertebrae_S1" if end_label == "sacrum" else end_label)
     except ValueError:
         return None
 
-    if start_index <= end_index:
-        return list(SPINE_CONFIG_LABEL_ORDER[start_index:end_index + 1])
-    return list(reversed(SPINE_CONFIG_LABEL_ORDER[end_index:start_index + 1]))
+    labels = (
+        list(SPINE_CONFIG_LABEL_ORDER[start_index:end_index + 1])
+        if start_index <= end_index
+        else list(reversed(SPINE_CONFIG_LABEL_ORDER[end_index:start_index + 1]))
+    )
+    if "sacrum" in (start_label, end_label):
+        labels = ["sacrum" if label == "vertebrae_S1" else label for label in labels]
+    return labels
 
 
 def _first_configured_label(value: Any) -> str | None:

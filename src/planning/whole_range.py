@@ -3,7 +3,8 @@
 
 """整切 planner 的公共方法。"""
 
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from itertools import product
 from typing import Any, Dict, List, Optional
 
@@ -41,6 +42,7 @@ from src.planning.face_extension import (
     expand_anatomical_bounds,
     resolve_face_extension,
 )
+from src.planning.regions import mpr_region_for_plane
 
 
 @dataclass(frozen=True)
@@ -222,19 +224,22 @@ def build_whole_range_plan_from_bbox(
     局部坐标及完整目标投影。旧结果缺少局部坐标时沿用已有整体坐标。
     """
 
-    anatomical_frame_parts = {
-        "颅脑", "肺部", "颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱", "髋骨",
-    }
-    uses_anatomical_frame = request.slice_part.value in anatomical_frame_parts
+    region_id, region = (
+        mpr_region_for_plane(localization_result, plane_config.plane)
+        if plane_config.slice_type is SliceType.MPR else ("", None)
+    )
     geometry = None
-    if localization_result.get("anatomical_geometry"):
+    if region is not None:
+        geometry = AnatomicalGeometryResult.from_dict(region)
+        source_labels = list(region["target_labels"])
+        if region.get("constrained"):
+            # 旧的部位 bbox 不能覆盖已经独立定义的组合边界。
+            target_region_bbox = None
+    elif localization_result.get("anatomical_geometry"):
         geometry = AnatomicalGeometryResult.from_dict(
             localization_result["anatomical_geometry"]
         )
-    if (
-        uses_anatomical_frame
-        and localization_result.get("anatomical_geometry")
-    ):
+    if geometry is not None:
         anatomical_frame = geometry.global_frame
         if (
             request.slice_part.value == "颈椎"
@@ -249,6 +254,8 @@ def build_whole_range_plan_from_bbox(
             anatomical_frame=anatomical_frame,
             source_labels=source_labels,
             target_region_bbox=target_region_bbox,
+            region_id=region_id,
+            region=region,
         )
         return _apply_localizer_preferences(
             plan,
@@ -324,7 +331,8 @@ def _apply_localizer_preferences(
     识别髋骨或其他具体部位。
     """
 
-    if slice_part != "髋骨" or geometry is None:
+    if (slice_part != "髋骨" or geometry is None
+            or (plan.region_geometry or {}).get("constrained")):
         return plan
     plan.localizer_reference = geometry.global_frame.origin
     return plan
@@ -361,6 +369,8 @@ def _build_whole_range_plan_from_anatomical_frame(
     anatomical_frame: AnatomicalFrame,
     source_labels: Optional[List[str]],
     target_region_bbox: Optional[Dict[str, float]] = None,
+    region_id: str = "",
+    region: Optional[Dict[str, Any]] = None,
 ) -> SlicePlan:
     """用第五阶段给出的中心、方向和投影边界构造居中的平行整切计划。"""
 
@@ -373,6 +383,7 @@ def _build_whole_range_plan_from_anatomical_frame(
         if target_region_bbox is not None
         else anatomical_frame.bounds
     )
+    base_bounds = bounds
     face_extension = resolve_face_extension(
         localization_result,
         plane_config.slice_type.value,
@@ -436,7 +447,7 @@ def _build_whole_range_plan_from_anatomical_frame(
         anatomical_frame,
         localization_result["image"],
     )
-    if target_region_bbox is not None:
+    if target_region_bbox is not None or (region or {}).get("constrained"):
         centered_target_start = target_start
         centered_target_end = target_end
         extent = target_extent
@@ -490,7 +501,7 @@ def _build_whole_range_plan_from_anatomical_frame(
         col_dir=straight_frame.col_dir,
         slice_image_count=sampling.slice_image_count,
     )
-    return SlicePlan(
+    plan = SlicePlan(
         plan_id=(
             f"{request.slice_part.value}_{plane_config.slice_type.value}_{plane.value}"
         ),
@@ -526,7 +537,20 @@ def _build_whole_range_plan_from_anatomical_frame(
         config_id=plane_config.config_id,
         output_plane=plane_config.output_plane,
         sampling_details=sampling.to_dict(),
+        region_id=region_id,
+        target_id=request.slice_part.value if region is not None else "",
     )
+    if region is not None:
+        plan.region_geometry = {
+            "frame": replace(anatomical_frame, bounds=bounds).to_dict(),
+            "base_bounds": base_bounds.to_dict(),
+            "constrained": bool(region.get("constrained")),
+            "target_labels": list(region["target_labels"]),
+        }
+    rule = localization_result.get("slice_rules", {}).get(plane.value, {}).get("MPR", {})
+    if plane_config.slice_type is SliceType.MPR and "framing_policy" in rule:
+        plan.framing_policy = deepcopy(rule["framing_policy"])
+    return plan
 
 
 def _anatomical_bounds_from_bbox(

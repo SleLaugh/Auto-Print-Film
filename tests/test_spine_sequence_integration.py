@@ -320,6 +320,19 @@ def test_stage3_uses_repaired_seg_for_coords_xy_and_workspace(monkeypatch, tmp_p
     )
     stage = SpatialCorrectionStage()
     monkeypatch.setattr(stage, "_find_dataset_json", lambda *a, **k: dataset_path)
+    monkeypatch.setattr(stage, "_resolve_pose_config", lambda *a, **k: {
+        "method": "spine", "labels": ["T12", "L1", "S1"],
+        "roles": {"start": "T12", "end": "S1"},
+    })
+    monkeypatch.setattr(stage, "_resolve_cut_configs", lambda *a, **k: {
+        "whole_range": {"regions": {"default": {
+            "type": "whole_range", "target_labels": ["T12", "L1", "S1"],
+            "bounds": {
+                "upper": {"labels": ["T12", "L1", "S1"], "edge": "upper", "reduce": "max", "offset_mm": 0.0},
+                "lower": {"labels": ["T12", "L1", "S1"], "edge": "lower", "reduce": "min", "offset_mm": 0.0},
+            },
+        }}},
+    })
     monkeypatch.setattr(stage, "_resolve_combined_label_targets", lambda *a, **k: {
         "vertebrae_L1": LabelTarget("vertebrae_L1", [7]),
         "vertebrae_S1": LabelTarget("vertebrae_S1", [2]),

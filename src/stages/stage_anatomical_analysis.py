@@ -7,6 +7,7 @@ from typing import Any, Dict
 import numpy as np
 import SimpleITK as sitk
 
+from src.anatomy.regions import resolve_anatomical_regions
 from src.core.context import ProcessingContext
 from src.core.resources import resource_operation
 from src.models import (
@@ -117,6 +118,10 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         if not localization_result:
             raise ValueError("前置阶段 'localization' 结果不存在")
         correction_result = context.get_result("spatial_correction") or {}
+        pose_config = localization_result["pose_config"]
+        resolved_pose_config = localization_result["resolved_pose_config"]
+        pose_method = resolved_pose_config["method"]
+        pose_labels = self._pose_label_names(resolved_pose_config)
 
         DebugLog("=" * 60)
         DebugLog("【第五阶段】解剖分析 - 坐标系与专用几何")
@@ -148,7 +153,9 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                     label_regions=label_regions,
                 )
                 self._validate_found_labels(label_coordinates)
-                target_mask = self._build_target_mask(seg_array, label_targets)
+                target_mask = self._build_target_mask(
+                    seg_array, {name: label_targets[name] for name in pose_labels},
+                )
             workspace = {
                 "seg_path": working_seg_path,
                 "image": image,
@@ -174,6 +181,8 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                     "resolved_cut_configs"
                 ],
                 "slice_rules": localization_result["slice_rules"],
+                "pose_config": pose_config,
+                "resolved_pose_config": resolved_pose_config,
             }
             context.metadata[_LOCALIZATION_WORKSPACE_KEY] = workspace
 
@@ -186,7 +195,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         correction_scope_bbox = workspace["correction_scope_bbox"]
 
         slice_part = context.request.slice_part.value
-        excluded_spine_labels = localization_result.get(
+        cpr_excluded_labels = localization_result.get(
             "spine_cpr_config",
             {},
         ).get("excluded_labels", [])
@@ -194,32 +203,36 @@ class AnatomicalAnalysisStage(LocalizationOperations):
             "resolved_cut_configs",
             {},
         ).get("interspace", {}).get("intervals", [])
+        fit_excluded_labels = set(resolved_pose_config.get("fit_excluded_labels", []))
+        interspace_labels = {
+            label for interval in interspace_regions
+            for role in ("start_labels", "end_labels") for label in interval.get(role, [])
+        }
+        # 主体是回正、CPR 和椎间隙共享的证据。只有两种用途都排除、且不被
+        # 椎间隙引用时才省略主体；CPR 是否选用该标签仍由自己的配置决定。
+        excluded_spine_labels = sorted(
+            (set(cpr_excluded_labels) & fit_excluded_labels) - interspace_labels
+        )
         label_masks: Dict[str, np.ndarray] = {}
         # 脊柱直接复用已有索引，避免每个椎体额外常驻一份整卷 bool mask。
-        if slice_part == "髋骨":
+        if pose_method == "hip":
             with resource_operation(
                 "anatomical_analysis", "build_hip_label_masks",
                 label_count=len(label_regions), shape_zyx=seg_array.shape,
             ):
-                for label_name, region in label_regions.items():
+                for label_name in pose_labels:
+                    region = label_regions[label_name]
                     label_mask = np.zeros(seg_array.shape, dtype=bool)
                     if region.indices_zyx.size:
                         label_mask[tuple(region.indices_zyx.T)] = True
                     label_masks[label_name] = label_mask
 
         resolved_cut_config = localization_result["resolved_cut_config"]
-        anatomical_cut_config = localization_result[
-            "resolved_cut_configs"
-        ].get("whole_range", resolved_cut_config)
-        start_labels = anatomical_cut_config.get("start_labels") or []
-        end_labels = anatomical_cut_config.get("end_labels") or []
+        pose_roles = resolved_pose_config.get("roles", {})
+        start_labels = pose_roles.get("start", [])
+        end_labels = pose_roles.get("end", [])
         start_label = start_labels[0] if start_labels else None
         end_label = end_labels[0] if end_labels else None
-        if slice_part in {"颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱"}:
-            # 范围配置使用标准椎体名，实际模型可能以 sacrum 表示 S1。
-            # 仅解析本次已验证的标签，不改写持久配置或缺标签校验政策。
-            start_label = self._resolve_spine_endpoint_label(start_label, label_targets)
-            end_label = self._resolve_spine_endpoint_label(end_label, label_targets)
         def load_spine_raw_array():
             with resource_operation("anatomical_analysis", "read_spine_raw") as details:
                 raw_image = sitk.ReadImage(localization_result["raw_for_reconstruction_path"])
@@ -258,18 +271,24 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         if spine_geometry is not None and localization_result.get("spine_label_sequence") is not None:
             spine_geometry["label_sequence"] = localization_result["spine_label_sequence"]
         lung_pose_support_mask, lung_pose_support_labels = (None, ())
-        if slice_part == "肺部":
+        if pose_method == "lung":
             with resource_operation("anatomical_analysis", "build_lung_pose_support"):
                 lung_pose_support_mask, lung_pose_support_labels = self._lung_pose_support(
                     target_mask, seg_array, localization_result.get("dataset_json_path"),
                 )
         framing_label_ids, framing_source_labels = (), ()
         coverage_diagnostic = None
-        if slice_part == "颅脑":
+        if pose_method == "brain":
             with resource_operation("anatomical_analysis", "build_brain_framing_support"):
                 framing_label_ids, framing_source_labels, coverage_diagnostic = self._brain_framing_support(
                     seg_array, localization_result.get("dataset_json_path"),
                 )
+        # 回正的拟合排除与 CPR 主体排除独立；复用已有对称面结果，不重复拟合。
+        pose_annotations = {
+            name: annotation
+            for name, annotation in (spine_geometry or {}).get("filtered_annotation_centroids", {}).items()
+            if name in pose_labels and name not in fit_excluded_labels
+        }
         # 脑区独占姿态与三轴基础范围；规划另加配置余量，骨只作独立取景支持。
         with resource_operation(
             "anatomical_analysis", "build_anatomical_frame",
@@ -282,11 +301,13 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 label_masks=label_masks,
                 start_label=start_label,
                 end_label=end_label,
-                label_pose_annotations=(spine_geometry or {}).get("filtered_annotation_centroids"),
+                label_pose_annotations=pose_annotations,
                 label_indices_zyx=(
-                    {name: region.indices_zyx for name, region in label_regions.items()}
-                    if slice_part in {"颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱"} else None
+                    {name: label_regions[name].indices_zyx for name in pose_labels}
+                    if pose_method == "spine" else None
                 ),
+                pose_method=pose_method,
+                pose_roles=pose_roles,
                 lung_pose_support_mask=lung_pose_support_mask,
                 lung_pose_support_labels=lung_pose_support_labels,
             )
@@ -297,6 +318,14 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 anatomical_geometry.global_frame.warnings.append(
                     "本次分割缺少可用骨性取景支持，仅按脑区居中，不能保证脑部周边骨轮廓完整"
                 )
+
+        with resource_operation("anatomical_analysis", "resolve_anatomical_regions"):
+            anatomical_regions = resolve_anatomical_regions(
+                localization_result["resolved_cut_configs"].get("whole_range", {}).get("regions", {}),
+                anatomical_geometry, image,
+                {name: region.indices_zyx for name, region in label_regions.items()},
+                pose_labels, pose_method, pose_roles=pose_roles,
+            )
 
         debug_label_path = ""
         debug_body_path = ""
@@ -391,13 +420,19 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 anatomical_geometry=anatomical_geometry,
                 spine_cpr_config=localization_result["spine_cpr_config"],
                 anatomical_geometry_diagnostics=anatomical_diagnostics,
-                framing_source_labels=list(framing_source_labels) if slice_part == "颅脑" else None,
-                framing_label_ids=list(framing_label_ids) if slice_part == "颅脑" else None,
+                pose_config=pose_config,
+                resolved_pose_config=resolved_pose_config,
+                anatomical_regions=anatomical_regions,
+                framing_source_labels=list(framing_source_labels) if pose_method == "brain" else None,
+                framing_label_ids=list(framing_label_ids) if pose_method == "brain" else None,
             )
 
         payload = {
             "spine_geometry": spine_geometry,
             "anatomical_geometry_diagnostics": anatomical_diagnostics,
+            "pose_config": pose_config,
+            "resolved_pose_config": resolved_pose_config,
+            "anatomical_regions": anatomical_regions,
             "debug_label_mask_overlay_path": debug_label_path,
             "debug_vertebral_body_mask_overlay_path": debug_body_path,
             "debug_vertebral_body_prism_mask_overlay_path": debug_prism_path,
@@ -407,7 +442,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         }
         if anatomical_geometry is not None:
             payload["anatomical_geometry"] = anatomical_geometry.to_dict()
-        if slice_part == "颅脑":
+        if pose_method == "brain":
             payload.update(
                 framing_source_labels=list(framing_source_labels),
                 framing_label_ids=list(framing_label_ids),
@@ -421,7 +456,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
         if anatomical_geometry is not None:
             frame = anatomical_geometry.global_frame
             DebugLog(f"  解剖坐标: {frame.method}, pose_applied={frame.applied}")
-            if slice_part == "颅脑":
+            if pose_method == "brain":
                 pitch = anatomical_diagnostics.get("pitch", {})
                 DebugLog(
                     f"  颅脑形态俯仰: status={pitch.get('status')}, "

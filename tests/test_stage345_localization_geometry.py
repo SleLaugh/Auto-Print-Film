@@ -47,12 +47,22 @@ class LocalizationGeometryTest(unittest.TestCase):
         config = load_slice_part_config()
         lumbar = config["slice_parts"]["腰椎"]
         lumbar["localization"] = {
+            "pose": {
+                "method": "spine", "labels": ["L1", "S1"],
+                "roles": {"start": "L1", "end": "S1"},
+            },
             "spine_cpr": {"full_label": True},
             "regions": {
                 "default": {
                     "type": "whole_range",
-                    "start_label": "L1",
-                    "end_label": "S1",
+                    "target_labels": ["L1", "S1"],
+                    "bounds": {
+                        "upper": {"labels": ["L1", "S1"], "edge": "upper", "reduce": "max", "offset_mm": 0.0},
+                        "lower": {"labels": ["L1", "S1"], "edge": "lower", "reduce": "min", "offset_mm": 0.0},
+                    },
+                },
+                "cpr_range": {
+                    "type": "spine_range", "start_label": "L1", "end_label": "S1",
                 },
                 "L1_S1": {
                     "type": "interspace",
@@ -86,7 +96,7 @@ class LocalizationGeometryTest(unittest.TestCase):
                     "localizer_plane": "矢状位",
                 },
                 "CPR": {
-                    "regions": ["default"],
+                    "regions": ["cpr_range"],
                     "face_extension_mm": deepcopy(zero_extension),
                     "localizer_plane": "矢状位",
                 },
@@ -696,11 +706,12 @@ class LocalizationGeometryTest(unittest.TestCase):
 
         config = load_slice_part_config()
 
-        self.assertEqual(config["slice_parts"]["颈椎"]["localization"]["regions"]["default"], {
-            "type": "whole_range",
-            "start_label": "C1",
-            "end_label": "T1",
-        })
+        region = config["slice_parts"]["颈椎"]["localization"]["regions"]["default"]
+        labels = [f"C{index}" for index in range(1, 8)] + ["T1"]
+        self.assertEqual(region["type"], "whole_range")
+        self.assertEqual(region["target_labels"], labels)
+        self.assertEqual(region["bounds"]["upper"]["labels"], labels)
+        self.assertEqual(region["bounds"]["lower"]["labels"], labels)
 
     def test_default_spine_targets_include_junction_vertebrae(self):
         """颈椎覆盖到 T1、腰椎从 T12 开始，仍只保留原有五个椎间隙。"""
@@ -3157,8 +3168,8 @@ class LocalizationGeometryTest(unittest.TestCase):
             )
             self.assertEqual(
                 metadata["resolved_cut_configs"]["whole_range"]
-                ["start_labels"],
-                ["vertebrae_L1"],
+                ["regions"]["default"]["target_labels"],
+                ["vertebrae_L1", "vertebrae_S1"],
             )
             self.assertEqual(
                 metadata["resolved_cut_configs"]["interspace"]

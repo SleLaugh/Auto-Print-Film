@@ -26,13 +26,26 @@ from src.stages.stage_spatial_correction import SpatialCorrectionStage
 def _sacral_config():
     config = load_slice_part_config()
     lumbar = config["slice_parts"]["腰椎"]
+    lumbar["localization"]["pose"] = {
+        "method": "spine",
+        "labels": ["L5", "S1"],
+        "roles": {"start": "L5", "end": "S1"},
+    }
     lumbar["localization"]["regions"] = {
-        "default": {"type": "whole_range", "start_label": "L5", "end_label": "S1"},
+        "default": {
+            "type": "whole_range",
+            "target_labels": ["L5", "S1"],
+            "bounds": {
+                "upper": {"labels": ["L5", "S1"], "edge": "upper", "reduce": "max"},
+                "lower": {"labels": ["L5", "S1"], "edge": "lower", "reduce": "min"},
+            },
+        },
+        "cpr_range": {"type": "spine_range", "start_label": "L5", "end_label": "S1"},
         "L5_S1": {"type": "interspace", "start_label": "L5", "end_label": "S1"},
     }
     for rules in lumbar["slice_rules"].values():
         for slice_type, rule in rules.items():
-            rule["regions"] = ["L5_S1"] if slice_type == "椎间隙" else ["default"]
+            rule["regions"] = [{"椎间隙": "L5_S1", "CPR": "cpr_range", "MPR": "default"}[slice_type]]
     validate_slice_part_config(config)
     return config
 
@@ -137,7 +150,11 @@ def test_sacral_endpoint_reaches_anatomical_frame_interspace_and_dicom_output(
     assert anatomical["anatomical_geometry_diagnostics"]["used_labels"] == [
         "vertebrae_L5", expected_sacral,
     ]
-    assert localization["resolved_cut_configs"]["whole_range"]["end_labels"] == ["vertebrae_S1"]
+    assert localization["resolved_cut_configs"]["spine_range"]["end_labels"] == [expected_sacral]
+    region = localization["resolved_cut_configs"]["whole_range"]["regions"]["default"]
+    assert region["target_labels"] == ["vertebrae_L5", expected_sacral]
+    assert region["bounds"]["lower"]["labels"] == ["vertebrae_L5", expected_sacral]
+    assert config["slice_parts"]["腰椎"]["localization"]["pose"]["roles"]["end"] == "S1"
     assert anatomical["spine_geometry"]["interspace_body_pairs"]["L5_S1"]["lower_label"] == expected_sacral
     plans = context.get_result("planning")["plans"]
     assert len(plans) == 1

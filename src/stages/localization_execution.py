@@ -50,7 +50,10 @@ class LocalizationExecutionMixin:
                 label_regions=label_regions,
             )
             self._validate_found_labels(label_coordinates)
-            target_mask = self._build_target_mask(seg_array, label_targets)
+            pose_names = self._pose_label_names(correction_result["resolved_pose_config"])
+            target_mask = self._build_target_mask(
+                seg_array, {name: label_targets[name] for name in pose_names},
+            )
             correction_scope_bbox = self._build_target_bbox(target_mask)
             workspace = {
                 "seg_path": working_seg_path,
@@ -77,6 +80,8 @@ class LocalizationExecutionMixin:
                     "resolved_cut_configs"
                 ],
                 "slice_rules": correction_result["slice_rules"],
+                "pose_config": correction_result["pose_config"],
+                "resolved_pose_config": correction_result["resolved_pose_config"],
             }
             context.metadata[_LOCALIZATION_WORKSPACE_KEY] = workspace
 
@@ -110,8 +115,10 @@ class LocalizationExecutionMixin:
                 "resolved_cut_configs"
             ],
             "slice_rules": correction_result["slice_rules"],
+            "pose_config": correction_result["pose_config"],
+            "resolved_pose_config": correction_result["resolved_pose_config"],
             "spine_cpr_config": self._resolve_spine_cpr_config(
-                context.request.slice_part.value,
+                context.request.slice_part.value, label_targets,
             ),
             "label_targets": self._label_targets_to_dict(label_targets),
             "dataset_json_path": correction_result["dataset_json_path"],

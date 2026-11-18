@@ -7,7 +7,7 @@ from src.models.enums import SliceType
 
 _LOCALIZATION_PROFILES = {
     SliceType.MPR.value: "whole_range",
-    SliceType.CPR.value: "whole_range",
+    SliceType.CPR.value: "spine_range",
     SliceType.椎间隙.value: "interspace",
 }
 
@@ -29,5 +29,8 @@ def localization_profile_for_request(slice_types: Iterable[object]) -> str:
         localization_profile_for_slice_type(slice_type)
         for slice_type in slice_types
     }
-    # 椎间隙配置会列出所有相邻椎体，能够同时满足同部位 MPR/CPR 的标签需求。
-    return "interspace" if "interspace" in profiles else "whole_range"
+    # 主配置仅用于结果标识；各切法的标签依赖由定位阶段分别收集。
+    for profile in ("interspace", "whole_range", "spine_range"):
+        if profile in profiles:
+            return profile
+    raise ValueError("至少需要一种切片方式")

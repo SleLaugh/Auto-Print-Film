@@ -11,7 +11,8 @@ from src.runtime import config_path
 
 _PLANES = {"横状位", "冠状位", "矢状位"}
 _SLICE_TYPES = {"MPR", "CPR", "椎间隙"}
-_REGION_TYPES = {"whole_range", "interspace"}
+_REGION_TYPES = {"whole_range", "spine_range", "interspace"}
+_POSE_METHODS = {"brain", "lung", "hip", "spine"}
 _FACE_EXTENSION_FIELDS = (
     "top_mm",
     "bottom_mm",
@@ -109,12 +110,14 @@ def _validate_part_config(
         raise ValueError(f"{slice_part}.localization 必须是对象")
     _reject_unknown_fields(
         localization,
-        {"regions", "spine_cpr"},
+        {"pose", "regions", "spine_cpr"},
         f"{slice_part}.localization",
     )
     regions = localization.get("regions")
     if not isinstance(regions, Mapping):
         raise ValueError(f"{slice_part}.localization.regions 必须是对象")
+    if regions or part_config["enabled"] or "pose" in localization:
+        _validate_pose(slice_part, localization.get("pose"), aliases)
     for region_name, region in regions.items():
         _validate_region(slice_part, region_name, region, aliases)
     _validate_spine_cpr_config(
@@ -153,6 +156,9 @@ def _validate_part_config(
             f"{sorted(unused_regions)}"
         )
     supports_cpr = any("CPR" in type_rules for type_rules in slice_rules.values())
+    spine_ranges = [region for region in regions.values() if region["type"] == "spine_range"]
+    if len(spine_ranges) > 1:
+        raise ValueError(f"{slice_part} 当前只支持一个 CPR 脊柱范围")
     has_cpr_config = "spine_cpr" in localization
     if supports_cpr and not has_cpr_config:
         raise ValueError(f"{slice_part} 支持 CPR，但缺少 localization.spine_cpr")
@@ -227,25 +233,128 @@ def _validate_model_mappings(
                 )
 
 
+def _validate_alias_list(
+    values: Any,
+    aliases: Mapping[str, Any],
+    field_name: str,
+    *,
+    allow_empty: bool = False,
+) -> list[str]:
+    """校验别名数组，并返回展开后的实际标签名。"""
+
+    if not isinstance(values, list) or (not values and not allow_empty) or any(
+        not isinstance(value, str) or not value for value in values
+    ):
+        qualifier = "" if allow_empty else "非空"
+        raise ValueError(f"{field_name} 必须是{qualifier}字符串数组")
+    if len(values) != len(set(values)):
+        raise ValueError(f"{field_name} 不能包含重复标签")
+    resolved = []
+    for name in values:
+        if name not in aliases:
+            raise ValueError(f"{field_name} 未在 label_aliases 中定义: {name}")
+        labels = aliases[name]
+        resolved.extend(labels if isinstance(labels, list) else [labels])
+    return resolved
+
+
+def _validate_pose(
+    slice_part: str,
+    pose: Any,
+    aliases: Mapping[str, Any],
+) -> None:
+    """校验与切割边界独立的回正输入；专用方向算法不开放角度配置。"""
+
+    prefix = f"{slice_part}.localization.pose"
+    if not isinstance(pose, Mapping):
+        raise ValueError(f"{prefix} 必须是对象")
+    method = pose.get("method")
+    if not isinstance(method, str) or method not in _POSE_METHODS:
+        raise ValueError(f"{prefix}.method 仅支持 brain/lung/hip/spine")
+    allowed_fields = {"method", "roles"} if method == "hip" else {"method", "labels"}
+    if method == "spine":
+        allowed_fields.update({"roles", "fit_excluded_labels"})
+    _reject_unknown_fields(pose, allowed_fields, prefix)
+    labels = []
+    if method != "hip":
+        labels = _validate_alias_list(pose.get("labels"), aliases, f"{prefix}.labels")
+    if method in {"hip", "spine"}:
+        roles = pose.get("roles")
+        if not isinstance(roles, Mapping):
+            raise ValueError(f"{prefix}.roles 必须是对象")
+        role_names = {"left", "right"} if method == "hip" else {"start", "end"}
+        _reject_unknown_fields(roles, role_names, f"{prefix}.roles")
+        for role in sorted(role_names):
+            role_labels = _validate_alias_list(
+                [roles.get(role)], aliases, f"{prefix}.roles.{role}",
+            )
+            if method == "spine" and len(role_labels) != 1:
+                raise ValueError(f"{prefix}.roles.{role} 必须恰好对应一个实际标签")
+            if method == "spine" and not set(role_labels).issubset(labels):
+                raise ValueError(f"{prefix}.roles.{role} 必须包含在 pose.labels 中")
+        if method == "hip" and roles["left"] == roles["right"]:
+            raise ValueError(f"{prefix}.roles.left 和 right 不能使用相同标签")
+    if "fit_excluded_labels" in pose:
+        excluded = _validate_alias_list(
+            pose["fit_excluded_labels"], aliases, f"{prefix}.fit_excluded_labels",
+            allow_empty=True,
+        )
+        if not set(excluded).issubset(labels):
+            raise ValueError(f"{prefix}.fit_excluded_labels 必须包含在 pose.labels 中")
+        if not set(labels) - set(excluded):
+            raise ValueError(f"{prefix}.fit_excluded_labels 不能排除全部回正标签")
+
+
+def _validate_boundary(
+    boundary: Any,
+    aliases: Mapping[str, Any],
+    prefix: str,
+) -> None:
+    """边界按各标签极值、聚合、带符号偏移的次序求值。"""
+
+    if not isinstance(boundary, Mapping):
+        raise ValueError(f"{prefix} 必须是对象")
+    _reject_unknown_fields(boundary, {"labels", "edge", "reduce", "offset_mm"}, prefix)
+    labels = _validate_alias_list(boundary.get("labels"), aliases, f"{prefix}.labels")
+    edge = boundary.get("edge")
+    if not isinstance(edge, str) or edge not in {"upper", "lower"}:
+        raise ValueError(f"{prefix}.edge 仅支持 upper/lower")
+    reduction = boundary.get("reduce")
+    if "reduce" in boundary:
+        if not isinstance(reduction, str) or reduction not in {"max", "min"}:
+            raise ValueError(f"{prefix}.reduce 仅支持 max/min")
+    elif len(labels) > 1:
+        raise ValueError(f"{prefix} 包含多个实际标签，必须配置 reduce")
+    _finite_number(boundary.get("offset_mm", 0.0), f"{prefix}.offset_mm")
+
+
 def _validate_region(
     slice_part: str,
     region_name: Any,
     region: Any,
     aliases: Mapping[str, Any],
 ) -> None:
-    """校验一个可输出区域的定位方式和端点标签。"""
+    """校验普通区域边界，或 CPR/椎间隙的独立端点定义。"""
 
     if not isinstance(region_name, str) or not region_name:
         raise ValueError(f"{slice_part} 的区域名称必须是非空字符串")
     if not isinstance(region, Mapping):
         raise ValueError(f"{slice_part}.{region_name} 区域必须是对象")
-    _reject_unknown_fields(
-        region,
-        {"type", "start_label", "end_label"},
-        f"{slice_part}.{region_name}",
-    )
-    if region.get("type") not in _REGION_TYPES:
+    region_type = region.get("type")
+    if not isinstance(region_type, str) or region_type not in _REGION_TYPES:
         raise ValueError(f"{slice_part}.{region_name} 包含未知区域类型")
+    prefix = f"{slice_part}.{region_name}"
+    if region_type == "whole_range":
+        _reject_unknown_fields(region, {"type", "target_labels", "bounds"}, prefix)
+        _validate_alias_list(region.get("target_labels"), aliases, f"{prefix}.target_labels")
+        bounds = region.get("bounds")
+        if not isinstance(bounds, Mapping):
+            raise ValueError(f"{prefix}.bounds 必须是对象")
+        _reject_unknown_fields(bounds, {"upper", "lower"}, f"{prefix}.bounds")
+        for side in ("upper", "lower"):
+            _validate_boundary(bounds.get(side), aliases, f"{prefix}.bounds.{side}")
+        return
+    _reject_unknown_fields(region, {"type", "start_label", "end_label"}, prefix)
     for field_name in ("start_label", "end_label"):
         if not isinstance(region.get(field_name), str) or not region[field_name]:
             raise ValueError(f"{slice_part}.{region_name}.{field_name} 必须是非空字符串")
@@ -360,7 +469,7 @@ def _validate_slice_rule(
     if len(region_names) != len(set(region_names)):
         raise ValueError(f"{prefix}.regions 不能包含重复区域")
 
-    expected_region_type = "interspace" if slice_type == "椎间隙" else "whole_range"
+    expected_region_type = {"MPR": "whole_range", "CPR": "spine_range", "椎间隙": "interspace"}[slice_type]
     for region_name in region_names:
         if region_name not in regions:
             raise ValueError(f"{prefix} 引用了不存在的区域: {region_name}")
@@ -368,7 +477,7 @@ def _validate_slice_rule(
             raise ValueError(
                 f"{prefix} 的区域 {region_name} 必须是 {expected_region_type}"
             )
-    if expected_region_type == "whole_range" and len(region_names) != 1:
+    if expected_region_type in {"whole_range", "spine_range"} and len(region_names) != 1:
         raise ValueError(f"{prefix} 当前只支持一个整体区域")
 
     face_extension = rule.get("face_extension_mm")
@@ -411,6 +520,20 @@ def _non_negative_finite_number(value: Any, field_name: str) -> float:
         raise ValueError(f"{field_name} 必须是非负有限数字") from error
     if not math.isfinite(parsed) or parsed < 0:
         raise ValueError(f"{field_name} 必须是非负有限数字")
+    return parsed
+
+
+def _finite_number(value: Any, field_name: str) -> float:
+    """解析可以为负数的物理边界偏移。"""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} 必须是有限数字")
+    try:
+        parsed = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{field_name} 必须是有限数字") from error
+    if not math.isfinite(parsed):
+        raise ValueError(f"{field_name} 必须是有限数字")
     return parsed
 
 
@@ -506,7 +629,7 @@ def localization_profiles_for(
     config: Mapping[str, Any],
     slice_part: str,
 ) -> Dict[str, Any]:
-    """把区域配置整理为现有定位阶段消费的整体范围和椎间范围。"""
+    """按用途整理定位区域，回正输入通过 :func:`pose_for` 独立读取。"""
 
     part_config = get_slice_part(config, slice_part)
     localization = part_config["localization"]
@@ -518,32 +641,40 @@ def localization_profiles_for(
                 if region_name not in referenced_names:
                     referenced_names.append(region_name)
 
-    whole_ranges = []
+    whole_ranges = {}
+    spine_ranges = []
     interspaces = []
     for region_name in referenced_names:
         region = regions[region_name]
-        item = {
-            "region": region_name,
-            "start": region["start_label"],
-            "end": region["end_label"],
-        }
         if region["type"] == "whole_range":
-            whole_ranges.append(item)
+            whole_ranges[region_name] = deepcopy(dict(region))
         else:
-            interspaces.append(item)
+            item = {
+                "region": region_name,
+                "start": region["start_label"],
+                "end": region["end_label"],
+            }
+            if region["type"] == "spine_range":
+                spine_ranges.append(item)
+            else:
+                interspaces.append(item)
 
     profiles: Dict[str, Any] = {}
     if whole_ranges:
-        unique_whole_ranges = {
-            (item["region"], item["start"], item["end"])
-            for item in whole_ranges
-        }
-        if len(unique_whole_ranges) != 1:
-            raise ValueError(f"{slice_part} 当前只支持一个整体定位区域")
-        profiles["whole_range"] = whole_ranges[0]
+        profiles["whole_range"] = {"regions": whole_ranges}
+    if spine_ranges:
+        if len(spine_ranges) != 1:
+            raise ValueError(f"{slice_part} 当前只支持一个 CPR 脊柱范围")
+        profiles["spine_range"] = spine_ranges[0]
     if interspaces:
         profiles["interspace"] = interspaces
     return profiles
+
+
+def pose_for(config: Mapping[str, Any], slice_part: str) -> Dict[str, Any]:
+    """返回回正配置副本，避免阶段处理修改原始配置。"""
+
+    return deepcopy(dict(localization_for(config, slice_part)["pose"]))
 
 
 def capability_entries(

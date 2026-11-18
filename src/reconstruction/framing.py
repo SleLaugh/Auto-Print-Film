@@ -9,6 +9,7 @@ from src.core.label_index import SparseLabelIndex
 from src.models.request import parse_fill_percent
 from src.reconstruction.body_framing import BodyFramingSupport
 from src.reconstruction.framing_context import FramingContext
+from src.reconstruction.region_framing import RegionFramingBounds
 from src.reconstruction.source_framing import BodyImageSupport, SourceImageSupport
 from src.reconstruction.symmetry_framing import SymmetryFramingPlane
 
@@ -111,6 +112,7 @@ class TargetFramer:
         label_index: FramingLabelIndex | None = None,
     ):
         self.shared_geometry = shared_geometry
+        self._region_bounds = RegionFramingBounds.from_plan(plan)
         self.symmetry_plane = symmetry_plane
         self._selected_region = selected_region_framing(plan) if body_support is None else None
         percent = parse_fill_percent(plan.get("fill_percent"))
@@ -232,6 +234,13 @@ class TargetFramer:
                 self._body_points = points[keep]
                 self._body_voxel_axes = body_axes
                 self._body_region = body_support.region
+        if self._region_bounds is not None and not curved:
+            self.points = self._region_bounds.select_points(self.points, self.voxel_axes)
+            self._context_points = self._region_bounds.select_points(self._context_points, self.voxel_axes)
+            if self._body_points is not None:
+                self._body_points = self._region_bounds.select_points(self._body_points, self._body_voxel_axes)
+                if not len(self._body_points):
+                    self._body_points = None
         self._projection_key = None
         self._bounds = None
         self._projection_axes = None
@@ -263,12 +272,15 @@ class TargetFramer:
         axes /= np.linalg.norm(axes, axis=0)
         key = tuple(axes.ravel())
         if key != self._projection_key:
-            projected = self.points @ axes[:, :2]
             half_voxel = np.abs(self.voxel_axes.T @ axes).sum(axis=0) / 2
-            self._bounds = (
-                projected.min(axis=0) - half_voxel[:2],
-                projected.max(axis=0) + half_voxel[:2],
-            )
+            if self._region_bounds is not None:
+                self._bounds = self._region_bounds.projected_bounds(axes)
+            else:
+                projected = self.points @ axes[:, :2]
+                self._bounds = (
+                    projected.min(axis=0) - half_voxel[:2],
+                    projected.max(axis=0) + half_voxel[:2],
+                )
             self._projection_axes = axes
             self._half_voxel = half_voxel
             self._normal_depths = None
@@ -284,6 +296,8 @@ class TargetFramer:
                     projected_body.min(axis=0) - self._body_half_voxel[:2],
                     projected_body.max(axis=0) + self._body_half_voxel[:2],
                 )
+                if self._region_bounds is not None:
+                    self._body_group_bounds = self._region_bounds.clip_bounds(self._body_group_bounds, axes)
             self._framing_target_size = None
             self._reference_framing = None
             self._source_required_size = None
@@ -329,6 +343,8 @@ class TargetFramer:
             np.min([item[0] for item in bounds], axis=0),
             np.max([item[1] for item in bounds], axis=0),
         )
+        if self._region_bounds is not None:
+            result = self._region_bounds.clip_bounds(result, axes)
         self._slab_bounds_cache[key] = result
         return result
 
@@ -351,7 +367,9 @@ class TargetFramer:
                 # 按配置的中心容纳整组标签，再加每侧物理余量。尺寸与占比无关，
                 # 不能随末层小标签缩放，也不由外围体表撑大画布。
                 target_size = self._selected_region_target_size(plan, lower, upper)
-                self._framing_target_size = target_size + 2 * self._selected_region["margin_mm"]
+                self._framing_target_size = self._region_protected_target_size(
+                    plan, target_size + 2 * self._selected_region["margin_mm"], lower, upper,
+                )
                 return self._framing_target_size
             target_size = upper - lower
             target_canvas = self._body_points is None and uses_target_centered_canvas(plan)
@@ -359,8 +377,10 @@ class TargetFramer:
                 self._reference_framing = self._reference_slice_geometry(plan)
                 if self._reference_framing is not None:
                     target_size = self._reference_framing["required_size"]
-                self._framing_target_size = target_size
-                return target_size
+                self._framing_target_size = self._region_protected_target_size(
+                    plan, target_size, lower, upper,
+                )
+                return self._framing_target_size
             if target_canvas:
                 # 各层已经独立居中，跨层的位置漂移不能再撑大共同视野。
                 # 只用实际计划厚层的目标尺寸定倍率，避免部位始终达不到 Fill。
@@ -403,8 +423,37 @@ class TargetFramer:
                 target_size = np.maximum(upper, body_upper) - np.minimum(lower, body_lower)
             elif target_canvas and not np.any(target_size > 0):
                 target_size = upper - lower
-            self._framing_target_size = target_size
+            self._framing_target_size = self._region_protected_target_size(
+                plan, target_size, lower, upper,
+            )
         return self._framing_target_size
+
+    def _region_protected_target_size(
+        self, plan: dict, target_size: np.ndarray, lower: np.ndarray, upper: np.ndarray,
+    ) -> np.ndarray:
+        """一次容纳所有计划层居中后的显式区域，继续共用整组倍率。"""
+
+        if self._region_bounds is None:
+            return target_size
+        required = np.maximum(target_size, upper - lower)
+        if (parse_fill_percent(plan.get("fill_percent")) or 0) <= 0 or (
+            self._selected_region is not None
+            and self._selected_region.get("centering", "group") == "group"
+        ):
+            return required
+        for item in plan["slices"]:
+            axes = np.column_stack([
+                self._vector(item[key]) for key in ("row_dir", "col_dir", "normal")
+            ])
+            axes /= np.linalg.norm(axes, axis=0)
+            if not np.allclose(axes, self._projection_axes, rtol=0, atol=1e-12):
+                continue
+            # 复用已有厚层投影缓存及同一中心策略，不再次展开或投影全标签点云。
+            target_center, _, _, _ = self._slice_framing_center(plan, item, lower, upper)
+            required = np.maximum(
+                required, 2 * np.maximum(upper - target_center, target_center - lower),
+            )
+        return required
 
     def _selected_region_target_size(
         self, plan: dict, lower: np.ndarray, upper: np.ndarray,
@@ -541,32 +590,11 @@ class TargetFramer:
         }
         return self._skin_edge_geometry
 
-    def plane_geometry(self, plan: dict, planned_slice: dict) -> tuple[dict, dict]:
-        """整组共用比例，按配置选择整组、参考层或逐层目标居中。
+    def _slice_framing_center(
+        self, plan: dict, planned_slice: dict, lower: np.ndarray, upper: np.ndarray,
+    ) -> tuple[np.ndarray, str, list[float] | None, dict | None]:
+        """计划厚层的居中策略，供共同视野预计算及实际出图复用。"""
 
-        显式 selected_region 对正数占比启用：以原选定标签的整组包络和物理
-        余量为基准，按占比同时扩大宽高，始终从完整原 CT 采样。整组共用
-        倍率；居中可选整组包络、参考厚层固定偏移或逐层目标中心，均不随
-        占比变化，不先裁目标图再缩小。100% 时允许外围非目标组织越框。
-        默认肺/髋使用整组中心与 original 画框，保留第六阶段原矩阵的物理
-        宽高比；参考层、逐层目标与紧致 target 画框仅为显式兼容模式。
-        未启用该配置的肺/髋正数 MPR 用完整人体约束倍率，排除外部空气和可
-        分离的薄床板，不能为目标占比裁掉皮肤、肋骨或骶尾骨。肺部以最大
-        目标厚层的面内偏移取景，所有层沿用该偏移，一次放宽视野保护其他层。
-        髋骨正数 MPR 仍按各实际厚层目标居中、以最大尺寸确定共同间距。
-        100% 改用人体与目标的紧包络：肺追加整组相同平移；髋将部位中心
-        限制在能完整容纳人体的区间内，整组保持相同倍率和矩阵。
-        独立调用显式提供身体支持时，才按实际厚层联合尺寸及轮廓中心取景。
-        椎间隙配置可共用矩阵及比例；逐层只移动面内中心，不改变切平面。
-        可靠镜像面只约束面内左右中心，其余方向继续使用当前厚层 bbox 中心。
-        肺部没有实际参考层时、其余计划当前层没有目标时回退整组中心；
-        FillPercent 未设置/为零时保留原有整组目标中心和间距，完整源保护
-        只扩画布。肺/髋两种保护画布均不再单侧裁空；其余平面 HU 采样后的
-        上下无源支持行裁剪仍可改变最终 Rows 和图像垂直中心。
-        """
-
-        lower, upper = self.plane_target_bounds(planned_slice)
-        framing_target_size = self.framing_target_size(plan, planned_slice)
         axes = self._projection_axes
         center = self._vector(planned_slice["center"])
         center_local = center @ axes
@@ -625,6 +653,41 @@ class TargetFramer:
                         ))
                         target_center = symmetry_center
                         center_source = "slice_symmetry_plane"
+        return target_center, center_source, slice_target_size, symmetry_details
+
+    def plane_geometry(self, plan: dict, planned_slice: dict) -> tuple[dict, dict]:
+        """整组共用比例，按配置选择整组、参考层或逐层目标居中。
+
+        显式 selected_region 对正数占比启用：以原选定标签的整组包络和物理
+        余量为基准，按占比同时扩大宽高，始终从完整原 CT 采样。整组共用
+        倍率；居中可选整组包络、参考厚层固定偏移或逐层目标中心，均不随
+        占比变化，不先裁目标图再缩小。100% 时允许外围非目标组织越框。
+        默认肺/髋使用整组中心与 original 画框，保留第六阶段原矩阵的物理
+        宽高比；参考层、逐层目标与紧致 target 画框仅为显式兼容模式。
+        未启用该配置的肺/髋正数 MPR 用完整人体约束倍率，排除外部空气和可
+        分离的薄床板，不能为目标占比裁掉皮肤、肋骨或骶尾骨。肺部以最大
+        目标厚层的面内偏移取景，所有层沿用该偏移，一次放宽视野保护其他层。
+        髋骨正数 MPR 仍按各实际厚层目标居中、以最大尺寸确定共同间距。
+        100% 改用人体与目标的紧包络：肺追加整组相同平移；髋将部位中心
+        限制在能完整容纳人体的区间内，整组保持相同倍率和矩阵。
+        独立调用显式提供身体支持时，才按实际厚层联合尺寸及轮廓中心取景。
+        椎间隙配置可共用矩阵及比例；逐层只移动面内中心，不改变切平面。
+        可靠镜像面只约束面内左右中心，其余方向继续使用当前厚层 bbox 中心。
+        肺部没有实际参考层时、其余计划当前层没有目标时回退整组中心；
+        FillPercent 未设置/为零时保留原有整组目标中心和间距，完整源保护
+        只扩画布。肺/髋两种保护画布均不再单侧裁空；其余平面 HU 采样后的
+        上下无源支持行裁剪仍可改变最终 Rows 和图像垂直中心。
+        """
+
+        lower, upper = self.plane_target_bounds(planned_slice)
+        framing_target_size = self.framing_target_size(plan, planned_slice)
+        axes = self._projection_axes
+        center = self._vector(planned_slice["center"])
+        center_local = center @ axes
+        target_center, center_source, slice_target_size, symmetry_details = (
+            self._slice_framing_center(plan, planned_slice, lower, upper)
+        )
+        percent = parse_fill_percent(plan.get("fill_percent"))
         target_center_before_skin_edge = None
         target_center_source = None
         center_adjustment = None
@@ -846,6 +909,7 @@ class _PreparedInterspaceFramer(TargetFramer):
 
     def __init__(self, plan: dict, framer: TargetFramer):
         self._plan = plan
+        self._region_bounds = None
         self._slice_projections = {}
         self._prepared_slabs = {}
         self.shared_geometry = None
@@ -922,6 +986,7 @@ def uses_source_preserving_canvas(plan: dict) -> bool:
         and plan.get("slice_type") == "MPR"
         and plan.get("geometry_type") == "plane_stack"
         and selected_region_framing(plan) is None
+        and not (plan.get("region_geometry") or {}).get("constrained")
     )
 
 

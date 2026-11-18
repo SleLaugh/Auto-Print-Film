@@ -30,27 +30,20 @@ def select_planner(slice_part: str, slice_type: str) -> Any:
     from src.planning.lumbar import LumbarInterspacePlanner, LumbarWholeRangePlanner
     from src.planning.single_label import SingleLabelWholeRangePlanner
 
+    # 普通整切消费统一方向和区域，不再为每个新部位增补白名单。
+    # 只有确有专用行为的处理器在此集中注册。
     planner_types = {
-        ("颈椎", "MPR"): SingleLabelWholeRangePlanner,
-        ("颈椎", "CPR"): SingleLabelWholeRangePlanner,
         ("颈椎", "椎间隙"): CervicalInterspacePlanner,
-        ("胸椎", "MPR"): SingleLabelWholeRangePlanner,
-        ("胸椎", "CPR"): SingleLabelWholeRangePlanner,
-        ("胸腰椎", "MPR"): SingleLabelWholeRangePlanner,
-        ("胸腰椎", "CPR"): SingleLabelWholeRangePlanner,
-        ("全脊柱", "MPR"): SingleLabelWholeRangePlanner,
-        ("全脊柱", "CPR"): SingleLabelWholeRangePlanner,
         ("腰椎", "MPR"): LumbarWholeRangePlanner,
         ("腰椎", "CPR"): LumbarWholeRangePlanner,
         ("腰椎", "椎间隙"): LumbarInterspacePlanner,
-        ("肺部", "MPR"): SingleLabelWholeRangePlanner,
-        ("颅脑", "MPR"): SingleLabelWholeRangePlanner,
-        ("髋骨", "MPR"): SingleLabelWholeRangePlanner,
     }
     key = (slice_part, slice_type)
-    if key not in planner_types:
-        raise ValueError(
-            f"未找到第六阶段 planner: slice_part={slice_part}, "
-            f"SliceType={slice_type}"
-        )
-    return planner_types[key]()
+    if key in planner_types:
+        return planner_types[key]()
+    if slice_type in {"MPR", "CPR"}:
+        return SingleLabelWholeRangePlanner()
+    raise ValueError(
+        f"未找到第六阶段 planner: slice_part={slice_part}, "
+        f"SliceType={slice_type}"
+    )

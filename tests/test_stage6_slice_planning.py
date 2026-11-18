@@ -78,6 +78,19 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                         for interval in cut_config
                     ]
                 }
+            elif profile == "whole_range":
+                regions = deepcopy(cut_config["regions"])
+                for region in regions.values():
+                    region["target_labels"] = [
+                        label for alias in region["target_labels"]
+                        for label in alias_values(alias)
+                    ]
+                    for boundary in region["bounds"].values():
+                        boundary["labels"] = [
+                            label for alias in boundary["labels"]
+                            for label in alias_values(alias)
+                        ]
+                resolved_cut_configs[profile] = {"regions": regions}
             else:
                 resolved_cut_configs[profile] = {
                     **cut_config,
@@ -103,6 +116,79 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                 ],
             },
         }
+
+    @staticmethod
+    def _configured_geometry_contract(slice_part):
+        """独立几何单测只借用正式规则，不伪造第五阶段求解后的区域。
+
+        本文件的大多数 fixture 刻意只给 bbox、质心或手写 frame，并会在
+        单测中继续修改这些数据。MPR 仅保留直接几何调用的标签首尾参考，
+        不提供生产用的具名 whole_range.regions；CPR 和椎间隙仍使用正式配置。
+        """
+
+        result = Stage6SlicePlanningTest._configured_localization_contract(slice_part)
+        region = result["cut_configs"]["whole_range"]["regions"]["default"]
+        resolved = result["resolved_cut_configs"]["whole_range"]["regions"]["default"]
+        reference = {
+            "region": "default",
+            "start": region["target_labels"][0],
+            "end": region["target_labels"][-1],
+        }
+        resolved_reference = {
+            **reference,
+            "start_labels": [resolved["target_labels"][0]],
+            "end_labels": [resolved["target_labels"][-1]],
+        }
+        result["cut_config"] = reference
+        result["cut_configs"]["whole_range"] = reference
+        result["resolved_cut_config"] = resolved_reference
+        result["resolved_cut_configs"]["whole_range"] = resolved_reference
+        return result
+
+    def test_production_mpr_contract_requires_solved_named_region(self):
+        """生产配置不能绕过第五阶段退回回正标签或 bbox 范围。"""
+
+        result = self._lumbar_localization_result()
+        result.update(self._configured_localization_contract("腰椎"))
+        request = Request(
+            dicom_dir="/tmp/dicom", output_dir="/tmp/output",
+            slice_part=SlicePartEnum.腰椎,
+            plane_configs=[PlaneConfig(PlaneTypeEnum.横状位, 1.0, 3.0, ["骨窗"])],
+        )
+        with self.assertRaisesRegex(ValueError, "缺少第五阶段的 anatomical_regions"):
+            LumbarWholeRangePlanner().build_plans(request, result)
+
+    def test_production_contract_separates_mpr_targets_from_cpr_endpoints(self):
+        result = self._configured_localization_contract("颈椎")
+        mpr = result["resolved_cut_configs"]["whole_range"]["regions"]["default"]
+        self.assertEqual(mpr["target_labels"], [
+            *(f"vertebrae_C{index}" for index in range(1, 8)), "vertebrae_T1",
+        ])
+        self.assertEqual(mpr["bounds"]["upper"]["labels"], mpr["target_labels"])
+        self.assertEqual(result["resolved_cut_configs"]["spine_range"]["end_labels"], ["vertebrae_T1"])
+        self.assertNotIn("end_labels", result["resolved_cut_configs"]["whole_range"])
+
+    def test_cpr_missing_range_or_excluded_all_does_not_reuse_mpr(self):
+        request = Request(
+            dicom_dir="/tmp/dicom", output_dir="/tmp/output",
+            slice_part=SlicePartEnum.颈椎,
+            plane_configs=[PlaneConfig(
+                PlaneTypeEnum.冠状位, 1.0, 3.0, ["骨窗"], slice_type=SliceType.CPR,
+            )],
+        )
+        for reason in ("missing_range", "excluded_all"):
+            with self.subTest(reason=reason):
+                result = self._spine_localization_result(
+                    [*(f"vertebrae_C{index}" for index in range(1, 8)), "vertebrae_T1"], "颈椎",
+                )
+                result.update(self._configured_localization_contract("颈椎"))
+                if reason == "missing_range":
+                    result["resolved_cut_configs"].pop("spine_range")
+                else:
+                    result["spine_cpr_config"]["excluded_labels"] += configured_spine_cpr_labels(result)
+                self.assertEqual(configured_spine_cpr_labels(result), [])
+                with self.assertRaisesRegex(ValueError, "CPR 规划失败"):
+                    SingleLabelWholeRangePlanner().build_plans(request, result)
 
     @classmethod
     def _set_planning_inputs(cls, context, combined_result):
@@ -2545,7 +2631,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             },
         }
         localization_result.update(
-            self._configured_localization_contract("肺部")
+            self._configured_geometry_contract("肺部")
         )
         localization_result["slice_rules"]["横状位"]["MPR"][
             "face_extension_mm"
@@ -2598,7 +2684,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             ],
         )
         localization_result = {
-            **self._configured_localization_contract("肺部"),
+            **self._configured_geometry_contract("肺部"),
             "slice_part": "肺部",
             "localization_profile": "whole_range",
             "correction_scope_bbox": {
@@ -3670,7 +3756,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         # 固定 LR 参考两侧均保留标签的半体素外缘。
         self.assertAlmostEqual(plan.extent_mm.width, 11.0)
 
-    def test_lumbar_coronal_cpr_uses_configured_whole_range_subset(self):
+    def test_lumbar_coronal_cpr_uses_configured_spine_range_subset(self):
         """腰椎 CPR 应按配置范围取椎体，不应固定使用 L1 到 S1。"""
 
         request = Request(
@@ -3691,7 +3777,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             "start_labels": ["vertebrae_L2"],
             "end_labels": ["vertebrae_L5"],
         }
-        localization_result["resolved_cut_configs"]["whole_range"] = (
+        localization_result["resolved_cut_configs"]["spine_range"] = (
             localization_result["resolved_cut_config"]
         )
 
@@ -3708,7 +3794,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             "vertebrae_L5",
         ])
 
-    def test_lumbar_cpr_uses_whole_range_in_mixed_interspace_request(self):
+    def test_lumbar_cpr_uses_spine_range_in_mixed_interspace_request(self):
         """混合请求以椎间隙定位时，CPR 仍使用独立的整段范围。"""
 
         request = Request(
@@ -3733,7 +3819,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             ],
         }
         localization_result["resolved_cut_configs"] = {
-            "whole_range": {
+            "spine_range": {
                 "start_labels": ["vertebrae_L2"],
                 "end_labels": ["vertebrae_L5"],
             },
@@ -3770,7 +3856,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         )
         localization_result = self._lumbar_localization_result()
         localization_result.update(
-            self._configured_localization_contract("髋骨")
+            self._configured_geometry_contract("髋骨")
         )
         localization_result["slice_part"] = "髋骨"
         localization_result["image"]["size_xyz"] = [100, 100, 100]
@@ -3842,7 +3928,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
                     ) for plane in PlaneTypeEnum],
                 )
                 localization = self._lumbar_localization_result()
-                localization.update(self._configured_localization_contract(part.value))
+                localization.update(self._configured_geometry_contract(part.value))
                 localization["slice_part"] = part.value
                 before = deepcopy(localization)
                 baseline = deepcopy(localization)
@@ -3872,7 +3958,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             )],
         )
         localization = self._lumbar_localization_result()
-        localization.update(self._configured_localization_contract("髋骨"))
+        localization.update(self._configured_geometry_contract("髋骨"))
         planner = SingleLabelWholeRangePlanner()
         first = planner.build_plans(request, localization).plans[0]
         second = planner.build_plans(request, localization).plans[0]
@@ -4483,7 +4569,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         from src.planning.straight import StraightPlaneFrame
 
         localization_result = {
-            **self._configured_localization_contract("颈椎"),
+            **self._configured_geometry_contract("颈椎"),
             "slice_part": "颈椎",
             "spine_geometry": {
                 "interspace_body_pairs": {
@@ -4554,7 +4640,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         from src.planning.straight import StraightPlaneFrame
 
         localization_result = {
-            **self._configured_localization_contract("颈椎"),
+            **self._configured_geometry_contract("颈椎"),
             "slice_part": "颈椎",
             "spine_geometry": {
                 "interspace_body_pairs": {
@@ -6363,7 +6449,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             }
 
         return {
-            **Stage6SlicePlanningTest._configured_localization_contract(
+            **Stage6SlicePlanningTest._configured_geometry_contract(
                 slice_part
             ),
             "slice_part": slice_part,
@@ -6511,7 +6597,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
             }
 
         return {
-            **Stage6SlicePlanningTest._configured_localization_contract("腰椎"),
+            **Stage6SlicePlanningTest._configured_geometry_contract("腰椎"),
             "slice_part": "腰椎",
             "localization_profile": "whole_range",
             "correction_scope_bbox": {

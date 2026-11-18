@@ -50,11 +50,11 @@ class DocumentationConsistencyTests(unittest.TestCase):
         config = json.loads(config_path.read_text(encoding="utf-8"))
         aliases = config["label_aliases"]
 
-        thoracic_range = localization_profiles_for(config, "胸椎")["whole_range"]
+        thoracic_range = localization_profiles_for(config, "胸椎")["spine_range"]
         thoracic_labels = configured_spine_cpr_labels(
             {
                 "resolved_cut_configs": {
-                    "whole_range": {
+                    "spine_range": {
                         "start_labels": [aliases[thoracic_range["start"]]],
                         "end_labels": [aliases[thoracic_range["end"]]],
                     },
@@ -71,14 +71,14 @@ class DocumentationConsistencyTests(unittest.TestCase):
             ),
         )
 
-        cervical_range = localization_profiles_for(config, "颈椎")["whole_range"]
+        cervical_range = localization_profiles_for(config, "颈椎")["spine_range"]
         excluded = config["slice_parts"]["颈椎"]["localization"]["spine_cpr"][
             "excluded_labels"
         ]
         cervical_labels = configured_spine_cpr_labels(
             {
                 "resolved_cut_configs": {
-                    "whole_range": {
+                    "spine_range": {
                         "start_labels": [aliases[cervical_range["start"]]],
                         "end_labels": [aliases[cervical_range["end"]]],
                     },

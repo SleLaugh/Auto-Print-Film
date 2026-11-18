@@ -10,7 +10,9 @@ from src.planning.spine_cpr import SPINE_CONFIG_LABEL_ORDER
 
 def _contract(part: str, superior=50.0, inferior=50.0, *, with_anatomy=False):
     cfg = load_slice_part_config()
-    profile = localization_profiles_for(cfg, part)["whole_range"]
+    profiles = localization_profiles_for(cfg, part)
+    profile = profiles["spine_range"]
+    mpr_target_aliases = profiles["whole_range"]["regions"]["default"]["target_labels"]
     aliases = cfg["label_aliases"]
 
     def labels(name):
@@ -35,9 +37,16 @@ def _contract(part: str, superior=50.0, inferior=50.0, *, with_anatomy=False):
                      "z_min": z - 1, "z_max": z + 1},
         }
 
-    # Planning only needs whole_range labels; preserve the same resolved contract as stage 3.
+    # This is a direct bbox/frame geometry fixture, not a stage-5 result. Keep the
+    # MPR label references separate from the production CPR interval and do not
+    # pretend named MPR regions have been solved from segmentation voxels.
     resolved = {
         "whole_range": {
+            "start_labels": labels(mpr_target_aliases[0]),
+            "end_labels": labels(mpr_target_aliases[-1]),
+            "region": "default",
+        },
+        "spine_range": {
             "start_labels": labels(profile["start"]),
             "end_labels": labels(profile["end"]),
             "region": profile["region"],

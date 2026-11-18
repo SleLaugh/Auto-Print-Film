@@ -158,18 +158,21 @@ class SpatialCorrectionStage(LocalizationOperations):
                 f"未找到定位范围配置: slice_part={request.slice_part.value}, "
                 f"profile={localization_profile}"
             )
+        dataset_json_path = self._find_dataset_json(model_info, seg_path=seg_path)
+        label_map = self._load_label_map(dataset_json_path)
+        pose_config = self._resolve_pose_config(request.slice_part.value)
+        resolved_pose_config = self._resolve_pose_aliases(pose_config, label_map)
         resolved_cut_configs = {
-            profile: self._resolve_label_aliases(config)
+            profile: self._resolve_label_aliases(config, label_map)
             for profile, config in cut_configs.items()
         }
         resolved_cut_config = resolved_cut_configs[localization_profile]
-
-        dataset_json_path = self._find_dataset_json(model_info, seg_path=seg_path)
-        label_map = self._load_label_map(dataset_json_path)
         label_targets = self._resolve_combined_label_targets(
-            resolved_cut_configs,
-            label_map,
+            resolved_cut_configs, label_map, resolved_pose_config,
         )
+        pose_targets = {
+            name: label_targets[name] for name in self._pose_label_names(resolved_pose_config)
+        }
 
         with resource_operation(
             "spatial_correction", "read_segmentation", path=str(seg_path),
@@ -186,7 +189,7 @@ class SpatialCorrectionStage(LocalizationOperations):
                 output_dir=request.output_dir,
                 slice_part=request.slice_part.value,
                 label_map=label_map,
-                label_targets=label_targets,
+                label_targets=pose_targets,
             )
             if sequence_diagnostic is not None:
                 details["status"] = sequence_diagnostic.get("status")
@@ -204,11 +207,14 @@ class SpatialCorrectionStage(LocalizationOperations):
             )
             self._validate_found_labels(label_coordinates)
         with resource_operation("spatial_correction", "target_bbox"):
-            target_mask = self._build_target_mask(seg_array, label_targets)
+            target_mask = self._build_target_mask(seg_array, pose_targets)
             correction_scope_bbox = self._build_target_bbox(target_mask)
 
         # 语义修复已完成；只缓存此时的分割快照，空间校正后必须丢弃。
-        pose_cache = SpineLabelSymmetryCache(seg_array)
+        pose_cache = (
+            SpineLabelSymmetryCache(seg_array)
+            if resolved_pose_config["method"] == "spine" else None
+        )
         with resource_operation("spatial_correction", "estimate_xy_candidate") as details:
             candidate = self._build_xy_correction_candidate(
                 seg_array,
@@ -217,6 +223,7 @@ class SpatialCorrectionStage(LocalizationOperations):
                 label_regions=label_regions,
                 image=image,
                 pose_cache=pose_cache,
+                resolved_pose_config=resolved_pose_config,
             )
             details.update(
                 angle_degrees=candidate["angle_degrees"],
@@ -267,7 +274,7 @@ class SpatialCorrectionStage(LocalizationOperations):
                 )
                 self._validate_found_labels(label_coordinates)
             with resource_operation("spatial_correction", "corrected_target_bbox"):
-                target_mask = self._build_target_mask(seg_array, label_targets)
+                target_mask = self._build_target_mask(seg_array, pose_targets)
                 correction_scope_bbox = self._build_target_bbox(target_mask)
             DebugLog("  已启用校正候选，后续阶段统一使用候选空间")
         else:
@@ -297,6 +304,8 @@ class SpatialCorrectionStage(LocalizationOperations):
             "resolved_cut_config": resolved_cut_config,
             "resolved_cut_configs": resolved_cut_configs,
             "slice_rules": slice_rules,
+            "pose_config": pose_config,
+            "resolved_pose_config": resolved_pose_config,
             "candidate": candidate,
             "spine_label_sequence": sequence_diagnostic,
             "spine_pose_cache": pose_cache,
@@ -312,6 +321,8 @@ class SpatialCorrectionStage(LocalizationOperations):
             "resolved_cut_config": resolved_cut_config,
             "resolved_cut_configs": resolved_cut_configs,
             "slice_rules": slice_rules,
+            "pose_config": pose_config,
+            "resolved_pose_config": resolved_pose_config,
             "label_targets": self._label_targets_to_dict(label_targets),
             "dataset_json_path": str(dataset_json_path),
             "raw_for_reconstruction_path": correction_result[

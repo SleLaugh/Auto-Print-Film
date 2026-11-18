@@ -35,7 +35,7 @@ def _base_rule(config):
     return rule
 
 
-def test_face_extension_is_optional_and_normalized_by_rule_parser():
+def test_complete_face_extension_is_normalized_by_rule_parser():
     config = load_slice_part_config()
     rule = _base_rule(config)
     rule["face_extension_mm"] = {

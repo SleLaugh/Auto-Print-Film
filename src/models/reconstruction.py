@@ -123,6 +123,12 @@ class SlicePlan:
     """颅脑横状位获准的颅顶取景余量；同步范围扩展，不包含下端或取整余量。"""
     framing_in_plane_extension_mm: Dict[str, float] | None = None
     """椎间隙前后左右扩展的面内投影；row/col_min/max 均为向外余量，不延长层组。"""
+    region_id: str = ""
+    """该计划引用的区域名称，与目标身份共同隔离不同重建范围。"""
+    target_id: str = ""
+    """当前独立重建目标；现有部位使用部位名。"""
+    region_geometry: Dict[str, Any] | None = None
+    """已应用六面外扩的最终物理区域，取景只能消费它而不能重建原始范围。"""
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化第七阶段可直接执行的一组完整切片计划。"""
@@ -155,6 +161,12 @@ class SlicePlan:
             data["framing_superior_extension_mm"] = self.framing_superior_extension_mm
         if self.framing_in_plane_extension_mm is not None:
             data["framing_in_plane_extension_mm"] = dict(self.framing_in_plane_extension_mm)
+        if self.region_id:
+            data["region_id"] = self.region_id
+        if self.target_id:
+            data["target_id"] = self.target_id
+        if self.region_geometry is not None:
+            data["region_geometry"] = deepcopy(self.region_geometry)
         if self.target_start is not None:
             data["target_start"] = self.target_start.to_dict()
         if self.target_end is not None:

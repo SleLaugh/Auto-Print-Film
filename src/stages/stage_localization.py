@@ -27,11 +27,8 @@ from src.models import (
     VoxelBBox,
     VoxelPoint,
 )
-from src.anatomy.lung import estimate_lung_frame_with_diagnostics
-from src.anatomy.hip import estimate_hip_frame_with_diagnostics
-from src.anatomy.spine import estimate_spine_frame_with_diagnostics
 from src.anatomy.spine_labels import resolve_spine_label_name
-from src.anatomy.brain import estimate_brain_frame_with_diagnostics
+from src.anatomy.pose import PoseInputs, estimate_pose
 from src.anatomy.spine_pose import (
     SpineLabelSymmetryCache,
     estimate_spine_axial_symmetry,
@@ -184,47 +181,37 @@ class LocalizationOperations(
         label_indices_zyx: Dict[str, np.ndarray] | None = None,
         lung_pose_support_mask: np.ndarray | None = None,
         lung_pose_support_labels: tuple[str, ...] = (),
+        pose_method: str | None = None,
+        pose_roles: Dict[str, list[str]] | None = None,
     ) -> tuple[AnatomicalGeometryResult | None, Dict[str, Any]]:
-        """只为已经适配的部位计算统一解剖坐标，其余部位保持旧行为。"""
+        """统一回正入口；颈椎横状位的局部方向仍由专用代码决定。"""
 
-        if slice_part == "肺部":
-            return estimate_lung_frame_with_diagnostics(
-                target_mask, image,
-                pose_support_mask=lung_pose_support_mask,
-                pose_support_source=lung_pose_support_labels,
-            )
-        if slice_part == "颅脑":
-            # 方向和切片三轴范围只使用脑区，骨性取景支持不进入几何估计。
-            return estimate_brain_frame_with_diagnostics(target_mask, image)
-        if slice_part in {"颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱"}:
-            if not (label_masks or label_indices_zyx) or not start_label or not end_label:
-                raise ValueError(f"{slice_part} 解剖坐标缺少首尾椎体标签信息")
-            return estimate_spine_frame_with_diagnostics(
-                label_masks=label_masks,
-                start_label=start_label,
-                end_label=end_label,
-                image=image,
-                label_pose_annotations=label_pose_annotations,
-                label_indices_zyx=label_indices_zyx,
-                include_axial_frame=slice_part == "颈椎",
-            )
-        if slice_part == "髋骨":
-            if not label_masks or not start_label or not end_label:
-                raise ValueError("髋骨解剖坐标缺少左右髋骨标签信息")
-            if start_label not in label_masks:
-                raise ValueError(f"髋骨解剖坐标缺少左侧标签: {start_label}")
-            if end_label not in label_masks:
-                raise ValueError(f"髋骨解剖坐标缺少右侧标签: {end_label}")
-            geometry, diagnostics = estimate_hip_frame_with_diagnostics(
-                left_mask=label_masks[start_label],
-                right_mask=label_masks[end_label],
-                image=image,
-            )
-            # 配置决定左右标签来源，诊断中保留原名，便于现场核对模型映射。
-            diagnostics["left_label"] = start_label
-            diagnostics["right_label"] = end_label
-            return geometry, diagnostics
-        return None, {}
+        # 独立几何 helper 允许省略 method；生产流程始终传入已校验的 pose.method。
+        method = pose_method or {
+            "肺部": "lung", "颅脑": "brain", "髋骨": "hip",
+            "颈椎": "spine", "胸椎": "spine", "腰椎": "spine",
+            "胸腰椎": "spine", "全脊柱": "spine",
+        }.get(slice_part)
+        if method is None:
+            return None, {}
+        roles = pose_roles
+        if roles is None:
+            start_role, end_role = ("left", "right") if method == "hip" else ("start", "end")
+            roles = {
+                start_role: [start_label] if start_label else [],
+                end_role: [end_label] if end_label else [],
+            }
+        return estimate_pose(method, PoseInputs(
+            image=image,
+            target_mask=target_mask,
+            label_masks=label_masks or {},
+            label_indices_zyx=label_indices_zyx,
+            roles=roles,
+            label_pose_annotations=label_pose_annotations,
+            include_axial_frame=slice_part == "颈椎",
+            lung_pose_support_mask=lung_pose_support_mask,
+            lung_pose_support_labels=lung_pose_support_labels,
+        ))
 
     def _find_dataset_json(self, model_info: Dict[str, Any], seg_path: str = None) -> Path:
         """
@@ -329,12 +316,14 @@ class LocalizationOperations(
         self,
         resolved_cut_configs: Dict[str, Dict[str, Any]],
         label_map: Dict[str, list[int]],
+        resolved_pose_config: Dict[str, Any] | None = None,
     ) -> Dict[str, LabelTarget]:
         """合并全部范围方案的标签，供空间校正、整体定位和解剖分析使用。
 
         即使本次只请求椎间隙，也会合并整切范围并校验其中的标签体素；
         因此扩展整切端点后，新增椎体同样必须存在于分割结果中。
-        这里仅合并定位标签，不会据此增加椎间隙区域。
+        回正标签、区域边界和目标标签统一建立一次索引；每种用途仍由原配置
+        单独选择，不能把这个依赖并集直接当作回正或取景目标。
         """
 
         combined_targets: Dict[str, LabelTarget] = {}
@@ -342,6 +331,12 @@ class LocalizationOperations(
             combined_targets.update(
                 self._resolve_label_targets(resolved_cut_config, label_map)
             )
+        if resolved_pose_config is not None:
+            pose_names = self._pose_label_names(resolved_pose_config)
+            for name in pose_names:
+                if name not in label_map:
+                    raise ValueError(f"dataset.json 中找不到回正标签: {name}")
+                combined_targets[name] = LabelTarget(label_name=name, label_ids=label_map[name])
         return combined_targets
 
     def _collect_label_names(
@@ -352,12 +347,17 @@ class LocalizationOperations(
         """
         收集本次定位需要的 label 名称。
 
-        普通目标仍然收集 start/end。脊柱整切的 start/end 是范围边界，
-        不是只取两个端点；例如 C1 到 T1 会按解剖顺序收集 C1-C7、T1，
-        T12 到 S1 会收集 T12、L1-L5、S1。
+        普通 MPR 直接收集具名区域的 target_labels 和两端边界标签。
+        CPR / 椎间隙的 start/end 保留脊柱序列语义，例如 C1 到 T1
+        按解剖顺序收集 C1-C7、T1。
         """
         label_names = []
-        if 'intervals' in resolved_cut_config:
+        if "regions" in resolved_cut_config:
+            for region in resolved_cut_config["regions"].values():
+                label_names.extend(region["target_labels"])
+                for bound in region["bounds"].values():
+                    label_names.extend(bound["labels"])
+        elif 'intervals' in resolved_cut_config:
             for interval in resolved_cut_config['intervals']:
                 label_names.extend(self._expand_label_pair(
                     interval['start_labels'],
@@ -374,6 +374,8 @@ class LocalizationOperations(
         seen = set()
         unique_names = []
         for label_name in label_names:
+            if label_map is not None:
+                label_name = resolve_spine_label_name(label_name, label_map)
             if label_name in seen:
                 continue
             seen.add(label_name)
@@ -772,6 +774,7 @@ class LocalizationOperations(
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
         image: sitk.Image | None = None,
         pose_cache: SpineLabelSymmetryCache | None = None,
+        resolved_pose_config: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """估计横状位回正候选角；图像写出与应用由第三阶段决定。
 
@@ -779,6 +782,17 @@ class LocalizationOperations(
         保留归一偏角 PCA；头、髋、肺由第三阶段转交第五阶段的统一坐标处理。
         """
 
+        if resolved_pose_config is None and slice_part:
+            resolved_pose_config = self._resolve_pose_aliases(
+                self._resolve_pose_config(slice_part), label_targets,
+            )
+        pose_method = (resolved_pose_config or {}).get("method")
+        excluded = set((resolved_pose_config or {}).get("fit_excluded_labels", []))
+        if resolved_pose_config is not None:
+            names = set(self._pose_label_names(resolved_pose_config))
+            label_targets = {name: target for name, target in label_targets.items() if name in names}
+            if label_regions is not None:
+                label_regions = {name: region for name, region in label_regions.items() if name in names}
         if not self.correction_requested:
             return {
                 'method': 'xy_correction_disabled',
@@ -790,7 +804,7 @@ class LocalizationOperations(
                 'correction_applied': False,
                 'reason': 'correction_requested 为 false',
             }
-        if image is not None and slice_part in {"颅脑", "髋骨", "肺部"}:
+        if image is not None and pose_method in {"brain", "hip", "lung"}:
             # 三维姿态在第五阶段计算，重建时一次采样到最终方向。
             # 此处不再分配整块 PCA 点云或先做整卷 XY 插值。
             return {
@@ -803,7 +817,7 @@ class LocalizationOperations(
                 "should_correct": False,
                 "reason": "由第五阶段左右对称面统一确定各状位方向",
             }
-        if not self._is_vertebrae_targets(label_targets):
+        if pose_method != "spine" and not self._is_vertebrae_targets(label_targets):
             target_mask = self._build_target_mask(seg_array, label_targets)
             skew_info = self._detect_axial_skew(target_mask)
             abs_angle = float(skew_info.get('abs_angle_degrees', 0.0))
@@ -837,10 +851,6 @@ class LocalizationOperations(
             if pose_cache is not None and not pose_cache.matches_source(seg_array):
                 pose_cache = None
             regions = label_regions or self._build_label_voxel_regions(seg_array, label_targets)
-            excluded = set(
-                self._resolve_spine_cpr_config(slice_part).get("excluded_labels", [])
-                if slice_part else []
-            )
             skipped = [
                 name for name, region in regions.items()
                 if name in excluded or region.bbox is None
@@ -869,14 +879,7 @@ class LocalizationOperations(
             seg_array,
             label_targets,
             label_regions=label_regions,
-            excluded_labels=(
-                self._resolve_spine_cpr_config(slice_part).get(
-                    "excluded_labels",
-                    [],
-                )
-                if slice_part
-                else []
-            ),
+            excluded_labels=excluded,
         )
         abs_angle = float(skew_info.get('abs_angle_degrees', 0.0))
         enough_points = bool(skew_info.get('enough_points'))
@@ -2447,8 +2450,9 @@ class LocalizationOperations(
         为第五阶段生成脊柱过滤主体、四棱柱和相邻主体间隙几何。
 
         这里不修改原始 label 的质心和 bbox。完整 label 负责定位及覆盖范围，
-        过滤主体负责 CPR 质心、椎间四棱柱和真实最近间隙参考；配置排除的标签仍
-        保留在完整定位中，但不进入这些主体几何。物理坐标直接由当前工作图像转换，
+        过滤主体负责 CPR 质心、椎间四棱柱和真实最近间隙参考。excluded_labels
+        是调用方综合回正、CPR 和椎间隙需求得到的主体排除列表，不等同于 CPR
+        的选用配置；这些标签仍保留在完整定位中。物理坐标直接由当前工作图像转换，
         保证与第四阶段定位空间一致。
         """
 
@@ -2897,6 +2901,7 @@ class LocalizationOperations(
             "stage": "stage5_anatomical_analysis",
             "filtered_annotation_centroids": filtered_annotation_centroids,
             "interspace_body_pairs": interspace_body_pairs,
+            # 记录共享主体实际省略的标签；CPR 选用列表另读 spine_cpr_config。
             "excluded_from_annotation_centroids": sorted(excluded_label_set),
             "full_label_geometry": "coords",
             "full_label_bbox": "coords.*.bbox",

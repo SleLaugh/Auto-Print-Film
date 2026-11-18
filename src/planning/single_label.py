@@ -16,6 +16,7 @@ from src.planning.spine_cpr import (
 from src.planning.base import PlanningResult
 from src.planning.whole_range import build_whole_range_plan_from_bbox
 from src.planning.face_extension import resolve_face_extension
+from src.planning.regions import mpr_region_for_plane
 
 
 class SingleLabelWholeRangePlanner:
@@ -33,24 +34,25 @@ class SingleLabelWholeRangePlanner:
 
         plans = []
         warnings = []
-        spine_labels = configured_whole_range_spine_labels(
-            localization_result,
-        ) or []
         cpr_labels = configured_spine_cpr_labels(
             localization_result,
         )
         for plane_config in request.plane_configs:
             target_region_bbox = None
+            region_name, region = (
+                mpr_region_for_plane(localization_result, plane_config.plane)
+                if plane_config.slice_type is SliceType.MPR else ("", None)
+            )
+            spine_labels = configured_whole_range_spine_labels(
+                localization_result, region_name or None,
+            ) or []
             # 颅脑基础范围只用配置内的脑区标签；可选头骨是独立取景支持，
             # 不能通过 source_labels 再次把面部和下颌纳入实际切片范围。
             source_labels = (
                 list(localization_result.get("label_targets") or {})
                 if request.slice_part.value == "颅脑" else None
             )
-            if (
-                cpr_labels
-                and plane_config.slice_type is SliceType.CPR
-            ):
+            if plane_config.slice_type is SliceType.CPR:
                 cpr_plans, cpr_warnings = build_spine_sagittal_cpr_plans(
                     request=request,
                     plane_config=plane_config,
@@ -66,6 +68,7 @@ class SingleLabelWholeRangePlanner:
                 spine_labels
                 and request.slice_part.value in {"胸椎", "胸腰椎", "全脊柱"}
                 and plane_config.plane == PlaneTypeEnum.冠状位
+                and not (region or {}).get("constrained")
             ):
                 # 普通 MPR 覆盖整体范围，不应用 CPR 专用的椎体排除项。
                 target_region_bbox, source_labels = spine_target_bbox(

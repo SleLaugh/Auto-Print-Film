@@ -5,6 +5,7 @@
 ``LocalizationOperations``，保留原有方法名和调用方式。
 """
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict
 import json
@@ -22,6 +23,7 @@ from src.models import (
     VoxelBBox,
 )
 from src.planning.slice_policy import localization_profile_for_request
+from src.anatomy.spine_labels import resolve_spine_label_name
 
 
 class LocalizationContractMixin:
@@ -63,6 +65,9 @@ class LocalizationContractMixin:
         anatomical_geometry_diagnostics: Dict[str, Any] | None = None,
         framing_source_labels: list[str] | None = None,
         framing_label_ids: list[int] | None = None,
+        pose_config: Dict[str, Any] | None = None,
+        resolved_pose_config: Dict[str, Any] | None = None,
+        anatomical_regions: Dict[str, Any] | None = None,
     ) -> None:
         """写出定位结果，供后续规划、重建和调试使用。"""
 
@@ -109,6 +114,9 @@ class LocalizationContractMixin:
             is_skewed=is_skewed,
             skew_params=skew_params,
             anatomical_geometry=anatomical_geometry,
+            pose_config=pose_config or {},
+            resolved_pose_config=resolved_pose_config or {},
+            anatomical_regions=anatomical_regions or {},
         )
         data = localization_result.to_dict()
         if anatomical_geometry_diagnostics is not None:
@@ -170,16 +178,18 @@ class LocalizationContractMixin:
             )
         return cut_config
 
-    def _resolve_spine_cpr_config(self, slice_part: str) -> Dict[str, Any]:
+    def _resolve_spine_cpr_config(
+        self, slice_part: str, label_map: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         """从当前脊柱部位配置中读取 CPR 配置，非脊柱部位返回空配置。"""
 
         localization = localization_for(self._slice_part_config, slice_part)
         config = localization.get("spine_cpr")
         if not isinstance(config, dict):
             return {}
-        excluded_labels = []
-        for label_name in config.get("excluded_labels", []):
-            excluded_labels.extend(self._label_alias(label_name))
+        excluded_labels = self._resolve_alias_list(
+            config.get("excluded_labels", []), label_map,
+        )
         result = {
             "full_label": config["full_label"],
             "excluded_labels": excluded_labels,
@@ -198,29 +208,62 @@ class LocalizationContractMixin:
         slice_part = getattr(request.slice_part, "value", request.slice_part)
         return slice_rules_for(self._slice_part_config, slice_part)
 
-    def _resolve_label_aliases(self, cut_config: CutConfig) -> Dict[str, Any]:
-        """把业务短名解析成模型/数据集中的标准 label 名。"""
+    def _resolve_pose_config(self, slice_part: str) -> Dict[str, Any]:
+        """回正来源独立于区域边界，不从 start/end 反推姿态标签。"""
+
+        return deepcopy(localization_for(self._slice_part_config, slice_part)["pose"])
+
+    def _resolve_alias_list(
+        self, aliases: list[str], label_map: Dict[str, Any] | None = None,
+    ) -> list[str]:
+        names = [name for alias in aliases for name in self._label_alias(alias)]
+        if label_map is not None:
+            names = [resolve_spine_label_name(name, label_map) for name in names]
+        return list(dict.fromkeys(names))
+
+    def _resolve_pose_aliases(
+        self, pose_config: Dict[str, Any], label_map: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        resolved = deepcopy(pose_config)
+        resolved["labels"] = self._resolve_alias_list(pose_config.get("labels", []), label_map)
+        resolved["roles"] = {
+            role: self._resolve_alias_list([alias], label_map)
+            for role, alias in pose_config.get("roles", {}).items()
+        }
+        resolved["fit_excluded_labels"] = self._resolve_alias_list(
+            pose_config.get("fit_excluded_labels", []), label_map,
+        )
+        return resolved
+
+    @staticmethod
+    def _pose_label_names(resolved_pose_config: Dict[str, Any]) -> list[str]:
+        return list(dict.fromkeys([
+            *resolved_pose_config.get("labels", []),
+            *(name for names in resolved_pose_config.get("roles", {}).values() for name in names),
+        ]))
+
+    def _resolve_label_aliases(
+        self, cut_config: CutConfig, label_map: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """保留具名区域及边界语义，只把业务标签解析成当前模型的实际名称。"""
 
         if isinstance(cut_config, list):
-            return {
-                "intervals": [
-                    {
-                        "region": interval["region"],
-                        "start": interval["start"],
-                        "end": interval["end"],
-                        "start_labels": self._label_alias(interval["start"]),
-                        "end_labels": self._label_alias(interval["end"]),
-                    }
-                    for interval in cut_config
-                ]
-            }
-
+            return {"intervals": [self._resolve_label_aliases(item, label_map) for item in cut_config]}
+        if "regions" in cut_config:
+            regions = {}
+            for name, region in cut_config["regions"].items():
+                resolved_region = deepcopy(region)
+                resolved_region["target_labels"] = self._resolve_alias_list(region["target_labels"], label_map)
+                for face, bound in region["bounds"].items():
+                    resolved_region["bounds"][face]["labels"] = self._resolve_alias_list(bound["labels"], label_map)
+                regions[name] = resolved_region
+            return {"regions": regions}
         return {
             "region": cut_config["region"],
             "start": cut_config["start"],
             "end": cut_config["end"],
-            "start_labels": self._label_alias(cut_config["start"]),
-            "end_labels": self._label_alias(cut_config["end"]),
+            "start_labels": self._resolve_alias_list([cut_config["start"]], label_map),
+            "end_labels": self._resolve_alias_list([cut_config["end"]], label_map),
         }
 
     def _label_alias(self, name: str) -> list[str]:

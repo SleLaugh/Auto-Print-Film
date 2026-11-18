@@ -6,6 +6,46 @@ from time import perf_counter
 import numpy as np
 
 
+def prism_collision_recovery_allowed(slice_part, sequence_diagnostic):
+    """仅对未提示编号疑点的腰椎请求开放局部几何恢复。"""
+
+    return (
+        slice_part == "腰椎"
+        and isinstance(sequence_diagnostic, dict)
+        and sequence_diagnostic.get("status") == "unchanged"
+        and isinstance(sequence_diagnostic.get("mixed_body_labels"), dict)
+        and sequence_diagnostic["mixed_body_labels"].get("status") == "unchanged"
+    )
+
+
+def _collision_recovery_groups(annotations, pair_definitions):
+    """真实主体相交、模型主体恢复及无来源的失效均不进入新路径。"""
+
+    lumbar_labels = {f"vertebrae_L{i}" for i in range(1, 6)}
+    groups = set()
+    for group, upper, lower in pair_definitions:
+        if upper not in lumbar_labels or lower not in lumbar_labels:
+            continue
+        pair = [annotations.get(name) for name in (upper, lower)]
+        if any(not isinstance(item, dict) or not item.get("found")
+               or item.get("prism_found") not in (True, False)
+               or not isinstance(item.get("sagittal_body_quadrilateral"), dict)
+               or item.get("body_extraction") for item in pair):
+            continue
+        invalid = [item for item in pair if item.get("prism_found") is False]
+        if invalid and all(
+            isinstance(item.get("prism_failure_reasons"), list)
+            and item["prism_failure_reasons"]
+            and all(isinstance(reason, dict)
+                    and reason.get("reason") == "projected_separator_unavailable"
+                    and reason.get("partner_label") in lumbar_labels
+                    for reason in item["prism_failure_reasons"])
+            for item in invalid
+        ):
+            groups.add(group)
+    return groups
+
+
 def _replacement_annotation(operations, image, indices, previous, diagnostic):
     """将候选主体转换为独立标注；端板核验通过前不交给规划器。"""
 
@@ -68,6 +108,7 @@ def _replacement_annotation(operations, image, indices, previous, diagnostic):
 def validate_spine_interspace_geometry(
     operations, image, seg_array, label_targets, label_regions,
     body_indices, annotations, pair_definitions, *, raw_array_loader=None,
+    collision_recovery_enabled=False,
 ):
     """共用已定位的体素索引；只发布经端板验证接受的每组替换。"""
 
@@ -119,9 +160,20 @@ def validate_spine_interspace_geometry(
             candidate_annotations[name] = annotation
             replaced_labels.add(name)
 
+    recovery_groups = (
+        _collision_recovery_groups(annotations, pair_definitions)
+        if collision_recovery_enabled else set()
+    )
+    # 本次恢复仅复用原主体，不借道另一个模型缺损补救分支。
+    recovery_groups.difference_update(
+        group for group, upper, lower in pair_definitions
+        if replaced_labels.intersection((upper, lower))
+    )
+    recovery_options = {"collision_recovery_groups": recovery_groups} if recovery_groups else {}
     validated, diagnostics = validate_interspace_endplates(
         image, candidate_indices, source_indices, candidate_annotations,
         pair_definitions, raw_array_loader=raw_array_loader,
+        **recovery_options,
     )
     pairs = {}
     for group, upper, lower in pair_definitions:

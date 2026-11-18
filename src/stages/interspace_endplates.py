@@ -141,6 +141,8 @@ def _ct_confirm_face(face, body, source, raw, spacing):
             "ct_validation": "density_drop",
             "ct_profile_count": len(accepted), "ct_profile_available": available,
             "ct_boundary_offset_mm": offset,
+            "ct_profile_x_range": [min(item[0] for item in accepted),
+                                   max(item[0] for item in accepted)],
             "ct_min_positive_fraction": min(ev["positive_fraction"] for _, _, evidence in accepted for ev in evidence),
             "ct_min_normalized_drop": min(ev["normalized_drop"] for _, _, evidence in accepted for ev in evidence)}
 
@@ -178,6 +180,10 @@ def _fit_facing_face(image, body, source, edge, side, raw):
         physical = [image.TransformContinuousIndexToPhysicalPoint(tuple(p[::-1]))
                     for p in face.pop("endpoints_zyx")]
         face.pop("normal_zyx")
+        row_origin = float(np.asarray(image.GetOrigin()) @ direction[:, 0])
+        face["ct_profile_row_range_mm"] = [
+            row_origin + float(x) * spacing[2] for x in face.pop("ct_profile_x_range")
+        ]
         return {**face, "endpoints": [_xyz(p) for p in physical], "normal": _xyz(normal)}
     return None
 
@@ -215,6 +221,7 @@ def _positive_facing_gap(image, faces):
 def validate_interspace_endplates(
     image, body_indices, source_indices_by_label, annotations, pair_definitions,
     *, raw_array_loader: Callable[[], np.ndarray] | None = None,
+    collision_recovery_groups=(),
 ):
     """返回 {组名: {标签: 验证标注}} 和诊断；不写入任何输入容器。"""
 
@@ -226,7 +233,9 @@ def validate_interspace_endplates(
     quick_cache, fit_cache = {}, {}
     for group, upper, lower in pair_definitions:
         labels = (upper, lower)
-        if any(not isinstance(annotations.get(n), dict) or not annotations[n].get("prism_found")
+        collision_recovery = group in collision_recovery_groups
+        if any(not isinstance(annotations.get(n), dict)
+               or (not annotations[n].get("prism_found") and not collision_recovery)
                or body_indices.get(n) is None or len(body_indices[n]) < 8
                or source_indices_by_label.get(n) is None for n in labels):
             continue
@@ -241,7 +250,7 @@ def validate_interspace_endplates(
         physical_centers = [np.mean([[p[k] for k in "xyz"]
                                     for p in annotations[n]["sagittal_body_quadrilateral"]["vertices"]], axis=0)
                             for n in labels]
-        edges, reasons = [], []
+        edges, reasons = [], (["prism_collision_recovery"] if collision_recovery else [])
         for i, n in enumerate(labels):
             pair = _quad_edges(annotations[n], image, physical_centers[1 - i] - physical_centers[i], signs[i])
             if pair is None:
@@ -290,6 +299,11 @@ def validate_interspace_endplates(
         if not _positive_facing_gap(image, faces):
             diagnostic["reason"] = "facing_endplates_cross_or_miss"
             continue
+        if collision_recovery:
+            ranges = [face["ct_profile_row_range_mm"] for face in faces]
+            if max(bounds[0] for bounds in ranges) >= min(bounds[1] for bounds in ranges):
+                diagnostic["reason"] = "ct_endplates_have_no_common_lr_support"
+                continue
         result = {}
         for n, side, face in zip(labels, sides, faces):
             annotation = deepcopy(annotations[n])
@@ -298,6 +312,8 @@ def validate_interspace_endplates(
                 "method": "interspace_validated_endplate", "required_endplate_side": side,
                 "group_name": group,
             }
+            if collision_recovery:
+                annotation["sagittal_endplate_support"]["trigger"] = "prism_collision_recovery"
             result[n] = annotation
         replacements[group] = result
         diagnostic.update(status="validated", confirmed_labels=list(labels))

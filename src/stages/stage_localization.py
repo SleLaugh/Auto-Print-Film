@@ -1580,6 +1580,7 @@ class LocalizationOperations(
         label_regions: Dict[str, _LabelVoxelRegion] | None = None,
         excluded_labels: Iterable[str] = (),
         body_diagnostics: dict[str, dict] | None = None,
+        prism_diagnostics: dict[str, list[dict]] | None = None,
     ) -> tuple[
         dict[str, np.ndarray],
         dict[str, tuple[np.ndarray, np.ndarray] | None],
@@ -1696,6 +1697,7 @@ class LocalizationOperations(
                  for name, region in prism_regions.items()},
                 protected_indices=body_indices,
                 voxel_spacing_zyx=np.asarray(image.GetSpacing())[::-1],
+                diagnostics=prism_diagnostics,
             )
             if recovered_labels:
                 candidates = cls._resolve_non_overlapping_prism_regions(
@@ -1779,6 +1781,7 @@ class LocalizationOperations(
         ],
         protected_indices: dict[str, np.ndarray] | None = None,
         voxel_spacing_zyx: np.ndarray | None = None,
+        diagnostics: dict[str, list[dict]] | None = None,
     ) -> dict[str, tuple[np.ndarray, np.ndarray] | None]:
         """用单一矢状分隔平面拆分重叠；主体不可分时整体失效。"""
 
@@ -1835,6 +1838,15 @@ class LocalizationOperations(
             centroids[label_name] = minimum + mask_indices.mean(axis=0)
 
         collided_labels: set[str] = set()
+
+        def invalidate_pair(left_label, right_label, reason):
+            collided_labels.update((left_label, right_label))
+            if diagnostics is not None:
+                for label, partner in ((left_label, right_label), (right_label, left_label)):
+                    evidence = {"reason": reason, "partner_label": partner}
+                    if evidence not in diagnostics.setdefault(label, []):
+                        diagnostics[label].append(evidence)
+
         separating_planes: dict[
             tuple[str, str],
             tuple[np.ndarray, float],
@@ -1881,7 +1893,7 @@ class LocalizationOperations(
                 # 主体真实占用同一体素时不存在无损直线拆分，不能使用二维
                 # 投影容错掩盖三维碰撞。
                 if protected_overlap > 0:
-                    collided_labels.update((left_label, right_label))
+                    invalidate_pair(left_label, right_label, "actual_body_voxel_overlap")
                     continue
                 if len(left_points) and len(right_points):
                     separating_plane = cls._sagittal_body_separating_plane(
@@ -1890,7 +1902,7 @@ class LocalizationOperations(
                         voxel_spacing_zyx=voxel_spacing_zyx,
                     )
                     if separating_plane is None:
-                        collided_labels.update((left_label, right_label))
+                        invalidate_pair(left_label, right_label, "projected_separator_unavailable")
                     else:
                         separating_planes[(left_label, right_label)] = (
                             separating_plane
@@ -1911,7 +1923,7 @@ class LocalizationOperations(
                         protected_indices is None
                         or protected_overlap > 0
                     ):
-                        collided_labels.update((left_label, right_label))
+                        invalidate_pair(left_label, right_label, "unverified_prism_overlap")
         for label_name in collided_labels:
             resolved_regions[label_name] = None
 
@@ -2429,6 +2441,7 @@ class LocalizationOperations(
         raw_array_loader: Callable[[], np.ndarray] | None = None,
         pose_cache: SpineLabelSymmetryCache | None = None,
         validate_interspaces: bool = False,
+        sequence_diagnostic: Dict[str, Any] | None = None,
     ) -> Dict[str, Any] | None:
         """
         为第五阶段生成脊柱过滤主体、四棱柱和相邻主体间隙几何。
@@ -2450,6 +2463,7 @@ class LocalizationOperations(
             tuple[np.ndarray, np.ndarray, np.ndarray] | None,
         ] = {}
         body_diagnostics: dict[str, dict] = {}
+        prism_diagnostics: dict[str, list[dict]] = {}
         with resource_operation(
             "anatomical_analysis", "extract_spine_bodies_and_prisms",
             label_count=len(label_targets),
@@ -2462,6 +2476,7 @@ class LocalizationOperations(
                 label_regions=label_regions,
                 excluded_labels=excluded_label_set,
                 body_diagnostics=body_diagnostics,
+                prism_diagnostics=prism_diagnostics,
             )
 
         raw_array = None
@@ -2676,6 +2691,10 @@ class LocalizationOperations(
                 if label_regions is not None and label_name in label_regions
                 else np.argwhere(np.isin(seg_array, target.label_ids))
             )
+            if not prism_voxel_count and label_name in prism_diagnostics:
+                filtered_annotation_centroids[label_name]["prism_failure_reasons"] = (
+                    prism_diagnostics[label_name]
+                )
             extraction_diagnostic = body_diagnostics.get(label_name)
             if extraction_diagnostic:
                 filtered_annotation_centroids[label_name]["body_extraction"] = extraction_diagnostic
@@ -2885,7 +2904,10 @@ class LocalizationOperations(
         if interspace_recovered_annotations:
             result["interspace_recovered_annotations"] = interspace_recovered_annotations
         if validate_interspaces and pair_definitions:
-            from .interspace_geometry import validate_spine_interspace_geometry
+            from .interspace_geometry import (
+                prism_collision_recovery_allowed,
+                validate_spine_interspace_geometry,
+            )
 
             # 旧端面恢复已经读取的原图直接复用；新增核验按需加载且只加载一次。
             def load_validation_raw():
@@ -2902,10 +2924,16 @@ class LocalizationOperations(
                 return raw_array
 
             with resource_operation("anatomical_analysis", "validate_interspaces"):
+                recovery_options = (
+                    {"collision_recovery_enabled": True}
+                    if prism_collision_recovery_allowed(slice_part, sequence_diagnostic)
+                    else {}
+                )
                 validated, validated_pairs, diagnostics = validate_spine_interspace_geometry(
                     cls, image, seg_array, label_targets, label_regions,
                     body_indices, filtered_annotation_centroids, pair_definitions,
                     raw_array_loader=load_validation_raw,
+                    **recovery_options,
                 )
             result["interspace_validation"] = diagnostics
             if validated:

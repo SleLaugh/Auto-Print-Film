@@ -249,6 +249,7 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                 interspace_regions=interspace_regions,
                 raw_array_loader=load_spine_raw_array,
                 pose_cache=workspace.get("spine_pose_cache"),
+                sequence_diagnostic=localization_result.get("spine_label_sequence"),
                 validate_interspaces=any(
                     config.slice_type.value == "椎间隙"
                     for config in context.request.plane_configs

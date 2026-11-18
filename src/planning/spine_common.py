@@ -1466,6 +1466,92 @@ def _resolve_interspace_prism_geometry(
     )
 
 
+def _resolve_collision_endplate_geometry(localization_result, group_name, upper_label, lower_label):
+    """全局包络无效时，只解析当前组经 CT 验证的两条独立端板。"""
+
+    annotations = _filtered_spine_annotations(localization_result)
+    pair = [annotations.get(name) for name in (upper_label, lower_label)]
+    if not all(
+        _has_validated_interspace_endplate(item, group_name)
+        and item["sagittal_endplate_support"].get("trigger") == "prism_collision_recovery"
+        for item in pair
+    ):
+        return None
+    try:
+        reference = default_straight_frame(PlaneTypeEnum.横状位, localization_result["image"])
+        if not _is_finite_orthonormal_frame(reference):
+            return None
+        centers = [_parse_xyz_point(item.get("centroid_physical")) for item in pair]
+        if any(center is None for center in centers):
+            return None
+        delta = subtract_points(centers[1], centers[0])
+        toward = (_dot(delta, reference.col_dir), _dot(delta, reference.normal))
+        edges = [
+            _supported_sagittal_endplate_edge(pair[0], reference, toward),
+            _supported_sagittal_endplate_edge(pair[1], reference, (-toward[0], -toward[1])),
+        ]
+        if any(edge is None for edge in edges):
+            return None
+        if -sum(edges[0][2][axis] * edges[1][2][axis] for axis in (0, 1)) < math.cos(math.radians(35.0)):
+            return None
+        raw_ranges = [item["sagittal_body_endplates"][0]["ct_profile_row_range_mm"] for item in pair]
+        if any(not isinstance(bounds, (list, tuple)) or len(bounds) != 2 for bounds in raw_ranges):
+            return None
+        ranges = [tuple(map(float, bounds)) for bounds in raw_ranges]
+        if any(not all(math.isfinite(value) for value in bounds) or bounds[0] >= bounds[1]
+               for bounds in ranges):
+            return None
+        row_min, row_max = max(bounds[0] for bounds in ranges), min(bounds[1] for bounds in ranges)
+        if row_min >= row_max:
+            return None
+        normal = (edges[0][2][0] - edges[1][2][0], edges[0][2][1] - edges[1][2][1])
+        length = math.hypot(*normal)
+        if length <= 1e-8:
+            return None
+        normal = (normal[0] / length, normal[1] / length)
+        tangent = (-normal[1], normal[0])
+        projections = [[point[0] * tangent[0] + point[1] * tangent[1] for point in edge[:2]]
+                       for edge in edges]
+        lower = max(min(values) for values in projections)
+        upper = min(max(values) for values in projections)
+        if upper - lower <= 1e-8:
+            return None
+
+        def boundary_points(fraction):
+            coordinate = lower + (upper - lower) * fraction
+            points = []
+            for edge, values in zip(edges, projections):
+                span = values[1] - values[0]
+                if abs(span) <= 1e-8:
+                    return None
+                amount = (coordinate - values[0]) / span
+                points.append(tuple(edge[0][axis] + amount * (edge[1][axis] - edge[0][axis])
+                                    for axis in (0, 1)))
+            gap = sum((points[1][axis] - points[0][axis]) * normal[axis] for axis in (0, 1))
+            return points if gap > 1e-8 else None
+
+        for fraction in (0.25, 0.5, 0.75):
+            if boundary_points(fraction) is None:
+                return None
+        points = boundary_points(0.5)
+        row = (row_min + row_max) / 2.0
+
+        def lift(point):
+            return Point3D(*(getattr(reference.row_dir, axis) * row
+                             + getattr(reference.col_dir, axis) * point[0]
+                             + getattr(reference.normal, axis) * point[1] for axis in "xyz"))
+
+        start, end = map(lift, points)
+        normal_3d = normalize_vector(subtract_points(end, start))
+        frame = StraightPlaneFrame(reference.row_dir,
+                                   normalize_vector(_cross(normal_3d, reference.row_dir)), normal_3d)
+        if not _is_finite_orthonormal_frame(frame, require_right_handed=True):
+            return None
+        return start, end, frame
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
 def _interspace_sidewall_geometry_warning(
     localization_result: Dict[str, Any],
     upper_label: str,
@@ -1732,7 +1818,79 @@ def resolve_spine_interspace_segments(
     localization_result: Dict[str, Any],
     intervals: Sequence[Tuple[str, str, str]],
 ) -> Tuple[List[CutSegment], List[str]]:
-    """把脊柱相邻 label 解析成多个独立待切区间及其 warning。"""
+    """保留旧流程已生成的全部区间，仅为其跳过的组尝试独立 CT 恢复。"""
+
+    geometry = localization_result.get("spine_geometry")
+    validated = geometry.get("interspace_validated_annotations") if isinstance(geometry, dict) else None
+    collision_groups = {
+        group for group, annotations in validated.items()
+        if isinstance(annotations, dict) and any(
+            isinstance(item, dict)
+            and isinstance(item.get("sagittal_endplate_support"), dict)
+            and item["sagittal_endplate_support"].get("trigger") == "prism_collision_recovery"
+            for item in annotations.values()
+        )
+    } if isinstance(validated, dict) else set()
+    if not any(group in collision_groups for group, _, _ in intervals):
+        return _resolve_spine_interspace_segments_legacy(localization_result, intervals)
+
+    segments: List[CutSegment] = []
+    warnings: List[str] = []
+    for interval in intervals:
+        group_name, upper_label, lower_label = interval
+        if group_name not in collision_groups:
+            existing, existing_warnings = _resolve_spine_interspace_segments_legacy(
+                localization_result, [interval],
+            )
+            segments.extend(existing)
+            warnings.extend(existing_warnings)
+            continue
+
+        # 仅移除当前组新增的碰撞恢复端板；其他主体/端板核验仍按旧规则生效。
+        original_view = {
+            **localization_result,
+            "spine_geometry": {
+                **geometry,
+                "interspace_validated_annotations": {
+                    name: annotations for name, annotations in validated.items() if name != group_name
+                },
+            },
+        }
+        existing, existing_warnings = _resolve_spine_interspace_segments_legacy(
+            original_view, [interval],
+        )
+        if existing:
+            # 包括有效 bbox/质心回退：位置、方向、取景与 warnings 均原样保留。
+            segments.extend(existing)
+            warnings.extend(existing_warnings)
+            continue
+
+        recovery_view = _interspace_annotation_view(
+            localization_result, (upper_label, lower_label), group_name,
+        )
+        recovery_geometry = _resolve_collision_endplate_geometry(
+            recovery_view, group_name, upper_label, lower_label,
+        )
+        boxes = [_label_bbox(recovery_view, name) for name in (upper_label, lower_label)]
+        if recovery_geometry is None or any(box is None for box in boxes):
+            warnings.extend(existing_warnings)
+            warnings.append(f"跳过脊柱区间 {group_name}: 独立 CT 端板几何无效")
+            continue
+        start, end, frame = recovery_geometry
+        # 已核验的端板独立决定位置和方向；不能再按包络、最近点或姿态改写。
+        segments.append(CutSegment(
+            group_name=group_name, target_start=start, target_end=end,
+            target_region_bbox=union_bboxes(*boxes), source_labels=(upper_label, lower_label),
+            frame=frame, recenter_target_in_plane=False,
+        ))
+    return segments, warnings
+
+
+def _resolve_spine_interspace_segments_legacy(
+    localization_result: Dict[str, Any],
+    intervals: Sequence[Tuple[str, str, str]],
+) -> Tuple[List[CutSegment], List[str]]:
+    """原有四棱柱、端面和 bbox 解析流程，不含碰撞恢复。"""
 
     segments: List[CutSegment] = []
     warnings: List[str] = []

@@ -182,6 +182,7 @@ def build_body_framing_support(
     target_mask: sitk.Image | None = None,
     exclude_arms: bool = False,
     preserve_small_components: bool = False,
+    separate_arms_only: bool = False,
 ) -> BodyFramingSupport | None:
     """提取身体外轮廓；无可识别身体时返回 None，由调用方保留原取景。
 
@@ -197,6 +198,8 @@ def build_body_framing_support(
     外侧床翼可以向前翘起；不拆开与人体相连的设备。
     方向不足以判断前后关系时保留组件；无可靠主躯干时仍不提供支持。
     与身体厚度接近或已和身体连通的垫子/设备不能仅凭 HU 可靠区分，可能被包含。
+    exclude_arms 与 separate_arms_only 同时为真时，仅删除有可靠中央躯干
+    支持的独立外围组件，不启用针对肺部的连接手臂骨芯/分水岭识别。
     """
 
     if image.GetDimension() != 3:
@@ -254,9 +257,13 @@ def build_body_framing_support(
                 trunk = extract_trunk_slice(
                     hu.T, body.T, target_array[z].T,
                     (y_min, y_max, x_min, x_max), spacing_yx[::-1],
+                    separate_only=separate_arms_only,
                 ).T
             else:
-                trunk = extract_trunk_slice(hu, body, target_array[z], target_bounds_xy, spacing_yx)
+                trunk = extract_trunk_slice(
+                    hu, body, target_array[z], target_bounds_xy, spacing_yx,
+                    separate_only=separate_arms_only,
+                )
             separated_arms |= bool(np.any(body & ~trunk))
             body = trunk
         boundary = body & ~ndimage.binary_erosion(body, structure=np.ones((3, 3)), border_value=0)

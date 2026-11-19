@@ -64,6 +64,8 @@ def extract_trunk_slice(
     target_slice: np.ndarray,
     target_bounds_xy: tuple[float, float, float, float],
     spacing_yx: np.ndarray,
+    *,
+    separate_only: bool = False,
 ) -> np.ndarray:
     """返回用于肺部取景的躯干支持，证据不足时保留完整身体。
 
@@ -76,6 +78,8 @@ def extract_trunk_slice(
     当成上臂。填孔身体距离场的标记分水岭在上臂与主干之间的连接处分离，
     肺周围 20 mm 及中央主干作为保护种子。没有可靠拓扑/骨芯证据或分离结果不可靠时
     原样返回；肩背肌仍属于躯干。这里不承诺识别所有姿势或已截断的手臂。
+    separate_only 为真时只排除完全分离的外围组件，不使用肺部专用骨芯识别，
+    可用于腹部等未验证连接手臂分离规则的区域。
     """
 
     body = np.asarray(body_mask, dtype=bool)
@@ -95,6 +99,8 @@ def extract_trunk_slice(
         return body
 
     body = _remove_separate_arms(body, target, bounds, spacing)
+    if separate_only:
+        return body
     center_x = 0.5 * (x_min + x_max)
     width_x = x_max - x_min + 1.0
     body_x = np.flatnonzero(np.any(body, axis=0))

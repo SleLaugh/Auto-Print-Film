@@ -29,7 +29,12 @@
         "lung": "lung",
         "brain": "brain",
         "hip_left": "hip_left",
-        "hip_right": "hip_right"
+        "hip_right": "hip_right",
+        "liver": "liver",
+        "kidney_left": "kidney_left",
+        "kidney_right": "kidney_right",
+        "femur_left": "femur_left",
+        "femur_right": "femur_right"
     },
     "slice_parts": {
         "颅脑": {
@@ -768,6 +773,216 @@
                         "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
                         "localizer_plane": "冠状位",
                         "framing_policy": { "basis": "selected_region", "margin_mm": 5.0, "canvas": "original" }
+                    }
+                }
+            }
+        },
+        "上腹部": {
+            "enabled": true,
+            "model_rules": {
+                "CT": [
+                    {
+                        "scan_thickness_range_mm": { "min": 0.0, "max": 6.0 },
+                        "model_id": 701,
+                        "configuration": "3d_fullres",
+                        "input_orientation": "RAS",
+                        "fold": 0
+                    }
+                ]
+            },
+            "localization": {
+                "pose": {
+                    "method": "hip",
+                    "roles": {
+                        "left": "hip_left",
+                        "right": "hip_right"
+                    }
+                },
+                "regions": {
+                    "default": {
+                        "type": "whole_range",
+                        "transverse_source": "body",
+            "target_labels": ["liver", "hip_left", "hip_right"],
+                        "bounds": {
+                            "upper": {
+                                "labels": ["liver"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            },
+                            "lower": {
+                                "labels": ["hip_left", "hip_right"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            }
+                        }
+                    }
+                }
+            },
+            "slice_rules": {
+                "横状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
+                        "localizer_plane": "矢状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 0.0, "centering": "group", "canvas": "target" }
+                    }
+                },
+                "冠状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
+                        "localizer_plane": "矢状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 0.0, "centering": "group", "canvas": "target" }
+                    }
+                },
+                "矢状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
+                        "localizer_plane": "冠状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 0.0, "centering": "group", "canvas": "target" }
+                    }
+                }
+            }
+        },
+        "下腹部": {
+            "enabled": true,
+            "model_rules": {
+                "CT": [
+                    {
+                        "scan_thickness_range_mm": { "min": 0.0, "max": 6.0 },
+                        "model_id": 701,
+                        "configuration": "3d_fullres",
+                        "input_orientation": "RAS",
+                        "fold": 0
+                    }
+                ]
+            },
+            "localization": {
+                "pose": {
+                    "method": "hip",
+                    "roles": {
+                        "left": "hip_left",
+                        "right": "hip_right"
+                    }
+                },
+                "regions": {
+                    "default": {
+                        "type": "whole_range",
+                        "transverse_source": "body",
+                        "target_labels": ["kidney_left", "kidney_right", "hip_left", "hip_right", "femur_left", "femur_right"],
+                        "bounds": {
+                            "upper": {
+                                "labels": ["kidney_left", "kidney_right"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 30.0
+                            },
+                            "lower": {
+                                "labels": ["femur_left", "femur_right"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            }
+                        }
+                    }
+                }
+            },
+            "slice_rules": {
+                "横状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
+                        "localizer_plane": "矢状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 0.0, "centering": "group", "canvas": "target" }
+                    }
+                },
+                "冠状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
+                        "localizer_plane": "矢状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 0.0, "centering": "group", "canvas": "target" }
+                    }
+                },
+                "矢状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
+                        "localizer_plane": "冠状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 0.0, "centering": "group", "canvas": "target" }
+                    }
+                }
+            }
+        },
+        "全腹部": {
+            "enabled": true,
+            "model_rules": {
+                "CT": [
+                    {
+                        "scan_thickness_range_mm": { "min": 0.0, "max": 6.0 },
+                        "model_id": 701,
+                        "configuration": "3d_fullres",
+                        "input_orientation": "RAS",
+                        "fold": 0
+                    }
+                ]
+            },
+            "localization": {
+                "pose": {
+                    "method": "hip",
+                    "roles": {
+                        "left": "hip_left",
+                        "right": "hip_right"
+                    }
+                },
+                "regions": {
+                    "default": {
+                        "type": "whole_range",
+                        "transverse_source": "body",
+                        "target_labels": ["liver", "hip_left", "hip_right", "femur_left", "femur_right"],
+                        "bounds": {
+                            "upper": {
+                                "labels": ["liver"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            },
+                            "lower": {
+                                "labels": ["femur_left", "femur_right"],
+                                "edge": "upper",
+                                "reduce": "max",
+                                "offset_mm": 0.0
+                            }
+                        }
+                    }
+                }
+            },
+            "slice_rules": {
+                "横状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
+                        "localizer_plane": "矢状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 0.0, "centering": "group", "canvas": "target" }
+                    }
+                },
+                "冠状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
+                        "localizer_plane": "矢状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 0.0, "centering": "group", "canvas": "target" }
+                    }
+                },
+                "矢状位": {
+                    "MPR": {
+                        "regions": ["default"],
+                        "face_extension_mm": {"top_mm": 0.0, "bottom_mm": 0.0, "front_mm": 0.0, "back_mm": 0.0, "left_mm": 0.0, "right_mm": 0.0},
+                        "localizer_plane": "冠状位",
+                        "framing_policy": { "basis": "selected_region", "margin_mm": 0.0, "centering": "group", "canvas": "target" }
                     }
                 }
             }

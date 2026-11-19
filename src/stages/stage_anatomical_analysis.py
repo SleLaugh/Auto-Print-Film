@@ -7,6 +7,7 @@ from typing import Any, Dict
 import numpy as np
 import SimpleITK as sitk
 
+from src.anatomy.body_regions import apply_body_transverse_regions
 from src.anatomy.regions import resolve_anatomical_regions
 from src.core.context import ProcessingContext
 from src.core.resources import resource_operation
@@ -319,13 +320,35 @@ class AnatomicalAnalysisStage(LocalizationOperations):
                     "本次分割缺少可用骨性取景支持，仅按脑区居中，不能保证脑部周边骨轮廓完整"
                 )
 
+        region_configs = localization_result["resolved_cut_configs"].get("whole_range", {}).get("regions", {})
         with resource_operation("anatomical_analysis", "resolve_anatomical_regions"):
             anatomical_regions = resolve_anatomical_regions(
-                localization_result["resolved_cut_configs"].get("whole_range", {}).get("regions", {}),
+                region_configs,
                 anatomical_geometry, image,
                 {name: region.indices_zyx for name, region in label_regions.items()},
                 pose_labels, pose_method, pose_roles=pose_roles,
             )
+        body_target_labels = {
+            name for region in region_configs.values()
+            if region.get("transverse_source", "labels") == "body"
+            for name in region["target_labels"]
+        }
+        if body_target_labels:
+            # 仅体表区域额外读取 CT。先有 SI 边界，再扩充 LR/AP，保证冠、矢状
+            # 层组的范围也覆盖躯干；第七阶段直接复用序列化的区域框。
+            with resource_operation("anatomical_analysis", "resolve_body_transverse_regions") as details:
+                raw_image = sitk.ReadImage(localization_result["raw_for_reconstruction_path"])
+                body_target = sitk.GetImageFromArray(self._build_target_mask(
+                    seg_array, {name: label_targets[name] for name in body_target_labels},
+                ).astype(np.uint8))
+                body_target.CopyInformation(image)
+                anatomical_regions = apply_body_transverse_regions(
+                    raw_image, body_target, anatomical_regions, region_configs,
+                )
+                details.update(size_xyz=raw_image.GetSize(), region_count=sum(
+                    region.get("transverse_source") == "body" for region in region_configs.values()
+                ))
+                del body_target, raw_image
 
         debug_label_path = ""
         debug_body_path = ""

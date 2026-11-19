@@ -184,6 +184,7 @@ class SeriesReuseSession:
             "model": {
                 **{key: model[key] for key in ("model_id", "configuration", "fold")},
                 "plans": model.get("plans", "nnUNetPlans"),
+                **({"input_orientation": model["input_orientation"]} if "input_orientation" in model else {}),
             },
         })
         planes = []

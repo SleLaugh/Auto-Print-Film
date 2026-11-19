@@ -33,6 +33,7 @@ from src.config import (
     validate_slice_part_config,
 )
 from src.models import SegmentationResult
+from src.inference.orientation import prepare_oriented_input, restore_segmentation_file
 from src.runtime import config_candidates, external_process_environment, resolve_application_path
 from src.utils import DebugLog, ErrorLog, RunLog
 
@@ -174,6 +175,10 @@ class SegmentationStage(BaseStage):
         dataset_id = model_info['model_id']
         configuration = model_info.get('configuration', self._configuration)
         fold = model_info.get('fold', self._fold)
+        orientation_options = (
+            {"input_orientation": model_info["input_orientation"]}
+            if "input_orientation" in model_info else {}
+        )
         DebugLog(
             f"    切割部位: {slice_part}, 检查类型: {study_type}, "
             f"扫描厚度: {scan_thickness:.3f}mm "
@@ -195,7 +200,9 @@ class SegmentationStage(BaseStage):
         reuse_session = context.metadata.get("series_reuse_session")
 
         def reusable():
-            return self._can_reuse_segmentation(output_dir, output_path, dataset_id) and (
+            return self._can_reuse_segmentation(
+                output_dir, output_path, dataset_id, **orientation_options,
+            ) and (
                 (reuse_session is None and not context.metadata.get("series_reuse_requested"))
                 or (reuse_session is not None
                     and reuse_session.local_segmentation_valid(output_dir))
@@ -221,6 +228,7 @@ class SegmentationStage(BaseStage):
                         output_dir, input_path, dataset_id, configuration, fold,
                         inference_log_dir=Path(request.output_dir) / "log",
                         plans=model_info.get('plans', self._plans),
+                        **orientation_options,
                     )
                     if reuse_session is not None and not reuse_session.disabled:
                         try:
@@ -255,15 +263,18 @@ class SegmentationStage(BaseStage):
         fold: str,
         inference_log_dir: Path | None = None,
         plans: str = "nnUNetPlans",
+        input_orientation: str | None = None,
     ) -> None:
         """锁内生成独立推理结果，最后发布 seg，避免半成品被当作缓存。"""
 
+        orientation_options = {"input_orientation": input_orientation} if input_orientation is not None else {}
         for attempt in range(1, self._inference_max_retries + 2):
             try:
                 self._generate_segmentation_attempt(
                     output_dir, input_path, dataset_id, configuration, fold,
                     inference_log_dir=inference_log_dir, attempt=attempt,
                     plans=plans,
+                    **orientation_options,
                 )
                 return
             except ExternalProcessError as error:
@@ -284,6 +295,7 @@ class SegmentationStage(BaseStage):
         configuration: str, fold: str, *,
         inference_log_dir: Path | None, attempt: int,
         plans: str = "nnUNetPlans",
+        input_orientation: str | None = None,
     ) -> None:
         """每次尝试使用新工作目录，避免继续模式复用上一次的半成品。"""
 
@@ -291,10 +303,15 @@ class SegmentationStage(BaseStage):
         with cache_workspace(output_dir.parent, ".segmentation-") as workspace:
             work_path = workspace.path
             temporary_seg = work_path / "seg.nii.gz"
+            inference_input, orientation_transform = input_path, None
+            if input_orientation is not None:
+                inference_input, orientation_transform = prepare_oriented_input(
+                    input_path, work_path / "image_input", input_orientation,
+                )
             DebugLog("  [2] run_nnunet_inference: 执行nnUNet推理...")
             self._run_nnunet_inference(
-                input_dir=input_path.parent,
-                input_path=input_path,
+                input_dir=inference_input.parent,
+                input_path=inference_input,
                 output_path=temporary_seg,
                 dataset_id=dataset_id,
                 configuration=configuration,
@@ -307,7 +324,11 @@ class SegmentationStage(BaseStage):
             )
             if not temporary_seg.is_file():
                 raise FileNotFoundError(f"未找到nnUNet输出文件: {temporary_seg}")
-            self._write_model_marker(work_path, dataset_id)
+            if orientation_transform is not None:
+                restore_segmentation_file(temporary_seg, orientation_transform)
+                self._write_model_marker(work_path, dataset_id, input_orientation=input_orientation)
+            else:
+                self._write_model_marker(work_path, dataset_id)
 
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / "seg.nii.gz"
@@ -331,6 +352,7 @@ class SegmentationStage(BaseStage):
         output_dir: Path,
         output_path: Path,
         dataset_id: Any,
+        input_orientation: str | None = None,
     ) -> bool:
         """按模型目录中的分割文件和标记判断第二阶段缓存是否可复用。"""
 
@@ -339,17 +361,23 @@ class SegmentationStage(BaseStage):
         marker = output_dir / "model.json"
         if not marker.is_file():
             # 兼容没有模型标记的历史缓存：文件存在即可复用。
-            return output_path.is_file()
+            return input_orientation is None and output_path.is_file()
         try:
             with marker.open("r", encoding="utf-8") as file:
-                matches_model = str(json.load(file).get("model_id")) == str(dataset_id)
+                metadata = json.load(file)
+                if not isinstance(metadata, dict):
+                    return False
+                matches_model = str(metadata.get("model_id")) == str(dataset_id)
+                matches_orientation = metadata.get("input_orientation") == input_orientation
             # 读取标记期间失效缓存可能正在被替换，最终seg必须仍已发布。
-            return matches_model and output_path.is_file()
+            return matches_model and matches_orientation and output_path.is_file()
         except (OSError, ValueError, TypeError):
             return False
 
     @staticmethod
-    def _write_model_marker(output_dir: Path, dataset_id: Any) -> None:
+    def _write_model_marker(
+        output_dir: Path, dataset_id: Any, input_orientation: str | None = None,
+    ) -> None:
         """记录模型缓存对应的模型，避免模型切换时误复用。"""
 
         marker = output_dir / "model.json"
@@ -360,7 +388,10 @@ class SegmentationStage(BaseStage):
                 prefix=".model.", suffix=".tmp", delete=False,
             ) as file:
                 temporary = Path(file.name)
-                json.dump({"model_id": str(dataset_id)}, file, ensure_ascii=False)
+                metadata = {"model_id": str(dataset_id)}
+                if input_orientation is not None:
+                    metadata["input_orientation"] = input_orientation
+                json.dump(metadata, file, ensure_ascii=False)
             temporary.replace(marker)
         finally:
             if temporary is not None:
@@ -400,7 +431,7 @@ class SegmentationStage(BaseStage):
         )
         thickness_range = model_mapping['scan_thickness_range_mm']
         model_id = model_mapping['model_id']
-        return {
+        result = {
             'model_id': model_id,
             'dataset_id': model_id,
             'scan_thickness': normalized_scan_thickness,
@@ -414,6 +445,9 @@ class SegmentationStage(BaseStage):
             'plans': model_mapping.get('plans', self._plans),
             'matched_by': 'slice_part_config',
         }
+        if 'input_orientation' in model_mapping:
+            result['input_orientation'] = model_mapping['input_orientation']
+        return result
 
     @staticmethod
     def _match_model_mapping(

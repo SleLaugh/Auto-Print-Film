@@ -155,6 +155,32 @@ def test_new_model_generation_misses_old_full_and_segmentation_cache(lung_reuse_
     assert old_marker["segmentation_key"] != new_marker["segmentation_key"]
 
 
+def test_input_orientation_changes_segmentation_identity_before_cross_series_reuse(lung_reuse_case, monkeypatch):
+    parent, inference_calls = lung_reuse_case
+    _mutable_model_identity(monkeypatch)
+    original_match = SegmentationStage._match_model
+    orientation = {"value": "RAS"}
+
+    def match(stage, *args, **kwargs):
+        return {**original_match(stage, *args, **kwargs), "input_orientation": orientation["value"]}
+
+    monkeypatch.setattr(SegmentationStage, "_match_model", match)
+    first = _pipeline().run(_request(parent, "A"))
+    assert first.success, first.errors
+    orientation["value"] = "LPS"
+    second = _pipeline().run(_request(parent, "B"))
+    assert second.success, second.errors
+    assert len(inference_calls) == 2
+    assert not second.context.metadata["series_reuse_session"].segmentation_hit
+    old_marker = json.loads(_ready_markers(parent, "A")[0].read_text(encoding="utf-8"))
+    new_marker = json.loads(_ready_markers(parent, "B")[0].read_text(encoding="utf-8"))
+    assert old_marker["segmentation_key"] != new_marker["segmentation_key"]
+    third = _pipeline().run(_request(parent, "C"))
+    assert third.success, third.errors
+    assert third.context.metadata["series_reuse_session"].hit
+    assert len(inference_calls) == 2
+
+
 def test_model_change_during_inference_does_not_publish_cache(lung_reuse_case, monkeypatch):
     parent, inference_calls = lung_reuse_case
     model = _mutable_model_identity(monkeypatch)

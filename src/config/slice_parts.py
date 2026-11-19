@@ -190,7 +190,7 @@ def _validate_model_mappings(
             raise ValueError(f"{slice_part}.{study_type} 的模型规则项必须是对象")
         _reject_unknown_fields(
             mapping,
-            {"scan_thickness_range_mm", "model_id", "configuration", "fold", "plans"},
+            {"scan_thickness_range_mm", "model_id", "configuration", "fold", "plans", "input_orientation"},
             f"{slice_part}.{study_type}.model_rules",
         )
         thickness_range = mapping.get("scan_thickness_range_mm")
@@ -222,6 +222,10 @@ def _validate_model_mappings(
                     or any(value in plans for value in ("/", "\\", "\x00", "__"))
                     or plans in {".", ".."}):
                 raise ValueError(f"{slice_part}.{study_type}.plans 必须是有效的训练计划名称")
+        if "input_orientation" in mapping:
+            orientation = mapping["input_orientation"]
+            if not isinstance(orientation, str) or orientation not in {"RAS", "LPS"}:
+                raise ValueError(f"{slice_part}.{study_type}.input_orientation 仅支持 RAS/LPS")
         parsed_ranges.append((minimum, maximum))
 
     for index, current in enumerate(parsed_ranges):
@@ -345,7 +349,12 @@ def _validate_region(
         raise ValueError(f"{slice_part}.{region_name} 包含未知区域类型")
     prefix = f"{slice_part}.{region_name}"
     if region_type == "whole_range":
-        _reject_unknown_fields(region, {"type", "target_labels", "bounds"}, prefix)
+        _reject_unknown_fields(
+            region, {"type", "target_labels", "bounds", "transverse_source"}, prefix,
+        )
+        transverse_source = region.get("transverse_source", "labels")
+        if not isinstance(transverse_source, str) or transverse_source not in {"labels", "body"}:
+            raise ValueError(f"{prefix}.transverse_source 仅支持 labels/body")
         _validate_alias_list(region.get("target_labels"), aliases, f"{prefix}.target_labels")
         bounds = region.get("bounds")
         if not isinstance(bounds, Mapping):

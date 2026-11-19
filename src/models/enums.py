@@ -17,6 +17,9 @@ class SlicePartEnum(Enum):
     肺部 = "肺部"
     骶骨 = "骶骨"
     髋骨 = "髋骨"
+    上腹部 = "上腹部"
+    下腹部 = "下腹部"
+    全腹部 = "全腹部"
 
 
 class StudyTypeEnum(Enum):

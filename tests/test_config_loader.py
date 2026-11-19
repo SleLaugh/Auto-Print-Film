@@ -618,8 +618,8 @@ class ConfigLoaderTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "framing_policy 仅支持 MPR"):
                     validate_slice_part_config(config)
 
-    def test_default_selected_region_framing_applies_to_lung_and_hip_only(self):
-        """肺髋保留原画框并按整组部位居中，其他部位不启用。"""
+    def test_default_selected_region_framing_preserves_lung_hip_and_frames_abdomen(self):
+        """肺髋保留原画框，腹部使用体表区域画框；均按整组居中。"""
 
         config = load_slice_part_config()
         configured = [
@@ -632,6 +632,13 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertCountEqual(configured, [
             (part, plane, "MPR", {"basis": "selected_region", "margin_mm": 5.0, "canvas": "original"})
             for part in ("肺部", "髋骨")
+            for plane in ("横状位", "冠状位", "矢状位")
+        ] + [
+            (part, plane, "MPR", {
+                "basis": "selected_region", "margin_mm": 0.0,
+                "centering": "group", "canvas": "target",
+            })
+            for part in ("上腹部", "下腹部", "全腹部")
             for plane in ("横状位", "冠状位", "矢状位")
         ])
         cervical = config["slice_parts"]["颈椎"]

@@ -9,7 +9,7 @@
 ## 当前有效规则
 
 - 第三阶段唯一决定后续使用的 raw/seg 空间。脊柱使用可靠逐椎体镜像角汇聚生成
-  XY 候选；颅脑、髋骨、肺部保持原工作图像，延后在第五阶段估计方向、第七阶段采样。
+  XY 候选；颅脑、髋骨、肺部、上腹部、下腹部、全腹部保持原工作图像，延后在第五阶段估计方向、第七阶段采样。
 - 第四阶段收集回正、区域边界、取景目标、CPR 和椎间隙所需标签，提取全量 bbox、centroid 和顺序，并保留各自用途。
 - 第五阶段为当前启用部位生成整体解剖坐标系，颈椎横状位 MPR 另有专属坐标；脊柱额外生成过滤主体、四棱柱、端面和
   `spine_geometry.filtered_annotation_centroids`（沟通简称“标注质心”）。
@@ -26,7 +26,14 @@
   `localization.regions` 定义具名区域，`slice_rules` 决定每种状位和切法引用的区域。
   MPR 的 `whole_range` 使用 `target_labels` 和 `bounds.upper/lower`；CPR 的 `spine_range`
   与椎间隙的 `interspace` 使用各自首尾标签。边界按每标签的 `edge`、多标签 `reduce`、
-  带符号 `offset_mm` 顺序求值；默认边界使用全部目标的上下极值，保持原有覆盖。
+  带符号 `offset_mm` 顺序求值；原八部位默认边界使用全部目标的上下极值，保持原有覆盖。
+- 上腹部、下腹部、全腹部复用双髋 `hip` 回正，仅从双髋估计方向；上腹部为肝上界至双髋较高上界，
+  下腹部为双肾较高上界再向头侧 30 mm 至双股骨较高上界；全腹部为肝上界至双股骨
+  较高上界，只要求肝、双髋、双股骨，不依赖双肾或该 30 mm 偏移。
+  `transverse_source=body` 在第五阶段仅用所选头脚范围内的 CT 体表补充 LR/AP，
+  识别不足的源层以该层原视野补足并记录 `transverse_support`。仅保守排除可靠分离手臂，
+  不移动已求解的方向或头脚边界；省略字段默认 `labels`，既有部位不提取体表。
+  定义限制与模型说明见[腹部接入设计](../../architecture/2026-11-18-上下腹部接入设计.md)。
 - 混合请求通过 `resolved_cut_configs` 同时转交独立范围：普通 MPR 使用
   `whole_range.regions`，CPR 使用 `spine_range`，椎间隙使用 `interspace.intervals`。
   第五阶段把普通 MPR 各区域求解成 `anatomical_regions`，与回正 `anatomical_geometry`

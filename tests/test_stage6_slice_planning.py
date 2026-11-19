@@ -2515,7 +2515,7 @@ class Stage6SlicePlanningTest(unittest.TestCase):
         ]
 
         self.assertEqual(set(whole_range_slice_parts), {
-            "颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱", "肺部", "颅脑", "髋骨",
+            "颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱", "肺部", "颅脑", "髋骨", "上腹部", "下腹部", "全腹部",
         })
 
         for slice_part in whole_range_slice_parts:

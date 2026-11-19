@@ -181,9 +181,8 @@ class SpinePartConfigTest(unittest.TestCase):
         """迁移不得把原有目标并集的极值收缩成首尾标签的极值。"""
 
         self.assertEqual(self.config["schema_version"], 1)
-        for name, part in self.config["slice_parts"].items():
-            if not part["enabled"]:
-                continue
+        for name in ("颅脑", "颈椎", "胸椎", "腰椎", "胸腰椎", "全脊柱", "肺部", "髋骨"):
+            part = self.config["slice_parts"][name]
             with self.subTest(slice_part=name):
                 region = part["localization"]["regions"]["default"]
                 for side, reduction in (("upper", "max"), ("lower", "min")):

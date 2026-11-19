@@ -71,7 +71,19 @@
 
                     new SliceRuleConfigInfo("CT", "髋骨", PlaneEnums.横状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default }),
                     new SliceRuleConfigInfo("CT", "髋骨", PlaneEnums.冠状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default }),
-                    new SliceRuleConfigInfo("CT", "髋骨", PlaneEnums.矢状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default })
+                    new SliceRuleConfigInfo("CT", "髋骨", PlaneEnums.矢状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default }),
+
+                    new SliceRuleConfigInfo("CT", "上腹部", PlaneEnums.横状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default }),
+                    new SliceRuleConfigInfo("CT", "上腹部", PlaneEnums.冠状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default }),
+                    new SliceRuleConfigInfo("CT", "上腹部", PlaneEnums.矢状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default }),
+
+                    new SliceRuleConfigInfo("CT", "下腹部", PlaneEnums.横状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default }),
+                    new SliceRuleConfigInfo("CT", "下腹部", PlaneEnums.冠状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default }),
+                    new SliceRuleConfigInfo("CT", "下腹部", PlaneEnums.矢状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default }),
+
+                    new SliceRuleConfigInfo("CT", "全腹部", PlaneEnums.横状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default }),
+                    new SliceRuleConfigInfo("CT", "全腹部", PlaneEnums.冠状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default }),
+                    new SliceRuleConfigInfo("CT", "全腹部", PlaneEnums.矢状位, SliceTypes.MPR, new List<SliceRegions>() { SliceRegions.Default })
                 };
             }
         }
